@@ -848,3 +848,56 @@ fn kitty_shell_cwd_rejects_controls_missing_absolute_paths_and_oversize() {
     };
     assert_eq!(directory.path(), "/tmp/a b");
 }
+
+#[test]
+fn snapshot_publishes_osc11_default_background_and_clears_on_osc111() {
+    let mut engine = engine();
+    assert_eq!(engine.snapshot().unwrap().default_background, None);
+    engine.process(b"\x1b]11;#123456\x1b\\").unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    let override_color = Rgb {
+        red: 0x12,
+        green: 0x34,
+        blue: 0x56,
+    };
+    assert_eq!(snapshot.default_background, Some(override_color));
+    assert_eq!(
+        snapshot.rows[0].cells[0].background,
+        CellColor::Rgb(override_color)
+    );
+    engine.process(b"\x1b]111\x1b\\").unwrap();
+    let reset = engine.snapshot().unwrap();
+    assert_eq!(reset.default_background, None);
+    assert_eq!(
+        reset.rows[0].cells[0].background,
+        CellColor::DefaultBackground
+    );
+}
+
+#[test]
+fn equal_osc11_reset_restores_symbolic_default_background() {
+    let mut engine = engine();
+    engine.snapshot().unwrap();
+    // The override equals the theme background, so the resolved colors never
+    // change and only the engine's damage rebuilds the retained rows.
+    engine.process(b"\x1b]11;#445566\x1b\\").unwrap();
+    let overridden = engine.snapshot().unwrap();
+    assert_eq!(
+        overridden.default_background,
+        Some(presentation().background)
+    );
+    assert_eq!(
+        overridden.rows[0].cells[0].background,
+        CellColor::Rgb(presentation().background)
+    );
+    engine.process(b"\x1b]111\x1b\\").unwrap();
+    let reset = engine.snapshot().unwrap();
+    assert_eq!(reset.default_background, None);
+    for row in &reset.rows {
+        assert_eq!(
+            row.cells[0].background,
+            CellColor::DefaultBackground,
+            "OSC 111 must restore symbolic default backgrounds even when RGB is unchanged"
+        );
+    }
+}

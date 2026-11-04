@@ -13,7 +13,7 @@ const FRAME_STALL_EXIT_CODE = 3;
 type Fields = Record<string, string>;
 export type Phase = { minNs: number; medianNs: number; p95Ns: number; counts: Record<string, number> };
 export type ScenarioReport = { prepare: Phase; paint: Phase };
-export type Report = { revision: string; platform: string; runs: number; scenarios: Record<string, ScenarioReport> };
+export type Report = { revision: string; platform: string; runs: number; transparency?: { background: number; foreground: number; appearance: string }; scenarios: Record<string, ScenarioReport> };
 
 function fields(line: string): Fields {
   return Object.fromEntries(line.slice(PREFIX.length).split(" ").filter(part => part.includes("=")).map(part => {
@@ -66,6 +66,7 @@ function change(before: number, after: number): string {
 
 export function renderTable(report: Report, baseline?: Report): string {
   const lines = [`revision ${report.revision} on ${report.platform}, ${report.runs} runs per scenario${baseline ? `, compared with ${baseline.revision}` : ""}`];
+  if (report.transparency) lines.push(`background alpha ${report.transparency.background}, text alpha ${report.transparency.foreground}, appearance ${report.transparency.appearance}`);
   lines.push(`${"scenario".padEnd(10)} ${"phase".padEnd(8)} ${"median µs".padStart(9)} ${"min µs".padStart(9)} ${"p95 µs".padStart(9)}${baseline ? ` ${"median".padStart(8)} ${"min".padStart(8)}` : ""}  counts`);
   for (const [name, scenario] of Object.entries(report.scenarios)) {
     for (const phase of ["prepare", "paint"] as const) {
@@ -102,7 +103,8 @@ if (import.meta.main) {
   const runs = Number(values.runs);
   if (!Number.isInteger(runs) || runs <= 0) throw new Error("--runs must be a positive integer");
   const selected = values.scenarios ? values.scenarios.split(",") : [...SCENARIOS];
-  const report: Report = { revision: await revision(), platform: `${process.platform}-${process.arch}`, runs, scenarios: {} };
+  const transparency = { background: Number(process.env.HUTERM_BENCH_BACKGROUND_OPACITY ?? 1), foreground: Number(process.env.HUTERM_BENCH_FOREGROUND_OPACITY ?? 1), appearance: process.env.HUTERM_BENCH_APPEARANCE ?? (Number(process.env.HUTERM_BENCH_BACKGROUND_OPACITY ?? 1) < 1 ? "transparent" : "opaque") };
+  const report: Report = { transparency, revision: await revision(), platform: `${process.platform}-${process.arch}`, runs, scenarios: {} };
   for (const scenario of selected) {
     const collected: Record<"prepare" | "paint", Fields[]> = { prepare: [], paint: [] };
     for (let run = 0; run < runs; run += 1) {

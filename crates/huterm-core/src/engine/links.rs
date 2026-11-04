@@ -640,6 +640,7 @@ mod tests {
                 viewport: Viewport { bottom_offset },
                 history_size: history,
                 cursor_color: None,
+                default_background: None,
             };
             for row in 0..ROWS {
                 for column in 0..COLUMNS {

@@ -413,6 +413,7 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
         viewport: Viewport::default(),
         history_size: 0,
         cursor_color: None,
+        default_background: None,
     }
 }
 

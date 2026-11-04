@@ -594,6 +594,7 @@ impl SettingsView {
         })
         .when_some(description, Field::description)
         .when_some(note, Field::description)
+        .when_some(Self::transparency_note(path, cx), Field::description)
         .error(error)
         .when_some(reset, Field::action)
         .control(control);

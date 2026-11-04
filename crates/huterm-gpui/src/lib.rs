@@ -54,6 +54,7 @@ mod terminal_font;
 mod terminfo;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod themes;
+mod transparency;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod ui;
 

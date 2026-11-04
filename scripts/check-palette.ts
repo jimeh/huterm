@@ -520,6 +520,20 @@ command = "select_tab"
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
 
+    // Native readback and surface appearance in both reload directions.
+    await writeFile(config, configDocument + "\n[window]\nopacity = 0.7\nbackground_opacity = 0.6\nforeground_opacity = 0.8\nbackground_blur = true\n");
+    await command("invoke-reload");
+    await waitFor(async () => {
+      const text = await state();
+      const alpha = Number(text.match(/w0\.native_alpha=([0-9.]+)/)?.[1]);
+      const expectedAlpha = process.platform === "darwin" ? 0.7 : 1;
+      const expectedAppearance = process.platform === "darwin" ? "Blurred" : "Opaque";
+      return Math.abs(alpha - expectedAlpha) < 0.0001 && text.includes(`w0.background_appearance=Some(${expectedAppearance})`);
+    }, "transparency reload native alpha and appearance");
+    await writeFile(config, configDocument);
+    await command("invoke-reload");
+    await state("w0.native_alpha=1", "w0.background_appearance=Some(Opaque)");
+
     // Production reload preserves the active legacy warning after a rejected
     // file and clears it only after a subsequent valid engine-free reload.
     await writeFile(

@@ -1078,11 +1078,7 @@ impl SettingsView {
 
     /// Whether a setting applies here, or the file sets it anyway.
     fn available(&self, setting: &Setting) -> bool {
-        !file_only(&setting.path)
-            && (setting
-                .platform
-                .is_none_or(|platform| platform == current())
-                || self.file.is_set(&setting.path))
+        available_on(setting, current(), self.file.is_set(&setting.path))
     }
 
     /// Whether advanced settings show, as `[settings] show_advanced` says
@@ -1117,6 +1113,8 @@ impl SettingsView {
         query.is_empty()
             || setting.label.to_lowercase().contains(query)
             || setting.path.to_lowercase().contains(query)
+            // A group's heading, such as Transparency, finds its rows.
+            || setting.group.to_lowercase().contains(query)
             // Descriptions match as they read, without code-span backticks.
             || setting.description.as_deref().is_some_and(|text| {
                 prose::plain(text).to_lowercase().contains(query)
@@ -2593,6 +2591,21 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// Why the platform cannot apply the requested window transparency.
+    pub(super) fn transparency_note(
+        path: &str,
+        cx: &App,
+    ) -> Option<&'static str> {
+        matches!(
+            path,
+            "window.opacity"
+                | "window.background_opacity"
+                | "window.foreground_opacity"
+        )
+        .then(|| cx.global::<Desktop>().transparency_support.note())
+        .flatten()
+    }
+
     /// Why the applied font differs from the file: an alias or an unavailable
     /// family, as the last resolution found it, rather than the latest scan.
     pub(super) fn fallback_note(setting: &Setting, cx: &App) -> Option<String> {
@@ -2838,8 +2851,11 @@ fn offered_modifiers() -> &'static [&'static str] {
 
 /// What a setting for another platform says: that it applies there only.
 fn foreign_note(setting: &Setting) -> Option<String> {
-    let platform =
-        setting.platform.filter(|platform| *platform != current())?;
+    foreign_note_on(setting, current())
+}
+
+fn foreign_note_on(setting: &Setting, host: SettingPlatform) -> Option<String> {
+    let platform = setting.platform.filter(|platform| *platform != host)?;
     let name = match platform {
         SettingPlatform::Macos => "macOS",
         SettingPlatform::Linux => "Linux",
@@ -3761,5 +3777,52 @@ impl SettingsView {
     pub(super) fn use_mine(&mut self, path: &str, cx: &mut Context<'_, Self>) {
         let setting = self.setting_at(path).expect("a known setting");
         self.keep_mine(setting.path.as_str(), cx);
+    }
+}
+
+fn available_on(
+    setting: &Setting,
+    platform: huterm_config::settings::Platform,
+    is_set: bool,
+) -> bool {
+    !file_only(&setting.path)
+        && (setting.platform.is_none_or(|required| required == platform)
+            || is_set)
+}
+
+#[cfg(test)]
+mod transparency_tests {
+    use super::*;
+    #[test]
+    fn linux_blur_row_is_hidden_unless_set_and_remains_foreign() {
+        use huterm_config::settings::Platform;
+        let model = huterm_config::settings::SettingsModel::load().unwrap();
+        let blur = model.setting("window.background_blur").unwrap();
+        assert!(!available_on(blur, Platform::Linux, false));
+        assert!(available_on(blur, Platform::Linux, true));
+        assert_eq!(blur.platform, Some(Platform::Macos));
+        assert!(
+            foreign_note_on(blur, Platform::Linux)
+                .unwrap()
+                .starts_with("macOS only")
+        );
+        assert!(foreign_note_on(blur, Platform::Macos).is_none());
+        assert!(available_on(blur, Platform::Macos, false));
+    }
+
+    #[test]
+    fn searching_a_group_heading_finds_its_rows() {
+        let model = huterm_config::settings::SettingsModel::load().unwrap();
+        for path in [
+            "window.opacity",
+            "window.background_opacity",
+            "window.foreground_opacity",
+            "window.background_blur",
+        ] {
+            let setting = model.setting(path).unwrap();
+            assert!(SettingsView::matches(setting, "transparency"), "{path}");
+        }
+        let padding = model.setting("window.padding_x").unwrap();
+        assert!(!SettingsView::matches(padding, "transparency"));
     }
 }

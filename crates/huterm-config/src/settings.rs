@@ -976,7 +976,16 @@ mod tests {
                 assert_eq!(seen, None, "{} is listed twice", setting.path);
                 let expected = match setting.path.split_once('.') {
                     // Padding draws with the terminal's appearance.
-                    Some(("window", key)) if key.starts_with("padding_") => {
+                    Some(("window", key))
+                        if key.starts_with("padding_")
+                            || matches!(
+                                key,
+                                "opacity"
+                                    | "background_opacity"
+                                    | "foreground_opacity"
+                                    | "background_blur"
+                            ) =>
+                    {
                         SectionId::Appearance
                     }
                     Some(("window", _)) => SectionId::Windows,
@@ -1588,5 +1597,33 @@ mod tests {
                 Err(error(path, message)),
             );
         }
+    }
+    #[test]
+    fn transparency_rows_are_live_percent_sliders_between_theme_and_padding() {
+        let model = SettingsModel::load().unwrap();
+        for (key, label, order) in [
+            ("opacity", "Opacity", 36),
+            ("background_opacity", "Background opacity", 37),
+            ("foreground_opacity", "Text opacity", 38),
+        ] {
+            let setting = model
+                .settings()
+                .find(|setting| setting.path == format!("window.{key}"))
+                .unwrap();
+            assert_eq!(setting.label, label);
+            assert_eq!(setting.group, "Transparency");
+            assert_eq!(setting.section, SectionId::Appearance);
+            assert_eq!(setting.order, order);
+            assert_eq!(setting.control, Some(Control::Slider));
+            assert_eq!(setting.step, Some(0.05));
+            assert_eq!(setting.unit, None);
+            assert_eq!(setting.apply, Apply::Live);
+        }
+        let blur = model
+            .settings()
+            .find(|setting| setting.path == "window.background_blur")
+            .unwrap();
+        assert_eq!(blur.platform, Some(Platform::Macos));
+        assert_eq!(blur.order, 39);
     }
 }

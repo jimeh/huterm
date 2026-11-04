@@ -58,7 +58,7 @@ pub(crate) fn frame_appearance_name(window: &Window) -> anyhow::Result<String> {
 }
 
 #[cfg(target_os = "macos")]
-mod macos {
+pub(crate) mod macos {
     use anyhow::{Context as _, ensure};
     use gpui::Window;
     use objc::runtime::{Class, Object};
@@ -66,10 +66,10 @@ mod macos {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     /// A retained `NSWindow`, released on drop.
-    pub(super) struct NativeWindow(*mut Object);
+    pub(crate) struct NativeWindow(*mut Object);
 
     impl NativeWindow {
-        pub(super) fn of(window: &Window) -> anyhow::Result<Self> {
+        pub(crate) fn of(window: &Window) -> anyhow::Result<Self> {
             let RawWindowHandle::AppKit(handle) =
                 HasWindowHandle::window_handle(window)
                     .map_err(|error| {
@@ -89,6 +89,23 @@ mod macos {
                 let _: *mut Object = msg_send![native, retain];
                 Ok(Self(native))
             }
+        }
+
+        pub(crate) fn opacity_value(&self) -> f64 {
+            // SAFETY: Main-thread read from this retained NSWindow.
+            unsafe { msg_send![self.0, alphaValue] }
+        }
+
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "shares the fallible X11 alpha writer contract"
+        )]
+        pub(crate) fn opacity(&self, value: f64) -> anyhow::Result<()> {
+            // SAFETY: Retained main-thread NSWindow, outside GPUI updates.
+            unsafe {
+                let _: () = msg_send![self.0, setAlphaValue: value];
+            }
+            Ok(())
         }
 
         pub(super) fn set_dark(&self, dark: bool) -> anyhow::Result<()> {

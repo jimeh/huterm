@@ -652,6 +652,10 @@ impl TerminalEngine {
         self.render.clean()?;
         self.retained.clone_from(&built);
         self.retained_viewport = viewport;
+        let default_background = colors
+            .background
+            .filter(|_| self.overrides.background)
+            .map(rgb);
         self.retained_colors = Some(colors);
         Ok(TerminalSnapshot {
             terminal_id: self.id,
@@ -668,6 +672,7 @@ impl TerminalEngine {
             },
             history_size: viewport.1,
             cursor_color,
+            default_background,
         })
     }
 

@@ -10080,6 +10080,47 @@
     "WindowConfig": {
       "additionalProperties": false,
       "properties": {
+        "background_blur": {
+          "default": false,
+          "description": "Blurs what shows through a translucent background, on macOS only. It\nhas no effect while the background is opaque.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Background blur",
+          "x-huterm-order": 39,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "appearance"
+        },
+        "background_opacity": {
+          "default": 1.0,
+          "description": "How opaque the terminal's default background, the tab bar and pane\ntitle bars are, from 0 to 1. Text, and colors that programs set, stay\nsolid.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Background opacity",
+          "x-huterm-order": 37,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.05
+        },
+        "foreground_opacity": {
+          "default": 1.0,
+          "description": "How opaque terminal text and its underlines are, from 0.1 to 1.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0.1,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Text opacity",
+          "x-huterm-order": 38,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.05
+        },
         "initial_columns": {
           "default": 100,
           "description": "The grid width new ordinary windows request, from 10 to 1000 cells.\nLarge requests are limited to the display's available area.",
@@ -10140,6 +10181,21 @@
           "x-huterm-label": "Menu button",
           "x-huterm-order": 10,
           "x-huterm-section": "windows"
+        },
+        "opacity": {
+          "default": 1.0,
+          "description": "How opaque the whole window is, text and chrome included, from 0.1\nto 1. Background and text opacity multiply with it.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0.1,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Opacity",
+          "x-huterm-order": 36,
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 0.05
         },
         "padding_balance": {
           "default": false,

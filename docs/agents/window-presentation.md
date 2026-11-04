@@ -84,6 +84,31 @@ before terminal handlers and reconcile after gesture ownership changes.
 
 ## Native window handles
 
+`transparency::Alpha` owns native alpha for ordinary and Quake windows:
+configured opacity times normalized fade. Native writes must preserve and
+reconcile factors changed by reentrant callbacks. Opacity reload keeps the
+Quake effect generation: effects read the live configured factor, and cancelling
+them can discard an already-issued Show or Hide. Progress and deadlines stay
+unchanged. Recovery and cleanup restore the configured factor. Without
+transparency support only the configured factor drops to 1: the Quake fade
+needs a compositor, not a 32-bit visual. `Alpha::sync` writes on a later
+foreground turn, so a reload publishes `reloading=false` before its native
+alpha lands (about 40 ms later in the Docker Quake smoke); smokes wait for the
+readback instead of asserting it at publication. Background appearance
+follows the shared pure policy at open, reload and decoration changes; refresh
+after applying it because GPUI's native setters do not redraw.
+Pane creation reads cached transparency support instead of probing X11.
+
+Window-only startup captures can be stale while AppKit reports the window
+occluded. `isVisible` only means the window is ordered on screen; check
+`occlusionState & NSWindowOcclusionStateVisible` (bit 1) for native frame
+delivery. GPUI stops its display link when that bit is absent. An appearance
+change can trigger a native display while paced frames remain stopped, so a
+successful capture after an opacity reload does not prove frame progression.
+Record occlusion alongside pane installation and snapshot progress before
+attributing an empty startup capture to terminal layout or paint alpha.
+Opening Opaque or delaying transparency by a frame does not resolve occlusion.
+
 GPUI's inherent `Window::window_handle` returns its own handle; qualify
 `HasWindowHandle::window_handle(window)` when obtaining the raw AppKit handle.
 Map its `HandleError` explicitly into anyhow; it does not implement

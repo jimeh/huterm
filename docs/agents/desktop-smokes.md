@@ -67,6 +67,16 @@ its holder in `owner` beside it, and runs its command while holding the lock.
 
 ## Benchmarks
 
+Renderer and scroll benchmark tasks accept `HUTERM_BENCH_BACKGROUND_OPACITY`
+and `HUTERM_BENCH_FOREGROUND_OPACITY` (defaults 1). The scenario benchmark also
+accepts `HUTERM_BENCH_APPEARANCE=opaque|transparent|blurred`, choosing Opaque at
+background 1 and Transparent below it when unset. Scenario JSON records these
+inputs, and terminal benchmark logs report the effective paint alpha and
+appearance. Transparent fixtures have one translucent underlay. Run Linux
+terminal benchmarks under a compositor such as `xcompmgr` for reduced-alpha
+measurements; otherwise the production fallback deliberately measures opaque
+paint. Compare the defaults and background 0.8 independently.
+
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
 - `mise run bench:renderer-scenarios` times production `prepare` and `paint`

@@ -804,6 +804,41 @@ pub enum MacosOptionAsAlt {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct WindowConfig {
+    /// How opaque the whole window is, text and chrome included, from 0.1
+    /// to 1. Background and text opacity multiply with it.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0.1, max = 1), extend(
+        "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
+        "x-huterm-label" = "Opacity", "x-huterm-order" = 36,
+        "x-huterm-apply" = "live", "x-huterm-control" = "slider",
+        "x-huterm-step" = 0.05,
+    ))) ]
+    pub opacity: f32,
+    /// How opaque the terminal's default background, the tab bar and pane
+    /// title bars are, from 0 to 1. Text, and colors that programs set, stay
+    /// solid.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 1), extend(
+        "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
+        "x-huterm-label" = "Background opacity", "x-huterm-order" = 37,
+        "x-huterm-apply" = "live", "x-huterm-control" = "slider",
+        "x-huterm-step" = 0.05,
+    ))) ]
+    pub background_opacity: f32,
+    /// How opaque terminal text and its underlines are, from 0.1 to 1.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0.1, max = 1), extend(
+        "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
+        "x-huterm-label" = "Text opacity", "x-huterm-order" = 38,
+        "x-huterm-apply" = "live", "x-huterm-control" = "slider",
+        "x-huterm-step" = 0.05,
+    ))) ]
+    pub foreground_opacity: f32,
+    /// Blurs what shows through a translucent background, on macOS only. It
+    /// has no effect while the background is opaque.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
+        "x-huterm-label" = "Background blur", "x-huterm-order" = 39,
+        "x-huterm-apply" = "live", "x-huterm-platform" = "macos",
+    ))) ]
+    pub background_blur: bool,
     /// The grid width new ordinary windows request, from 10 to 1000 cells.
     /// Large requests are limited to the display's available area.
     #[cfg_attr(feature = "schema", schemars(range(min = 10, max = 1000), extend(
@@ -1082,9 +1117,34 @@ pub struct UpdateConfig {
     pub check_interval_hours: Option<u32>,
 }
 
+impl WindowConfig {
+    fn validate_opacity(self) -> Result<(), ConfigError> {
+        if !(0.1..=1.0).contains(&self.opacity) {
+            return Err(ConfigError::Invalid(
+                "window.opacity must be between 0.1 and 1",
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.background_opacity) {
+            return Err(ConfigError::Invalid(
+                "window.background_opacity must be between 0 and 1",
+            ));
+        }
+        if !(0.1..=1.0).contains(&self.foreground_opacity) {
+            return Err(ConfigError::Invalid(
+                "window.foreground_opacity must be between 0.1 and 1",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for WindowConfig {
     fn default() -> Self {
         Self {
+            opacity: 1.0,
+            background_opacity: 1.0,
+            foreground_opacity: 1.0,
+            background_blur: false,
             initial_columns: 100,
             initial_rows: 32,
             macos_fullscreen_mode: MacosFullscreenMode::NonNative,
@@ -2973,6 +3033,7 @@ impl RawConfig {
     /// # Errors
     /// Returns an error when the input violates the configuration contract.
     pub fn validate_values(&self) -> Result<(), ConfigError> {
+        self.window.validate_opacity()?;
         if !(10..=1000).contains(&self.window.initial_columns) {
             return Err(ConfigError::Invalid(
                 "window.initial_columns must be between 10 and 1000",
@@ -4198,6 +4259,42 @@ mod panes_tests {
                 format!("{source}[panes]\ndrag_modifier = 'ctrl-alt'\n");
             let raw: RawConfig = toml::from_str(&written).unwrap();
             assert!(raw.validate_values().is_err());
+        }
+    }
+    #[test]
+    fn window_transparency_defaults_ranges_and_keyed_errors() {
+        let defaults: RawConfig = toml::from_str("").unwrap();
+        assert_eq!(
+            (
+                defaults.window.opacity,
+                defaults.window.background_opacity,
+                defaults.window.foreground_opacity,
+                defaults.window.background_blur
+            ),
+            (1.0, 1.0, 1.0, false)
+        );
+        for (key, min) in [
+            ("opacity", 0.1),
+            ("background_opacity", 0.0),
+            ("foreground_opacity", 0.1),
+        ] {
+            for value in [min, 0.6, 1.0] {
+                let raw: RawConfig =
+                    toml::from_str(&format!("[window]\n{key} = {value}"))
+                        .unwrap();
+                raw.validate_values().unwrap();
+            }
+            for value in ["-0.01", "1.01", "inf", "-inf", "nan"] {
+                let raw: RawConfig =
+                    toml::from_str(&format!("[window]\n{key} = {value}"))
+                        .unwrap();
+                assert!(
+                    raw.validate_values()
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&format!("window.{key}"))
+                );
+            }
         }
     }
 }

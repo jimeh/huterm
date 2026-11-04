@@ -22,9 +22,10 @@ so comments, ordering, and formatting stay as you wrote them. A dot marks each
 setting the file sets, and its Reset button, a counterclockwise arrow, removes
 it and returns the setting to its default. A setting that does not apply at
 once says when it does, such as "Applies to new terminals". Search finds
-settings in every section. Settings marked Advanced appear in every section
-once you turn on Show advanced settings at the foot of any section, or the
-switch in General; either writes `show_advanced`, and hiding them removes it.
+settings in every section by name, description, or group heading. Settings
+marked Advanced appear in every section once you turn on Show advanced
+settings at the foot of any section, or the switch in General; either writes
+`show_advanced`, and hiding them removes it.
 The sidebar's sections scroll when the window is too short to list them all,
 and moving between them with the keyboard keeps the selected one in view.
 
@@ -677,6 +678,10 @@ the `[window]` and `[tabs]` settings with their defaults:
 #:schema https://github.com/jimeh/huterm/releases/latest/download/huterm.schema.json
 
 [window]
+opacity = 1.0
+background_opacity = 1.0
+foreground_opacity = 1.0
+background_blur = false # macOS only
 padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
@@ -755,6 +760,56 @@ foreground; exit, error, and bell indicators replace it. The window title is
 `<active tab title> — Huterm`, so window switchers show the active tab. On
 macOS the title bar shows the active tab's title in place of the application
 name.
+
+## Transparency
+
+Windows can let the desktop show through. These are the `[window]` settings
+with their defaults; in Settings they are under Appearance > Transparency:
+
+```toml
+[window]
+opacity = 1.0            # 0.1 to 1: fades the whole window evenly
+background_opacity = 1.0 # 0 to 1: the terminal background and chrome bars
+foreground_opacity = 1.0 # 0.1 to 1: terminal text, labelled Text opacity
+background_blur = false  # macOS only
+```
+
+`opacity` fades everything in the window together, chrome, text, cursor and
+selection included. `background_opacity` sets how much of the terminal's
+default background shows, together with the padding, the tab bar, the title
+row, the tab sidebar and pane title bars; their text, icons and dividers stay
+solid. `foreground_opacity` fades terminal text, box-drawing and powerline
+characters, underlines, strikethrough and link underlines. `opacity`
+multiplies the other two: opacity 0.7 with background opacity 0.6 leaves the
+background at 0.42. All four apply to open windows, Quake windows included, as
+soon as the file reloads, without restarting shells or losing scrollback. They
+stay in effect in fullscreen.
+
+Only the default background turns transparent, including a default background
+that a program changed with OSC 11. Background colors that programs set, such
+as an editor's status line, and inverse video stay solid, even when their color
+matches the theme background. The cursor, the selection and selected text also
+stay solid apart from `opacity`. Menus, dialogs, notices, the command palette,
+pane title bars revealed on hover, the tab bar revealed in fullscreen, and the
+Settings window stay opaque so they remain readable over the terminal.
+
+A few things look slightly different below full opacity. Unfocused panes dim
+their colors rather than drawing a shade over them, so emoji in them are not
+dimmed, and emoji keep full strength at reduced text opacity. Where box-drawing
+characters overlap, reduced text opacity can show the overlap. The visual bell's
+flash briefly looks more solid.
+
+`background_blur` blurs what shows through a translucent background, using the
+system's blur, whose strength is fixed. It has no effect while
+`background_opacity` is 1. Linux has no blur: Huterm logs a warning when the
+file turns it on, and Settings shows the row only when the file sets it.
+
+On Linux, transparency needs an X11 compositing manager and a 32-bit color
+visual. Without either, windows stay opaque, Huterm logs which one is missing,
+and Settings says so under Opacity, Background opacity and Text opacity. Huterm
+checks again when a window opens and when the file reloads. A transparent
+window on Linux draws text without subpixel antialiasing, and some graphics
+drivers can keep a window opaque in a way Huterm cannot detect.
 
 ## Title bar tabs
 

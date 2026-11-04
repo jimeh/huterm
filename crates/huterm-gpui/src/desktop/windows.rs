@@ -860,6 +860,7 @@ struct RestoreSnapshot {
 }
 
 struct Desktop {
+    pub(super) transparency_support: crate::transparency::Support,
     quake: quake_windows::Registry,
     runtime: Arc<DesktopRuntime>,
     config: Config,
@@ -927,6 +928,13 @@ struct Desktop {
     updater: native_updater::Updater,
 }
 impl Global for Desktop {}
+
+pub(super) fn transparency_support(cx: &App) -> crate::transparency::Support {
+    cx.try_global::<Desktop>()
+        .map_or(crate::transparency::Support::Available, |desktop| {
+            desktop.transparency_support
+        })
+}
 
 /// Font fallbacks as Huterm last applied them, including terminal aliases.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1626,7 +1634,10 @@ fn install_desktop(
     let (keymap, config_report) = install_startup_keymap(cx, &loaded);
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     let updater = native_updater::Updater::initialize(loaded.config.updates);
+    let transparency_support = crate::transparency::support();
+    warn_transparency(loaded.config.window, transparency_support);
     cx.set_global(Desktop {
+        transparency_support,
         quake: quake_windows::Registry::default(),
         runtime,
         config: loaded.config,
@@ -2456,8 +2467,24 @@ fn open_window_with_profile(
         initial_window_size(&config, metrics, host, WindowFrame::default()),
         cx,
     );
+    let transparency_support = crate::transparency::support();
+    cx.global_mut::<Desktop>().transparency_support = transparency_support;
     let result = cx.open_window(
         WindowOptions {
+            window_background: crate::transparency::appearance(
+                host.platform,
+                host.platform == Platform::Linux
+                    && requested_decorations(
+                        config.tabs.position,
+                        host.platform,
+                        host.quake,
+                    ) == gpui::WindowDecorations::Client
+                    && transparency_support
+                        == crate::transparency::Support::Available,
+                transparency_support,
+                config.window.background_opacity,
+                config.window.background_blur,
+            ),
             display_id,
             show: profile.is_none(),
             focus: profile.is_none(),
@@ -2546,6 +2573,19 @@ fn open_window_with_profile(
             let native_radii = pane_indicators::read_native_radii(window);
             #[cfg(not(target_os = "macos"))]
             let native_radii = NativeRadii::default();
+            let native_alpha = crate::transparency::Alpha::default();
+            native_alpha.set_supported(
+                transparency_support == crate::transparency::Support::Available,
+            );
+            native_alpha.configure(
+                if transparency_support
+                    == crate::transparency::Support::Available
+                {
+                    f64::from(config.window.opacity)
+                } else {
+                    1.0
+                },
+            );
             let profile_requested = profile.is_some();
             let quake = profile.and_then(|(name, profile, display)| {
                 quake_windows::attach(
@@ -2553,6 +2593,7 @@ fn open_window_with_profile(
                     profile,
                     display,
                     reporter.clone(),
+                    native_alpha.clone(),
                     window,
                     cx,
                 )
@@ -2599,6 +2640,9 @@ fn open_window_with_profile(
                 },
             );
             let view = cx.new(|cx| WorkspaceView {
+                native_alpha,
+                transparency_support,
+                background_appearance: None,
                 frame_clock,
                 quake,
                 window: window_id,
@@ -2695,6 +2739,7 @@ fn open_window_with_profile(
                 drawn_dialog_groups: None,
             });
             view.update(cx, |view, cx| {
+                view.native_alpha.sync(window, cx);
                 view.frame_clock.observe(cx);
                 // A field's menu over Licenses reaches past its panel.
                 view.dialog.beneath(&view.popover);
@@ -3763,6 +3808,9 @@ struct PointerReveal {
     reason = "window busy, layout, and drag states are independent"
 )]
 struct WorkspaceView {
+    native_alpha: crate::transparency::Alpha,
+    pub(super) transparency_support: crate::transparency::Support,
+    background_appearance: Option<gpui::WindowBackgroundAppearance>,
     frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
     /// This window's key in the window model, which owns its attachment,
@@ -4872,6 +4920,7 @@ impl WorkspaceView {
             };
             let terminal = rect.map_or(bounds, |rect| rect.terminal);
             let id = pane.pane;
+            self.configure_pane_paint(&pane.view, id == focused, shown, cx);
             let grab = grabs.then(|| self.grab_layer(tab, pane, terminal, cx));
             elements.push(
                 div()
@@ -4923,7 +4972,8 @@ impl WorkspaceView {
                             bottom: bars.position
                                 == PaneTitleBarPosition::Bottom,
                         },
-                        colors,
+                        colors
+                            .for_floating(bars.mode == PaneTitleBarMode::Hover),
                         swatch,
                         cx,
                     )
@@ -4941,6 +4991,39 @@ impl WorkspaceView {
             ));
         }
         elements
+    }
+
+    fn tab_colors(&self) -> TabColors {
+        let alpha = self.transparency_support.paint(self.config.window).0;
+        TabColors::new(&self.config.theme).background_opacity(alpha)
+    }
+
+    fn configure_pane_paint(
+        &self,
+        view: &Entity<TerminalView>,
+        focused: bool,
+        shown: usize,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let (background_alpha, foreground_alpha) =
+            self.transparency_support.paint(self.config.window);
+        let tint = if background_alpha < 1.0 && !focused && shown > 1 {
+            crate::transparency::Tint {
+                dim: self.config.panes.inactive_dim,
+                darken: self.config.panes.inactive_dim_background,
+            }
+        } else {
+            crate::transparency::Tint::default()
+        };
+        view.update(cx, |view, cx| {
+            if view.renderer.borrow_mut().set_opacity(
+                background_alpha,
+                foreground_alpha,
+                tint,
+            ) {
+                cx.notify();
+            }
+        });
     }
 
     /// The layers dimming `pane`'s terminal: the theme background under
@@ -4973,7 +5056,12 @@ impl WorkspaceView {
             drawn.darkened.push((pane, alpha));
             div().absolute().inset_0().bg(gpui::black().opacity(alpha))
         });
-        [dim, background].into_iter().flatten()
+        let translucent =
+            self.transparency_support.paint(self.config.window).0 < 1.0;
+        [dim, background]
+            .into_iter()
+            .flatten()
+            .filter(move |_| !translucent)
     }
 
     /// How many of `tab`'s panes `pane_elements` draws: each installed view
@@ -5969,17 +6057,20 @@ impl WorkspaceView {
         let state_changed = self.frame_state != state;
         self.frame_state = state;
         let frame = self.window_frame();
+        let appearance = crate::transparency::appearance(
+            Platform::current(),
+            frame.decorated(),
+            self.transparency_support,
+            self.config.window.background_opacity,
+            self.config.window.background_blur,
+        );
+        if self.background_appearance != Some(appearance) {
+            window.set_background_appearance(appearance);
+            window.refresh();
+            self.background_appearance = Some(appearance);
+        }
         if self.applied_frame == Some(frame) {
             return state_changed;
-        }
-        if self.applied_frame.is_some_and(WindowFrame::decorated)
-            != frame.decorated()
-        {
-            window.set_background_appearance(if frame.decorated() {
-                gpui::WindowBackgroundAppearance::Transparent
-            } else {
-                gpui::WindowBackgroundAppearance::Opaque
-            });
         }
         // GPUI writes `_GTK_FRAME_EXTENTS` only when the inset changes,
         // so a zero inset on a server-decorated window sets no property.
@@ -11102,6 +11193,8 @@ fn finish_reload(
             apply_update_config(cx, &config);
             let desktop = cx.global_mut::<Desktop>();
             desktop.system_mode = system_appearance::Mode::of(dark);
+            desktop.transparency_support = crate::transparency::support();
+            warn_transparency(config.window, desktop.transparency_support);
             desktop.config = config.clone();
             desktop.config_report = ConfigReport::reloaded(
                 &config,
@@ -11230,6 +11323,22 @@ impl WorkspaceView {
                 window.request_decorations(requested);
             }
             self.config = config.clone();
+            self.transparency_support =
+                cx.global::<Desktop>().transparency_support;
+            self.native_alpha.set_supported(
+                self.transparency_support
+                    == crate::transparency::Support::Available,
+            );
+            self.native_alpha.configure(
+                if self.transparency_support
+                    == crate::transparency::Support::Available
+                {
+                    f64::from(config.window.opacity)
+                } else {
+                    1.0
+                },
+            );
+            self.native_alpha.sync(window, cx);
             self.pane_bars
                 .set_timing(PaneBarTiming::from_config(&config.panes));
             // A change of bar mode reveals or hides the hover bars.
@@ -11243,6 +11352,8 @@ impl WorkspaceView {
             self.family.clone_from(family);
             self.metrics = *metrics;
             // `layout_pending` resizes the views at the next sync.
+            let (background_alpha, foreground_alpha) =
+                self.transparency_support.paint(config.window);
             for (view, geometry) in self.pane_views_with_geometry(window, cx) {
                 view.update(cx, |view, cx| {
                     let metrics = metrics.at_scale(view.metrics.scale_factor);
@@ -11250,6 +11361,11 @@ impl WorkspaceView {
                         family.clone(),
                         config.theme.clone(),
                         metrics,
+                    );
+                    view.renderer.borrow_mut().set_opacity(
+                        background_alpha,
+                        foreground_alpha,
+                        crate::transparency::Tint::default(),
                     );
                     view.terminal_font.clone_from(family);
                     view.font_size = metrics.font_size;
@@ -11267,6 +11383,70 @@ impl WorkspaceView {
         }
         self.replace_diagnostics(diagnostics, window, cx);
         self.reload_palette(cx);
+    }
+}
+
+fn chrome_background(
+    area: Bounds<Pixels>,
+    hole: Option<Bounds<Pixels>>,
+    color: gpui::Hsla,
+    corners: gpui::Corners<Pixels>,
+) -> impl IntoElement {
+    let local = Bounds::new(point(px(0.0), px(0.0)), area.size);
+    let hole =
+        hole.map(|hole| Bounds::new(hole.origin - area.origin, hole.size));
+    canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            for region in crate::transparency::background_regions(local, hole) {
+                let radii = gpui::Corners {
+                    top_left: if region.top() == local.top()
+                        && region.left() == local.left()
+                    {
+                        corners.top_left
+                    } else {
+                        px(0.0)
+                    },
+                    top_right: if region.top() == local.top()
+                        && region.right() == local.right()
+                    {
+                        corners.top_right
+                    } else {
+                        px(0.0)
+                    },
+                    bottom_left: px(0.0),
+                    bottom_right: px(0.0),
+                };
+                window.paint_quad(
+                    gpui::fill(
+                        Bounds::new(bounds.origin + region.origin, region.size),
+                        color,
+                    )
+                    .corner_radii(radii),
+                );
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+fn warn_transparency(
+    config: huterm_config::WindowConfig,
+    support: crate::transparency::Support,
+) {
+    if (config.opacity < 1.0
+        || config.background_opacity < 1.0
+        || config.foreground_opacity < 1.0)
+        && let Some(note) = support.note()
+    {
+        eprintln!("Window transparency: {note}");
+    }
+    #[cfg(target_os = "linux")]
+    if config.background_blur {
+        eprintln!(
+            "window.background_blur is unsupported on Linux (macOS only)"
+        );
     }
 }
 
@@ -11808,6 +11988,68 @@ fn pane_area_top_border(
                 })))
 }
 
+fn workspace_root(decorated: bool, background: gpui::Hsla) -> gpui::Div {
+    div().when(!decorated && background.a >= 1.0, |root| {
+        root.bg(background)
+    })
+}
+
+fn client_frame_panel(
+    content: Bounds<Pixels>,
+    background: gpui::Hsla,
+    swatch: Swatch,
+) -> gpui::Div {
+    let panel = div()
+        .absolute()
+        .left(content.origin.x)
+        .top(content.origin.y)
+        .w(content.size.width)
+        .h(content.size.height)
+        .rounded_tl(FRAME_RADIUS)
+        .rounded_tr(FRAME_RADIUS);
+    if background.a >= 1.0 {
+        return panel.bg(background).shadow(swatch.frame_shadow());
+    }
+    // GPUI fills a drop shadow's whole blurred rectangle, interior included,
+    // so without the panel's fill over it the shadow would darken the
+    // translucent content. Paint it only in the ring around the panel.
+    panel.child(
+        canvas(
+            |_, _, _| (),
+            move |bounds, (), window, _| {
+                let corners = gpui::Corners {
+                    top_left: FRAME_RADIUS,
+                    top_right: FRAME_RADIUS,
+                    ..Default::default()
+                };
+                for mask in frame_shadow_masks(bounds) {
+                    window.with_content_mask(
+                        Some(gpui::ContentMask { bounds: mask }),
+                        |window| {
+                            window.paint_drop_shadows(
+                                bounds,
+                                corners,
+                                &swatch.frame_shadow(),
+                            );
+                        },
+                    );
+                }
+            },
+        )
+        .absolute()
+        .inset_0(),
+    )
+}
+
+/// The inset ring around a client frame panel at `content`, where a
+/// translucent panel's drop shadow may paint.
+fn frame_shadow_masks(content: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
+    crate::transparency::background_regions(
+        content.dilate(client_frame::CLIENT_INSET),
+        Some(content),
+    )
+}
+
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
@@ -11833,6 +12075,7 @@ impl Render for WorkspaceView {
         }
         self.measure_tab_widths(window, cx);
         self.sync_frame(window);
+        self.native_alpha.sync(window, cx);
         self.frame_appearance.sync(
             theme_is_dark(&self.config.theme),
             window,
@@ -11847,12 +12090,15 @@ impl Render for WorkspaceView {
         let layout = self.chrome_layout(window);
         let frame = layout.frame;
         let content = layout.content;
-        // Inside a drawn border the window is transparent around a rounded,
-        // shadowed panel; otherwise the root fills the window.
+        // Opaque windows retain their root/frame underlay. Below alpha 1,
+        // panes and in-flow chrome own disjoint background fills.
         let decorated = frame.decorated();
         let foreground = color(self.config.theme.foreground);
-        let background = color(self.config.theme.background);
-        let colors = TabColors::new(&self.config.theme);
+        let (background_alpha, _) =
+            self.transparency_support.paint(self.config.window);
+        let background =
+            color(self.config.theme.background).opacity(background_alpha);
+        let colors = self.tab_colors();
         let swatch = tokens(&self.config.theme);
         let menu_placement = self.menu_button_placement();
         if menu_placement == MenuButtonPlacement::Hidden {
@@ -11867,10 +12113,9 @@ impl Render for WorkspaceView {
         // A dialog change that skipped `sync_dialog` still opens or closes
         // the slot before its guard reads it.
         self.sync_dialog(window, cx);
-        let mut root = div()
+        let mut root = workspace_root(decorated, background)
             .size_full()
             .relative()
-            .when(!decorated, |root| root.bg(background))
             .text_color(foreground)
             .font_family(typography.family)
             .text_size(tab_bar::TAB_TEXT_SIZE)
@@ -11944,18 +12189,7 @@ impl Render for WorkspaceView {
             ))
             .child(huterm_ui::focus::tracker());
         if decorated {
-            root = root.child(
-                div()
-                    .absolute()
-                    .left(content.origin.x)
-                    .top(content.origin.y)
-                    .w(content.size.width)
-                    .h(content.size.height)
-                    .bg(background)
-                    .rounded_tl(FRAME_RADIUS)
-                    .rounded_tr(FRAME_RADIUS)
-                    .shadow(swatch.frame_shadow()),
-            );
+            root = root.child(client_frame_panel(content, background, swatch));
         }
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
@@ -12232,21 +12466,65 @@ impl Render for WorkspaceView {
                     .when(decorated, |bar| {
                         bar.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS)
                     })
-                    .bg(
-                        // A shelf bar fills the whole safe-area strip, so
-                        // the bar reads as one band across the notch.
-                        if shelf_bar
-                            || top_chrome_uses_bar(
-                                position,
-                                self.presentation(),
-                                self.reveal.progress,
-                            )
-                        {
-                            colors.bar
-                        } else {
-                            background
-                        },
-                    )
+                    .when(background_alpha >= 1.0, |bar| {
+                        bar.bg(
+                            if shelf_bar
+                                || top_chrome_uses_bar(
+                                    position,
+                                    self.presentation(),
+                                    self.reveal.progress,
+                                )
+                            {
+                                colors.bar
+                            } else {
+                                background
+                            },
+                        )
+                    })
+                    .when(background_alpha < 1.0, |bar| {
+                        bar.child(chrome_background(
+                            title_row.bounds,
+                            bar_drawn.then(|| {
+                                Bounds::new(
+                                    point(
+                                        layout.tabs.origin.x
+                                            + frame.buttons.leading.width(),
+                                        layout.tabs.origin.y,
+                                    ),
+                                    size(
+                                        layout.tabs.size.width
+                                            - frame.buttons.leading.width()
+                                            - layout.strip_trailing,
+                                        layout.tabs.size.height,
+                                    ),
+                                )
+                            }),
+                            if shelf_bar
+                                || top_chrome_uses_bar(
+                                    position,
+                                    self.presentation(),
+                                    self.reveal.progress,
+                                )
+                            {
+                                colors.bar
+                            } else {
+                                background
+                            },
+                            gpui::Corners {
+                                top_left: if decorated {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                top_right: if decorated {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                ..Default::default()
+                            },
+                        ))
+                    })
                     .when(titlebar > px(0.0), |bar| {
                         // The strip stays draggable and keeps the menu
                         // button at its right end.
@@ -12394,6 +12672,10 @@ impl Render for WorkspaceView {
             root = root.children(std::mem::take(&mut marks));
         }
         if bar_drawn {
+            // Only the fullscreen reveal floats over the terminal; pinned
+            // pane title bars keep the configured background alpha.
+            let colors = colors
+                .for_floating(self.presentation() == Presentation::Overlay);
             let clip = if self.presentation() == Presentation::Overlay {
                 layout.terminal
             } else {
@@ -12419,7 +12701,76 @@ impl Render for WorkspaceView {
                         - bar_lead
                         - layout.strip_trailing)
                     .h(layout.tabs.size.height)
-                    .bg(colors.bar)
+                    .when(background_alpha >= 1.0, |bar| bar.bg(colors.bar))
+                    .when(background_alpha < 1.0, |bar| {
+                        bar.child(chrome_background(
+                            Bounds::new(
+                                point(
+                                    layout.tabs.origin.x + bar_lead,
+                                    layout.tabs.origin.y,
+                                ),
+                                size(
+                                    layout.tabs.size.width
+                                        - bar_lead
+                                        - layout.strip_trailing,
+                                    layout.tabs.size.height,
+                                ),
+                            ),
+                            (tabs.style == TabStyle::Strip)
+                                .then(|| {
+                                    self.tabs.iter().position(|tab| {
+                                        Some(tab.id) == active_tab
+                                    })
+                                })
+                                .flatten()
+                                .map(|index| {
+                                    let offset =
+                                        strip.start(index) - strip.offset;
+                                    let tab = if vertical {
+                                        Bounds::new(
+                                            strip.bounds.origin
+                                                + point(px(0.0), offset),
+                                            size(
+                                                strip.bounds.size.width,
+                                                TAB_HEIGHT,
+                                            ),
+                                        )
+                                    } else {
+                                        Bounds::new(
+                                            strip.bounds.origin
+                                                + point(offset, px(0.0)),
+                                            size(
+                                                strip.tab_extent(index),
+                                                layout.tabs.size.height,
+                                            ),
+                                        )
+                                    };
+                                    // `tab-strip` clips the tab, so the bar
+                                    // still fills the part scrolled beyond it.
+                                    tab.intersect(&strip.bounds)
+                                }),
+                            colors.bar,
+                            gpui::Corners {
+                                top_left: if merged_row
+                                    && decorated
+                                    && bar_lead == px(0.0)
+                                {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                top_right: if merged_row
+                                    && decorated
+                                    && layout.strip_trailing == px(0.0)
+                                {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                ..Default::default()
+                            },
+                        ))
+                    })
                     .occlude()
                     .when(merged_row && decorated, |row| {
                         // Where the bar reaches a top corner of the frame,
@@ -14632,6 +14983,14 @@ impl WorkspaceView {
             .about_buttons
             .focused(window)
             .map_or("none", AboutButton::name);
+        let alpha = crate::transparency::native_alpha(window, cx).map_or_else(
+            |_| "unavailable".to_owned(),
+            |value| value.to_string(),
+        );
+        let transparency = format!(
+            "{prefix}native_alpha={alpha} {prefix}background_appearance={:?}",
+            self.background_appearance
+        );
         let licenses = self.licenses_smoke_state(prefix, window, cx);
         let menu = self.menu_smoke_state(prefix, window, cx);
         let dialog_focus = self.close_buttons.focused(window);
@@ -14687,7 +15046,7 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}window_radii={},{} {prefix}radius_source={} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{transparency} {menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}window_radii={},{} {prefix}radius_source={} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.drawn_dialog_groups.as_deref().unwrap_or("none"),
             self.notice_focus.is_focused(window),

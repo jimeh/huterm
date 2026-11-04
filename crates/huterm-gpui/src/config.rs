@@ -94,6 +94,11 @@ weight = "regular"
 # ui_size = 13.0
 
 [window]
+# Live whole-window, default-background, and text opacity. Overall multiplies both.
+opacity = 1.0 # 0.1 through 1
+background_opacity = 1.0 # 0 through 1
+foreground_opacity = 1.0 # 0.1 through 1
+background_blur = false # macOS only; only below background opacity 1
 # Grid size for new ordinary windows, limited to the available display area.
 initial_columns = 100 # 10 through 1000
 initial_rows = 32 # 3 through 1000
