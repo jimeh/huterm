@@ -814,3 +814,11 @@ need root before the image's `USER huterm` line.
 The local Linux runner omits Git metadata because linked worktrees reference
 paths outside the source mount. It passes host HEAD as HUTERM_SOURCE_REVISION;
 benchmark metadata must use that value before falling back to Git.
+
+`crates/huterm-ipc-sim` is the runtime IPC design's simulation proof, not
+product code (see
+[its section in the plan](../plans/runtime-ipc.md#simulation-proof)). The
+normal suite runs every scenario over 12 seeds; before changing the IPC
+design, change the simulation first and run `mise run sim:ipc -- 2000`.
+`mise run sim:ipc -- <scenario> <seed>` replays one failing seed exactly.
+It stays dependency free, and no crate may depend on it.

@@ -29,7 +29,7 @@ Agreed with the maintainer on 2026-11-03, before drafting:
   depends only on `huterm-protocol`, and `huterm-protocol` keeps its empty
   dependency set. The architecture gate gains rules; none is weakened.
 - **At-most-once retry.** A reconnect never repeats a request that may have
-  committed or input the server admitted. In-flight requests whose outcome
+  committed, or any input. In-flight requests whose outcome
   is unknown report it, and the resynchronized state shows what happened.
   Only runtime queries are retried. The maintainer confirmed on 2026-11-04
   that shared setters count as mutations, narrowing the set first
@@ -106,6 +106,8 @@ In scope:
 - Unix domain socket placement, permissions, and peer authentication.
 - Contract tests, golden vectors, property tests, fuzz targets, and a
   `wasm32-unknown-unknown` build gate.
+- The simulation proof in `crates/huterm-ipc-sim`, which checks the design
+  itself under faults, version skew, and remote-like links.
 
 Out of scope, with the issue that owns each:
 
@@ -249,11 +251,25 @@ than one per payload kind:
 
 - **Streams.** The sender picks a stream ID for each message from IDs it
   has no message in flight on; the first frame on a free ID starts a new
-  message. Frames of different streams interleave, so a
-  large snapshot cannot hold up a keystroke echo in another terminal. Each
-  direction may have at most `MAX_OPEN_STREAMS` (4) unfinished messages; a
-  sender waits rather than open a fifth, and receiving a fifth is a protocol
-  violation. One viewer's updates are serialized (see terminal updates).
+  message. Frames of different streams interleave, so a large snapshot
+  cannot hold up a keystroke echo in another terminal. Each direction may
+  have at most `MAX_OPEN_STREAMS` (4) unfinished messages; a sender waits
+  rather than open a fifth, and receiving a fifth is a protocol violation.
+- **Ordering lanes.** Interleaving means messages on different streams can
+  complete in any order, even single-frame messages, because the sender
+  takes frames from its streams in turn. Every message therefore belongs to
+  an ordering lane, and a lane holds at most one unfinished message, so a
+  lane's messages complete in the order they started. The server's lanes
+  are control (handshake replies and results), large results such as
+  selection text, the hierarchy, host effects, and one lane per viewer for
+  its updates, status, and input acknowledgements. The client's lanes are
+  control (handshake and requests) and one per viewer for its input,
+  credit, permission, focus, and resync requests. Lanes interleave freely.
+  A viewer's lane opens only after the result that created the viewer has
+  been queued in full, so the client always knows a viewer before its
+  first update. The simulation proof found both failures this prevents:
+  input arriving out of order, and a subscription's first update
+  overtaking its result and being dropped.
 - **Caps, not trusted lengths.** The first bytes of a message are its kind,
   and every kind has a byte cap (`MessageCaps` in `huterm-wire`). A message's
   record still starts with its length, but the receiver checks that length
@@ -289,11 +305,16 @@ than one per payload kind:
   limit, and exceeding it is a protocol violation.
 - **Abort and idle.** A sender abandons an unfinished message with a frame
   that sets the abort flag, after the frame already being written, and the
-  receiver frees the stream. The sender queues a large message's frames one at
-  a time, each a copy of at most `max_frame` bytes, so abandoning a message
-  releases its source, such as a host effect's reservation, immediately; only
-  the frame already in the writer remains, and the writer-stall rule bounds
-  how long that frame can take. A stream that receives no frame for
+  receiver frees the stream. The sender queues a large message's frames one
+  at a time, each a copy of at most `max_frame` bytes, so abandoning a
+  message releases its source, such as a host effect's reservation,
+  immediately; only the frame already in the writer remains, and the
+  writer-stall rule bounds how long that frame can take. An abort names its
+  message, never its stream: once a message's frames are all queued, its
+  stream ID is reused, and the simulation proof showed that an abort by
+  stream ID kills whatever message took the stream over. Aborting a
+  message whose frames are all queued does nothing, and that message still
+  arrives. A stream that receives no frame for
   `STREAM_IDLE_DEADLINE` (30 s) is a protocol violation; the server pauses
   that clock while it has itself stopped reading the connection.
 
@@ -352,10 +373,15 @@ The server answers with `Welcome` or `Reject`, then closes after a
 - the major version, and the negotiated minor version: the smaller of the
   two peers' minor versions;
 - the negotiated features: the intersection of both sets;
-- the server incarnation, the socket name, the server's build version, and
-  its process ID;
-- the negotiated `max_frame` and the limits that bind the client, such as
-  credit and in-flight request maximums.
+- the server incarnation, a stable server ID, the host name, the socket
+  name, the server's build version, and its process ID. The server ID is
+  generated once and kept with the socket scope's saved state, so a session
+  picker or a saved client layout ([#42][issue-42]) can name the same server
+  across restarts, while the incarnation still changes on every start;
+- the negotiated `max_frame` and the transport profile, which holds the
+  limits and deadlines that bind the client, such as credit, in-flight
+  requests, message caps, and the stall and effect deadlines (see "Bounds
+  and backpressure").
 
 `Reject` carries a reason code (`IncompatibleMajor` with the server's
 versions, `ServerBusy`, or `Malformed`) and a diagnostic message. The
@@ -416,9 +442,12 @@ canonical values and their bytes per minor version. A test fails if an
 existing vector's bytes change, so a released minor version cannot change
 silently. A new minor version adds vectors.
 
-The client kind is policy, not authentication: every peer already passed
-the same-user check. It selects host-effect eligibility and the defaults a
-client gets.
+The client kind is policy, not authentication. Authentication belongs to the
+transport adapter, which gives each connection a peer identity: on local
+IPC, `Peer::LocalSameUser` after the peer-credential check. Server policy,
+such as host-effect eligibility and the defaults a client gets, reads the
+peer identity and the client kind together, so a later authenticated remote
+transport adds a peer variant instead of changing every policy check.
 
 **Server incarnation.** `huterm-protocol` gains `ServerIncarnation`, 16
 bytes the server reads from `/dev/urandom` at startup. It distinguishes
@@ -547,11 +576,11 @@ level-triggered reconcile installs or removes views from state. A tab whose
 spawn result was lost therefore appears as a tab the window did not spawn,
 which reconcile already handles.
 
-Input is not request-and-result. Input admitted by the server is never
-resent, so a keystroke typed during a disconnect can be lost but never
-duplicated. Input the server refused before admission is resent in order
-on the same connection (see input below). Host effects are never resent or
-replayed.
+Input is not request-and-result, and it is never resent: input the client
+sent but the server had not acknowledged when the connection broke may or
+may not have reached the terminal, so a keystroke typed during a disconnect
+can be lost but never duplicated (see input below). Host effects are never
+resent or replayed.
 
 Rejected: idempotency keys with a server-side dedupe table. Retrying a create
 or close exactly once would need a client identity that outlives a
@@ -560,10 +589,14 @@ already shows each outcome.
 
 ### Hierarchy over the wire
 
-`SubscribeHierarchy` returns the current `HierarchyState`, its sequence,
-and its digest. The server then forwards each envelope as a
-`HierarchyEvent { seq, event }` message. The connection supplies the stream,
-so the client rebuilds the `StreamId`.
+`SubscribeHierarchy` answers with the sequence it subscribed at, and the
+server sends the current `HierarchyState`, its sequence, and its digest as
+the first message on the hierarchy lane, ahead of every event that follows
+it. The client resolves the request once its projection reaches that
+sequence, through the same waiters as any structural result. The server
+then forwards each envelope as a `HierarchyEvent { seq, event }` message on
+the same lane. The connection supplies the stream, so the client rebuilds
+the `StreamId`.
 
 The server drains its core `HierarchySubscription` only while the
 connection's hierarchy lane is under its byte budget. When the client reads
@@ -692,20 +725,23 @@ state pays nothing for it. Like the hierarchy digest, it covers exactly the
 fields of the negotiated minor version.
 
 **Credit paces updates.** The client grants each viewer credit, at most
-`MAX_VIEWER_CREDIT` (2) outstanding updates. Each update says whether it
-spent a credit. The client returns a credit when it has disposed of a
-credited update, whether it applied it or discarded it as stale, so a
-discarded delta never leaks credit. The first update of a subscription, the
-update that answers a scroll, and the complete snapshot that answers
-`ResyncViewer` spend none, so recovery never waits for credit. The server's
-pump for a viewer waits on the viewer's wake and on credit grants; when the
-viewer is notified and has credit, it requests a snapshot, encodes the
-update, and spends a credit. A credit grant that raises a notified viewer's
-credit from zero wakes the pump itself, so the update never waits for
-another publication. A client grants no credit to a hidden tab, so its viewer stays
-notified, the runtime does not wake it again, and a hidden terminal costs
-the wire no row data until it is shown. This is the in-process rearm rule
-carried across the wire.
+`MAX_VIEWER_CREDIT` (2) outstanding updates. Each update says whether it spent
+a credit. The client returns a credit when it has disposed of a credited
+update, whether it applied it or discarded it as stale, so a discarded delta
+never leaks credit. Each credit return also names the last `UpdateSeq` the
+client applied. Local IPC uses that acknowledgement only in assertions; it
+lets a later remote transport keep a viewer's baseline across a short outage
+and resume with a delta (see "Remote clients later"). The first update of a
+subscription, the update that answers a scroll, and the complete snapshot that
+answers `ResyncViewer` spend none, so recovery never waits for credit. The
+server's pump for a viewer waits on the viewer's wake and on credit grants;
+when the viewer is notified and has credit, it requests a snapshot, encodes
+the update, and spends a credit. A credit grant that raises a notified
+viewer's credit from zero wakes the pump itself, so the update never waits for
+another publication. A client grants no credit to a hidden tab, so its viewer
+stays notified, the runtime does not wake it again, and a hidden terminal
+costs the wire no row data until it is shown. This is the in-process rearm
+rule carried across the wire.
 
 **Status is state.** When a viewer's status revision changes, the server
 puts the whole `TerminalStatus` in the viewer's single pending status slot,
@@ -748,8 +784,8 @@ client's to show.
 ### Input
 
 Input is not request-and-result. Each viewer numbers its input with a
-client-assigned `InputSeq`, and the server admits input from one viewer in
-that order.
+client-assigned `InputSeq`, sends it on the viewer's lane so it stays in
+order, and the server admits input from one viewer in that order.
 
 - Core gives each remote viewer its own input byte budget,
   `VIEWER_INPUT_BUDGET` (1 MiB), passed through `ViewerOptions`. One
@@ -759,12 +795,17 @@ that order.
 - When core answers `Busy`, the server holds that viewer's input in an
   ordered staging queue, bounded by the same budget, and retries on the
   16 ms timer the desktop uses, armed only while input is staged.
-- When the staging queue is full, the server refuses that input with
-  `InputRefused { viewer, seq }` and refuses every later input from the
-  viewer until the client sends `ResumeInput { viewer, seq }`. Ordering
-  therefore holds across a refusal. The server sends `InputCapacity` when
-  staging falls below half, and the client resends from the refused
-  sequence. Refused input never reached core, so resending it is safe.
+- Input is flow-controlled by a window, so staging never overflows. The
+  server acknowledges admitted input with `InputAck { viewer, seq }`, naming
+  the highest sequence that reached core, and the client keeps its
+  unacknowledged input within `VIEWER_INPUT_BUDGET`, queueing further typing
+  locally, as the desktop's input queue does today. A client that exceeds
+  the window commits a protocol violation. The simulation proof found that
+  the earlier refuse-and-resume design (`InputRefused`, `ResumeInput`,
+  `InputCapacity`) needs an unbounded resend buffer, because a client
+  cannot tell which of its inputs the server will refuse; the window bounds
+  what the client keeps to the budget, and unacknowledged input at a
+  disconnect is never resent.
 - A paste larger than one frame, up to exactly `PASTE_PAYLOAD_LIMIT`, is a
   multi-frame message that the server reassembles into one
   `TerminalInput::Paste` before admission, so bracketed paste stays atomic.
@@ -774,7 +815,10 @@ that order.
 ### Disconnect
 
 A broken connection, a protocol violation, or a stalled writer ends the
-connection the same way:
+connection. The transport profile sets a suspend grace period, during which
+a client could resume the connection's attachments and viewers with a
+resume token. Local IPC's grace period is zero, so the connection ends at
+once, as follows; a later remote transport only changes the value:
 
 1. The server drops the connection's viewers. Their admitted input still
    runs; then core finalizes them, releasing held mouse buttons and counting
@@ -805,7 +849,7 @@ A disconnect never closes a terminal, workspace, or session.
 | `MAX_CONNECTION_VIEWERS` | 256 | `LimitExceeded` |
 | Viewers per terminal | 32, as today | `LimitExceeded` |
 | `MAX_VIEWER_CREDIT` | 2 | Protocol violation |
-| `VIEWER_INPUT_BUDGET` | 1 MiB | Staged, then `InputRefused` |
+| `VIEWER_INPUT_BUDGET` | 1 MiB of unacknowledged input per viewer | Client waits; exceeding it is a protocol violation |
 | `HIERARCHY_LANE_BUDGET` per connection | 1 MiB | Lag, then `HierarchyResync` |
 | `OUTBOUND_BUDGET` per connection | 8 MiB | Producers wait; inbound reading pauses |
 | `WRITER_STALL_DEADLINE` | 30 s | Disconnect |
@@ -1028,6 +1072,47 @@ blocking work (spawn, close, assessment) runs on worker threads, never on a
 connection's I/O or pump threads. Slice 3a picks the executor from crates
 already in `Cargo.lock` and runs the license and release-age checks.
 
+### Remote clients later
+
+Remote clients ([#19][issue-19], [#49][issue-49]) will let a desktop attach
+to a Huterm server on another machine, as mosh and Eternal Terminal do for a
+single shell. This plan leaves them out but keeps their path open. The
+design already holds the property that makes those tools work: it
+synchronizes state, not a byte stream. Eternal Terminal and Hubris replay
+bytes because their clients run the emulator; mosh, like Huterm, sends the
+current screen state and diffs against it.
+
+What this plan provides for them:
+
+- A contract over any reliable, ordered byte stream. An SSH channel to a
+  proxy command, TLS, a WebSocket, or a QUIC stream can carry it unchanged.
+- Correctness that never assumes low latency: ordering, gaps, and recovery
+  are sequence and event driven, and latency only affects the transport
+  profile's tuning.
+- Five seams that would cost a major version later: update
+  acknowledgements on credit returns, a suspend grace period on disconnect,
+  peer identity on every connection, limits and deadlines in a transport
+  profile, and a stable server ID.
+
+What waits for remote clients to be the focus:
+
+- The transport. SSH first, as #49 prefers. QUIC is the candidate for
+  roaming across network changes, because it keeps reliable, ordered
+  streams. Mosh's unreliable datagram transport would need acknowledged
+  diffs everywhere and is not planned.
+- Authentication, host verification, and per-connection policy for remote
+  peers, whose host effects stay ineligible until then.
+- Transport integrity. The protocol relies on the transport to deliver
+  bytes intact, as SSH, TLS, and QUIC do; a transport without integrity
+  would need a frame checksum (see "Simulation proof").
+- Resuming suspended connections, delta resume from acknowledged baselines,
+  compression as a negotiated frame flag, local echo prediction in the
+  client, and cycle checks across remote hops ([#47][issue-47]).
+
+The simulation proof runs a remote-like link profile, with high round trip
+times, jitter, frequent cuts, and daemon restarts, to check that the state
+model and its bounds hold beyond a local socket.
+
 ### Embedded and server modes share one contract
 
 Embedded mode keeps its in-process calls, its `Arc`-shared snapshots, and no
@@ -1047,6 +1132,82 @@ scenarios later.
 A production client-facing trait for the desktop, shared by native and
 browser presentation, belongs to [#132][issue-132] and [#45][issue-45]. This
 plan does not add one ahead of a production caller.
+
+## Simulation proof
+
+`crates/huterm-ipc-sim` is a deterministic simulation of this design, kept
+in the repository as its proof and as the place to try later design changes
+before implementing them. It is not Huterm's implementation; slices start
+fresh in `huterm-wire`, `huterm-client`, and `huterm-server`. It depends on
+no crate, and nothing depends on it, which `mise run architecture` checks.
+`mise run sim:ipc -- 2000` runs every scenario over 2000 seeds, and
+`mise run sim:ipc -- remote 17` replays one seed.
+
+One single-threaded program holds a server, three clients, and a broker on
+a virtual clock driven by a seeded generator, so every run replays exactly.
+Messages are encoded and framed; the broker carries real bytes with
+latency, jitter, random fragmentation, a bounded socket buffer, stalled and
+trickling readers, connection cuts, and daemon restarts. Limits are scaled
+down, with 48-byte frames and 4-by-6 grids, so multi-frame messages, caps,
+and budgets are exercised constantly. It models the hierarchy and its
+reducer, versioned digests and downgrades, terminals with shared rows and
+revisioned status, host effects with their lane, generations, deadlines,
+and shares, ordering lanes, credit, the input window, retry classes,
+read-your-writes waiters, and status baselines carried across reconnects.
+
+| Scenario | What it adds |
+| --- | --- |
+| `clean` | No faults; every effect and input must arrive |
+| `local-faults` | Cuts, stalls, trickle reads, 7-byte chunks, permission toggles |
+| `remote` | 80 to 200 ms latency, 5-byte chunks, cuts, stalls, daemon restarts |
+| `newer-client` | Test-only minor 1 clients against a minor-0 server |
+| `newer-server` | A minor-1 server against minor-0 and text clients |
+| `corruption` | Flipped and dropped bytes; only digested state is checked |
+
+After the faults stop, each run waits for quiescence and checks:
+
+- every client's hierarchy equals the server's, projected to its version;
+- every viewer's rows and metadata equal the terminal's current snapshot;
+- each client's status counts (bells, exit, failures) match the terminal's,
+  including what happened while it was disconnected;
+- no mutation runs twice, a successful result always ran, and a failed one
+  never did;
+- every effect runs at most once, on the connection core chose, and, with
+  no faults, every effect and input for a live terminal arrives;
+- input reaches the PTY once and in order per viewer;
+- without corruption, no client ever asks for a resync, and no connection
+  ends for anything but a stall;
+- on every tick, the outbound queue stays within its budget plus one frame
+  per open stream, and reassembly within its budget.
+
+Each design rule the reviews argued over is load bearing: a test switches it
+off and shows the simulation catches its absence. Without ordering lanes,
+messages overtake each other; without carried status baselines, a
+reconnect misses status; without versioned digests, older peers resync;
+without credit on discard, a discarded delta leaks its credit, which a
+client unit test shows directly.
+
+The simulation changed the design in four places, all reflected above:
+
+- **Ordering lanes.** Messages on different streams complete in any
+  order, so input arrived out of order and a subscription's first update
+  could overtake its result and be dropped.
+- **An input window.** Refuse-and-resume needed an unbounded resend buffer,
+  because a client cannot know which inputs the server will refuse.
+- **Abort by message.** An effect deadline that aborted by stream ID killed
+  the viewer update that had reused the stream, silently freezing a view.
+- **Transport integrity is assumed.** Under corruption, digests catch
+  damaged hierarchy and rows, but request IDs, effect identities, and
+  status carry no integrity check, and a corrupted value can still decode.
+  Unix sockets, SSH, TLS, and QUIC all provide integrity; a transport
+  without it would need a frame checksum. Periodic digests also find a
+  corrupted delta only at the next digest, which is acceptable only
+  because the transport does not corrupt.
+
+It does not model scrolling, mouse and focus arbitration, close tickets,
+undo tokens, effects that need a response, pane layouts, the real codec's
+encodings, sockets and peer credentials, the `wasm32-unknown-unknown`
+build, or performance. Those stay with the slices.
 
 ## Delivery
 
@@ -1197,8 +1358,8 @@ Acceptance:
 ### Slice 3b: viewers, updates, and input over IPC
 
 - Remote viewers, update pumps with credit, status slots, scrolling, input
-  sequencing with staging, `InputRefused`, `ResumeInput`, and
-  `InputCapacity`, per-viewer input budgets in core, client-numbered scrolls
+  sequencing with staging, the input window and `InputAck`, per-viewer
+  input budgets in core, client-numbered scrolls
   in core, and the disconnect order with its core change.
 - Contract scenarios for snapshots, scrolling, input, focus, geometry
   control, and revocation.
@@ -1322,11 +1483,12 @@ closed at the deadline.
 | Incompatible versions, malformed and oversized messages, stale incarnations | Slice 1 decoder and negotiation tests, slice 3a incarnation test, fuzz targets |
 | Bounded memory per connection | Slice 1 stream, cap, and reassembly tests; slice 1 and 2 core invariant tests; slice 3a flood, slow-reader, stall, and undo-slot tests on the injected clock |
 | Partial writes and slow or disconnected consumers | Slice 5 byte-split tests; slice 3a and 3b stall and disconnect tests |
-| Retry behavior | Slice 3a tests for in-flight runtime queries, viewer requests, mutations, and shared setters; slice 3b refused-input resend test |
+| Retry behavior | Slice 3a tests for in-flight runtime queries, viewer requests, mutations, and shared setters; slice 3b input-window test, in which no input is lost or repeated |
 | PTY parsing and other viewers continue when a client stalls | Slice 3b stalled-client test that asserts another viewer's updates and PTY output progress |
 | `wasm32-unknown-unknown` | CI check of `huterm-protocol`, `huterm-wire` with its vectors, and the sans-IO `huterm-client`; the vectors decode in native tests |
 | Architecture boundaries | New `mise run architecture` rules, each shown to fail once against a deliberate violation |
 | Peer authentication and socket permissions | Slice 5 tests, including a second-user test in Docker |
+| The design's invariants hold under faults, version skew, and remote-like links | `huterm-ipc-sim`: every scenario over 12 seeds in the normal suite, the design-switch tests, and `mise run sim:ipc -- 2000` before changing the design |
 
 Property tests use `proptest` as a dev-dependency, synchronize on observable
 progress, and bound their case counts so the normal suite stays fast. The
@@ -1390,6 +1552,7 @@ None blocking. The starting values in the bounds table are proposals that
 each slice may tune with evidence, recorded in this plan when they change.
 
 [issue-18]: https://github.com/jimeh/huterm/issues/18
+[issue-19]: https://github.com/jimeh/huterm/issues/19
 [issue-21]: https://github.com/jimeh/huterm/issues/21
 [issue-22]: https://github.com/jimeh/huterm/issues/22
 [issue-23]: https://github.com/jimeh/huterm/issues/23
@@ -1398,6 +1561,7 @@ each slice may tune with evidence, recorded in this plan when they change.
 [issue-44]: https://github.com/jimeh/huterm/issues/44
 [issue-45]: https://github.com/jimeh/huterm/issues/45
 [issue-46]: https://github.com/jimeh/huterm/issues/46
+[issue-47]: https://github.com/jimeh/huterm/issues/47
 [issue-48]: https://github.com/jimeh/huterm/issues/48
 [issue-49]: https://github.com/jimeh/huterm/issues/49
 [issue-80]: https://github.com/jimeh/huterm/issues/80

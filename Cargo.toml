@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-procinfo", "crates/huterm-protocol", "crates/huterm-ui"]
+members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-ipc-sim", "crates/huterm-procinfo", "crates/huterm-protocol", "crates/huterm-ui"]
 exclude = ["third-party/vendor/global-hotkey-0.9.0", "third-party/vendor/gpui-pre-0.3.10", "third-party/vendor/gpui-pre-linux-0.3.10", "third-party/vendor/gpui-pre-macos-0.3.10", "third-party/vendor/portable-pty-0.9.0"]
 resolver = "2"
 

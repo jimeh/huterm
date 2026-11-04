@@ -1,0 +1,12 @@
+[package]
+name = "huterm-ipc-sim"
+description = "Deterministic simulation that checks the local runtime IPC design"
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+rust-version.workspace = true
+version = "0.27.0"
+
+[lints]
+workspace = true

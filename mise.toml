@@ -120,7 +120,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, process-info, UI component, and Ghostty binding boundaries"
+description = "Check dependency-neutral protocol, process-info, UI component, Ghostty binding, and IPC simulation boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -154,7 +154,24 @@ if echo "$ghostty_dependents" | rg -v '^huterm-core '; then
   echo "only huterm-core may depend on huterm-ghostty" >&2
   exit 1
 fi
+# huterm-ipc-sim is a standalone design simulation, not product code.
+sim_dependencies="$(cargo tree --locked -p huterm-ipc-sim --depth 1 --edges normal,build --prefix none | tail -n +2)"
+if [ -n "$sim_dependencies" ]; then
+  echo "huterm-ipc-sim must not have normal or build dependencies:" >&2
+  echo "$sim_dependencies" >&2
+  exit 1
+fi
+sim_dependents="$(cargo tree --locked --workspace --target all --invert huterm-ipc-sim --prefix none --edges normal,build,dev --depth 1 | tail -n +2)"
+if [ -n "$sim_dependents" ]; then
+  echo "no crate may depend on huterm-ipc-sim:" >&2
+  echo "$sim_dependents" >&2
+  exit 1
+fi
 '''
+
+[tasks."sim:ipc"]
+description = "Run the runtime IPC design simulation over many seeds per scenario"
+run = "cargo run --quiet --locked --release -p huterm-ipc-sim --"
 
 [tasks.check]
 description = "Run fast deterministic local checks"
