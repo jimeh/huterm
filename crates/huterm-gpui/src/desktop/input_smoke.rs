@@ -156,11 +156,15 @@ fn pane_state(
                 .as_ref()
                 .map(|snapshot| snapshot.modes.mouse_tracking);
             format!(
-                "grid_origin={},{} cell={},{} tracking={tracking:?}",
+                "grid_origin={},{} cell={},{} tracking={tracking:?} kitty={}",
                 f32::from(content.origin.x + grid.origin.x),
                 f32::from(content.origin.y + grid.origin.y),
                 f32::from(terminal.metrics.cell_width),
                 f32::from(terminal.metrics.cell_height),
+                terminal
+                    .snapshot
+                    .as_ref()
+                    .map_or(0, |snapshot| snapshot.modes.kitty_keyboard.bits()),
             )
         },
     );

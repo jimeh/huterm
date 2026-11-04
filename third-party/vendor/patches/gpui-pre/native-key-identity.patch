@@ -1,0 +1,156 @@
+diff --git a/src/app.rs b/src/app.rs
+index 77403564e7bf684573e583540cf7e767efa83d95..89535617ab9274d92c018fdfa10273efe9eb2c95 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -3605,6 +3605,8 @@ pub enum InputPreference {
+ /// A keystroke event, and potentially the associated action
+ #[derive(Debug)]
+ pub struct KeystrokeEvent {
++    /// Native key identity supplied to interceptors, absent for observers.
++    pub key_identity: Option<crate::KeyIdentity>,
+     /// The keystroke that occurred
+     pub keystroke: Keystroke,
+ 
+diff --git a/src/elements/div.rs b/src/elements/div.rs
+index 11f0b72406a23d32aa3e701ca2eac6f5e771225f..dc34a169f897a0e34b867cc5d0a5bd73efa58dc3 100644
+--- a/src/elements/div.rs
++++ b/src/elements/div.rs
+@@ -5510,6 +5510,7 @@ mod tests {
+         cx.update_window(window, |_, window, cx| {
+             window.dispatch_event(
+                 KeyDownEvent {
++                    key_identity: None,
+                     keystroke,
+                     is_held: false,
+                     prefer_character_input: false,
+diff --git a/src/gpui.rs b/src/gpui.rs
+index 2328e954df3062c6cc7e99973b4d6712051cf439..4b99f4f17b384bdb1d2e633b935dfeba5e4b59f1 100644
+--- a/src/gpui.rs
++++ b/src/gpui.rs
+@@ -31,6 +31,8 @@ mod hot_reload;
+ mod input;
+ mod inspector;
+ mod interactive;
++mod key_identity;
++pub use key_identity::native_key_identity;
+ mod key_dispatch;
+ mod keymap;
+ mod path_builder;
+diff --git a/src/interactive.rs b/src/interactive.rs
+index cfb1410c78830fde3f501c303c72d3251a2ec0e9..f8f1f13f6f5c493ee8e4fb6ae7c0207b16e9331e 100644
+--- a/src/interactive.rs
++++ b/src/interactive.rs
+@@ -20,9 +20,24 @@ pub trait MouseEvent: InputEvent {}
+ /// A gesture event from the platform.
+ pub trait GestureEvent: InputEvent {}
+ 
++/// Native layout identity before shortcut normalization. Keystroke equality is unchanged.
++#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
++pub struct KeyIdentity {
++    /// Unshifted printable character on the active layout.
++    pub unshifted: Option<char>,
++    /// Shifted printable character on the active layout.
++    pub shifted: Option<char>,
++    /// Shift as physically held, including on punctuation.
++    pub shift: bool,
++    /// Physical key's ANSI US-layout character.
++    pub base_layout: Option<char>,
++}
++
+ /// The key down event equivalent for the platform.
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct KeyDownEvent {
++    /// Native identity, absent for synthetic events and chord replay.
++    pub key_identity: Option<KeyIdentity>,
+     /// The keystroke that was generated.
+     pub keystroke: Keystroke,
+ 
+diff --git a/src/key_dispatch.rs b/src/key_dispatch.rs
+index 1e7a42447254f6ad4a2c7a2e0cf15940443d12a3..554c82398f5beabda51f268c7f1fd17d6e09500e 100644
+--- a/src/key_dispatch.rs
++++ b/src/key_dispatch.rs
+@@ -947,6 +947,7 @@ mod tests {
+         cx.update(|window, cx| {
+             window.dispatch_event(
+                 PlatformInput::KeyDown(KeyDownEvent {
++                    key_identity: None,
+                     keystroke: Keystroke {
+                         key_char: Some("ą".into()),
+                         ..Keystroke::parse("ctrl-alt-a").expect("valid keystroke")
+diff --git a/src/key_identity.rs b/src/key_identity.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..bf5a907a948234ed2db27c086c9c2c8242b136b3
+--- /dev/null
++++ b/src/key_identity.rs
+@@ -0,0 +1,11 @@
++use crate::KeyIdentity;
++
++/// Builds native identity from layout characters without retaining control/function codes.
++pub fn native_key_identity(unshifted: &str, shifted: &str, shift: bool, base_layout: Option<char>) -> KeyIdentity {
++    fn printable(text: &str) -> Option<char> {
++        let mut chars = text.chars();
++        let ch = chars.next()?;
++        (chars.next().is_none() && !ch.is_control() && !(0xf700..=0xf8ff).contains(&u32::from(ch))).then_some(ch)
++    }
++    KeyIdentity { unshifted: printable(unshifted), shifted: printable(shifted), shift, base_layout }
++}
+diff --git a/src/window.rs b/src/window.rs
+index 9809a4400c355f6a8b26f68742bd1370b5fd9575..aee1c4dbb0c6a22f9701f5d9b6c8671a787a6346 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -2585,6 +2585,7 @@ impl Window {
+                     keystroke: keystroke.clone(),
+                     input_preference,
+                     is_held: false,
++                    key_identity: None,
+                     action: action.map(|action| action.boxed_clone()),
+                     context_stack: context_stack.clone(),
+                 },
+@@ -2599,6 +2600,7 @@ impl Window {
+         keystroke: &Keystroke,
+         input_preference: InputPreference,
+         is_held: bool,
++        key_identity: Option<crate::KeyIdentity>,
+         context_stack: Vec<KeyContext>,
+         cx: &mut App,
+     ) {
+@@ -2610,6 +2612,7 @@ impl Window {
+                         keystroke: keystroke.clone(),
+                         input_preference,
+                         is_held,
++                        key_identity,
+                         action: None,
+                         context_stack: context_stack.clone(),
+                     },
+@@ -5597,6 +5600,7 @@ impl Window {
+         let keystroke = keystroke.with_simulated_ime();
+         let result = self.dispatch_event(
+             PlatformInput::KeyDown(KeyDownEvent {
++                key_identity: None,
+                 keystroke: keystroke.clone(),
+                 is_held: false,
+                 prefer_character_input: false,
+@@ -6137,6 +6141,7 @@ impl Window {
+             &keystroke,
+             input_preference,
+             is_held,
++            event.downcast_ref::<KeyDownEvent>().and_then(|event| event.key_identity),
+             self.context_stack(),
+             cx,
+         );
+@@ -6487,6 +6492,7 @@ impl Window {
+ 
+         'replay: for replay in replays {
+             let event = KeyDownEvent {
++                key_identity: None,
+                 keystroke: replay.keystroke.clone(),
+                 is_held: false,
+                 prefer_character_input: true,
+@@ -9002,6 +9008,7 @@ mod tests {
+             window.draw(cx).clear(cx);
+             window.dispatch_event(
+                 PlatformInput::KeyDown(KeyDownEvent {
++                    key_identity: None,
+                     keystroke: Keystroke::parse("down").expect("valid keystroke"),
+                     is_held: false,
+                     prefer_character_input: false,

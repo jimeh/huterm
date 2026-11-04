@@ -208,6 +208,12 @@ impl TerminalEngine {
     pub(crate) fn size(&self) -> GridSize {
         self.inner.size()
     }
+    pub(crate) fn encode_input(
+        &mut self,
+        input: &huterm_protocol::TerminalInput,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        self.inner.encode_input(input)
+    }
     pub(crate) fn modes(&self) -> Result<TerminalModes, RuntimeError> {
         self.inner.modes()
     }

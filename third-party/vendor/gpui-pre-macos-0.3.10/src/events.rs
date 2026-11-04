@@ -1,3 +1,5 @@
+#[path = "key_identity.rs"]
+mod key_identity;
 use gpui::{
     Capslock, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
@@ -137,6 +139,12 @@ pub(crate) unsafe fn platform_input_from_native(
                 }))
             }
             NSEventType::KeyDown => Some(PlatformInput::KeyDown(KeyDownEvent {
+                key_identity: Some(gpui::native_key_identity(
+                    &chars_for_modified_key(native_event.keyCode(), NO_MOD),
+                    &chars_for_modified_key(native_event.keyCode(), SHIFT_MOD),
+                    native_event.modifierFlags().contains(NSEventModifierFlags::Shift),
+                    key_identity::us_key(native_event.keyCode()),
+                )),
                 keystroke: parse_keystroke(native_event),
                 is_held: native_event.isARepeat(),
                 prefer_character_input: false,

@@ -120,6 +120,13 @@ source drift or edit recipe files during an active session. Review patch ownersh
 run `vendor:check` and the affected behavioral checks, and finish every session
 before handoff or commit. Commit source and patches together when authorized.
 
+The three `native-key-identity` GPUI patches retain native layout characters,
+raw Shift, and physical US keys separately from binding equality for Kitty
+keyboard input. Core GPUI carries the optional identity to interceptors;
+macOS and Linux populate it before normalization. Drop them when a reviewed
+snapshot supplies equivalent native identity. The vendor README records the
+platform derivation and required input-smoke checks.
+
 `gpui-pre` archives carry no Cargo VCS file; their manifest entries set
 `"snapshot": "gpui-pre"` so the checker reads the Zed crate and revision from
 `package.metadata.gpui-pre`. The archive remains the exact source baseline.

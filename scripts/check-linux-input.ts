@@ -2,6 +2,8 @@
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { inputSmokeState, waitForInputSmoke } from "./input-smoke-state";
+import { checkKittyLinuxInput } from "./check-kitty-linux-input";
 
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
@@ -26,10 +28,6 @@ function signal(pid: number, signal: NodeJS.Signals): void {
   catch { /* The process already exited. */ }
 }
 
-async function waitFor(check: () => Promise<boolean>, label: string): Promise<void> {
-  if (!await waitWithin(check, 10_000)) throw new Error(`timed out waiting for ${label}`);
-}
-
 /** Polls `check` until it holds or `milliseconds` pass; false on timeout. */
 async function waitWithin(check: () => Promise<boolean>, milliseconds: number): Promise<boolean> {
   const deadline = performance.now() + milliseconds;
@@ -45,6 +43,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 async function checkInput(executable: string): Promise<void> {
   const engine = "ghostty";
   const directory = await mkdtemp(join(tmpdir(), "huterm-x11-input-"));
+  const waitFor = (check: () => Promise<boolean>, label: string) => waitForInputSmoke(check, label, directory, 10_000);
   const ready = join(directory, "ready");
   const probed = join(directory, "probed");
   const complete = join(directory, "complete");
@@ -56,6 +55,15 @@ async function checkInput(executable: string): Promise<void> {
   const stop = join(directory, "stop");
   const finished = join(directory, "finished");
   const expected = Buffer.from("\x1br\x1bR\x1b3\x1b<\x1b\x12\x1b\x1b[D\x1bcx");
+  const recorder = join(directory, "recorder.ts");
+  await writeFile(recorder, `import {openSync,writeSync} from "node:fs";
+const fd = openSync(${JSON.stringify(bytes)}, "w");
+for await (const chunk of Bun.stdin.stream()) {
+ const end = chunk.indexOf(4);
+ writeSync(fd, end < 0 ? chunk : chunk.subarray(0, end));
+ if (end >= 0) break;
+}
+`);
   await writeFile(shell, `#!/bin/sh
 stty raw -echo
 printf READY > ${quote(ready)}
@@ -65,7 +73,7 @@ printf READY > ${quote(ready)}
 dd bs=1 count=1 of=/dev/null 2>/dev/null
 printf PROBED > ${quote(probed)}
 while :; do c=$(dd bs=1 count=1 2>/dev/null); [ "$c" = g ] && break; done
-timeout --foreground 15s dd bs=1 count=${expected.length} of=${quote(bytes)} 2>/dev/null
+timeout --foreground 15s ${quote(process.execPath)} ${quote(recorder)}
 printf COMPLETE > ${quote(complete)}
 ${quote(process.execPath)} ${quote(reporter)}
 printf FINISHED > ${quote(finished)}
@@ -126,7 +134,7 @@ command = "quit"
   async function backgroundIs(color: string, label: string) {
     let last = "";
     if (!await waitWithin(async () => (last = await readFile(background, "utf8").catch(() => "")) === color, 10_000)) {
-      throw new Error(`timed out waiting for ${label}: background ${last || "unreported"}, expected ${color}`);
+      throw new Error(`timed out waiting for ${label}: background ${last || "unreported"}, expected ${color}\n${await inputSmokeState(directory)}`);
     }
   }
   await configure();
@@ -161,13 +169,13 @@ command = "quit"
       run(["xdotool", "key", "--clearmodifiers", "z"]);
       probedInput = await waitWithin(() => Bun.file(probed).exists(), 250);
     }
-    if (!probedInput) throw new Error(`${engine}: the terminal never accepted input`);
+    if (!probedInput) throw new Error(`${engine}: the terminal never accepted input\n${await inputSmokeState(directory)}`);
     run(["xdotool", "key", "--clearmodifiers", "g"]);
     // XTest updates the server's XKB modifier state; --window would instead
     // send XSendEvent events and bypass the conversion this smoke must prove.
     run(["xdotool", "key", "--clearmodifiers", "--delay", "40",
       "alt+r", "alt+shift+r", "alt+3", "alt+shift+comma", "ctrl+alt+r",
-      "alt+Left", "alt+b", "alt+c", "x"]);
+      "alt+Left", "alt+b", "alt+c", "x", "ctrl+d"]);
     await waitFor(() => Bun.file(complete).exists(), "received input bytes");
     const actual = await readFile(bytes);
     if (!actual.equals(expected)) {
@@ -221,5 +229,6 @@ if (import.meta.main) {
     const executable = resolve(Bun.argv[2] ?? "target/debug/huterm");
     run(["setxkbmap", "-layout", "us"]);
     await checkInput(executable);
+    if (Bun.argv[3]) await checkKittyLinuxInput(resolve(Bun.argv[3]));
   }
 }

@@ -55,7 +55,7 @@ use super::{
 
 use crate::linux::{
     DEFAULT_CURSOR_ICON_NAME, capslock_from_xkb, cursor_style_to_icon_names, get_xkb_compose_state,
-    is_within_click_distance, keystroke_from_xkb, keystroke_underlying_dead_key,
+    is_within_click_distance, key_identity_from_xkb, keystroke_from_xkb, keystroke_underlying_dead_key,
     log_cursor_icon_warning, modifiers_from_xkb, new_xkb_context, open_uri_internal,
     platform::{DOUBLE_CLICK_INTERVAL, SCROLL_LINES},
     reveal_path_internal,
@@ -1239,6 +1239,7 @@ impl X11Client {
                 let is_held = state.held_keys.press(event.detail);
                 let key_event_state = xkb_state_for_key_event(&state.xkb, event.state);
 
+                let key_identity = key_identity_from_xkb(&key_event_state, modifiers, event.detail.into());
                 let keystroke = {
                     let code = event.detail.into();
                     let mut keystroke = keystroke_from_xkb(&key_event_state, modifiers, code);
@@ -1289,6 +1290,7 @@ impl X11Client {
                 };
                 drop(state);
                 window.handle_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    key_identity: Some(key_identity),
                     keystroke,
                     is_held,
                     prefer_character_input: false,

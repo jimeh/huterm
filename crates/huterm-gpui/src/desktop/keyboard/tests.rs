@@ -204,7 +204,8 @@ fn option_meta_uses_base_key_instead_of_composed_character() {
         translate(&stroke, Platform::MacOs, true),
         Some(TerminalInput::Character {
             text: "r".into(),
-            meta: true
+            meta: true,
+            key: None
         })
     );
 }
@@ -248,7 +249,8 @@ fn meta_characters_preserve_shift_punctuation_digits_space_and_control() {
             translate(&input, Platform::MacOs, true),
             Some(TerminalInput::Character {
                 text: expected.into(),
-                meta: true
+                meta: true,
+                key: None
             }),
             "{key}"
         );
@@ -296,7 +298,8 @@ fn linux_alt_uses_native_character_and_ignores_macos_option_setting() {
                 ),
                 Some(TerminalInput::Character {
                     text: text.into(),
-                    meta: true
+                    meta: true,
+                    key: None
                 })
             );
         }
@@ -308,7 +311,8 @@ fn linux_alt_uses_native_character_and_ignores_macos_option_setting() {
             ),
             Some(TerminalInput::Character {
                 text: "\x12".into(),
-                meta: true
+                meta: true,
+                key: None
             })
         );
         assert_eq!(
@@ -319,7 +323,8 @@ fn linux_alt_uses_native_character_and_ignores_macos_option_setting() {
             ),
             Some(TerminalInput::Character {
                 text: "é".into(),
-                meta: false
+                meta: false,
+                key: None
             })
         );
     }
@@ -424,7 +429,8 @@ fn matcher_consumes_alt_bindings_and_allows_conditional_and_unbound_meta() {
                 translate(&key, Platform::MacOs, true),
                 Some(TerminalInput::Character {
                     text: "r".into(),
-                    meta: true
+                    meta: true,
+                    key: None
                 })
             );
             assert_eq!(translate(&key, Platform::MacOs, false), None);
@@ -497,4 +503,144 @@ fn the_device_bits_name_one_option_key_or_none() {
     assert_eq!(option_side(option | 0x40), Some(OptionSide::Right));
     assert_eq!(option_side(option), None);
     assert_eq!(option_side(option | 0x20 | 0x40), None);
+}
+
+fn translate(
+    stroke: &Keystroke,
+    platform: Platform,
+    option: bool,
+) -> Option<TerminalInput> {
+    let mut input = super::translate(stroke, platform, option, None, false)?;
+    if let TerminalInput::Character { key, .. } = &mut input {
+        *key = None;
+    }
+    Some(input)
+}
+
+#[test]
+fn native_identity_keeps_layout_and_raw_shift_for_kitty_chords() {
+    for (base, shifted, raw_shift, key, control) in [
+        ("a", "A", false, "a", false),
+        ("a", "A", true, "a", false),
+        ("1", "!", true, "!", true),
+        (";", ":", true, ":", true),
+        ("a", "A", false, "a", true),
+        ("a", "A", true, "a", true),
+        (" ", " ", false, "space", true),
+        ("ф", "Ф", true, "a", true),
+    ] {
+        let native =
+            gpui::native_key_identity(base, shifted, raw_shift, Some('a'));
+        let stroke = stroke(key, None, false, false, control);
+        // Use Linux to exercise plain Character routing too.
+        let mut stroke = stroke;
+        stroke.key_char = Some(if raw_shift { shifted } else { base }.into());
+        let input = super::translate(
+            &stroke,
+            Platform::Linux,
+            false,
+            Some(native),
+            true,
+        )
+        .unwrap();
+        let TerminalInput::Character {
+            key: Some(identity),
+            ..
+        } = input
+        else {
+            panic!("character expected")
+        };
+        assert_eq!(identity.unshifted.to_string(), base);
+        assert_eq!(identity.text, if raw_shift { shifted } else { base });
+        assert_eq!(identity.modifiers.shift, raw_shift);
+        assert_eq!(identity.modifiers.control, control);
+    }
+}
+
+#[test]
+fn kitty_only_control_chords_require_hint_and_fallback_preserves_layout_text() {
+    let native = gpui::native_key_identity(";", ":", true, Some(';'));
+    let stroke = stroke(":", None, false, false, true);
+    assert!(
+        super::translate(&stroke, Platform::MacOs, false, Some(native), false)
+            .is_none()
+    );
+    let input =
+        super::translate(&stroke, Platform::MacOs, false, Some(native), true)
+            .unwrap();
+    assert!(
+        matches!(input, TerminalInput::Character { text, key: Some(key), .. } if text == ":" && key.unshifted == ';' && key.modifiers.shift)
+    );
+    let synthetic = stroke_for_fallback();
+    let input =
+        super::translate(&synthetic, Platform::MacOs, false, None, true)
+            .unwrap();
+    assert!(
+        matches!(input, TerminalInput::Character { key: Some(key), .. } if key.unshifted == 'a' && key.text == "A" && key.modifiers.shift)
+    );
+    let mut command = synthetic;
+    command.modifiers.platform = true;
+    assert!(
+        super::translate(&command, Platform::MacOs, true, Some(native), true)
+            .is_none()
+    );
+}
+fn stroke_for_fallback() -> Keystroke {
+    stroke("a", None, false, true, true)
+}
+
+#[test]
+fn function_keys_insert_and_named_key_shift_are_retained() {
+    for (name, expected) in [
+        ("f1", TerminalKey::F1),
+        ("f12", TerminalKey::F12),
+        ("insert", TerminalKey::Insert),
+        ("enter", TerminalKey::Enter),
+        ("tab", TerminalKey::Tab),
+    ] {
+        let native = gpui::native_key_identity("", "", true, None);
+        assert!(
+            matches!(super::translate(&stroke(name, None, false, false, false), Platform::MacOs, false, Some(native), true),
+            Some(TerminalInput::Key { key, modifiers }) if key == expected && modifiers.shift)
+        );
+    }
+}
+
+#[test]
+fn native_text_is_preserved_when_a_layout_has_no_single_key_identity() {
+    let native = gpui::native_key_identity("", "", false, None);
+    let stroke = stroke("dead_acute", Some("é"), false, false, false);
+    assert_eq!(
+        super::translate(&stroke, Platform::Linux, false, Some(native), false),
+        Some(TerminalInput::Character {
+            text: "é".into(),
+            meta: false,
+            key: None
+        })
+    );
+}
+
+#[test]
+fn alternate_keys_alone_do_not_claim_kitty_only_control_chords() {
+    use huterm_protocol::KittyKeyboardFlags;
+    let stroke = stroke("1", None, false, false, true);
+    let native = gpui::native_key_identity("1", "!", false, Some('1'));
+    for flags in [0, 1, 4, 5, 6, 12, 31] {
+        let hint = KittyKeyboardFlags::from_bits(flags);
+        assert_eq!(hint.bits(), flags & 5);
+        for platform in [Platform::MacOs, Platform::Linux] {
+            assert_eq!(
+                super::translate(
+                    &stroke,
+                    platform,
+                    false,
+                    Some(native),
+                    hint.disambiguates()
+                )
+                .is_some(),
+                flags & 1 != 0,
+                "flags={flags} {platform:?}"
+            );
+        }
+    }
 }

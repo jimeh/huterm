@@ -23,7 +23,8 @@ fn character_queue_bytes_include_utf8_payload_and_meta_prefix() {
         assert_eq!(
             input_bytes(&TerminalInput::Character {
                 text: text.into(),
-                meta
+                meta,
+                key: None
             }),
             expected
         );
@@ -52,6 +53,7 @@ fn meta_roundtrip() {
             .send_input(TerminalInput::Character {
                 text: text.into(),
                 meta: true,
+                key: None,
             })
             .unwrap();
     }
@@ -851,6 +853,10 @@ fn exited_history() {
     for input in [
         TerminalInput::Text("LATE".into()),
         TerminalInput::Paste("PASTE".into()),
+        TerminalInput::Key {
+            key: huterm_protocol::TerminalKey::Escape,
+            modifiers: huterm_protocol::Modifiers::default(),
+        },
     ] {
         client.send_input(input).unwrap();
     }
@@ -2568,4 +2574,50 @@ fn shutdown_should_terminate_a_distinct_foreground_process_group() {
         }
     }
     std::fs::remove_file(pid_path).expect("PID file should be removable");
+}
+
+#[test]
+fn character_identity_owned_text_counts_toward_queue_capacity() {
+    let input = TerminalInput::Character {
+        text: "λ".into(),
+        meta: true,
+        key: Some(Box::new(huterm_protocol::CharacterKey {
+            unshifted: 'λ',
+            text: "Λ".into(),
+            base_layout: Some('l'),
+            modifiers: huterm_protocol::Modifiers::default(),
+        })),
+    };
+    assert_eq!(input_bytes(&input), 5);
+}
+
+#[test]
+fn queued_key_uses_flags_parsed_before_its_dequeue() {
+    let runtime = TerminalRuntime::spawn(TerminalId::new(195), &command(
+        "stty raw -echo; printf READY; bytes=$(dd bs=1 count=11 2>/dev/null | od -An -tx1 | tr -d ' \n'); printf 'HEX:%s:DONE' \"$bytes\""
+    )).unwrap();
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    let resume = pause_runtime(&client);
+    // Whichever queue gets the next turn, the first client message is empty.
+    // The alternating NextMessage order must parse output before the second.
+    client
+        .send_input(TerminalInput::Text(String::new()))
+        .unwrap();
+    client
+        .send_input(TerminalInput::Key {
+            key: huterm_protocol::TerminalKey::Escape,
+            modifiers: huterm_protocol::Modifiers::default(),
+        })
+        .unwrap();
+    client
+        .control
+        .output
+        .send(b"\x1b[>5u\x1b[?u".to_vec())
+        .unwrap();
+    resume.send(()).unwrap();
+    // Query reply, then the Kitty Escape: 5 + 5 bytes, followed by sentinel.
+    client.send_input(TerminalInput::Text("!".into())).unwrap();
+    wait_for_text(&client, "HEX:1b5b3f35751b5b32377521:DONE");
+    runtime.shutdown().unwrap();
 }

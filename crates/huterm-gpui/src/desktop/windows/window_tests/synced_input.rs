@@ -801,3 +801,48 @@ fn the_tab_menu_toggles_its_own_tab_and_not_the_active_one(
     harness.wait_for("the menu's tab to stop", |cx| !syncs_input(other, cx));
     harness.cx.update(|cx| assert!(syncs_input(active, cx)));
 }
+
+#[gpui::test]
+fn synced_character_chords_encode_for_each_panes_kitty_flags(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.macos_option_as_alt =
+            crate::config::MacosOptionAsAlt::Both;
+    });
+    let tab = harness.open_tab(HEX_ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, tab, "READY");
+    harness.activate(window, tab);
+    let legacy = harness.first_pane(tab);
+    let kitty = harness.split(tab, legacy, SplitDirection::Right,
+        "stty raw -echo; printf '\\033[>5uREADY'; while byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'); [ -n \"$byte\" ]; do printf '%s' \"$byte\"; done");
+    harness.wait_for("the Kitty pane to publish its routing hint", |cx| {
+        pane_view(cx, window, tab, kitty).is_some_and(|view| {
+            view.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.modes.kitty_keyboard.bits() == 5
+            })
+        })
+    });
+    harness.toggle_sync(window, tab, true);
+    harness.focus(window, tab, kitty);
+    harness.press(window, "ctrl-a");
+    harness.press(window, "alt-r->r");
+    harness.press(window, "ctrl-1");
+    harness.press(window, "ctrl-g");
+    harness.focus(window, tab, legacy);
+    harness.press(window, "ctrl-a");
+    harness.press(window, "alt-r->r");
+    // A legacy source does not claim this Kitty-only chord. Its native text
+    // path remains platform-owned; the synthetic stroke has no key_char.
+    harness.press(window, "ctrl-1");
+    harness.press(window, "ctrl-g");
+    let legacy_bytes = "011b723107011b7207";
+    let kitty_bytes = "1b5b39373b35751b5b3131343b33751b5b34393b35751b5b3130333b35751b5b39373b35751b5b3131343b33751b5b3130333b3575";
+    harness.wait_for("each shell to reach its second completion key", |cx| {
+        pane_received(cx, window, tab, legacy, "READY").as_deref()
+            == Some(legacy_bytes)
+            && pane_received(cx, window, tab, kitty, "READY").as_deref()
+                == Some(kitty_bytes)
+    });
+}

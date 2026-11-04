@@ -31,6 +31,8 @@ mod hot_reload;
 mod input;
 mod inspector;
 mod interactive;
+mod key_identity;
+pub use key_identity::native_key_identity;
 mod key_dispatch;
 mod keymap;
 mod path_builder;

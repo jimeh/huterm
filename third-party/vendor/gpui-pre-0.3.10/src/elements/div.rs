@@ -5510,6 +5510,7 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             window.dispatch_event(
                 KeyDownEvent {
+                    key_identity: None,
                     keystroke,
                     is_held: false,
                     prefer_character_input: false,

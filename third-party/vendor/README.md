@@ -310,3 +310,17 @@ exposes no safe pre-exec hook, and Huterm denies `unsafe_code`, so the
 child-side call lives here. `pty::tests::child_starts_with_the_configured_open_file_limit`
 in huterm-core checks the child's soft limit. Remove the patch when a reviewed
 release offers an equivalent option.
+
+## Native keyboard identity
+
+The `native-key-identity` patches in `gpui-pre`, `gpui-pre-macos`, and
+`gpui-pre-linux` retain layout characters, held Shift, and the physical US key
+for Huterm's Kitty encoder. Core GPUI carries an optional plain `KeyIdentity`
+on `KeyDownEvent` and interceptor `KeystrokeEvent`, leaving `Keystroke` equality
+unchanged. Synthetic, IME-only, and replay events can omit it. macOS reads the
+native keyCode and Unicode layout; Linux reads active XKB layout levels and
+evdev physical codes before shortcut normalization. Pure helper tests compile
+both platforms' physical maps on either host; native input smokes exercise the
+real event paths. Drop each patch when a reviewed GPUI snapshot exposes and
+populates equivalent identity without changing binding equality. Rerun both
+platforms' input smokes when removing them.

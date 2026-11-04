@@ -1,7 +1,7 @@
 use super::{control_byte, protocol_modifiers};
 use crate::config::MacosOptionAsAlt;
 use crate::keymap::Platform;
-use gpui::Keystroke;
+use gpui::{KeyIdentity, Keystroke};
 use huterm_protocol::{TerminalInput, TerminalKey};
 
 /// Keystrokes already held by GPUI's matcher, awaiting consumption or replay.
@@ -144,8 +144,16 @@ pub(super) fn translate(
     keystroke: &Keystroke,
     platform: Platform,
     option_meta: bool,
+    native: Option<KeyIdentity>,
+    kitty: bool,
 ) -> Option<TerminalInput> {
-    let modifiers = protocol_modifiers(keystroke.modifiers);
+    if keystroke.modifiers.platform {
+        return None;
+    }
+    let mut modifiers = protocol_modifiers(keystroke.modifiers);
+    if let Some(identity) = native {
+        modifiers.shift = identity.shift;
+    }
     let key = match keystroke.key.as_str() {
         "enter" => Some(TerminalKey::Enter),
         "tab" => Some(TerminalKey::Tab),
@@ -160,6 +168,20 @@ pub(super) fn translate(
         "pageup" => Some(TerminalKey::PageUp),
         "pagedown" => Some(TerminalKey::PageDown),
         "delete" => Some(TerminalKey::Delete),
+        "insert" => Some(TerminalKey::Insert),
+        "f1" => Some(TerminalKey::F1),
+        "f2" => Some(TerminalKey::F2),
+        "f3" => Some(TerminalKey::F3),
+        "f4" => Some(TerminalKey::F4),
+        "f5" => Some(TerminalKey::F5),
+        "f6" => Some(TerminalKey::F6),
+        "f7" => Some(TerminalKey::F7),
+        "f8" => Some(TerminalKey::F8),
+        "f9" => Some(TerminalKey::F9),
+        "f10" => Some(TerminalKey::F10),
+        "f11" => Some(TerminalKey::F11),
+        "f12" => Some(TerminalKey::F12),
+
         _ => None,
     };
     if let Some(key) = key {
@@ -167,8 +189,21 @@ pub(super) fn translate(
     }
     let meta =
         keystroke.modifiers.alt && (platform == Platform::Linux || option_meta);
+    let identity = native.unwrap_or_else(|| fallback_identity(keystroke));
+    let layout_text = identity.unshifted.map(|unshifted| {
+        if identity.shift {
+            identity.shifted.unwrap_or(unshifted)
+        } else {
+            unshifted
+        }
+        .to_string()
+    });
     let text = if keystroke.modifiers.control {
-        String::from(char::from(control_byte(&keystroke.key)?))
+        match control_byte(&keystroke.key) {
+            Some(byte) => String::from(char::from(byte)),
+            None if kitty => layout_text.clone()?,
+            None => return None,
+        }
     } else if meta && platform == Platform::MacOs {
         match keystroke.key.as_str() {
             "space" => " ".into(),
@@ -186,7 +221,42 @@ pub(super) fn translate(
     } else {
         keystroke.key_char.clone()?
     };
-    Some(TerminalInput::Character { text, meta })
+    modifiers.alt = meta;
+    Some(TerminalInput::Character {
+        text,
+        meta,
+        key: identity.unshifted.map(|unshifted| {
+            Box::new(huterm_protocol::CharacterKey {
+                unshifted,
+                text: layout_text.unwrap_or_default(),
+                base_layout: identity.base_layout,
+                modifiers,
+            })
+        }),
+    })
+}
+
+/// Synthetic and unpatched paths cannot recover shifted punctuation's base key.
+fn fallback_identity(stroke: &Keystroke) -> KeyIdentity {
+    let character = if stroke.key == "space" {
+        Some(' ')
+    } else {
+        let mut chars = stroke.key.chars();
+        let first = chars.next();
+        if chars.next().is_none() { first } else { None }
+    };
+    KeyIdentity {
+        unshifted: character,
+        shifted: character.map(|ch| {
+            if ch.is_ascii_lowercase() {
+                ch.to_ascii_uppercase()
+            } else {
+                ch
+            }
+        }),
+        shift: stroke.modifiers.shift,
+        base_layout: character.filter(char::is_ascii),
+    }
 }
 
 #[cfg(test)]

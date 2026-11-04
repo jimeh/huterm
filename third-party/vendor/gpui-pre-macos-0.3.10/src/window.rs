@@ -3564,6 +3564,7 @@ extern "C" fn do_command_by_selector(this: &AnyObject, _: Sel, _: Sel) {
 
     if let Some((keystroke, callback)) = keystroke.zip(event_callback.as_mut()) {
         let handled = (callback)(PlatformInput::KeyDown(KeyDownEvent {
+            key_identity: None,
             keystroke,
             is_held: false,
             prefer_character_input: false,

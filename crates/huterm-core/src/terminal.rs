@@ -1916,7 +1916,13 @@ fn handle_input(
             return true;
         }
     }
-    let bytes = encode_input(input, modes, owner.engine.size());
+    let bytes = match owner.engine.encode_input(input) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            owner.status.failure(error.to_string());
+            return false;
+        }
+    };
     if probes.input(&bytes, Instant::now()) {
         owner.metadata.reports.job_control_input();
     }
@@ -2331,9 +2337,10 @@ fn flush_pending_write(
 fn input_bytes(input: &TerminalInput) -> usize {
     match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
-        TerminalInput::Character { text, meta } => text
+        TerminalInput::Character { text, meta, key } => text
             .len()
-            .saturating_add(usize::from(*meta && !text.is_empty())),
+            .saturating_add(usize::from(*meta && !text.is_empty()))
+            .saturating_add(key.as_ref().map_or(0, |key| key.text.len())),
         _ => std::mem::size_of::<TerminalInput>(),
     }
 }

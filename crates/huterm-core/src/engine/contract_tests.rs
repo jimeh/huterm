@@ -346,10 +346,22 @@ fn ghostty_answers_primary_device_attributes_conservatively() {
 }
 
 #[test]
-fn ghostty_does_not_advertise_unsupported_kitty_keyboard_input() {
+fn ghostty_advertises_only_supported_kitty_keyboard_flags() {
     with_engine(|engine| {
         let effects = engine.process(b"\x1b[?u\x1b[>31u\x1b[?u").unwrap();
-        assert!(!effects.iter().any(|effect| matches!(effect, EngineEffect::PtyWrite(bytes) if bytes.ends_with(b"u"))));
+        assert_eq!(
+            effects
+                .into_iter()
+                .filter_map(|effect| {
+                    if let EngineEffect::PtyWrite(bytes) = effect {
+                        Some(bytes)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>(),
+            [b"\x1b[?0u".to_vec(), b"\x1b[?5u".to_vec()]
+        );
     });
 }
 

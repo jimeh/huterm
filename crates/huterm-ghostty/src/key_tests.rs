@@ -153,6 +153,7 @@ fn terminal_data_keys_write_exactly_their_output_type() {
         ColorBackgroundDefault: rgb,
         ColorCursorDefault: rgb,
         ColorPaletteDefault: palette,
+        KittyKeyboardFlags: 0,
         KittyImageStorageLimit: 0,
         ScrollbackMaxBytes: 0,
         ScrollbackMaxLines: 0,
@@ -547,4 +548,42 @@ fn mouse_option_keys_read_exactly_their_value_type() {
     assert_eq!(probe.report(ProbeEvent::Motion).unwrap(), b"");
     probed.push("TrackLastCell");
     covers(probed, option::KEYS);
+}
+
+#[test]
+fn key_encoder_option_keys_read_exactly_their_value_type() {
+    use crate::{Key, KeyEncoder, KeyEvent};
+    use keys::key_encoder_option as option;
+    let mut encoder = KeyEncoder::new().unwrap();
+    let mut terminal = Terminal::new(options(), ()).unwrap();
+    terminal.write(b"\x1b[?1036h").unwrap();
+    encoder.sync(&terminal).unwrap();
+    let event = KeyEvent {
+        key: Key::A,
+        text: "a",
+        unshifted: Some('a'),
+        control: false,
+        alt: true,
+        shift: false,
+    };
+    for guard in [0, 0xff] {
+        key_probe::set_key::<option::KittyFlags>(
+            &mut encoder.encoder,
+            &5,
+            guard,
+        );
+        key_probe::set_key::<option::MacosOptionAsAlt>(
+            &mut encoder.encoder,
+            &ffi::GHOSTTY_OPTION_AS_ALT_TRUE,
+            guard,
+        );
+        assert_eq!(encoder.encode(event).unwrap(), b"\x1b[97;3u");
+        key_probe::set_key::<option::KittyFlags>(
+            &mut encoder.encoder,
+            &0,
+            guard,
+        );
+        assert_eq!(encoder.encode(event).unwrap(), b"\x1ba");
+    }
+    covers(vec!["KittyFlags", "MacosOptionAsAlt"], option::KEYS);
 }

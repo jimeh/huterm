@@ -967,7 +967,7 @@ fn ui_state(
                 let content = terminal.content_bounds(window);
                 let grid = terminal.terminal_layout(window).bounds;
                 format!(
-                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{} {prefix}displayed_grid={},{} {prefix}grid_bounds={} {prefix}cell={},{} {prefix}selection={} {prefix}selecting={} {prefix}history={}",
+                    "{prefix}terminal_bounds={} {prefix}scrolled={} {prefix}scroll_pill={} {prefix}grid={},{} {prefix}displayed_grid={},{} {prefix}grid_bounds={} {prefix}cell={},{} {prefix}selection={} {prefix}selecting={} {prefix}history={} {prefix}kitty={}",
                     rect(content),
                     terminal.scroll.displayed(),
                     terminal.scroll_pill_visible(),
@@ -984,6 +984,7 @@ fn ui_state(
                         .snapshot
                         .as_ref()
                         .map_or(0, |snapshot| snapshot.history_size),
+                    terminal.snapshot.as_ref().map_or(0, |snapshot| snapshot.modes.kitty_keyboard.bits()),
                 )
             },
         );

@@ -242,9 +242,10 @@ impl InputQueue {
 pub(super) fn buffered_input_bytes(input: &TerminalInput) -> usize {
     match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
-        TerminalInput::Character { text, meta } => text
+        TerminalInput::Character { text, meta, key } => text
             .len()
-            .saturating_add(usize::from(*meta && !text.is_empty())),
+            .saturating_add(usize::from(*meta && !text.is_empty()))
+            .saturating_add(key.as_ref().map_or(0, |key| key.text.len())),
         _ => std::mem::size_of::<TerminalInput>(),
     }
 }

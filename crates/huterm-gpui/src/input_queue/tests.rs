@@ -99,6 +99,7 @@ fn meta_prefix_counts_toward_queue_capacity() {
     let full = TerminalInput::Character {
         text: "x".repeat(PENDING_INPUT_BYTE_CAPACITY),
         meta: true,
+        key: None,
     };
     assert_eq!(
         queue
@@ -111,6 +112,7 @@ fn meta_prefix_counts_toward_queue_capacity() {
     let fits = TerminalInput::Character {
         text: "x".repeat(PENDING_INPUT_BYTE_CAPACITY - 1),
         meta: true,
+        key: None,
     };
     assert_eq!(
         queue.enqueue(fits, STAMP, false, busy).unwrap(),
@@ -120,7 +122,8 @@ fn meta_prefix_counts_toward_queue_capacity() {
     assert_eq!(
         buffered_input_bytes(&TerminalInput::Character {
             text: "λ".into(),
-            meta: true
+            meta: true,
+            key: None
         }),
         3
     );
@@ -134,6 +137,7 @@ fn queued_characters_retain_policy_stamp_and_order_across_later_input() {
         TerminalInput::Character {
             text: "r".into(),
             meta: true,
+            key: None,
         },
         TerminalInput::Paste("r".into()),
     ];
@@ -605,4 +609,19 @@ fn immediate_press_and_buffered_release_keep_acceptance_distinct() {
         Admission::Accepted
     );
     assert_eq!(queue.entries.len(), 1);
+}
+
+#[test]
+fn character_identity_owned_text_counts_toward_queue_capacity() {
+    let input = TerminalInput::Character {
+        text: "λ".into(),
+        meta: true,
+        key: Some(Box::new(huterm_protocol::CharacterKey {
+            unshifted: 'λ',
+            text: "Λ".into(),
+            base_layout: Some('l'),
+            modifiers: huterm_protocol::Modifiers::default(),
+        })),
+    };
+    assert_eq!(buffered_input_bytes(&input), 5);
 }

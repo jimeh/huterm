@@ -96,6 +96,18 @@ impl<H: Host> Terminal<H> {
 }
 
 impl<H> Terminal<H> {
+    /// The active screen's native Kitty flag stack value.
+    ///
+    /// # Errors
+    /// Fails if the terminal is poisoned or the getter fails.
+    pub fn kitty_keyboard_flags(&self) -> Result<u8> {
+        let mut flags = 0;
+        self.native()?
+            .as_ref()
+            .get::<data::KittyKeyboardFlags>(&mut flags)?;
+        Ok(flags)
+    }
+
     fn state(&self) -> &State<H> {
         self.bound.state()
     }

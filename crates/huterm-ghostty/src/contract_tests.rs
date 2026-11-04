@@ -1298,3 +1298,116 @@ fn every_native_allocation_is_released() {
         "native allocations leaked"
     );
 }
+
+#[test]
+fn kitty_flag_stack_operations_screens_reset_and_malformed_forms() {
+    let mut t = terminal();
+    for (sequence, flags) in [
+        ("\x1b[>1u", 1),
+        ("\x1b[>5u", 5),
+        ("\x1b[<u", 1),
+        ("\x1b[=4;1u", 4),
+        ("\x1b[=1;2u", 5),
+        ("\x1b[=4;3u", 1),
+        ("\x1b[>31u", 31),
+        ("\x1b[?1049h", 0),
+        ("\x1b[>4u", 4),
+        ("\x1b[?1049l", 31),
+        ("\x1b[>32u", 31),
+        ("\x1b[=5;9u", 31),
+        ("\x1b[>999u", 31),
+        ("\x1bc", 0),
+    ] {
+        t.write(sequence.as_bytes()).unwrap();
+        assert_eq!(t.kitty_keyboard_flags().unwrap(), flags, "{sequence:?}");
+        assert_eq!(
+            written(&mut t, b"\x1b[?u"),
+            [format!("\x1b[?{flags}u").into_bytes()]
+        );
+    }
+}
+
+#[test]
+fn kitty_flag_stack_evicts_oldest_at_eight_entries() {
+    let mut t = terminal();
+    for flags in 1..=10 {
+        t.write(format!("\x1b[>{flags}u").as_bytes()).unwrap();
+    }
+    for expected in (3..=10).rev() {
+        assert_eq!(t.kitty_keyboard_flags().unwrap(), expected);
+        t.write(b"\x1b[<u").unwrap();
+    }
+    assert_eq!(t.kitty_keyboard_flags().unwrap(), 0);
+    t.write(b"\x1b[>5u\x1b[<999u").unwrap();
+    assert_eq!(t.kitty_keyboard_flags().unwrap(), 0);
+}
+
+#[test]
+fn kitty_encoder_flags_short_buffer_retry_and_event_reuse() {
+    use crate::{Key, KeyEncoder, KeyEvent};
+    let (counts, allocator) = test_alloc::tracking();
+    {
+        let mut encoder = KeyEncoder::new_in(Some(allocator)).unwrap();
+        assert_eq!(counts.live(), 2, "encoder and event are owned");
+        let event = KeyEvent {
+            key: Key::A,
+            control: true,
+            alt: false,
+            shift: true,
+            text: "A",
+            unshifted: Some('a'),
+        };
+        for (flags, expected) in [
+            (1, "\x1b[97;6u"),
+            // Native Ghostty selects Kitty for any nonzero flags. Core never
+            // passes flag 4 without disambiguation (1).
+            (4, "\x1b[97:65;6u"),
+            (5, "\x1b[97:65;6u"),
+        ] {
+            encoder.set_kitty_flags(flags);
+            assert_eq!(
+                encoder.encode_with_capacity(event, 0).unwrap(),
+                expected.as_bytes()
+            );
+            let next = KeyEvent {
+                key: Key::Enter,
+                control: false,
+                alt: false,
+                shift: false,
+                text: "",
+                unshifted: None,
+            };
+            assert_eq!(
+                encoder.encode(next).unwrap(),
+                b"\r",
+                "no stale text/modifiers/unshifted codepoint"
+            );
+            assert_eq!(
+                encoder
+                    .encode(KeyEvent {
+                        key: Key::Unidentified,
+                        control: true,
+                        text: "b",
+                        unshifted: None,
+                        ..next
+                    })
+                    .unwrap(),
+                b"b",
+                "a printable key must not inherit the previous unshifted codepoint"
+            );
+            assert_eq!(
+                encoder
+                    .encode(KeyEvent {
+                        key: Key::Unidentified,
+                        text: "λ",
+                        unshifted: Some('λ'),
+                        ..next
+                    })
+                    .unwrap(),
+                "λ".as_bytes()
+            );
+        }
+    }
+    assert_eq!(counts.live(), 0);
+    assert_eq!(counts.live_bytes(), 0);
+}

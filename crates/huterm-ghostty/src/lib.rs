@@ -20,6 +20,7 @@
 mod callbacks;
 mod error;
 mod ffi;
+mod keyboard;
 mod mouse;
 mod native;
 mod overrides;
@@ -44,6 +45,7 @@ mod test_layout;
 
 pub use callbacks::Host;
 pub use error::{Error, Result};
+pub use keyboard::{Key, KeyEncoder, KeyEvent};
 pub use mouse::{MouseProbe, ProbedFormat, ProbedTracking};
 pub use native::NativeBytes;
 pub use overrides::ColorOverrides;
