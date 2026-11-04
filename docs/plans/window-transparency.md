@@ -1,6 +1,6 @@
 # Window transparency and blur
 
-Status: approved
+Status: implemented
 
 Issue #39 (parent #16). Adds an overall window opacity, separate background
 and text (foreground) opacity, and optional background blur, applied live on
