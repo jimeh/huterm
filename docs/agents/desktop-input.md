@@ -384,19 +384,31 @@ spring deadlines. Hidden, minimized, busy, closing, confirming, and transitionin
 Quake windows take no drop. Pane centres never accept a cross-window swap.
 
 Resolve again at release. Reserve both windows before dispatching a worker, and
-keep the destination busy until every moved pane still projected in its workspace
-has an installed viewer, or one of those installs fails. A pane closed or moved
-elsewhere by another client no longer holds that reservation. Only
-a successful move clears local zoom; cross-window moves add no layout-history
-entry. Pane close requests queued in the source follow their pane IDs and
-resume after destination installation. A failed move restores the destination
-preview selection and scroll without taking focus. A failed moved-pane install
-releases the reservation, activates and shows the destination (including a hidden
-tear-off host), resumes queued closes, and posts "Cannot show moved tab" with
-"Try Again" to reconcile every missing view in that window. Only pending moved
-panes get a notice for a stale subscription; teardown posts none. Projected tabs
-keep an empty-view destination open, and install failure never stops terminals.
-An emptied source closes without stopping its terminals.
+keep the destination busy until every moved pane still projected in its
+workspace has an installed viewer, or one of those panes' own installs fails. An
+unrelated subscription failure in the same tab must neither settle the transfer
+nor exclude a moved pane that has not been subscribed. A pane closed or moved
+elsewhere by another client no longer holds that reservation. Only a successful
+move clears local zoom; cross-window moves add no layout-history entry. A pane
+close resolves its tab from this window's retained views first, then from
+projection membership, in request validation, the runtime request, confirmation
+pruning, and retargeting after a failed assessment. That accepts a source close
+after the projection moved its retained view away, and a destination close
+before the pane's view installs. Queued source pane closes follow their pane IDs
+and resume after destination installation. A failed move restores the
+destination preview selection and scroll without taking focus. A failed
+moved-pane install releases the reservation, activates and shows the destination
+(including a hidden tear-off host), resumes queued closes, and posts "Cannot
+show moved tab" with "Try Again" to reconcile every missing view in that window.
+Every other non-stale failed install that leaves a projected pane without a
+view, including a repeated retry of a moved pane, posts "Cannot show tab" with
+the same action. A stale subscription error, where this window's attachment no
+longer reaches the terminal, posts a notice only for a pane of the pending
+transfer; teardown and results for panes no longer held here post none. These
+notices persist, like the other notices with a recovery action, until reconcile
+finds no failed pane still projected here without a view. Projected tabs keep an
+empty-view destination open, and install failure never stops terminals. An
+emptied source closes without stopping its terminals.
 Tear-off creates a shell-less regular destination first and rolls back only its
 empty session on failure. A lone tab never tears off; Move Tab to New Window is
 unavailable in its palette, tab menu, and command invocation with the same reason.

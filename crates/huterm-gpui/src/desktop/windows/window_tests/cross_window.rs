@@ -2,6 +2,8 @@
 use super::super::pane_drag::{DropTarget, SPRING_LOAD_DELAY};
 use super::super::window_locator::{Located, WindowLocator};
 use super::*;
+use crate::desktop::notices::NOTICE_LIFETIME;
+use huterm_core::{Beside, MoveDestination, PaneRef};
 use std::cell::Cell;
 
 struct Locator(Cell<Located>);
@@ -1887,6 +1889,265 @@ fn cross_window_stale_install_notices_exclude_unrelated_panes_and_termination(
             view.notices.is_empty(),
             "teardown must not post a moved-pane install notice"
         );
+    });
+    runtime.worker_hooks.release(Stage::Subscribe);
+}
+#[gpui::test]
+fn cross_window_unrelated_same_tab_failure_does_not_fail_the_moved_pane(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, workspace, anchor, locator) =
+        DesktopHarness::cross_fixture(cx);
+    let pane = h.cross_pane(tab);
+    let target = h.cross_pane(anchor);
+    h.runtime.worker_hooks.hold(Stage::Subscribe);
+    h.runtime.worker_hooks.fail(Stage::Subscribe);
+    h.runtime
+        .lock()
+        .split_pane(
+            workspace,
+            anchor,
+            target,
+            SplitDirection::Right,
+            &fixture(ECHO),
+        )
+        .unwrap();
+    let runtime = h.runtime.clone();
+    h.wait_for("unrelated subscription held", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 1
+    });
+    let frame = h.update_view(destination, |view, _, _| {
+        view.drawn_frame(target).unwrap()
+    });
+    locator.0.set(Located::Window(
+        destination.window_id(),
+        point(frame.left() + px(3.0), frame.center().y),
+    ));
+    h.cross_begin_pane(source, tab, pane);
+    h.cross_release_pane(source);
+    h.wait_for("move committed behind unrelated subscription", |cx| {
+        cx.global::<Desktop>().hierarchy.state().pane_tab(pane) == Some(anchor)
+            && destination
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>()
+                        .unwrap()
+                        .read(cx)
+                        .transfer
+                        .as_ref()
+                        .is_some_and(|pending| pending.installing)
+                })
+                .unwrap()
+    });
+    assert_eq!(runtime.worker_hooks.held(Stage::Subscribe), 1);
+    runtime.worker_hooks.release(Stage::Subscribe);
+    h.wait_for("subscription failure settles destination", |cx| {
+        destination
+            .update(cx, |root, _, cx| {
+                let view = root.downcast::<WorkspaceView>().unwrap();
+                !view.read(cx).busy && view.read(cx).transfer.is_none()
+            })
+            .unwrap()
+    });
+    assert!(
+        h.cx.update(|cx| pane_view(cx, destination, anchor, pane).is_some()),
+        "an unrelated subscription failure must not settle or block the moved pane's install"
+    );
+    h.update_view(destination, |view, window, cx| {
+        let titles: Vec<_> = view
+            .notices
+            .contents()
+            .map(|notice| notice.title.clone())
+            .collect();
+        assert_eq!(titles, ["Cannot show tab"]);
+        let id = view.notices.newest().unwrap();
+        let notice = &view.notices.get(id).unwrap().content;
+        assert_eq!(
+            notice.actions.first().map(|action| action.label.as_str()),
+            Some("Try Again"),
+            "the unrelated pane is still projected here without a view"
+        );
+        view.run_notice_action(id, None, window, cx).unwrap();
+    });
+    h.wait_for("retry installs the unrelated pane", |cx| {
+        destination
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .unwrap()
+                    .read(cx)
+                    .pane_targets(anchor, cx)
+                    .is_empty()
+            })
+            .unwrap()
+    });
+    assert_eq!(
+        h.cx.update(|cx| notices(cx, destination)),
+        Vec::<String>::new()
+    );
+}
+
+#[gpui::test]
+fn cross_window_source_pane_close_after_projection_follows_the_transfer(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, workspace, _, _) =
+        DesktopHarness::cross_fixture(cx);
+    let pane = h.cross_pane(tab);
+    h.runtime.worker_hooks.hold(Stage::LayoutCommitted);
+    h.cross_begin(source, tab);
+    h.cross_release(source);
+    let runtime = h.runtime.clone();
+    h.wait_for("real transfer committed before completion delivery", |_| {
+        runtime.worker_hooks.held(Stage::LayoutCommitted) == 1
+    });
+    h.wait_for("projection applied before source completion", |cx| {
+        cx.global::<Desktop>().hierarchy.state().tab_workspace(tab)
+            == Some(workspace)
+    });
+    h.update_view(source, |view, window, cx| {
+        assert!(view.busy && view.tab_showing(pane) == Some(tab));
+        view.close_focused_pane(window, cx).unwrap();
+        assert!(matches!(view.close.pending, Some(CloseTarget::Pane { pane: queued, .. }) if queued == pane),
+            "source pane close must queue while its moved view is retained");
+    });
+    runtime.worker_hooks.hold(Stage::Assess);
+    runtime.worker_hooks.release(Stage::LayoutCommitted);
+    h.wait_for("destination assesses the forwarded pane close", |_| {
+        runtime.worker_hooks.held(Stage::Assess) == 1
+    });
+    assert!(h.update_view(
+        destination,
+        |view, _, _| matches!(view.close.current,
+        Some(CloseTarget::Pane { pane: closing, .. }) if closing == pane)
+    ));
+    runtime.worker_hooks.release(Stage::Assess);
+    h.wait_for("forwarded pane closes", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .pane_tab(pane)
+            .is_none()
+    });
+    assert_eq!(h.close_failures(), 0);
+}
+
+#[gpui::test]
+fn cross_window_second_failed_retry_still_offers_recovery(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, _, _, _) =
+        DesktopHarness::cross_fixture(cx);
+    let pane = h.cross_pane(tab);
+    h.cross_begin(source, tab);
+    h.runtime.worker_hooks.fail(Stage::Subscribe);
+    h.cross_release(source);
+    h.wait_for("initial failed install settles", |cx| {
+        notices(cx, destination)
+            .iter()
+            .any(|notice| notice.contains("Cannot show moved tab"))
+    });
+    h.runtime.worker_hooks.fail(Stage::Subscribe);
+    h.retry_moved_install(destination);
+    h.wait_for("second install failure reports", |cx| {
+        notices(cx, destination)
+            .iter()
+            .any(|notice| notice.contains("Cannot show tab"))
+    });
+    h.update_view(destination, |view, window, cx| {
+        assert!(!view.busy && view.transfer.is_none());
+        let titles: Vec<_> = view
+            .notices
+            .contents()
+            .map(|notice| notice.title.clone())
+            .collect();
+        assert_eq!(titles, ["Cannot show tab"]);
+        let id = view.notices.newest().unwrap();
+        let notice = &view.notices.get(id).unwrap().content;
+        assert_eq!(
+            notice.actions.first().map(|action| action.label.as_str()),
+            Some("Try Again"),
+            "a second failed attempt must retain its explicit recovery action"
+        );
+        view.notices
+            .expire(Instant::now() + NOTICE_LIFETIME + NOTICE_LIFETIME);
+        assert!(
+            view.notices.get(id).is_some(),
+            "the recovery action must outlive the command-failure expiry"
+        );
+        view.run_notice_action(id, None, window, cx).unwrap();
+    });
+    h.wait_for("second retry installs moved pane", |cx| {
+        pane_view(cx, destination, tab, pane).is_some()
+    });
+    assert_eq!(
+        h.cx.update(|cx| notices(cx, destination)),
+        Vec::<String>::new(),
+        "an installed pane withdraws its failure notice"
+    );
+}
+
+#[gpui::test]
+fn cross_window_close_retargets_a_projected_pane_without_a_view(
+    cx: &mut TestAppContext,
+) {
+    let (mut h, source, tab, destination, workspace, anchor, _) =
+        DesktopHarness::cross_fixture(cx);
+    let pane = h.cross_pane(tab);
+    let target = h.cross_pane(anchor);
+    h.cross_begin(source, tab);
+    h.runtime.worker_hooks.fail(Stage::Subscribe);
+    h.cross_release(source);
+    h.wait_for("moved pane's install failure settles", |cx| {
+        notices(cx, destination)
+            .iter()
+            .any(|notice| notice.contains("Cannot show moved tab"))
+    });
+    let runtime = h.runtime.clone();
+    runtime.worker_hooks.hold(Stage::Subscribe);
+    runtime.worker_hooks.hold(Stage::Assess);
+    h.update_view(destination, |view, window, cx| {
+        assert!(view.tab_showing(pane).is_none());
+        view.request_close(CloseTarget::Pane { tab, pane }, window, cx);
+    });
+    h.wait_for("pane close assessment starts", |_| {
+        runtime.worker_hooks.held(Stage::Assess) == 1
+    });
+    runtime
+        .lock()
+        .move_pane(
+            PaneRef {
+                workspace,
+                tab,
+                pane,
+            },
+            MoveDestination::Beside(Beside {
+                target: PaneRef {
+                    workspace,
+                    tab: anchor,
+                    pane: target,
+                },
+                side: SplitDirection::Right,
+            }),
+        )
+        .unwrap();
+    h.wait_for("missing pane projects in a different tab", |cx| {
+        cx.global::<Desktop>().hierarchy.state().pane_tab(pane) == Some(anchor)
+    });
+    h.update_view(destination, |view, _, cx| {
+        assert!(view.tab_showing(pane).is_none());
+        assert!(!view.shows_none_of(&CloseTarget::Pane { tab, pane }, cx));
+    });
+    runtime.worker_hooks.release(Stage::Assess);
+    h.wait_for("close retargets and closes the missing pane", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .pane_tab(pane)
+            .is_none()
+    });
+    assert_eq!(runtime.worker_hooks.entered(Stage::Assess), 2);
+    assert_eq!(h.close_failures(), 0);
+    h.wait_for("a closed failed pane withdraws its notice", |cx| {
+        notices(cx, destination).is_empty()
     });
     runtime.worker_hooks.release(Stage::Subscribe);
 }

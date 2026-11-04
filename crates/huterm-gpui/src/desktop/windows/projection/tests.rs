@@ -1289,7 +1289,8 @@ fn a_failed_install_waits_for_a_batch_that_touches_its_workspace() {
     let mut fake = attached_window(&mut model, 1, workspace(10));
     feed.open(workspace(10), 1);
     reconcile(&mut fake, &mut model, &feed.state, &Touched::everything());
-    fake.pending.finish(tab(1), true);
+    fake.pending
+        .finish(tab(1), &[PaneId::in_runtime(RUNTIME, 1)]);
     // The window's own completion and unrelated batches do not retry it.
     reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
     let elsewhere = feed.rename(1, Some("renamed"));
@@ -1351,7 +1352,8 @@ fn a_revoked_view_whose_tab_stays_is_replaced_once_and_otherwise_removed() {
     }
     .drop_tabs(&[tab(1)]);
     fake.revoked.clear();
-    fake.pending.finish(tab(1), true);
+    fake.pending
+        .finish(tab(1), &[PaneId::in_runtime(RUNTIME, 1)]);
     reconcile(&mut fake, &mut model, &feed.state, &Touched::default());
     assert_eq!(fake.started, Vec::<Vec<TabId>>::new());
     assert_eq!(fake.replaced.len(), 1);

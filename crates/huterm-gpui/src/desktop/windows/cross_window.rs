@@ -765,7 +765,13 @@ impl WorkspaceView {
                     seq: runtime.lock().hierarchy_seq(),
                 };
             }
-            runtime.transfer(change)
+            let committed = runtime.transfer(change);
+            #[cfg(all(test, feature = "test-support"))]
+            runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::LayoutCommitted)
+                .await;
+            committed
         });
         let app = cx.to_async();
         cx.spawn_in(window, async move |_, _cx| {
@@ -919,8 +925,8 @@ impl WorkspaceView {
         };
         let failed = pending.panes.iter().any(|pane| {
             !installed(*pane)
-                && in_workspace(*pane)
-                    .is_some_and(|tab| self.installs.failed(tab))
+                && in_workspace(*pane).is_some()
+                && self.installs.failed(*pane)
         });
         if !failed
             && !pending

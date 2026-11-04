@@ -4726,7 +4726,8 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Brings this window in line with the projection for `touched`.
+    /// Brings this window in line with the projection for `touched`, and
+    /// withdraws install failure notices that no longer apply.
     fn reconcile(
         &mut self,
         touched: &Touched,
@@ -4739,6 +4740,7 @@ impl WorkspaceView {
             terminating,
         );
         if !terminating {
+            self.withdraw_install_notices(cx);
             self.note_emptied(change.emptied, touched, cx);
         }
         change
@@ -10647,17 +10649,17 @@ impl WorkspaceView {
             (CloseTarget::Emptied, MuxError::ViewNotEmpty(_)) => {
                 self.emptied_close_refused(window, cx);
             }
-            // The pane moved to another tab this window shows between the
+            // The pane moved to another tab of this window between the
             // close's request and its assessment; assess it there.
             (
                 CloseTarget::Pane { tab, pane },
                 MuxError::UnknownPane(_) | MuxError::UnknownTab(_),
             ) if self
-                .tab_showing(*pane)
+                .pane_close_tab(*pane, cx)
                 .is_some_and(|current| current != *tab) =>
             {
                 let target = CloseTarget::Pane {
-                    tab: self.tab_showing(*pane).unwrap_or(*tab),
+                    tab: self.pane_close_tab(*pane, cx).unwrap_or(*tab),
                     pane: *pane,
                 };
                 self.request_close(target, window, cx);
@@ -10668,7 +10670,7 @@ impl WorkspaceView {
             (
                 CloseTarget::Pane { pane, .. },
                 MuxError::UnknownPane(_) | MuxError::UnknownTab(_),
-            ) if self.tab_showing(*pane).is_none() => {
+            ) if self.pane_close_tab(*pane, cx).is_none() => {
                 self.close.current = None;
                 self.release_exit_close_if_idle(cx);
                 self.restore_tab_focus(window, cx);
@@ -10769,7 +10771,7 @@ impl WorkspaceView {
             },
             CloseTarget::Pane { tab, pane } => CloseRequest::Pane {
                 workspace: self.workspace_id(cx)?,
-                tab: self.tab_showing(*pane).unwrap_or(*tab),
+                tab: self.pane_close_tab(*pane, cx).unwrap_or(*tab),
                 pane: *pane,
             },
             CloseTarget::Tabs(tabs) => CloseRequest::Tabs {
@@ -10805,9 +10807,19 @@ impl WorkspaceView {
             .map(|view| view.id)
     }
 
+    /// The tab a pane close targets: the tab whose view in this window
+    /// shows `pane`, which a busy transfer source keeps after the projection
+    /// moved the pane away, or else the tab the projection places it in
+    /// within this workspace, which covers a pane whose view failed to
+    /// install.
+    fn pane_close_tab(&self, pane: PaneId, cx: &App) -> Option<TabId> {
+        self.tab_showing(pane)
+            .or_else(|| self.projected_pane_tab(pane, cx))
+    }
+
     /// Restricts tab targets to current tabs, in window order, and points a
-    /// pane target at its tab in this workspace's projection, including a
-    /// moved pane whose viewer failed to install; `None` when nothing remains.
+    /// pane target at its retained view's tab or its projected tab in this
+    /// workspace; `None` when nothing remains.
     fn current_close_target(
         &self,
         target: CloseTarget,
@@ -10820,7 +10832,7 @@ impl WorkspaceView {
                 .any(|tab| tab.id == id)
                 .then_some(CloseTarget::Tab(id)),
             CloseTarget::Pane { pane, .. } => self
-                .projected_pane_tab(pane, cx)
+                .pane_close_tab(pane, cx)
                 .map(|tab| CloseTarget::Pane { tab, pane }),
             CloseTarget::Tabs(ids) => tabs_target(
                 self.tabs
@@ -10894,7 +10906,7 @@ impl WorkspaceView {
     fn shows_none_of(&self, target: &CloseTarget, cx: &App) -> bool {
         match target {
             CloseTarget::Pane { pane, .. } => {
-                self.projected_pane_tab(*pane, cx).is_none()
+                self.pane_close_tab(*pane, cx).is_none()
             }
             target => target.tabs().is_some_and(|tabs| {
                 !tabs
