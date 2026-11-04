@@ -5060,6 +5060,13 @@ impl WorkspaceView {
         TabColors::new(&self.config.theme).background_opacity(alpha)
     }
 
+    /// Colors for drag cues that float over the bar or terminal content: the
+    /// title chip and the tear-off pill stay opaque, like the palette, at
+    /// any background opacity.
+    fn floating_colors(&self) -> TabColors {
+        TabColors::new(&self.config.theme)
+    }
+
     fn configure_pane_paint(
         &self,
         view: &Entity<TerminalView>,
@@ -13496,6 +13503,7 @@ impl Render for WorkspaceView {
         *self.drawn_tear_off.borrow_mut() = None;
         if self.tear_off_cue(cx) {
             let bounds = self.tear_off_pill_bounds(&strip, &layout);
+            let floating = self.floating_colors();
             *self.drawn_tear_off.borrow_mut() = Some(bounds);
             root = root.child(
                 div()
@@ -13510,14 +13518,18 @@ impl Render for WorkspaceView {
                     .items_center()
                     .justify_center()
                     .rounded(px(6.0))
-                    .bg(colors.active)
+                    .bg(floating.active)
                     .border_1()
-                    .border_color(colors.accent)
-                    .text_color(colors.foreground)
+                    .border_color(floating.accent)
+                    .text_color(floating.foreground)
                     .child(cross_window::tear_off_label(bounds)),
             );
         }
-        root = root.children(self.drag_overlay(colors, window, cx));
+        root = root.children(self.drag_overlay(
+            self.floating_colors(),
+            window,
+            cx,
+        ));
         if let Some(notices) = self.render_notices(layout.terminal, cx) {
             root = root.child(notices);
         }

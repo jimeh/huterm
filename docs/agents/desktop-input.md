@@ -418,7 +418,9 @@ gets the icon-only pill there. Only when neither fits does it cover the strip's
 trailing end with an opaque fill.
 Keep the source slot's dashed state border at full contrast while dimming its
 contents. Every drag title chip measures its size, flips across each overflowing
-pointer axis, and clamps inside the window.
+pointer axis, and clamps inside the window. The chip and the pill float over
+content, so they paint from `floating_colors`, which ignores
+`background_opacity`, not from the translucent `tab_colors`.
 
 Native input fixtures use window-addressed AppKit events, including negative
 source-local coordinates, and XTest root coordinates on X11. Publish per-window

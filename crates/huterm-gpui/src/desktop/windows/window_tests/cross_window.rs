@@ -1329,6 +1329,80 @@ fn cross_window_lone_tab_command_is_unavailable_in_palette_and_invocation(
 }
 
 #[gpui::test]
+fn drag_cues_stay_opaque_over_translucent_chrome(cx: &mut TestAppContext) {
+    let translucent = |config: &mut crate::config::Config| {
+        config.tabs.always_show = true;
+        config.window.background_opacity = 0.6;
+    };
+    // Keep this paint-policy test independent of the host compositor.
+    let available = |view: &mut WorkspaceView| {
+        view.transparency_support = crate::transparency::Support::Available;
+    };
+
+    // The tear-off pill, in the source bar.
+    let mut h = DesktopHarness::with_config(cx, translucent);
+    let tab = h.open_tab(ECHO);
+    let _ = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    h.update_view(source, |view, _, cx| {
+        available(view);
+        cx.notify();
+    });
+    let _locator = h.cross_locator();
+    h.cross_begin(source, tab);
+    let (pill, opaque, bar) = h.update_view(source, |view, _, _| {
+        let pill = view.drawn_tear_off.borrow().expect("pill was drawn");
+        (
+            pill,
+            TabColors::new(&view.config.theme).active,
+            view.tab_colors().active,
+        )
+    });
+    assert_ne!(opaque, bar, "the fixture's chrome must be translucent");
+    assert!(
+        super::transparency::painted_at(&mut h, source, pill.center(), opaque),
+        "the tear-off pill {pill:?} must paint the opaque active fill"
+    );
+
+    // The title chip an incoming drag draws over the destination's terminal.
+    let mut h = DesktopHarness::with_config(cx, translucent);
+    let tab = h.open_tab(ECHO);
+    let source = h.attach_window();
+    let (destination, _, _) = h.private_window();
+    let locator = h.cross_locator();
+    h.activate(source, tab);
+    let pointer = h.update_view(destination, |view, window, cx| {
+        available(view);
+        cx.notify();
+        point(
+            window.viewport_size().width / 2.0,
+            window.viewport_size().height / 2.0,
+        )
+    });
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), pointer));
+    h.cross_begin(source, tab);
+    let chip = VisualTestContext::from_window(destination, &h.cx)
+        .debug_bounds("drag-title-chip")
+        .expect("incoming chip was drawn");
+    // The chip keeps its own 0.9 element opacity, whatever the chrome does.
+    let opaque = h.update_view(destination, |view, _, _| {
+        TabColors::new(&view.config.theme).active.opacity(0.9)
+    });
+    assert!(
+        super::transparency::painted_at(
+            &mut h,
+            destination,
+            chip.center(),
+            opaque
+        ),
+        "the incoming title chip {chip:?} must paint the opaque active fill at its own 0.9 opacity"
+    );
+}
+
+#[gpui::test]
 fn cross_window_incoming_title_chip_stays_inside_a_bottom_bar_window(
     cx: &mut TestAppContext,
 ) {

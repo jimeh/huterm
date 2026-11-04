@@ -173,7 +173,7 @@ fn chrome_fills_and_dimming_preserve_background_alpha(cx: &mut TestAppContext) {
 }
 
 /// Read the production scene without a native window or GPU rasterization.
-fn painted_at(
+pub(super) fn painted_at(
     harness: &mut DesktopHarness,
     handle: AnyWindowHandle,
     at: gpui::Point<Pixels>,
