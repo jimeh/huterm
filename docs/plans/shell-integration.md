@@ -501,3 +501,66 @@ revisions above.
 - **C1 controls.** Both shells compare paths against the 32 UTF-8 C1
   sequences as literal substrings, independent of locale and of zsh's
   metafication.
+
+### Final round, 2026-11-04
+
+A comparison of Ghostty, Kitty, VS Code, and iTerm2 found that none meets all
+of Huterm's invariants, and that each remaining defect has a general shell
+mechanism. Jim decided on 2026-11-04 to run one targeted final round with
+Huterm-authored scripts (no GPL route), to switch bash 4 and later from
+`--posix` with `ENV` to `--rcfile` with login emulation, and to hold the final
+review to no P1 or P2 finding in common supported use, documenting exotic
+cases instead of fixing them. These bullets supersede the earlier bash launch
+sections ("bash (not Apple's)", "bash (Apple's `/bin/bash`)") and the Apple
+resolution rule in "Shell detection".
+
+- **One bash launch.** Every injected bash runs as `bash --rcfile <bootstrap>
+  -i`, with `-i` after the user's leading long options because bash accepts
+  long options only before short ones. Login flags become
+  `HUTERM_BASH_LOGIN=1`, and the bootstrap emulates the login sequence on every
+  platform, so the `login_shell`, `logout`, and `.bash_logout` caveats apply to
+  all bash login shells. Core no longer resolves the program to detect Apple
+  bash and no longer sets `ENV`, `HISTFILE`, `HUTERM_ORIG_ENV`, or
+  `HUTERM_ORIG_HISTFILE`. Bash keeps its native `HISTFILE` default, and its
+  `shopt` and `set -o` state matches a plain start except `login_shell`;
+  `inherit_errexit` and imports of exported functions with non-POSIX names no
+  longer differ.
+- **Inherited prompt state.** Each `PROMPT_COMMAND` entry is a `case` on
+  `${_huterm_bash_loaded-}:$?`, which calls Huterm only in the process that
+  loaded it. Elsewhere it keeps `$_`, keeps `$?` without a command for 0, uses
+  `[[ -z 1 ]] && :` for 1, and forks `( exit $? ) && :` above 1. The `case ...
+  in` header has its own line so bash-preexec recognizes the entry. Huterm's
+  `PS1` and `PS0` additions expand Huterm's arrays, which bash never exports;
+  `D` comes from `${_huterm_bash_d[$?]-}`, a table of 256 marks. With
+  `promptvars` off, the prompts keep static marks, a documented exception.
+- **Armed `PS0`.** `PS0`'s C is `${_huterm_bash_c[${_huterm_bash_armed-0}]-}`,
+  and its expansion clears the flag without forking. Only the prompt hook sets
+  the flag, so a re-sourced `.bashrc` that replaces `PROMPT_COMMAND` leaves no
+  C on later commands, and the hook knows a command ran when the flag is clear.
+  Huterm restores `PS1` and `PS0` only from the exact values it set and
+  otherwise decorates the current value after removing its own marks.
+- **bash-preexec 0.7 installer.** Its scalar sanitizer takes seconds when its
+  installer's `:` placeholder sits between longer lines, so Huterm keeps a
+  scalar's pending `__bp_install "$_"` line last. On bash before 5.1, a
+  `precmd` theme that rebuilds `PS1` then leaves the first prompt unmarked, a
+  documented exception.
+- **Bash 3.2 C.** The `DEBUG` trap writes C to `/dev/tty` and falls back to
+  standard output, because a first command inside a redirected group, such as
+  `{ ...; } > file`, otherwise captured the mark.
+- **Directory check.** Bash compares against literal C0, DEL, and C1 lists
+  without `local LC_ALL=C`, which made an uninstalled `LC_ALL` warn at every
+  prompt.
+- **Zsh ownership.** Zsh restores the undecorated prompt only while `PROMPT`
+  still equals the decorated value Huterm set, and no longer strips marks by
+  pattern, so a framework's ST- or BEL-terminated marks survive and suppress
+  Huterm's OSC 133 stream.
+- **Documented exceptions added.** A wrapped user `DEBUG` trap sees
+  `PIPESTATUS` holding only the previous status on every version, which can
+  change an `extdebug` skip decision. Turning `promptvars` off mid-session
+  loses that command's D status. With `promptvars` off and a scalar
+  `PROMPT_COMMAND`, prompt hooks see only the previous status in `PIPESTATUS`.
+  Zsh re-sourcing a `.zshrc` that assigns `precmd_functions` loses one prompt
+  cycle. A full readline redraw, including a terminal resize, resends the
+  prompt's marks, D included, so #352 must ignore a D without a new C. Nested
+  shells inheriting exported prompt state see `PIPESTATUS` reduced to `$?`
+  after a failing command.

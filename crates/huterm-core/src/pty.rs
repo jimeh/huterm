@@ -308,9 +308,7 @@ pub(crate) fn spawn(
             .as_deref()
             .and_then(std::path::Path::parent)
             .map(std::path::Path::to_owned),
-        macos: cfg!(target_os = "macos"),
         environment: &environment,
-        resolve: &crate::shell_integration::resolve,
         is_file: &std::path::Path::is_file,
     };
     spawn_with_plan(command, crate::shell_integration::plan(command, &host))

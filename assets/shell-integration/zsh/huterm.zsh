@@ -3,9 +3,11 @@
 typeset -g _huterm_zsh_loaded=$$ _huterm_zsh_disabled=0 _huterm_zsh_running=0
 typeset -g _huterm_zsh_marked=0 _huterm_zsh_reported=0 _huterm_zsh_scheduled=0
 typeset -g _huterm_zsh_features=,${HUTERM_SHELL_FEATURES-},
+# The exact prompt Huterm last set and the prompt it decorated. Huterm puts
+# that prompt back only while PROMPT still equals its own value, so it never
+# removes marks it did not add or replaces a prompt the user changed.
+typeset -g _huterm_zsh_owned=0 _huterm_zsh_prompt_set= _huterm_zsh_prompt_user=
 typeset -g _huterm_zsh_body_path=${HUTERM_RESOURCES_DIR-}/shell-integration/zsh/huterm.zsh
-# Huterm's marks end with ST instead of BEL. That tells them apart from a prompt
-# framework's marks, so Huterm removes exactly its own marks before each prompt.
 typeset -g _huterm_zsh_amark=$'%{\e]133;A\e\\%}' _huterm_zsh_bmark=$'%{\e]133;B\e\\%}'
 # A late decoration runs as a scheduled command. Its arguments keep $_, and
 # the && keeps a non-zero $? from triggering ZERR or ERR_EXIT.
@@ -24,9 +26,11 @@ typeset -ga _huterm_zsh_c1
         done
     done
 }
-_huterm_zsh_strip() {
-    PROMPT=${PROMPT//"$_huterm_zsh_amark"}
-    PROMPT=${PROMPT//"$_huterm_zsh_bmark"}
+_huterm_zsh_restore() {
+    if (( _huterm_zsh_owned )) && [[ $PROMPT == "$_huterm_zsh_prompt_set" ]]; then
+        PROMPT=$_huterm_zsh_prompt_user
+    fi
+    _huterm_zsh_owned=0
 }
 _huterm_zsh_unschedule() {
     emulate -L zsh
@@ -52,7 +56,7 @@ _huterm_zsh_disable() {
     precmd_functions=(${precmd_functions:#_huterm_zsh_*})
     preexec_functions=(${preexec_functions:#_huterm_zsh_*})
     chpwd_functions=(${chpwd_functions:#_huterm_zsh_*})
-    _huterm_zsh_strip
+    _huterm_zsh_restore
     _huterm_zsh_unschedule
 }
 _huterm_zsh_failed() {
@@ -102,7 +106,7 @@ _huterm_zsh_status() {
 # mark text as zero-width, so A is printed directly and B is omitted.
 _huterm_zsh_decorate() {
     emulate -L zsh
-    _huterm_zsh_strip
+    _huterm_zsh_restore
     (( _huterm_zsh_reported )) || _huterm_zsh_report
     _huterm_zsh_reported=0
     _huterm_zsh_marked=0
@@ -111,7 +115,10 @@ _huterm_zsh_decorate() {
     esac
     _huterm_zsh_marked=1
     if (( $1 )); then
+        _huterm_zsh_prompt_user=$PROMPT
         PROMPT=$_huterm_zsh_amark$PROMPT$_huterm_zsh_bmark
+        _huterm_zsh_prompt_set=$PROMPT
+        _huterm_zsh_owned=1
     else
         printf '\e]133;A\e\\' || _huterm_zsh_failed
     fi
@@ -149,7 +156,7 @@ _huterm_zsh_preexec() {
     emulate -L zsh
     (( ! _huterm_zsh_disabled )) || return 0
     # Commands see the user's own prompt, as in a plain shell.
-    _huterm_zsh_strip
+    _huterm_zsh_restore
     _huterm_zsh_install
     if (( _huterm_zsh_marked )); then
         _huterm_zsh_running=1

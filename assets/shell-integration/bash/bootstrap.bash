@@ -1,30 +1,16 @@
 # Huterm shell integration bootstrap. Written from the Bash startup-file manual.
-# Keep startup restoration before the optional integration body.
+# Keep the startup files before the optional integration body.
 [[ ${HUTERM_SHELL_INTEGRATION-} == bash ]] || return 0
 unset HUTERM_SHELL_INTEGRATION
 _huterm_bash_flags=${HUTERM_BASH_INJECT-}
 _huterm_bash_login=${HUTERM_BASH_LOGIN-}
 _huterm_bash_rcfile=${HUTERM_BASH_RCFILE-$HOME/.bashrc}
 unset HUTERM_BASH_INJECT HUTERM_BASH_LOGIN HUTERM_BASH_RCFILE
-if [[ ${HUTERM_ORIG_ENV-} == 1* ]]; then
-    export ENV=${HUTERM_ORIG_ENV#?}
-else
-    unset ENV
-fi
-if [[ ${HUTERM_ORIG_HISTFILE-} == 1* ]]; then
-    export HISTFILE=${HUTERM_ORIG_HISTFILE#?}
-elif [[ -o posix ]]; then
-    # Core exported an empty value to suppress the POSIX ~/.sh_history default.
-    # Native bash uses an unexported ~/.bash_history when none was inherited.
-    export -n HISTFILE
-    HISTFILE=$HOME/.bash_history
-fi
-unset HUTERM_ORIG_ENV HUTERM_ORIG_HISTFILE
-set +o posix
-# Each branch ends with the last startup file it sources, so the next
-# statement sees that file's status, which the first prompt shows as in a
-# plain start.
-if [[ $_huterm_bash_login == 1 ]] || shopt -q login_shell; then
+# Core starts a requested login shell as an interactive one with this file as
+# its rcfile, so the first branch emulates the login sequence. Each branch ends
+# with the last startup file it sources, so the next statement sees that
+# file's status, which the first prompt shows as in a plain start.
+if [[ $_huterm_bash_login == 1 ]]; then
     if [[ $_huterm_bash_flags != *p* ]]; then
         if [[ -r /etc/profile ]]; then
             source /etc/profile

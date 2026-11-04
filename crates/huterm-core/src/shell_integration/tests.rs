@@ -25,8 +25,6 @@ pub(super) fn command(shell: &str) -> TerminalCommand {
 fn planned(
     command: &TerminalCommand,
     env: &[(&str, &str)],
-    macos: bool,
-    resolved: &str,
     exists: bool,
 ) -> LaunchPlan {
     let env: BTreeMap<_, _> = env
@@ -47,9 +45,7 @@ fn planned(
         &Host {
             resources: Some("/resources".into()),
             bin: Some("/bin/huterm".into()),
-            macos,
             environment: &lookup,
-            resolve: &|_, _, _| Some(resolved.into()),
             is_file: &|_| exists,
         },
     )
@@ -83,8 +79,6 @@ fn planner_off_unsupported_and_noninteractive_preserve_original_launch() {
                 ("HUTERM_SHELL_INTEGRATION", "zsh"),
                 ("HUTERM_SHELL_FEATURES", "path"),
             ],
-            false,
-            "/bin/bash",
             true,
         );
         assert_eq!(plan.program, command.program);
@@ -100,8 +94,6 @@ fn planner_preserves_unset_empty_and_client_overrides() {
     for original in [None, Some(""), Some("/user value")] {
         for (shell, name) in [
             ("zsh", "ZDOTDIR"),
-            ("bash", "ENV"),
-            ("bash", "HISTFILE"),
             ("fish", "XDG_DATA_DIRS"),
             ("nu", "XDG_DATA_DIRS"),
             ("elvish", "XDG_DATA_DIRS"),
@@ -110,7 +102,7 @@ fn planner_preserves_unset_empty_and_client_overrides() {
                 .map(|value| vec![(name, value)])
                 .unwrap_or_default();
             let mut command = command(shell);
-            let plan = planned(&command, &env, false, "/opt/bash", true);
+            let plan = planned(&command, &env, true);
             assert_eq!(
                 value(&plan, &format!("HUTERM_ORIG_{name}")),
                 Some(OsStr::new(
@@ -119,7 +111,7 @@ fn planner_preserves_unset_empty_and_client_overrides() {
             );
             assert_eq!(value(&plan, "HUTERM_SHELL_FEATURES"), None);
             command.environment.push((name.into(), "override".into()));
-            let plan = planned(&command, &env, false, "/opt/bash", true);
+            let plan = planned(&command, &env, true);
             assert_eq!(
                 value(&plan, &format!("HUTERM_ORIG_{name}")),
                 Some(OsStr::new("1override"))
@@ -134,7 +126,7 @@ fn planner_uses_shell_specific_xdg_roots_and_default_search_path() {
         [("fish", "fish"), ("nu", "nushell"), ("elvish", "elvish")]
     {
         for environment in [vec![], vec![("XDG_DATA_DIRS", "")]] {
-            let plan = planned(&command(shell), &environment, false, "", true);
+            let plan = planned(&command(shell), &environment, true);
             let root = format!("/resources/shell-integration/{root}/xdg");
             assert_eq!(
                 value(&plan, "HUTERM_XDG_ENTRY"),
@@ -151,41 +143,74 @@ fn planner_uses_shell_specific_xdg_roots_and_default_search_path() {
 }
 
 #[test]
-fn planner_apple_bash_carries_startup_options_and_combined_login_flags() {
-    for program in ["bash", "./bash", "/link/bash"] {
-        let mut command = command(program);
+fn planner_bash_uses_rcfile_bootstrap_and_emulates_login() {
+    let bootstrap = "/resources/shell-integration/bash/bootstrap.bash";
+    for (arguments, expected, login) in [
+        (vec![], vec!["-i"], false),
+        (vec!["-l"], vec!["-i"], true),
+        (vec!["--login"], vec!["-i"], true),
+        (
+            vec!["-il", "-O", "extglob"],
+            vec!["-i", "-i", "-O", "extglob"],
+            true,
+        ),
+        (
+            vec!["--noediting", "--login", "-o", "vi"],
+            vec!["--noediting", "-i", "-o", "vi"],
+            true,
+        ),
+        (
+            vec!["-il", "--norc", "--noprofile", "--init-file", "/custom rc"],
+            vec!["-i", "-i"],
+            true,
+        ),
+    ] {
+        let mut command = command("bash");
         command.arguments =
-            ["-il", "--norc", "--noprofile", "--init-file", "/custom rc"]
-                .map(str::to_owned)
-                .into();
-        let plan = planned(&command, &[], true, "/bin/bash", true);
-        assert_eq!(plan.program, command.program);
-        assert_eq!(
-            plan.arguments,
-            [
-                "--rcfile",
-                "/resources/shell-integration/bash/bootstrap.bash",
-                "-i",
-                "-i"
-            ]
+            arguments.iter().map(|&value| value.into()).collect();
+        let plan = planned(
+            &command,
+            &[("ENV", "/user env"), ("HISTFILE", "/user history")],
+            true,
         );
-        assert_eq!(value(&plan, "HUTERM_BASH_LOGIN"), Some(OsStr::new("1")));
-        assert_eq!(value(&plan, "HUTERM_BASH_INJECT"), Some(OsStr::new("rp")));
+        assert_eq!(plan.program, command.program);
+        let mut full = vec!["--rcfile", bootstrap];
+        full.extend(&expected);
+        assert_eq!(plan.arguments, full, "{arguments:?}");
         assert_eq!(
-            value(&plan, "HUTERM_BASH_RCFILE"),
-            Some(OsStr::new("/custom rc"))
+            value(&plan, "HUTERM_BASH_LOGIN"),
+            login.then_some(OsStr::new("1")),
+            "{arguments:?}"
+        );
+        // Bash's own ENV and HISTFILE handling applies untouched.
+        assert!(
+            plan.set.iter().all(|(name, _)| !matches!(
+                name.as_str(),
+                "ENV" | "HISTFILE"
+            ) && !name
+                .starts_with("HUTERM_ORIG_")),
+            "{:?}",
+            plan.set
         );
     }
-    let plan = planned(&command("sh"), &[], true, "/bin/bash", true);
+    let mut command = command("bash");
+    command.arguments = ["--norc", "--noprofile", "--rcfile", "/custom rc"]
+        .map(str::to_owned)
+        .into();
+    let plan = planned(&command, &[], true);
+    assert_eq!(value(&plan, "HUTERM_BASH_INJECT"), Some(OsStr::new("rp")));
+    assert_eq!(
+        value(&plan, "HUTERM_BASH_RCFILE"),
+        Some(OsStr::new("/custom rc"))
+    );
+    let plan = planned(&super::tests::command("sh"), &[], true);
     assert_eq!(plan.arguments, [] as [String; 0]);
-    let plan = planned(&command("bash"), &[], true, "/opt/bash", true);
-    assert_eq!(plan.arguments, ["--posix"]);
 }
 
 #[test]
 fn planner_missing_bootstrap_starts_plain() {
     let command = command("zsh");
-    let plan = planned(&command, &[], false, "", false);
+    let plan = planned(&command, &[], false);
     assert!(plan.warning.unwrap().contains("starting plain"));
     assert_eq!(plan.arguments, command.arguments);
     assert_eq!(plan.set.len(), 2);
@@ -197,10 +222,7 @@ fn planner_path_is_opt_in_and_resources_are_executable_relative() {
     command.shell_integration.features =
         [ShellFeature::Path].into_iter().collect();
     assert_eq!(
-        value(
-            &planned(&command, &[], false, "", true),
-            "HUTERM_SHELL_FEATURES"
-        ),
+        value(&planned(&command, &[], true), "HUTERM_SHELL_FEATURES"),
         Some(OsStr::new("path"))
     );
     for binary in [
@@ -222,71 +244,6 @@ fn planner_path_is_opt_in_and_resources_are_executable_relative() {
     assert!(
         resource_candidates(Path::new("/app/bin/huterm"), false)
             .contains(&PathBuf::from("/app/share/huterm"))
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn planner_resolver_matches_child_path_cwd_and_invocation_identity() {
-    use std::os::unix::fs::symlink;
-    struct Cleanup(PathBuf);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let root = std::env::temp_dir()
-        .join(format!("huterm-shell-resolver-{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
-    let _cleanup = Cleanup(root.clone());
-    symlink("/bin/bash", root.join("bash")).unwrap();
-    symlink("/bin/bash", root.join("sh")).unwrap();
-    for program in ["bash", "./bash"] {
-        assert_eq!(
-            resolve(Path::new(program), &root, Some(OsStr::new("."))),
-            Some(PathBuf::from("/bin/bash").canonicalize().unwrap())
-        );
-    }
-    let mut command = command("bash");
-    command.working_directory.clone_from(&root);
-    command
-        .environment
-        .push(("PATH".into(), root.to_string_lossy().into_owned()));
-    let environment = |name: &str| {
-        command
-            .environment
-            .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.into())
-    };
-    let host = Host {
-        resources: Some("/resources".into()),
-        bin: None,
-        macos: true,
-        environment: &environment,
-        resolve: &resolve,
-        is_file: &|_| true,
-    };
-    let planned = plan(&command, &host);
-    #[cfg(target_os = "macos")]
-    assert_eq!(planned.arguments[0], "--rcfile");
-    #[cfg(not(target_os = "macos"))]
-    assert_eq!(planned.arguments[0], "--posix");
-    command.program = root.join("sh");
-    assert_eq!(
-        plan(
-            &command,
-            &Host {
-                resources: None,
-                bin: None,
-                macos: true,
-                environment: &|_| None,
-                resolve: &resolve,
-                is_file: &|_| true
-            }
-        )
-        .arguments,
-        [] as [String; 0]
     );
 }
 

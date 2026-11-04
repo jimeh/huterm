@@ -1,6 +1,6 @@
 //! Executable-relative resources and a shell launch plan. No PTY parsing lives here.
 use std::ffi::{OsStr, OsString};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use huterm_protocol::{ShellFeature, ShellIntegrationMode, TerminalCommand};
 
@@ -12,23 +12,16 @@ const OWNED: &[&str] = &[
     "HUTERM_BASH_INJECT",
     "HUTERM_BASH_LOGIN",
     "HUTERM_BASH_RCFILE",
-    "HUTERM_ORIG_ENV",
-    "HUTERM_ORIG_HISTFILE",
     "HUTERM_ORIG_ZDOTDIR",
     "HUTERM_ORIG_XDG_DATA_DIRS",
     "HUTERM_XDG_ENTRY",
 ];
 
-type Resolver<'a> =
-    dyn Fn(&Path, &Path, Option<&OsStr>) -> Option<PathBuf> + 'a;
-
 pub(crate) struct Host<'a> {
     pub resources: Option<PathBuf>,
     pub bin: Option<PathBuf>,
-    pub macos: bool,
     /// Effective child environment, including client overrides.
     pub environment: &'a dyn Fn(&str) -> Option<OsString>,
-    pub resolve: &'a Resolver<'a>,
     pub is_file: &'a dyn Fn(&Path) -> bool,
 }
 
@@ -114,16 +107,7 @@ pub(crate) fn plan(command: &TerminalCommand, host: &Host<'_>) -> LaunchPlan {
             result.save(host, "ZDOTDIR");
             result.set("ZDOTDIR", bootstrap.parent().unwrap_or(Path::new("")));
         }
-        "bash" => {
-            let apple = host.macos
-                && (host.resolve)(
-                    &command.program,
-                    &command.working_directory,
-                    (host.environment)("PATH").as_deref(),
-                )
-                .is_some_and(|file| file == Path::new("/bin/bash"));
-            bash_plan(command, host, &mut result, &bootstrap, apple);
-        }
+        "bash" => bash_plan(command, &mut result, &bootstrap),
         "fish" | "nu" | "elvish" => {
             let root =
                 bootstrap.ancestors().nth(if shell == "nu" { 4 } else { 3 });
@@ -287,12 +271,12 @@ fn option_takes_value(shell: &str, option: &str) -> bool {
     }
 }
 
+// Every injected bash, Apple's 3.2 included, reads the bootstrap as its rcfile.
+// A login start becomes an interactive one whose bootstrap emulates login.
 fn bash_plan(
     command: &TerminalCommand,
-    host: &Host<'_>,
     result: &mut LaunchPlan,
     bootstrap: &Path,
-    apple: bool,
 ) {
     let mut arguments = Vec::new();
     let mut flags = String::new();
@@ -306,10 +290,9 @@ fn bash_plan(
                     result.set("HUTERM_BASH_RCFILE", file);
                 }
             }
-            "--login" if apple => result.set("HUTERM_BASH_LOGIN", "1"),
+            "--login" => result.set("HUTERM_BASH_LOGIN", "1"),
             value
-                if apple
-                    && value.starts_with('-')
+                if value.starts_with('-')
                     && !value.starts_with("--")
                     && value.contains('l') =>
             {
@@ -323,59 +306,15 @@ fn bash_plan(
         }
     }
     result.set("HUTERM_BASH_INJECT", flags);
-    result.save(host, "ENV");
-    result.save(host, "HISTFILE");
-    if apple {
-        result.arguments = vec![
-            "--rcfile".into(),
-            bootstrap.to_string_lossy().into_owned(),
-            "-i".into(),
-        ];
-    } else {
-        result.set("ENV", bootstrap);
-        // POSIX bash otherwise defaults history to ~/.sh_history before ENV.
-        result.set(
-            "HISTFILE",
-            (host.environment)("HISTFILE").unwrap_or_default(),
-        );
-        result.arguments = vec!["--posix".into()];
-    }
+    // Bash accepts long options only before single-character ones.
+    let long = arguments
+        .iter()
+        .take_while(|argument| argument.starts_with("--") && *argument != "--")
+        .count();
+    arguments.insert(long, "-i".into());
+    result.arguments =
+        vec!["--rcfile".into(), bootstrap.to_string_lossy().into_owned()];
     result.arguments.extend(arguments);
-}
-
-/// Match portable-pty's effective-PATH and explicit ./ or ../ resolution,
-/// then canonicalize only for the Apple bash identity check.
-pub(crate) fn resolve(
-    program: &Path,
-    cwd: &Path,
-    search: Option<&OsStr>,
-) -> Option<PathBuf> {
-    let executable = |file: &Path| {
-        #[cfg(unix)]
-        {
-            nix::unistd::access(file, nix::unistd::AccessFlags::X_OK).is_ok()
-                && file.is_file()
-        }
-        #[cfg(not(unix))]
-        {
-            file.is_file()
-        }
-    };
-    let resolved = if program.is_absolute() {
-        program.to_owned()
-    } else if matches!(
-        program.components().next(),
-        Some(Component::CurDir | Component::ParentDir)
-    ) {
-        cwd.join(program)
-    } else {
-        std::env::split_paths(search?)
-            .map(|part| cwd.join(part).join(program))
-            .find(|file| executable(file))?
-    };
-    executable(&resolved)
-        .then(|| resolved.canonicalize().ok())
-        .flatten()
 }
 
 pub(crate) fn resources(executable: &Path, macos: bool) -> Option<PathBuf> {

@@ -220,7 +220,6 @@ fn launch_plan(command: &TerminalCommand, root: Option<PathBuf>) -> LaunchPlan {
             bin: Some(
                 std::env::current_exe().unwrap().parent().unwrap().into(),
             ),
-            macos: cfg!(target_os = "macos"),
             environment: &|key| {
                 command
                     .environment
@@ -229,10 +228,27 @@ fn launch_plan(command: &TerminalCommand, root: Option<PathBuf>) -> LaunchPlan {
                     .find(|(name, _)| name == key)
                     .map(|(_, value)| OsString::from(value))
             },
-            resolve: &resolve,
             is_file: &Path::is_file,
         },
     )
+}
+
+/// The executable a shell finds for `program` through `search`, like portable-pty.
+fn resolve(
+    program: &Path,
+    cwd: &Path,
+    search: Option<&OsStr>,
+) -> Option<PathBuf> {
+    let executable = |file: &Path| {
+        nix::unistd::access(file, nix::unistd::AccessFlags::X_OK).is_ok()
+            && file.is_file()
+    };
+    if program.is_absolute() {
+        return executable(program).then(|| program.to_owned());
+    }
+    std::env::split_paths(search?)
+        .map(|part| cwd.join(part).join(program))
+        .find(|file| executable(file))
 }
 
 fn executable(name: &str) -> Option<PathBuf> {
@@ -1670,12 +1686,16 @@ fixture_user_preexec() { printf 'preexec\n' >> "$HOME/callbacks"; }
 fixture_user_precmd() { local code=$?; printf 'precmd:%s\n' "$code" >> "$HOME/statuses"; }
 fixture_status() { return "$1"; }
 fixture_in_prompt_command() {
-    local entry IFS=$'\n;'
+    local entry command=$1 IFS=$'\n;'
+    command=${command#"${command%%[![:space:]]*}"}
+    command=${command%"${command##*[![:space:]]}"}
+    set -f
     for entry in $PROMPT_COMMAND; do
         entry=${entry#"${entry%%[![:space:]]*}"}
         entry=${entry%"${entry##*[![:space:]]}"}
-        [[ $entry != "$1" ]] || return 0
+        [[ $entry != "$command" ]] || { set +f; return 0; }
     done
+    set +f
     return 1
 }
 fixture_debug() {
@@ -2273,5 +2293,344 @@ trap 'fixture_preexec' DEBUG
         }
         assert_eq!(logs[0], "true one\ntrue two\n", "{name}: plain baseline");
         assert_eq!(logs[1], logs[0], "{name}: trap saw Huterm's commands");
+    }
+}
+
+#[test]
+fn native_bash_options_and_exported_functions_match_plain_start() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        for login in [false, true] {
+            let mut states = Vec::new();
+            for integrated in [false, true] {
+                let (home, mut command) = fixture(name, login);
+                command.program.clone_from(&binary);
+                if !integrated {
+                    command.shell_integration =
+                        huterm_protocol::ShellIntegration::OFF;
+                }
+                // POSIX mode refuses to import a function whose name is not
+                // a POSIX name.
+                command.environment.push((
+                    "BASH_FUNC_fixture-greet%%".into(),
+                    "() {  printf GREET; }".into(),
+                ));
+                let mut shell = Shell::spawn(&command);
+                shell.prompt();
+                assert_no_shell_errors(
+                    name,
+                    &String::from_utf8_lossy(&shell.transcript),
+                );
+                assert!(
+                    !String::from_utf8_lossy(&shell.transcript)
+                        .contains("error importing"),
+                    "{name} login={login} integrated={integrated}: {:?}",
+                    String::from_utf8_lossy(&shell.transcript)
+                );
+                shell.plain(
+                    "{ shopt; set -o; fixture-greet; } > \"$HOME/state\"",
+                );
+                let state = fs::read_to_string(home.0.join("state")).unwrap();
+                // Jim accepted on 2026-11-04 that an emulated login shell
+                // reports login_shell off.
+                states.push(
+                    state
+                        .lines()
+                        .filter(|line| !line.starts_with("login_shell"))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            assert!(states[0].ends_with("GREET"), "{name}: {}", states[0]);
+            assert_eq!(
+                states[1], states[0],
+                "{name} login={login}: options or functions differ"
+            );
+            eprintln!(
+                "native {name}: options match a plain start (login={login})"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_bash_exported_prompts_stay_inert_in_nested_shells() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        for nested_rc in [true, false] {
+            let mut records = Vec::new();
+            for integrated in [false, true] {
+                let (home, mut command) = fixture(name, false);
+                command.program.clone_from(&binary);
+                if !integrated {
+                    command.shell_integration =
+                        huterm_protocol::ShellIntegration::OFF;
+                }
+                // The fixture environment already exports PS1.
+                home.write(
+                    ".bashrc",
+                    "export PS1='READY> '\nexport PROMPT_COMMAND=\"history -a; $PROMPT_COMMAND\"\n",
+                );
+                let mut shell = Shell::spawn(&command);
+                shell.prompt();
+                if integrated {
+                    assert_stream(&mut shell, name, "false", "1");
+                }
+                shell.transcript.clear();
+                shell.send(&format!(
+                    "'{}' {}-i\n",
+                    binary.display(),
+                    if nested_rc { "" } else { "--norc " }
+                ));
+                shell.until(|bytes| {
+                    String::from_utf8_lossy(bytes)
+                        .split_once("-i\r\n")
+                        .is_some_and(|(_, rest)| rest.contains("READY>"))
+                });
+                let mut nested =
+                    String::from_utf8_lossy(&shell.transcript).into_owned();
+                // A user entry after the inherited ones sees what Huterm's
+                // inherited entries leave behind.
+                let mut lines = vec![
+                    r#"PROMPT_COMMAND+=$'\n''printf "%s|%s\n" "$?" "$_" >> "$HOME/nested-hooks"'"#,
+                ];
+                for input in ["false", "true SENT", "(exit 3)", "true LAST"] {
+                    lines.push(input);
+                    lines.push(
+                        r#"printf '%s|%s\n' "$?" "$_" >> "$HOME/nested-next""#,
+                    );
+                }
+                for line in lines {
+                    shell.line(line);
+                    nested
+                        .push_str(&String::from_utf8_lossy(&shell.transcript));
+                }
+                assert_no_shell_errors(name, &nested);
+                // The parent marks the command that started the child.
+                if integrated {
+                    nested = nested.replacen("\x1b]133;C\x07", "", 1);
+                }
+                assert!(
+                    !nested.contains("]133;"),
+                    "{name} nested_rc={nested_rc} integrated={integrated}: {nested:?}"
+                );
+                shell.line("exit");
+                records.push((
+                    fs::read_to_string(home.0.join("nested-hooks")).unwrap(),
+                    fs::read_to_string(home.0.join("nested-next")).unwrap(),
+                ));
+                if integrated {
+                    // The parent keeps its own stream after the child exits.
+                    assert_stream(&mut shell, name, "true", "0");
+                }
+            }
+            let statuses = records[0]
+                .1
+                .lines()
+                .map(|line| line.split('|').next().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                statuses,
+                ["1", "0", "3", "0"],
+                "{name}: plain baseline"
+            );
+            assert_eq!(
+                records[1], records[0],
+                "{name} nested_rc={nested_rc}: nested state differs"
+            );
+            eprintln!(
+                "native {name}: nested shell with exported prompts ran (rc={nested_rc})"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_bash_resourced_startup_file_fails_cleanly() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        // Re-sourcing either replaces PROMPT_COMMAND, which removes Huterm's
+        // hook, or keeps its entries; both assign a new PS1.
+        for keeps_entries in [false, true] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            home.write(
+                ".bashrc",
+                &format!(
+                    "fixture_theme() {{ :; }}\nPS1=\"${{FIXTURE_PS1:-READY> }}\"\nPROMPT_COMMAND={}\n",
+                    if keeps_entries {
+                        "\"fixture_theme${PROMPT_COMMAND:+$'\\n'$PROMPT_COMMAND}\""
+                    } else {
+                        "fixture_theme"
+                    }
+                ),
+            );
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            assert_stream(&mut shell, name, "false", "1");
+            shell.line("FIXTURE_PS1='AGAIN READY> '; source \"$HOME/.bashrc\"");
+            let mut later = String::new();
+            for (input, status) in [("false", "1"), ("true", "0")] {
+                if keeps_entries {
+                    assert_stream(&mut shell, name, input, status);
+                } else {
+                    shell.line(input);
+                    assert_eq!(
+                        markers(&shell.transcript),
+                        [] as [String; 0],
+                        "{name}: a mark after Huterm's hook was replaced: {:?}",
+                        String::from_utf8_lossy(&shell.transcript)
+                    );
+                }
+                later.push_str(&String::from_utf8_lossy(&shell.transcript));
+            }
+            assert!(
+                later.contains("AGAIN READY> "),
+                "{name} keeps_entries={keeps_entries}: new PS1 not shown: {later:?}"
+            );
+            assert_no_shell_errors(name, &later);
+            eprintln!(
+                "native {name}: re-sourced startup file (keeps_entries={keeps_entries})"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_bash_uninstalled_locale_adds_no_warnings() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let mut counts = Vec::new();
+        for integrated in [false, true] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            if !integrated {
+                command.shell_integration =
+                    huterm_protocol::ShellIntegration::OFF;
+            }
+            command
+                .environment
+                .push(("LC_ALL".into(), "xx_XX.UTF-8".into()));
+            for control in ["\u{1}", "\u{7f}"] {
+                fs::create_dir(home.0.join(format!("control{control}")))
+                    .unwrap();
+            }
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            let mut transcript =
+                String::from_utf8_lossy(&shell.transcript).into_owned();
+            for input in [
+                "true",
+                "cd \"$HOME/control$(/usr/bin/printf '\\001')\"",
+                "cd \"$HOME/control$(/usr/bin/printf '\\177')\"",
+                "cd \"$HOME\"",
+            ] {
+                shell.line(input);
+                let text = String::from_utf8_lossy(&shell.transcript);
+                if integrated && input.contains("control") {
+                    assert!(
+                        directory_reports(&shell.transcript).is_empty(),
+                        "{name}: reported a control path: {text:?}"
+                    );
+                }
+                transcript.push_str(&text);
+            }
+            counts.push(transcript.matches("setlocale").count());
+        }
+        assert_eq!(counts[1], counts[0], "{name}: locale warnings");
+        eprintln!("native {name}: uninstalled locale warnings {counts:?}");
+    }
+}
+
+#[test]
+fn native_zsh_framework_marks_survive_and_suppress_huterm_marks() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    for terminator in [r"\e\\", r"\a"] {
+        let (home, mut command) = fixture("zsh", false);
+        command.program.clone_from(&binary);
+        home.write(
+            ".zshrc",
+            &format!(
+                r#"skip_global_compinit=1
+fixture_running=0
+PROMPT=$'%{{\e]133;A{terminator}%}}READY> %{{\e]133;B{terminator}%}}'
+fixture_preexec() {{ printf '\e]133;C{terminator}'; fixture_running=1; }}
+fixture_precmd() {{
+    local code=$?
+    if (( fixture_running )); then printf '\e]133;D;%s{terminator}' "$code"; fi
+    fixture_running=0
+}}
+preexec_functions+=(fixture_preexec)
+precmd_functions+=(fixture_precmd)
+"#
+            ),
+        );
+        let mut shell = Shell::spawn(&command);
+        shell.until(|bytes| markers(bytes).last().is_some_and(|m| m == "B"));
+        assert_eq!(
+            markers(&shell.transcript),
+            ["A", "B"],
+            "{terminator}: {:?}",
+            String::from_utf8_lossy(&shell.transcript)
+        );
+        for (input, status) in [("false", "1"), ("true", "0"), ("false", "1")] {
+            shell.line(input);
+            assert_eq!(
+                markers(&shell.transcript),
+                ["C", &format!("D;{status}"), "A", "B"],
+                "{terminator}: {:?}",
+                String::from_utf8_lossy(&shell.transcript)
+            );
+        }
+        assert!(
+            String::from_utf8_lossy(&shell.transcript)
+                .contains("]7;kitty-shell-cwd://"),
+            "{terminator}: OSC 7 stays active"
+        );
+    }
+}
+
+#[test]
+fn native_bash_keeps_a_pending_preexec_installer_last() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let (home, mut command) = fixture(name, false);
+        command.program = binary;
+        // bash-preexec 0.7 appends this installer line, then replaces it with
+        // ":" and sanitizes PROMPT_COMMAND, which takes seconds before Bash
+        // 5.1 when the ":" is not on the last line. The sanitizing removes a
+        // final ":".
+        home.write(
+            ".bashrc",
+            r#"PS1='READY> '
+fixture_theme() { :; }
+__bp_install() {
+    printf '%s\n' "${PROMPT_COMMAND##*$'\n'}" > "$HOME/installer"
+    PROMPT_COMMAND=${PROMPT_COMMAND//"__bp_install \"\$_\""/:}
+    PROMPT_COMMAND=${PROMPT_COMMAND%$'\n:'}
+}
+PROMPT_COMMAND=$'fixture_theme\n__bp_install "$_"'
+"#,
+        );
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        assert_eq!(
+            fs::read_to_string(home.0.join("installer")).unwrap(),
+            "__bp_install \"$_\"\n",
+            "{name}: Huterm's entry followed the pending installer"
+        );
+        assert_stream(&mut shell, name, "false", "1");
     }
 }
