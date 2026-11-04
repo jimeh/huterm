@@ -139,8 +139,11 @@ variable. On Linux, Huterm launches `$SHELL` in its own working directory.
 Without `$SHELL`, it falls back to `/bin/zsh` on macOS and `/bin/sh` on Linux.
 
 New tabs and panes start in the focused pane's directory when that directory
-is local and still accessible. Remote, malformed, deleted, or inaccessible
-paths use the normal launch directory instead:
+is local and still accessible. When it is remote, as while `ssh` runs, or
+malformed, deleted, or inaccessible, they start in the last local directory
+the pane's own shell reported, if that is still accessible, and otherwise in
+the normal launch directory. New windows always use the normal launch
+directory:
 
 ```toml
 [terminal]

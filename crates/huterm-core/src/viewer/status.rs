@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use huterm_protocol::{
-    ExitStatus, TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
-    TerminalMetadata, TerminalStatus,
+    CommandRecord, ExitStatus, TERMINAL_FAILURE_CAPACITY, TerminalFailure,
+    TerminalLifecycle, TerminalMetadata, TerminalStatus,
 };
 
 use super::Registry;
@@ -32,6 +32,14 @@ impl StatusPublisher {
         if self.status.metadata != *metadata {
             self.status.metadata = metadata.clone();
             self.status.metadata_revision = revision;
+            self.dirty = true;
+        }
+    }
+
+    /// Replaces the command records with a changed list.
+    pub(crate) fn commands(&mut self, commands: Arc<[CommandRecord]>) {
+        if self.status.commands != commands {
+            self.status.commands = commands;
             self.dirty = true;
         }
     }

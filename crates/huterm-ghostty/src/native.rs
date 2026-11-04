@@ -184,6 +184,64 @@ impl NativeTerminal {
         }
     }
 
+    /// Writes `bytes` up to and including the first byte that reaches one
+    /// of `boundaries`, a nonzero set of `GhosttyTerminalBoundary` flags.
+    /// Returns the bytes consumed and the flags reached, which are zero
+    /// when every byte was consumed without reaching one.
+    pub(crate) fn vt_write_until(
+        &mut self,
+        bytes: &[u8],
+        boundaries: u32,
+    ) -> Result<(usize, u32)> {
+        let mut stop: ffi::GhosttyTerminalWriteStop = ffi::sized();
+        let data = if bytes.is_empty() {
+            ptr::null()
+        } else {
+            bytes.as_ptr()
+        };
+        // SAFETY: terminal.h `ghostty_terminal_vt_write_until` reads `len`
+        // bytes from `data` (NULL when `len` is zero) and fills the sized
+        // `out`. Callbacks it invokes never re-enter the terminal.
+        let code = unsafe {
+            ffi::ghostty_terminal_vt_write_until(
+                self.ptr.as_ptr(),
+                data,
+                bytes.len(),
+                boundaries,
+                &raw mut stop,
+            )
+        };
+        match Error::from_code(code) {
+            Ok(()) => Ok((stop.consumed, stop.reached)),
+            Err(Error::NoValue) => Ok((bytes.len(), 0)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Creates a tracked reference to `point` on the active screen.
+    pub(crate) fn track(&mut self, point: Point) -> Result<NativeTrackedRef> {
+        let mut raw: ffi::GhosttyTrackedGridRef = ptr::null_mut();
+        // SAFETY: terminal.h `ghostty_terminal_grid_ref_track` resolves the
+        // point against the active screen and writes an owned handle, or
+        // NULL on failure, to the exclusive `raw`.
+        let code = unsafe {
+            ffi::ghostty_terminal_grid_ref_track(
+                self.ptr.as_ptr(),
+                ffi_point(point),
+                &raw mut raw,
+            )
+        };
+        Error::from_code(code)?;
+        NonNull::new(raw)
+            .map(|ptr| NativeTrackedRef { ptr })
+            .ok_or(Error::InvalidValue)
+    }
+
+    /// The handle's address, which identifies this terminal while it lives.
+    pub(crate) fn address(&self) -> usize {
+        self.ptr.as_ptr().addr()
+    }
+
     pub(crate) fn reset(&mut self) {
         // SAFETY: terminal.h `ghostty_terminal_reset` takes a live handle.
         unsafe { ffi::ghostty_terminal_reset(self.ptr.as_ptr()) }
@@ -343,27 +401,13 @@ impl<'a> TerminalRef<'a> {
     }
 
     pub(crate) fn grid_ref(self, point: Point) -> Result<GridRef<'a>> {
-        let tag = match point.space {
-            PointSpace::Active => ffi::GHOSTTY_POINT_TAG_ACTIVE,
-            PointSpace::Viewport => ffi::GHOSTTY_POINT_TAG_VIEWPORT,
-            PointSpace::Screen => ffi::GHOSTTY_POINT_TAG_SCREEN,
-        };
-        let point = ffi::GhosttyPoint {
-            tag,
-            value: ffi::GhosttyPointValue {
-                coordinate: ffi::GhosttyPointCoordinate {
-                    x: point.x,
-                    y: point.y,
-                },
-            },
-        };
         let mut raw: ffi::GhosttyGridRef = ffi::sized();
         // SAFETY: terminal.h `ghostty_terminal_grid_ref` resolves a point
         // and writes a sized grid ref to the exclusive `raw`.
         let code = unsafe {
             ffi::ghostty_terminal_grid_ref(
                 self.ptr.as_ptr(),
-                point,
+                ffi_point(point),
                 &raw mut raw,
             )
         };
@@ -421,6 +465,77 @@ impl<'a> TerminalRef<'a> {
         };
         Error::from_code(code)?;
         Ok(bytes)
+    }
+}
+
+const fn point_tag(space: PointSpace) -> ffi::GhosttyPointTag {
+    match space {
+        PointSpace::Active => ffi::GHOSTTY_POINT_TAG_ACTIVE,
+        PointSpace::Viewport => ffi::GHOSTTY_POINT_TAG_VIEWPORT,
+        PointSpace::Screen => ffi::GHOSTTY_POINT_TAG_SCREEN,
+    }
+}
+
+const fn ffi_point(point: Point) -> ffi::GhosttyPoint {
+    ffi::GhosttyPoint {
+        tag: point_tag(point.space),
+        value: ffi::GhosttyPointValue {
+            coordinate: ffi::GhosttyPointCoordinate {
+                x: point.x,
+                y: point.y,
+            },
+        },
+    }
+}
+
+/// An owned tracked grid reference. `grid_ref_tracked.h`: the handle stays
+/// valid after its terminal is freed, reporting no value, and is freed on
+/// drop.
+#[derive(Debug)]
+pub(crate) struct NativeTrackedRef {
+    ptr: NonNull<ffi::GhosttyTrackedGridRefImpl>,
+}
+
+impl NativeTrackedRef {
+    /// Whether the reference still has a meaningful value. Callers hold
+    /// their terminal borrowed, so no write is moving the reference.
+    pub(crate) fn has_value(&self) -> bool {
+        // SAFETY: grid_ref_tracked.h `ghostty_tracked_grid_ref_has_value`
+        // reads a live handle, including one whose terminal was freed.
+        unsafe { ffi::ghostty_tracked_grid_ref_has_value(self.ptr.as_ptr()) }
+    }
+
+    /// The reference's position in `space`, or `None` when it has no value
+    /// or cannot be represented there.
+    pub(crate) fn point(&self, space: PointSpace) -> Result<Option<Point>> {
+        let mut coordinate = ffi::GhosttyPointCoordinate::default();
+        // SAFETY: grid_ref_tracked.h `ghostty_tracked_grid_ref_point` reads
+        // a live handle and writes the coordinate to the exclusive output.
+        let code = unsafe {
+            ffi::ghostty_tracked_grid_ref_point(
+                self.ptr.as_ptr(),
+                point_tag(space),
+                &raw mut coordinate,
+            )
+        };
+        match Error::from_code(code) {
+            Ok(()) => Ok(Some(Point {
+                space,
+                x: coordinate.x,
+                y: coordinate.y,
+            })),
+            Err(Error::NoValue) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for NativeTrackedRef {
+    fn drop(&mut self) {
+        // SAFETY: grid_ref_tracked.h `ghostty_tracked_grid_ref_free` releases
+        // a handle from `ghostty_terminal_grid_ref_track`, before or after
+        // its terminal is freed; nothing uses it afterwards.
+        unsafe { ffi::ghostty_tracked_grid_ref_free(self.ptr.as_ptr()) }
     }
 }
 

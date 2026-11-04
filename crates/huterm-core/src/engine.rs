@@ -3,15 +3,17 @@ mod behavior_tests;
 mod escape_hint;
 mod ghostty;
 mod links;
+mod records;
 mod row_matcher;
 
 use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferRange, CellSize, GridSize, ScrollCommand, ScrollbackLimit,
-    TerminalDirectory, TerminalId, TerminalModes, TerminalPresentation,
-    TerminalSnapshot,
+    BufferRange, CellSize, CommandRecord, GridSize, ScrollCommand,
+    ScrollbackLimit, TerminalDirectory, TerminalId, TerminalModes,
+    TerminalPresentation, TerminalSnapshot,
 };
+use std::sync::Arc;
 
 const METADATA_BYTE_LIMIT: usize = 4096;
 
@@ -234,6 +236,31 @@ impl TerminalEngine {
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
         self.inner.process(bytes)
     }
+    /// Removes command records whose rows left history and returns the
+    /// record list if it changed since the last call. Call it after every
+    /// operation, so each publication carries its changes once.
+    pub(crate) fn command_update(&mut self) -> Option<Arc<[CommandRecord]>> {
+        self.inner.command_update()
+    }
+
+    /// Ends a running command record without a report, once no more output
+    /// can arrive.
+    pub(crate) fn abandon_running_command(&mut self) {
+        self.inner.abandon_running_command();
+    }
+
+    /// The current command records, without eviction.
+    #[cfg(test)]
+    pub(crate) fn commands(&self) -> Arc<[CommandRecord]> {
+        self.inner.commands()
+    }
+
+    /// The anchored screen row's text for record `sequence`.
+    #[cfg(test)]
+    pub(crate) fn anchored_text(&self, sequence: u64) -> Option<String> {
+        self.inner.anchored_text(sequence)
+    }
+
     pub(crate) fn clear_history(
         &mut self,
     ) -> Result<Vec<EngineEffect>, RuntimeError> {
@@ -340,6 +367,9 @@ impl TerminalEngine {
 
 #[cfg(test)]
 mod directory_tests;
+
+#[cfg(test)]
+mod record_tests;
 
 #[cfg(test)]
 mod clipboard_tests;

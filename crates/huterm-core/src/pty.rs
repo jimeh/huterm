@@ -82,6 +82,17 @@ impl PtyProcess {
 
 #[cfg(test)]
 impl PtyProcess {
+    /// The terminal's foreground process group and the root's PID, which
+    /// the runtime uses to attribute directory reports.
+    pub(crate) fn groups(&self) -> (Option<i32>, Option<u32>) {
+        (
+            self.master
+                .as_ref()
+                .and_then(|master| master.process_group_leader()),
+            self.child.as_ref().and_then(|child| child.process_id()),
+        )
+    }
+
     /// Raw bytes at the real production PTY boundary, before emulator parsing.
     pub(crate) fn raw_tap(
         &mut self,

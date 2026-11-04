@@ -7630,12 +7630,15 @@ impl WorkspaceView {
         if let Some(view) = self.active_view(cx) {
             command.grid_size = view.read(cx).requested_grid;
         }
-        let inherited_directory = self.active_view(cx).and_then(|view| {
-            inherited_directory(
-                self.config.terminal.new_tab_directory,
-                &view.read(cx).metadata,
-            )
-        });
+        let inherited_directories = self
+            .active_view(cx)
+            .map(|view| {
+                inherited_directories(
+                    self.config.terminal.new_tab_directory,
+                    &view.read(cx).metadata,
+                )
+            })
+            .unwrap_or_default();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace_id(cx);
         let attachment = self.attachment_id(cx);
@@ -7644,9 +7647,7 @@ impl WorkspaceView {
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
-            if let Some(directory) = inherited_directory
-                && usable_launch_directory(&directory)
-            {
+            if let Some(directory) = launch_directory(inherited_directories) {
                 command.working_directory = directory;
             }
             let spawned = runtime.open_tab(
@@ -7941,21 +7942,22 @@ impl WorkspaceView {
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
         command.grid_size = grid;
-        let inherited_directory = self.active_view(cx).and_then(|view| {
-            inherited_directory(
-                self.config.terminal.new_tab_directory,
-                &view.read(cx).metadata,
-            )
-        });
+        let inherited_directories = self
+            .active_view(cx)
+            .map(|view| {
+                inherited_directories(
+                    self.config.terminal.new_tab_directory,
+                    &view.read(cx).metadata,
+                )
+            })
+            .unwrap_or_default();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let clipboard_allowed =
             self.config.terminal.clipboard_write.is_allowed();
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
-            if let Some(directory) = inherited_directory
-                && usable_launch_directory(&directory)
-            {
+            if let Some(directory) = launch_directory(inherited_directories) {
                 command.working_directory = directory;
             }
             runtime.split_pane(
@@ -9975,17 +9977,36 @@ fn usable_launch_directory(directory: &Path) -> bool {
             .is_ok()
 }
 
-fn inherited_directory(
+/// Directories a new tab or split may inherit, best first: the effective
+/// local directory, then the root shell's last local report, which stands
+/// in while `ssh` or another job reports a remote one.
+fn inherited_directories(
     policy: huterm_config::NewTabDirectory,
     metadata: &huterm_protocol::TerminalMetadata,
-) -> Option<PathBuf> {
+) -> Vec<PathBuf> {
     if policy != huterm_config::NewTabDirectory::Inherit {
-        return None;
+        return Vec::new();
     }
-    metadata
-        .directory()
+    let mut candidates = Vec::with_capacity(2);
+    for directory in [metadata.directory(), metadata.shell_directory()]
+        .into_iter()
+        .flatten()
         .filter(|directory| directory.is_local())
-        .map(|directory| PathBuf::from(directory.path()))
+    {
+        let path = PathBuf::from(directory.path());
+        if !candidates.contains(&path) {
+            candidates.push(path);
+        }
+    }
+    candidates
+}
+
+/// The first inherited directory that can start a process, off the UI
+/// thread because it touches the file system.
+fn launch_directory(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .find(|directory| usable_launch_directory(directory))
 }
 
 /// An expiring notice for a terminal failure, keyed by its tab and naming

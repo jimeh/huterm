@@ -30,6 +30,13 @@ output, which changes the status. A test that asserts no status change must
 first wait for that directory, and must not fork per line, or it passes only
 while it outruns the probe.
 
+Separately, `Reports` keeps the root shell's own last local OSC 7 report,
+attributed when the root's group (its PID) holds the foreground, as
+`TerminalMetadata::shell_directory`. Reports from other groups, such as a
+remote shell under `ssh`, never change it; an empty report from the root clears
+it. New tabs and splits fall back to it when the effective directory is remote
+or unusable.
+
 ## Shell integration
 
 `huterm-core::shell_integration` owns executable-relative resource discovery and
@@ -139,9 +146,10 @@ bounded so output cannot starve. Client input, resize, and presentation
 messages have their own bounded queue, taken ahead of PTY output and
 alternating with it when both wait, so an output flood cannot refuse input.
 Writer dequeue wakes the runtime only after the runtime has spilled writes,
-recorded the request, and retried them once. A reader failure parses at most
-one queue of output already read before the runtime reports it and stops, so
-that output reaches history and a flood cannot delay teardown. Unix PTY
+recorded the request, and retried them once. A reader failure or end of file
+parses at most one queue of output already read before the runtime acts on it,
+so that output reaches history, a command's final D is parsed before the end of
+output settles its record, and a flood cannot delay teardown. Unix PTY
 readiness waits include cancellation descriptors; signal them and drop the data
 receiver before joining workers. The child waiter owns the physical child
 without holding a shared lock across `wait`; bounded teardown uses its
@@ -217,6 +225,40 @@ releases the owner's until another viewer's press is admitted or the owner
 presses that button again, and no report takes a gesture while tracking is off.
 After root exit, typing still moves control and returns the viewport to live,
 and replies from a resize are dropped with the input.
+
+## Command records
+
+`engine/records.rs` turns the OSC 133 events Ghostty reports into the records
+`TerminalStatus::commands` publishes: at most 256, oldest first, each with one
+tracked anchor (see [the engine guide](terminal-engines.md#the-huterm-ghostty-crate)).
+The engine handles each event at the stop that parsed it, so the cursor and
+active screen it reads are the marker's own. A primary A replaces the pending
+prompt anchor and abandons a running record; other prompt kinds and B change
+nothing. C abandons a running record and starts one at the pending anchor, or
+at the cursor once RIS has discarded it. D finishes the newest record only
+while it runs, so a redraw's repeated D is ignored. Without OSC 133 `aid`,
+an outer shell's D finishes a nested shell's command that was still running
+when that shell ended, such as `exit` under `ssh`. A and C parsed on the
+alternate screen are ignored; D is not, because a crashed full-screen program
+can leave it active. A record changes once, when it leaves `Running`. Command
+text comes only from the shell (fish sends it), stripped of controls, capped
+at 4 KiB, and never interpreted.
+
+The runtime calls `command_update` after every engine operation: output,
+resize, clear, reset, and scrollback limits. It drops records whose anchor lost
+its value, except the newest and any that left `Running` since the previous
+call, so each status revision carries every final state, and it stages a
+changed list for the status flush. Status is latest-value: a viewer that wakes
+once across two revisions can still miss a state the second one evicted, so a
+consumer that must see every completion (#81) needs its own signal. Root exit
+alone settles nothing, because the runtime observes the exit before it parses
+output already read. A running record is abandoned once the root has exited
+and the reader has ended (`PtyEof` or a reader failure), and at teardown, which
+parses no more output: a reader failure can stop the loop before it observes
+an exit that already happened. A macOS session leader's exit hangs the
+terminal up, so the end follows at once; on Linux a descendant that ignores
+SIGHUP keeps it open, and the record stays running until that descendant
+closes it.
 
 ## Snapshots and link lookup
 
