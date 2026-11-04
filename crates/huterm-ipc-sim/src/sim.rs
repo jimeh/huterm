@@ -197,7 +197,9 @@ pub fn scenarios() -> Vec<Scenario> {
 /// rates, link behavior, versions, and client kinds all vary, so bugs that
 /// need an unusual combination have a chance to appear. The bounds keep
 /// every drawn configuration valid: limits leave room for the workload's
-/// largest message, and deadlines leave room for the link's round trip.
+/// largest message, and deadlines leave room for the link's round trip. A
+/// healthy draw's link also carries the profile's minimum effect
+/// throughput; other draws may be slower, and their effects miss deadlines.
 #[must_use]
 pub fn swarm(seed: u64) -> Scenario {
     let mut rng = Rng::new(seed ^ 0x5157_4152_4d53_4545);
@@ -216,7 +218,7 @@ pub fn swarm(seed: u64) -> Scenario {
     } else {
         rng.range(0, 3)
     };
-    let link = LinkProfile {
+    let mut link = LinkProfile {
         latency,
         jitter,
         chunk: r(&mut rng, 1, 80),
@@ -274,6 +276,11 @@ pub fn swarm(seed: u64) -> Scenario {
         max_viewers: r(&mut rng, 1, 16),
         design: Design::default(),
     };
+    // Only a link that carries the effect throughput can promise that every
+    // effect arrives.
+    if healthy {
+        link.buffer = link.buffer.max(effect_buffer_floor(&link, &profile));
+    }
     Scenario {
         name: "swarm",
         server_minor: minor(&mut rng),
@@ -291,6 +298,28 @@ pub fn swarm(seed: u64) -> Scenario {
         duration: rng.range(1_000, 6_000),
         quiesce: 60_000,
     }
+}
+
+/// The smallest socket buffer with which `link` carries the profile's
+/// minimum effect throughput, so a healthy run's effects meet their
+/// completion deadlines.
+///
+/// A byte holds buffer space from the tick it is written until it arrives,
+/// up to `latency + jitter` later, so the link sustains `buffer / cycle`
+/// bytes per millisecond. Effect bytes travel in frames with a four-byte
+/// length and a flags-and-stream header. The margin of 4 leaves the effect
+/// a quarter of the link, halving twice: the writer alternates effect
+/// frames with ordinary ones at frame boundaries, and it builds one effect
+/// frame per tick, while room returns in bursts after latency and jitter,
+/// and ordinary frames take the rest of each burst. A margin of 2 still
+/// lost effects in healthy swarm draws.
+fn effect_buffer_floor(link: &LinkProfile, profile: &Profile) -> usize {
+    const MARGIN: u64 = 4;
+    let frame = profile.max_frame as u64;
+    let cycle = link.latency + link.jitter + 1;
+    let wire = MARGIN * profile.effect_bytes_per_ms * cycle * (frame + 4)
+        / (frame - 2);
+    usize::try_from(wire).unwrap_or(usize::MAX)
 }
 
 /// Totals from one run.
