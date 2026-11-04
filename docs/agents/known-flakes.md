@@ -395,6 +395,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
   `scroll_offset=0.0`). The PR changes neither the palette nor
   `option_list`.
+- **Third occurrence:** 2026-11-04 on PR #383 (run 41761415801, job
+  126349739460, head `0ea47d2a`), aarch64, with the same last state
+  (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
+  `wheel_events=1`, `scroll_offset=0.0`). The PR bundles a terminal font and
+  does not touch the palette or `option_list`.
 - **Triage:** rerun and record the run here. If it recurs, have the smoke
   wait for a frame drawn after `movePointerToRow` before the wheel, or make
   a hover change in `option_list` request a frame.
