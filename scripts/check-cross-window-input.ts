@@ -13,6 +13,10 @@ export function smokeField(state: string, name: string): string {
   return value;
 }
 function point(value: string): Point { const [x, y] = value.split(",").map(Number); return { x: x!, y: y! }; }
+/** A press reaches a tab only after a frame has drawn it and its listener. */
+export function tabsDrawn(state: string, index: number): boolean {
+  return smokeField(state, `w${index}.drawn_tab_ids`) === smokeField(state, `w${index}.tab_ids`);
+}
 function rectCenter(value: string, index = 0): Point { const [x, y, w, h] = value.split(";")[index]!.split(",").map(Number); return { x: x! + w! / 2, y: y! + h! / 2 }; }
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5000 });
@@ -49,7 +53,7 @@ export async function checkCrossWindowInput(executable: string): Promise<void> {
     const current = await state(); const native = smokeField(current, `w${index}.native`);
     if (macos) await send(`activate-window\t${native}`);
     else run(["xdotool", "windowactivate", "--sync", native]);
-    await until(`window ${index} active`, state => smokeField(state, `w${index}.active`) === "true");
+    await until(`window ${index} active and drawn`, state => smokeField(state, `w${index}.active`) === "true" && tabsDrawn(state, index));
   }
   async function invoke(id: string): Promise<void> {
     if (macos) await send(`invoke\t${id}`);
@@ -141,7 +145,7 @@ clearInterval(stop); clearTimeout(timer);
     for (const index of [0, 1]) {
       if (smokeField(cancelled, `w${index}.tabs`) !== cancelTabs[index]) throw new Error(`cancel changed window ${index} tab count`);
     }
-    await invoke("new_tab"); await until("tear-off source ready", state => smokeField(state, "w0.tabs") === "2" && smokeField(state, "w0.busy") === "false");
+    await invoke("new_tab"); await until("tear-off source ready", state => smokeField(state, "w0.tabs") === "2" && smokeField(state, "w0.busy") === "false" && tabsDrawn(state, 0));
     current = await state(); ids = terminals(current);
     await mouse(0, "down", rectCenter(smokeField(current, "w0.tabs_rects"), 1));
     const outside = { x: 30, y: point(smokeField(current, "w0.size")).y + 100 };

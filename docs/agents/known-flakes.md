@@ -139,6 +139,32 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
   then rerun once.
 
+## Linux input smoke tear-off cue timeout
+
+- **Label:** `Smoke Linux input` in `Rust smoke (Linux aarch64)`, at
+  `scripts/check-cross-window-input.ts`: "timed out: tear-off cue" while
+  waiting for `w0.drop=tear_off`.
+- **Occurrences:** two consecutive aarch64 runs on 2026-11-04: `main` at
+  `07678e49` (run 41795373417, job 126458105787) and PR #398 at `8799e94f`
+  (run 41884931970, job 126766733997). Linux x86_64 passed in both runs, and
+  the aarch64 job passed on `7d0abfa0` and `4ebf8dd0`.
+- **Evidence:** both last states are identical: `windows=2`, `w0.tabs=2`,
+  `w0.busy=false`, `w0.drop=none`, `w0.window_drag=false`. The tab-slot,
+  pane-edge, and Escape steps before it passed, and the whole cross-window
+  sequence took under two seconds. The step pressed on tab 1 as soon as the
+  model reported the new tab. `tabs_rects` comes from the model, and a tab's
+  press listener exists only from the frame that draws it. With titles fitted
+  to 125 points, a press at tab 1's centre on the old one-tab frame lands past
+  the only label and the add button, which starts no reorder, so no drag record
+  exists and `drop` stays `none`. A located drag would have
+  published `tear_off`, or a `window:` label. This cause is inferred from the
+  state; no run captured the frame.
+- **Fix:** the smoke publishes `drawn_tab_ids`, the tabs the last frame drew,
+  and waits for them to match `tab_ids` before each tab press.
+- **Triage:** a recurrence with `drawn_tab_ids` equal to `tab_ids` rules this
+  cause out; record the last state here. Remove this entry after about 20
+  clean aarch64 runs with the fix.
+
 ## `smoke:linux-integration` held-link hover timeout
 
 - **Label:** a timeout at `hover https://example.test/a_(b)?x=1&y=2` inside the

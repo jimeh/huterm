@@ -218,9 +218,10 @@ raw-PTY readiness file still appears. Check `CGSSessionScreenIsLocked` in
 `CGSessionCopyCurrentDictionary()` before treating that as a regression.
 
 Smoke state is sampled from the model, which can run ahead of the drawn frame.
-Before a smoke presses on a newly opened overlay, wait for a field set during
-render or paint, such as `dialog_drawn_groups` or `menu_rect`, not only for the
-model flag.
+Before a smoke presses on a newly opened overlay or tab, wait for a field set
+during render or paint, such as `dialog_drawn_groups`, `menu_rect`, or the
+cross-window state's `drawn_tab_ids`, not only for the model flag. A tab's
+press listener exists only once a frame has drawn it.
 
 Smoke state can also lag the app. The palette smoke fixture publishes `state`
 every 10ms, before it runs the next file command, so the state read right
