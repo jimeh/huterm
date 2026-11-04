@@ -19,6 +19,8 @@ pub struct Design {
     /// A client retries mutations after a reconnect. The design forbids
     /// it; the switch shows the at-most-once invariant catches it.
     pub retry_mutations: bool,
+    /// Clients compare digests. Without it, damage goes unnoticed.
+    pub check_digests: bool,
 }
 
 impl Default for Design {
@@ -29,6 +31,7 @@ impl Default for Design {
             credit_on_discard: true,
             versioned_digests: true,
             retry_mutations: false,
+            check_digests: true,
         }
     }
 }

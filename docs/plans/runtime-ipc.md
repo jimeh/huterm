@@ -251,13 +251,14 @@ than one per payload kind:
 
 - **Streams.** The sender picks a stream ID for each message from IDs it has
   no message in flight on; the first frame on a free ID starts a new message.
-  A stream ID is free again only once its message's last frame has been
-  written, not merely built, because the writer sends effect frames ahead of
-  queued ones (see host effects). Frames of different streams interleave, so a
-  large snapshot cannot hold up a keystroke echo in another terminal. Each
-  direction may have at most `MAX_OPEN_STREAMS` (4) unfinished messages; a
-  sender waits rather than open a fifth, and receiving a fifth is a protocol
-  violation.
+  Frames of different streams interleave, so a large snapshot cannot hold up
+  a keystroke echo in another terminal. Each direction may have at most
+  `MAX_OPEN_STREAMS` (4) unfinished messages; a sender waits rather than open
+  a fifth, and receiving a fifth is a protocol violation. The server keeps
+  one of its streams for host effects, whose frames its writer sends ahead
+  of queued ones (see host effects); ordinary frames stay in order among
+  themselves, so an ordinary stream ID is free again as soon as its
+  message's last frame is built, and an effect never waits for a stream.
 - **Ordering lanes.** Interleaving means messages on different streams can
   complete in any order, even single-frame messages, because the sender takes
   frames from its streams in turn. Every message therefore belongs to an
@@ -267,7 +268,8 @@ than one per payload kind:
   hierarchy, host effects, and one lane per viewer for its updates, status,
   input acknowledgements, and its `ViewerStopped` or `ViewerRevoked`, which
   therefore follows the viewer's final status and update. The client's lanes
-  are control (handshake and requests) and one per viewer for its input,
+  are control (the handshake, and requests that do not name a viewer) and
+  one per viewer for its input,
   credit, permission, focus, scroll, and resync requests, so a scroll stays in
   order with the typing around it. Lanes interleave freely. A viewer's lane
   opens only after the result that created the viewer has been queued in full,
@@ -397,7 +399,10 @@ message kinds of `Hello` and `Reject`, and `Reject`'s reason and version
 fields, keep their position and encoding in every major version, as
 `Hello`'s leading fields do, so a client of another major version reads a
 clear version error. Any message before `Hello` other than `Hello` itself,
-or no `Hello` within `HANDSHAKE_DEADLINE` (5 s), closes the connection.
+or no `Hello` within `HANDSHAKE_DEADLINE` (5 s), closes the connection. A
+client that has no `Welcome` or `Reject` within its own handshake deadline,
+a transport-profile value longer than the link's round trip, closes and
+reconnects, so a hung server cannot hold it forever.
 
 A minor version may only add messages, enum variants, and appended fields
 that a peer on an older minor version can do without. Senders withhold
@@ -740,8 +745,9 @@ never leaks credit. Each credit return also names the last `UpdateSeq` the
 client applied. Local IPC uses that acknowledgement only in assertions; it
 lets a later remote transport keep a viewer's baseline across a short outage
 and resume with a delta (see "Remote clients later"). The first update of a
-subscription, the update that answers a scroll, and the complete snapshot that
-answers `ResyncViewer` spend none, so recovery never waits for credit. The
+subscription, the update that answers a scroll, the final update of a
+stopped terminal, and the complete snapshot that answers `ResyncViewer` spend
+none, so recovery never waits for credit. The
 server's pump for a viewer waits on the viewer's wake and on credit grants;
 when the viewer is notified and has credit, it requests a snapshot, encodes
 the update, and spends a credit. A credit grant that raises a notified
@@ -785,8 +791,12 @@ the client's stamps through unchanged. The return-to-live rule then needs no
 terminal-wide counter, as the viewers plan intended.
 
 **Revocation and stop.** When a terminal stops, the viewer's pump sends its
-final status and, if the viewer is notified, a final update that spends no
-credit, then `ViewerStopped`, all on the viewer's lane, and stops. A
+final status and a complete final snapshot that spends no credit, then
+`ViewerStopped`, all on the viewer's lane, and stops. The snapshot is
+complete, not a delta, because the client may be recovering from a damaged
+delta whose resync request has not reached the server yet; a delta on a
+discarded baseline would leave it a stale final view. The simulation proof
+found this case. A
 revoked viewer gets `ViewerRevoked` on its lane the same way, after
 anything already queued there. A revoked viewer's requests answer
 `Revoked`. The client keeps a stopped terminal's final status and last view
@@ -864,7 +874,7 @@ A disconnect never closes a terminal, workspace, or session.
 | `HIERARCHY_LANE_BUDGET` per connection | 1 MiB | Lag, then `HierarchyResync` |
 | `OUTBOUND_BUDGET` per connection | 8 MiB | Producers wait; inbound reading pauses |
 | `WRITER_STALL_DEADLINE` | 30 s | Disconnect |
-| `MAX_OPEN_STREAMS` per direction per connection | 4 | Sender waits; receiving more is a protocol violation |
+| `MAX_OPEN_STREAMS` per direction per connection | 4, one of the server's kept for host effects | Sender waits; receiving more is a protocol violation |
 | `SERVER_REASSEMBLY_BUDGET` per connection, advertised in `Welcome` | `MAX_OPEN_STREAMS` times the paste message cap, about 4 MiB | Sender waits; receiving more is a protocol violation |
 | `STREAM_IDLE_DEADLINE` | 30 s, paused while the server is not reading | Protocol violation |
 | `CLIPBOARD_PAYLOAD_LIMIT`, `SELECTION_PAYLOAD_LIMIT` | 64 MiB of text each | Sender refuses with `LimitExceeded` |
@@ -976,7 +986,8 @@ effect at a time; when it frees, it takes the next queued effect from the
 connection's recipients with pending effects, so an effect queued behind a
 large write is delivered without another wake.
 
-**Effect frames go first.** The writer sends the lane's next frame ahead of
+**Effect frames go first.** The lane has a stream of its own, so an effect
+never waits for a stream. The writer sends the lane's next frame ahead of
 queued update and result frames, and the lane reserves its own one-frame
 slot rather than waiting on `OUTBOUND_BUDGET`. A busy connection therefore
 delays an effect's first frame by at most the frame already in the
@@ -1186,6 +1197,7 @@ reconnects.
 | `large-payloads` | Clipboard and selection payloads larger than the outbound budget |
 | `newer-client` | Test-only minor 1 clients against a minor-0 server |
 | `newer-server` | A minor-1 server against minor-0 and text clients |
+| `state-corruption` | Damage that still decodes, injected into deltas and events on intact links; digests must catch every one |
 | `corruption` | Flipped and dropped bytes; only digested state is checked |
 | `swarm` | Each seed draws its own limits, fault rates, link, client kinds, and versions |
 
@@ -1202,8 +1214,8 @@ After the faults stop, each run waits for quiescence and checks:
   healthy link however slow, every effect and input for a live terminal
   arrives;
 - input reaches the PTY once and in order per viewer;
-- without corruption, no client ever asks for a resync, and no connection
-  ends for anything but a stall;
+- without damage, no client ever asks for a resync, and no connection ends
+  for anything but a stall;
 - on every tick, the outbound queue stays within its budget plus one
   ordinary frame and one effect frame, the server holds no encoded message
   outside it, and reassembly stays within its budget.
@@ -1211,7 +1223,12 @@ After the faults stop, each run waits for quiescence and checks:
 Each run also counts what it checked and which rare paths ran, and the tests
 require each scenario to have compared real views and statuses and to have
 exercised its faults, lag resyncs, `Busy` answers, subscriptions to stopped
-terminals, effect deadlines, and all three downgrade paths.
+terminals, whose final status is checked too, effect deadlines, all three
+downgrade paths, and, in `state-corruption`, digests catching injected
+damage. The server encodes each frame through a writer that keeps only that
+frame's bytes, after a counting pass that sizes the message, so no whole
+encoded message ever exists, and a unit test checks every window against
+the full encoding.
 
 The fixed scenarios each test one combination of limits. The `swarm`
 scenario is a configuration fuzzer: every seed draws its frame size, stream
@@ -1232,11 +1249,12 @@ off and shows the simulation catches its absence. Without ordering lanes,
 messages overtake each other; without carried status baselines, a
 reconnect misses status; without versioned digests, older peers mismatch
 while same-version peers still pass; retrying mutations after a reconnect
-runs some twice. Without credit on discard, a discarded delta leaks its
+runs some twice; without digest checks, damage in `state-corruption`
+diverges. Without credit on discard, a discarded delta leaks its
 credit, which a client unit test shows directly, because with ordering
 lanes no scenario discards a delta without corruption.
 
-The simulation changed the design in five places, all reflected above:
+The simulation changed the design in six places, all reflected above:
 
 - **Ordering lanes.** Messages on different streams complete in any
   order, so input arrived out of order and a subscription's first update
@@ -1246,20 +1264,29 @@ The simulation changed the design in five places, all reflected above:
   because a client cannot know which inputs the server will refuse.
 - **Abort by message.** An effect deadline that aborted by stream ID killed
   the viewer update that had reused the stream, silently freezing a view.
-- **Streams free only once written.** With effect frames sent first at the
+- **A stream of its own for effects.** With effect frames sent first at the
   writer, a stream ID reused as soon as its message's last frame was built
   let a new effect's frames overtake the old message's final frame on the
-  same stream, and the receiver failed to decode. A stream is free again
-  only once its last frame has been written.
-- **Transport integrity is assumed.** Under corruption, digests catch
-  damaged hierarchy and rows, but request IDs, effect identities, and
-  status carry no integrity check, and a corrupted value can still decode.
-  Unix sockets, SSH, TLS, and QUIC all provide integrity; a transport
-  without it would need a frame checksum. Periodic digests also find a
-  corrupted delta only at the next digest, which is acceptable only
-  because the transport does not corrupt. The corruption scenario
-  reconnects only the clients whose links carried damaged bytes, so it
-  also shows that recovery restores convergence.
+  same stream, and the receiver failed to decode. Holding every stream until
+  its last frame was written fixed that but let an effect wait for a free
+  stream behind the whole outbound queue, which broke its delivery deadline
+  on healthy slow links. A stream reserved for effects fixes both: ordinary
+  frames never reorder among themselves, and effects never wait.
+- **A complete final snapshot on stop.** A viewer recovering from a
+  damaged delta when its terminal stopped could receive the final update as
+  a delta on the baseline it had discarded, then the stop, and keep a stale
+  final view. The final update of a stopped terminal is now complete.
+- **Transport integrity is assumed.** Digests catch damage to the
+  hierarchy and rows that still decodes: `state-corruption` injects such
+  damage on intact links and every run recovers by resync, while the same
+  run with digest checks off diverges. Request IDs, effect identities, and
+  status carry no integrity check, though, and a corrupted value there can
+  still decode. Unix sockets, SSH, TLS, and QUIC all provide integrity; a
+  transport without it would need a frame checksum. Periodic digests also
+  find a corrupted delta only at the next digest, which is acceptable only
+  because the transport does not corrupt. The byte-level `corruption`
+  scenario reconnects only the clients whose links carried damaged bytes,
+  and checks that recovery restores convergence.
 
 Coverage-guided fuzzing of the schedule, a cargo-fuzz target that drives
 the simulation's random choices from the fuzzer's input so it steers toward

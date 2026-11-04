@@ -88,6 +88,11 @@ fn every_scenario_holds_its_invariants_and_checks_real_work() {
         get("corruption").detections > 0,
         "corruption was never detected"
     );
+    let state = get("state-corruption");
+    assert!(
+        state.damage_injected > 0 && state.detections > 0,
+        "no decodable damage was injected and caught"
+    );
 }
 
 /// Returns the first failure with `design` in `scenario`, or `None`.
@@ -171,4 +176,15 @@ fn swarm_configurations_hold_their_invariants() {
         total.cuts > 0 && total.restarts > 0,
         "the swarm drew no faults"
     );
+}
+
+#[test]
+fn without_digest_checks_decodable_damage_goes_unnoticed() {
+    let design = Design {
+        check_digests: false,
+        ..Design::default()
+    };
+    let failure = first_failure("state-corruption", design);
+    let diverged = |f: &str| f.contains("diverged") || f.contains("hierarchy");
+    assert!(failure.as_deref().is_some_and(diverged), "got {failure:?}");
 }

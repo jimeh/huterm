@@ -28,17 +28,69 @@ impl fmt::Display for DecodeError {
     }
 }
 
-/// Appends encoded values to a buffer.
+/// What a writer keeps of the bytes it is given.
+#[derive(Clone, Copy, Debug, Default)]
+enum Keep {
+    /// Every byte.
+    #[default]
+    All,
+    /// None: the writer only counts, for a sizing pass.
+    Nothing,
+    /// Only bytes at offsets in `start..end`, to build one frame.
+    Window(usize, usize),
+}
+
+/// Appends encoded values to a buffer. A counting writer stores nothing and
+/// a windowed writer stores one byte range, so a message can be sized and
+/// framed without ever holding its whole encoding.
 #[derive(Debug, Default)]
 pub struct Writer {
     buf: Vec<u8>,
+    keep: Keep,
+    written: usize,
 }
 
 impl Writer {
-    /// Returns the encoded bytes.
+    /// A writer that only counts bytes, for a sizing pass.
+    #[must_use]
+    pub fn counting() -> Self {
+        Self {
+            keep: Keep::Nothing,
+            ..Self::default()
+        }
+    }
+
+    /// A writer that keeps only the bytes at offsets `start..end`.
+    #[must_use]
+    pub fn window(start: usize, end: usize) -> Self {
+        Self {
+            keep: Keep::Window(start, end),
+            ..Self::default()
+        }
+    }
+
+    /// Bytes written so far, kept or not.
+    #[must_use]
+    pub fn written(&self) -> usize {
+        self.written
+    }
+
+    /// Returns the kept bytes.
     #[must_use]
     pub fn finish(self) -> Vec<u8> {
         self.buf
+    }
+
+    fn push(&mut self, byte: u8) {
+        let keep = match self.keep {
+            Keep::All => true,
+            Keep::Nothing => false,
+            Keep::Window(start, end) => (start..end).contains(&self.written),
+        };
+        if keep {
+            self.buf.push(byte);
+        }
+        self.written += 1;
     }
 
     /// Writes an unsigned LEB128 varint.
@@ -47,10 +99,10 @@ impl Writer {
             let byte = u8::try_from(value & 0x7f).unwrap_or(0);
             value >>= 7;
             if value == 0 {
-                self.buf.push(byte);
+                self.push(byte);
                 return;
             }
-            self.buf.push(byte | 0x80);
+            self.push(byte | 0x80);
         }
     }
 
@@ -61,13 +113,15 @@ impl Writer {
 
     /// Writes a bool as one byte.
     pub fn bool(&mut self, value: bool) {
-        self.buf.push(u8::from(value));
+        self.push(u8::from(value));
     }
 
     /// Writes a length-prefixed byte string.
     pub fn bytes(&mut self, value: &[u8]) {
         self.len(value.len());
-        self.buf.extend_from_slice(value);
+        for byte in value {
+            self.push(*byte);
+        }
     }
 
     /// Writes a length-prefixed UTF-8 string.
@@ -75,11 +129,13 @@ impl Writer {
         self.bytes(value.as_bytes());
     }
 
-    /// Writes a record: its byte length, then the fields `fill` writes.
-    pub fn record(&mut self, fill: impl FnOnce(&mut Writer)) {
-        let mut inner = Writer::default();
-        fill(&mut inner);
-        self.bytes(&inner.buf);
+    /// Writes a record: its byte length, from a counting pass over `fill`,
+    /// then the fields `fill` writes.
+    pub fn record(&mut self, fill: impl Fn(&mut Writer)) {
+        let mut counter = Writer::counting();
+        fill(&mut counter);
+        self.len(counter.written);
+        fill(self);
     }
 }
 

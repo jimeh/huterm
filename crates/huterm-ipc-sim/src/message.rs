@@ -804,9 +804,31 @@ fn get_update(
 
 /// Encodes a server message as a server on `minor` writes it.
 #[must_use]
-#[expect(clippy::too_many_lines, reason = "one arm per message, in one place")]
 pub fn encode_server(message: &ServerMsg, minor: u16) -> Vec<u8> {
-    let mut writer = Writer::default();
+    write_server(message, minor, Writer::default()).finish()
+}
+
+/// The encoded length of a server message, from a counting pass that
+/// stores nothing.
+#[must_use]
+pub fn server_len(message: &ServerMsg, minor: u16) -> usize {
+    write_server(message, minor, Writer::counting()).written()
+}
+
+/// The bytes of a server message's encoding at offsets `start..end`,
+/// without building the rest.
+#[must_use]
+pub fn server_window(
+    message: &ServerMsg,
+    minor: u16,
+    start: usize,
+    end: usize,
+) -> Vec<u8> {
+    write_server(message, minor, Writer::window(start, end)).finish()
+}
+
+#[expect(clippy::too_many_lines, reason = "one arm per message, in one place")]
+fn write_server(message: &ServerMsg, minor: u16, mut writer: Writer) -> Writer {
     let kind = match message {
         ServerMsg::Welcome { .. } => kind::WELCOME,
         ServerMsg::Reject { .. } => kind::REJECT,
@@ -915,7 +937,7 @@ pub fn encode_server(message: &ServerMsg, minor: u16) -> Vec<u8> {
             record.str(payload);
         }
     });
-    writer.finish()
+    writer
 }
 
 fn error_code(value: u64) -> Result<ErrorCode, DecodeError> {
@@ -1127,5 +1149,39 @@ mod tests {
             decode_client(&bytes, &profile, MINOR_0),
             Err(DecodeError::TooLarge)
         );
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+
+    #[test]
+    fn frames_are_encoded_without_building_the_whole_message() {
+        let tab = TabInfo {
+            id: 9,
+            name: "tab".into(),
+            pinned: true,
+        };
+        let messages = [
+            ServerMsg::Result {
+                id: 3,
+                outcome: Ok(Body::Selection("日x".repeat(300))),
+            },
+            ServerMsg::Event {
+                seq: 2,
+                event: Event::Opened { tab, index: 0 },
+                digest: Some(5),
+            },
+        ];
+        for message in &messages {
+            let full = encode_server(message, MINOR_1);
+            assert_eq!(server_len(message, MINOR_1), full.len());
+            for start in (0..full.len()).step_by(7) {
+                let end = (start + 13).min(full.len());
+                let window = server_window(message, MINOR_1, start, end);
+                assert_eq!(window, full[start..end], "window {start}..{end}");
+            }
+        }
     }
 }

@@ -37,6 +37,9 @@ pub struct Scenario {
     pub activity_per_mille: u64,
     /// Whether clients toggle clipboard permission.
     pub toggle_permission: bool,
+    /// Chance per thousand that a client damages a decoded delta or event
+    /// in a way that still decodes, so digests must catch it.
+    pub damage_per_mille: u64,
     /// Whether nothing interferes with delivery, so every effect and input
     /// for a live terminal must arrive and no connection may end.
     pub healthy: bool,
@@ -70,6 +73,7 @@ fn remote_link() -> LinkProfile {
 
 /// Every scenario the tests and the program run.
 #[must_use]
+#[expect(clippy::too_many_lines, reason = "every scenario, listed once")]
 pub fn scenarios() -> Vec<Scenario> {
     let desktop = |minor| (minor, ClientKind::Desktop);
     let base = Scenario {
@@ -87,6 +91,7 @@ pub fn scenarios() -> Vec<Scenario> {
         action_per_mille: 60,
         activity_per_mille: 300,
         toggle_permission: false,
+        damage_per_mille: 0,
         healthy: true,
         profile: Profile::default(),
         duration: 3_000,
@@ -156,6 +161,18 @@ pub fn scenarios() -> Vec<Scenario> {
             ],
             cut_per_mille: 10,
             ..faulty.clone()
+        },
+        // Damage that decodes, on intact links: only digests can catch it,
+        // and every caught delta or event must recover by resync.
+        Scenario {
+            name: "state-corruption",
+            damage_per_mille: 30,
+            profile: Profile {
+                update_digest_every: 1,
+                hierarchy_digest_every: 1,
+                ..Profile::default()
+            },
+            ..base.clone()
         },
         Scenario {
             name: "corruption",
@@ -228,7 +245,8 @@ pub fn swarm(seed: u64) -> Scenario {
     let round_trip = 2 * (latency + jitter) + 10;
     let profile = Profile {
         max_frame: r(&mut rng, 12, 160),
-        max_open_streams: r(&mut rng, 1, 6),
+        // One stream is reserved for effects.
+        max_open_streams: r(&mut rng, 2, 6),
         max_name_bytes: r(&mut rng, 12, 24),
         max_tabs: r(&mut rng, 1, 10),
         max_status_text: r(&mut rng, 0, 24),
@@ -267,6 +285,7 @@ pub fn swarm(seed: u64) -> Scenario {
         action_per_mille: rng.range(10, 120),
         activity_per_mille: rng.range(50, 600),
         toggle_permission: !healthy && rng.chance(500),
+        damage_per_mille: 0,
         healthy,
         profile,
         duration: rng.range(1_000, 6_000),
@@ -308,6 +327,8 @@ pub struct Report {
     /// Faults, violations, and resyncs that detected damage, under
     /// corruption.
     pub detections: usize,
+    /// Damaged deltas and events clients injected.
+    pub damage_injected: usize,
     /// Rare-path counters, summed over incarnations.
     pub counters: Counters,
 }
@@ -330,6 +351,7 @@ impl Report {
         self.stopped_checked += other.stopped_checked;
         self.statuses_checked += other.statuses_checked;
         self.detections += other.detections;
+        self.damage_injected += other.damage_injected;
         add_counters(&mut self.counters, &other.counters);
     }
 }
@@ -376,6 +398,13 @@ impl World {
                 )
             })
             .collect::<Vec<_>>();
+        let mut clients = clients;
+        if scenario.damage_per_mille > 0 {
+            for client in &mut clients {
+                client
+                    .inject_damage(scenario.damage_per_mille, seed ^ client.id);
+            }
+        }
         let count = clients.len();
         Self {
             scenario: scenario.clone(),
@@ -784,7 +813,10 @@ impl World {
     #[expect(clippy::too_many_lines, reason = "every invariant, listed once")]
     fn check(&mut self) -> Result<(), String> {
         let incarnation = self.incarnation;
+        // Damaged links can corrupt anything; damaged state only touches
+        // digested deltas and events, so every other check still holds.
         let corrupt = self.scenario.link.corrupt_per_mille > 0;
+        let damaged = corrupt || self.scenario.damage_per_mille > 0;
         let healthy = self.scenario.healthy;
         for client in &self.clients {
             let minor = client.negotiated().ok_or("client not connected")?;
@@ -838,6 +870,18 @@ impl World {
                 self.report.stopped_checked += 1;
                 statuses.push(tab);
             }
+            // So does a stopped terminal the client learned of only from a
+            // `Stopped` reply, after subscribing to it.
+            // A tab the client stopped tracking, such as one whose
+            // resubscription was refused, makes no claim.
+            for &(seen_in, tab) in &client.stopped_replies {
+                let stopped =
+                    self.server.terminal(tab, minor).is_some_and(|(_, _, s)| s);
+                if seen_in == incarnation && stopped && !statuses.contains(&tab)
+                {
+                    statuses.push(tab);
+                }
+            }
             for tab in statuses {
                 let Some((_, status, _)) = self.server.terminal(tab, minor)
                 else {
@@ -867,8 +911,8 @@ impl World {
             if !corrupt && !client.faults.is_empty() {
                 return Err(format!("client {id} faults {:?}", client.faults));
             }
-            // With ordering lanes, a gap or digest mismatch needs corruption.
-            if !corrupt
+            // With ordering lanes, a gap or digest mismatch needs damage.
+            if !damaged
                 && (client.hierarchy_resyncs > 0 || client.viewer_resyncs > 0)
             {
                 return Err(format!(
@@ -879,6 +923,7 @@ impl World {
             self.report.detections += client.faults.len()
                 + client.hierarchy_resyncs as usize
                 + client.viewer_resyncs as usize;
+            self.report.damage_injected += client.damage_injected as usize;
         }
         let mut records = std::mem::take(&mut self.records);
         records.push((incarnation, std::mem::take(&mut self.server.record)));

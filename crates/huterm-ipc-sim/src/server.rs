@@ -12,7 +12,7 @@ use std::rc::Rc;
 use crate::frame::{Frame, FrameReceiver, FrameSender, Source};
 use crate::message::{
     Body, ClientKind, ClientMsg, ErrorCode, MAJOR, Request, RetryClass, RowOp,
-    ServerMsg, Update, client_cap, decode_client, encode_server,
+    ServerMsg, Update, client_cap, decode_client, server_len, server_window,
 };
 use crate::model::{
     Cell, Downgrade, Event, FAILURE_CAPACITY, Hierarchy, MINOR_1, Snapshot,
@@ -93,6 +93,7 @@ struct Op {
 }
 
 #[derive(Debug)]
+#[expect(clippy::struct_excessive_bools, reason = "independent viewer states")]
 struct RemoteViewer {
     tab: u64,
     opened_by: Option<u64>,
@@ -110,6 +111,7 @@ struct RemoteViewer {
     acked: u64,
     deltas: u64,
     acked_update: u64,
+    final_sent: bool,
 }
 
 #[derive(Debug)]
@@ -211,8 +213,10 @@ impl Conn {
         own: u16,
         priority: bool,
     ) -> Option<u64> {
-        let len = encode_server(&message, own).len();
-        let encode = Rc::new(move || encode_server(&message, own));
+        let len = server_len(&message, own);
+        let encode = Rc::new(move |start: usize, end: usize| {
+            server_window(&message, own, start, end)
+        });
         self.tx
             .start_source(lane, Source::Lazy(encode, len), priority)
             .map(|(_, serial)| serial)
@@ -331,14 +335,14 @@ impl Server {
                     profile.max_open_streams,
                     Some(profile.server_reassembly()),
                 ),
-                // The writer sends effect frames first, so a stream stays
-                // busy until its message's last frame is written.
+                // The writer sends effect frames first, so effects get a stream
+                // of their own and ordinary streams stay in order.
                 tx: FrameSender::new(
                     profile.max_frame,
                     profile.max_open_streams,
                     lanes,
                 )
-                .holding_until_written(),
+                .reserving_priority_stream(),
                 queue: VecDeque::new(),
                 urgent: VecDeque::new(),
                 current: None,
@@ -665,6 +669,7 @@ impl Server {
                                 acked: 0,
                                 deltas: 0,
                                 acked_update: 0,
+                                final_sent: false,
                             },
                         );
                         if effects && conn.kind == ClientKind::Desktop {
@@ -1171,10 +1176,14 @@ impl Server {
                 .get_mut(&viewer)
                 .unwrap_or_else(|| unreachable!());
             let stopped = terminal.stopped;
-            // A stopped terminal sends its final status and update, then
-            // closes the viewer on the same lane.
-            let wants_update = remote.notified
-                && (remote.credit > 0 || remote.full_uncredited || stopped);
+            // A stopped terminal sends its final status and a complete
+            // final snapshot, then closes the viewer on the same lane. The
+            // snapshot is complete because a client may be recovering from
+            // a damaged delta whose resync request has not arrived yet.
+            let final_due = stopped && !remote.final_sent;
+            let wants_update = final_due
+                || (remote.notified
+                    && (remote.credit > 0 || remote.full_uncredited));
             if stopped
                 && !wants_update
                 && remote.sent_status == Some(terminal.status.revision)
@@ -1194,7 +1203,9 @@ impl Server {
                 continue;
             }
             let current = Rc::clone(&terminal.snapshot);
-            let full = remote.full_uncredited
+            remote.final_sent |= final_due;
+            let full = final_due
+                || remote.full_uncredited
                 || remote
                     .baseline
                     .as_ref()
@@ -1243,16 +1254,18 @@ impl Server {
                 || now > complete_by
             {
                 // Unsent frames stop; frames already queued still arrive.
-                // Either way the reservation is released now.
-                conn.tx.abort(lane.serial);
-                self.record.dropped += 1;
-                self.record.counters.deadline_drops += 1;
+                // Either way the reservation is released now, and only an
+                // effect whose unsent frames stopped counts as dropped.
+                if conn.tx.abort(lane.serial) {
+                    self.record.dropped += 1;
+                    self.record.counters.deadline_drops += 1;
+                }
                 conn.lane = None;
             } else {
                 return;
             }
         }
-        if !conn.tx.can_start(LANE_EFFECTS) {
+        if !conn.tx.can_start_priority(LANE_EFFECTS) {
             return;
         }
         // Take the oldest queued effect for this connection.
@@ -1328,9 +1341,7 @@ impl Server {
             if *pos == frame.bytes.len() {
                 let (frame, _) =
                     conn.current.take().unwrap_or_else(|| unreachable!());
-                if frame.last {
-                    conn.tx.release(frame.serial);
-                }
+
                 if let Some(lane) = conn.lane.as_mut()
                     && lane.serial == frame.serial
                 {

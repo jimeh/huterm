@@ -9,7 +9,7 @@ use crate::message::{
     Body, ClientKind, ClientMsg, ErrorCode, MAJOR, Request, RetryClass, RowOp,
     ServerMsg, Update, decode_server, encode_client, server_cap,
 };
-use crate::model::{Applied, Cell, Hierarchy, StatusBaseline, View};
+use crate::model::{Applied, Cell, Event, Hierarchy, StatusBaseline, View};
 use crate::profile::Profile;
 
 /// How a request ended.
@@ -115,6 +115,12 @@ pub struct Client {
     pub intents: BTreeMap<u64, u64>,
     next_intent: u64,
     connected_at: u64,
+    /// Damage to inject into decoded deltas and events: a chance per
+    /// thousand and a generator.
+    damage: Option<(u64, crate::rng::Rng)>,
+    /// Terminals whose subscription was answered `Stopped`, per
+    /// (incarnation, tab).
+    pub stopped_replies: BTreeSet<(u64, u64)>,
     /// Final views of terminals that stopped, per (incarnation, tab).
     pub stopped: BTreeMap<(u64, u64), Option<View>>,
     /// Effects executed: (incarnation, link, terminal, origin).
@@ -126,6 +132,8 @@ pub struct Client {
     pub hierarchy_resyncs: u32,
     /// Viewer resyncs the client asked for.
     pub viewer_resyncs: u32,
+    /// Damaged deltas and events injected.
+    pub damage_injected: u32,
     /// Inputs typed and their fate: (incarnation, tab, viewer, seq).
     pub typed: Vec<(u64, u64, u64, u64)>,
 }
@@ -160,11 +168,14 @@ impl Client {
             next_intent: 0,
             connected_at: 0,
             stopped: BTreeMap::new(),
+            stopped_replies: BTreeSet::new(),
+            damage: None,
             outcomes: Vec::new(),
             executed: Vec::new(),
             faults: Vec::new(),
             hierarchy_resyncs: 0,
             viewer_resyncs: 0,
+            damage_injected: 0,
             typed: Vec::new(),
         }
     }
@@ -187,6 +198,23 @@ impl Client {
         self.conn
             .as_ref()
             .and_then(|conn| conn.open.map(|(_, minor)| minor))
+    }
+
+    /// Damages a share of decoded deltas and events, as corruption that
+    /// still decodes would, so the run shows digests catch it.
+    pub fn inject_damage(&mut self, per_mille: u64, seed: u64) {
+        self.damage = Some((per_mille, crate::rng::Rng::new(seed)));
+    }
+
+    fn damage(&mut self) -> bool {
+        match self.damage.as_mut() {
+            Some((per_mille, rng)) => {
+                let hit = rng.chance(*per_mille);
+                self.damage_injected += u32::from(hit);
+                hit
+            }
+            None => false,
+        }
     }
 
     /// Whether the handshake has taken longer than `limit` since `now`'s
@@ -429,6 +457,7 @@ impl Client {
         Ok(())
     }
 
+    #[expect(clippy::too_many_lines, reason = "one arm per server message")]
     fn handle(&mut self, message: ServerMsg) -> Result<(), String> {
         match message {
             ServerMsg::Welcome {
@@ -454,8 +483,21 @@ impl Client {
             }
             ServerMsg::Reject { .. } => return Err("rejected".into()),
             ServerMsg::Result { id, outcome } => self.result(id, outcome)?,
-            ServerMsg::Event { seq, event, digest } => {
+            ServerMsg::Event {
+                seq,
+                mut event,
+                digest,
+            } => {
                 let minor = self.negotiated().unwrap_or(0);
+                let checking = self.profile.design.check_digests;
+                if self.damage() {
+                    // Damage that still decodes: the digest must catch it.
+                    if let Event::Renamed { name, .. }
+                    | Event::Retitled { name, .. } = &mut event
+                    {
+                        name.push('!');
+                    }
+                }
                 let Some(state) = self.hierarchy.as_mut() else {
                     return Ok(());
                 };
@@ -464,7 +506,9 @@ impl Client {
                 }
                 match state.apply(seq, &event) {
                     Applied::Applied => {
-                        if digest.is_some_and(|d| d != state.digest(minor)) {
+                        if checking
+                            && digest.is_some_and(|d| d != state.digest(minor))
+                        {
                             self.request_hierarchy_resync();
                         }
                     }
@@ -550,7 +594,7 @@ impl Client {
         digest: u64,
     ) -> Result<(), String> {
         let minor = self.negotiated().unwrap_or(0);
-        if state.digest(minor) != digest {
+        if self.profile.design.check_digests && state.digest(minor) != digest {
             // A snapshot that mismatches would mismatch again: a fault.
             self.faults.push("hierarchy snapshot digest".into());
             return Err("hierarchy snapshot digest".into());
@@ -644,6 +688,8 @@ impl Client {
             }
             Ok(Body::Stopped { status }) => {
                 if let Some(tab) = pending.tab {
+                    let incarnation = self.incarnation.unwrap_or(0);
+                    self.stopped_replies.insert((incarnation, tab));
                     self.observe(tab, &status);
                     self.shown.remove(&tab);
                 }
@@ -682,6 +728,16 @@ impl Client {
     }
 
     fn update(&mut self, update: &Update) {
+        let damaged;
+        let update = if update.base.is_some() && self.damage() {
+            // Damage that still decodes: the digest must catch it.
+            let mut copy = update.clone();
+            copy.modes ^= 1;
+            damaged = copy;
+            &damaged
+        } else {
+            update
+        };
         let minor = self.negotiated().unwrap_or(0);
         let Some(tab) = self.tab_of(update.viewer) else {
             return;
@@ -740,6 +796,7 @@ impl Client {
         };
         let _ = minor;
         if let Some(digest) = update.digest
+            && self.profile.design.check_digests
             && digest != view.digest()
         {
             if full {
