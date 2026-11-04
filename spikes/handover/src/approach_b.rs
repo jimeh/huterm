@@ -362,17 +362,29 @@ pub fn handover(srv: &Arc<Server>, req: &Value) {
         stream
             .set_read_timeout(Some(Duration::from_millis(2000)))
             .ok();
-        // The target acks before it reads anything, so a socket that closes
-        // without the ack means it died unowned and the source can resume.
-        // A timeout is ambiguous; assume the target owns everything.
-        match read_line(&mut rd) {
-            Ok(l) if l == "owned" => Ok(()),
-            Err(e) if e.starts_with("peer closed") => {
-                Err(format!("target died after commit, before owning: {e}"))
-            }
-            other => {
-                eprintln!("no ownership ack after commit: {other:?}");
+        // The target acks before it reads anything, so anything but the ack
+        // or a read timeout means it died unowned and the source can resume.
+        // EOF and Linux's ECONNRESET (a close with unread data) both qualify.
+        // Only a timeout is ambiguous; then assume the target owns everything.
+        let mut line = String::new();
+        match rd.read_line(&mut line) {
+            Ok(_) if line.trim_end() == "owned" => Ok(()),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                eprintln!("no ownership ack after commit: {e}");
                 Ok(())
+            }
+            Ok(_) => Err(format!(
+                "target died after commit, before owning: {:?}",
+                line.trim_end()
+            )),
+            Err(e) => {
+                Err(format!("target died after commit, before owning: {e}"))
             }
         }
     })();
