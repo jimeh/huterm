@@ -747,6 +747,7 @@ fn opacity_changes_preserve_prepared_rows_and_glyph_caches() {
     assert!(renderer.set_opacity(
         0.6,
         0.7,
+        true,
         crate::transparency::Tint::default()
     ));
     assert_eq!(renderer.rows.as_ptr(), rows);
@@ -783,7 +784,7 @@ fn default_background_has_one_painter_even_before_a_snapshot() {
         Theme::default(),
         GridMetrics::fixed(8.0, 16.0),
     );
-    renderer.set_opacity(0.6, 0.7, crate::transparency::Tint::default());
+    renderer.set_opacity(0.6, 0.7, true, crate::transparency::Tint::default());
     assert_eq!(renderer.background(None).a, 0.6);
     assert!(renderer.snapshot.is_none());
     let cells = vec![
@@ -817,7 +818,7 @@ fn text_and_decorations_fade_while_selected_foreground_stays_solid() {
         GridMetrics::fixed(8.0, 16.0),
     );
     let snapshot = snapshot(2, 1, &["AB"]);
-    renderer.set_opacity(0.6, 0.7, crate::transparency::Tint::default());
+    renderer.set_opacity(0.6, 0.7, true, crate::transparency::Tint::default());
     renderer.set_selection(Some(BufferRange::ordered(
         huterm_protocol::BufferPoint {
             rows_from_live_bottom: 0,
@@ -916,6 +917,7 @@ impl gpui::Render for PaintFixture {
 #[cfg(feature = "test-support")]
 fn paint_fixture(
     cx: &mut gpui::TestAppContext,
+    background: f32,
     tint: crate::transparency::Tint,
 ) -> (Vec<gpui::Quad>, Vec<gpui::Underline>, Theme) {
     let theme = Theme::default();
@@ -955,7 +957,8 @@ fn paint_fixture(
             column: 1,
         },
     )));
-    renderer.set_opacity(0.6, 0.7, tint);
+    // Blur mode is translucent with an opaque background too.
+    renderer.set_opacity(background, 0.7, true, tint);
     let handle: gpui::AnyWindowHandle = cx
         .open_window(size(px(100.0), px(40.0)), |_, _| PaintFixture(renderer))
         .into();
@@ -976,22 +979,24 @@ fn translucent_paint_tints_solid_background_selection_and_cursor(
         dim: 0.25,
         darken: 0.3,
     };
-    let (quads, _, theme) = paint_fixture(cx, tint);
-    for (label, original) in [
-        ("program background", theme.indexed(1)),
-        ("selection", theme.selection),
-        ("cursor", theme.cursor),
-    ] {
-        let original = rgb_color(original);
-        let expected = tint.apply(original, rgb_color(theme.background));
-        assert_ne!(expected, original);
-        assert!(
-            quads
-                .iter()
-                .any(|quad| quad.background.as_solid() == Some(expected)),
-            "{label} must be tinted with its original alpha: expected {expected:?}, got {quads:?}"
-        );
-        assert_eq!(expected.a, original.a);
+    for background in [0.6, 1.0] {
+        let (quads, _, theme) = paint_fixture(cx, background, tint);
+        for (label, original) in [
+            ("program background", theme.indexed(1)),
+            ("selection", theme.selection),
+            ("cursor", theme.cursor),
+        ] {
+            let original = rgb_color(original);
+            let expected = tint.apply(original, rgb_color(theme.background));
+            assert_ne!(expected, original);
+            assert!(
+                quads
+                    .iter()
+                    .any(|quad| quad.background.as_solid() == Some(expected)),
+                "{label} at background {background} must be tinted with its original alpha: expected {expected:?}, got {quads:?}"
+            );
+            assert_eq!(expected.a, original.a);
+        }
     }
 }
 
@@ -1001,7 +1006,7 @@ fn paint_dispatches_translucent_text_and_decoration_path(
     cx: &mut gpui::TestAppContext,
 ) {
     let (_, underlines, theme) =
-        paint_fixture(cx, crate::transparency::Tint::default());
+        paint_fixture(cx, 0.6, crate::transparency::Tint::default());
     assert!(
         underlines
             .iter()

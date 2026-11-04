@@ -6,7 +6,8 @@ use toml::Value;
 use super::super::settings_window::SettingsView;
 
 use super::settings::{
-    ScratchConfig, open_settings, settings, settled, with_view, with_window,
+    ScratchConfig, conflicted, open_settings, settings, settled, with_view,
+    with_window,
 };
 use super::settings_controls::{a11y_node, key_down, keys, visual};
 use super::*;
@@ -1320,4 +1321,136 @@ fn keybindings_lists_global_shortcuts_under_their_commands_and_edits_them(
     with_window(&mut harness, |view, window, cx| {
         assert_eq!(view.focus_name(window, cx), "action:kcmd:show_quake");
     });
+}
+
+const PROFILE_BACKGROUND: &str = "quake.profiles.default.background_opacity";
+
+fn shown_number(harness: &mut DesktopHarness, path: &str) -> f64 {
+    with_view(harness, |view, _| {
+        view.shown_value(path)
+            .and_then(|value| value.as_float())
+            .unwrap()
+    })
+}
+
+fn description(harness: &mut DesktopHarness, path: &str) -> String {
+    with_view(harness, |view, _| view.row_description(path).unwrap())
+}
+
+#[gpui::test]
+fn an_unset_profile_transparency_row_shows_and_steps_from_appearance(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new(
+        "quake-transparency-inherits",
+        "[window]\nbackground_opacity = 0.6\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    assert!(
+        (shown_number(&mut harness, PROFILE_BACKGROUND) - 0.6).abs() < 1e-9
+    );
+    assert_eq!(
+        description(&mut harness, PROFILE_BACKGROUND),
+        "Uses Appearance > Transparency (60%)."
+    );
+    // A pending change to the inherited setting shows at once.
+    let release = with_view(&mut harness, |view, cx| {
+        let release = view.hold_batch();
+        view.set("window.background_opacity", Some(Value::Float(0.4)), cx);
+        release
+    });
+    assert!(
+        (shown_number(&mut harness, PROFILE_BACKGROUND) - 0.4).abs() < 1e-9
+    );
+    drop(release);
+    saved(&mut harness, &file, |text| text.contains("0.4"));
+    // Setting the profile's key shows its own value and description.
+    with_view(&mut harness, |view, cx| {
+        view.set(PROFILE_BACKGROUND, Some(Value::Float(0.8)), cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("0.8"));
+    assert!(
+        file.text()
+            .contains("[quake.profiles.default]\nbackground_opacity = 0.8")
+    );
+    assert!(
+        description(&mut harness, PROFILE_BACKGROUND)
+            .starts_with("How opaque the background")
+    );
+    // A pending reset shows the inherited value, and a step taken while it
+    // is pending starts there, not from the profile's old value.
+    let release = with_view(&mut harness, |view, cx| {
+        let release = view.hold_batch();
+        view.set(PROFILE_BACKGROUND, None, cx);
+        release
+    });
+    assert!(
+        (shown_number(&mut harness, PROFILE_BACKGROUND) - 0.4).abs() < 1e-9
+    );
+    assert_eq!(
+        description(&mut harness, PROFILE_BACKGROUND),
+        "Uses Appearance > Transparency (40%)."
+    );
+    with_view(&mut harness, |view, cx| {
+        view.step_at(PROFILE_BACKGROUND, true, cx);
+    });
+    drop(release);
+    saved(&mut harness, &file, |text| {
+        text.contains("[quake.profiles.default]\nbackground_opacity = 0.45")
+    });
+    // The inherited value is never written on its own.
+    assert_eq!(file.text().matches("0.4\n").count(), 1, "{}", file.text());
+}
+
+#[gpui::test]
+fn a_profile_transparency_write_conflicts_only_on_its_own_key(
+    cx: &mut TestAppContext,
+) {
+    let original = "[window]\nbackground_opacity = 0.6\n";
+    let file = ScratchConfig::new("quake-transparency-conflict", original);
+    let mut harness = DesktopHarness::new(cx);
+    open_quake(&mut harness, &file);
+    // Another editor changes the inherited setting: no conflict.
+    std::fs::write(file.path(), "[window]\nbackground_opacity = 0.3\n")
+        .unwrap();
+    with_view(&mut harness, |view, cx| {
+        view.set(PROFILE_BACKGROUND, Some(Value::Float(0.8)), cx);
+    });
+    saved(&mut harness, &file, |text| text.contains("0.8"));
+    assert!(!harness.cx.update(|cx| conflicted(cx, PROFILE_BACKGROUND)));
+    assert!(file.text().contains("background_opacity = 0.3"));
+    // Another editor changes the profile's own key: a conflict, which Use
+    // mine and Use file settle.
+    for (choice, kept) in [("mine", 0.7), ("file", 0.5)] {
+        let text = file.text();
+        std::fs::write(file.path(), text.replace("= 0.8", "= 0.5")).unwrap();
+        with_view(&mut harness, |view, cx| {
+            view.set(PROFILE_BACKGROUND, Some(Value::Float(0.7)), cx);
+        });
+        harness.wait_for("the conflict", |cx| {
+            settled(cx) && conflicted(cx, PROFILE_BACKGROUND)
+        });
+        with_view(&mut harness, |view, cx| {
+            if choice == "mine" {
+                view.use_mine(PROFILE_BACKGROUND, cx);
+            } else {
+                view.use_file(PROFILE_BACKGROUND, cx);
+            }
+        });
+        harness.wait_for("the conflict to settle", |cx| {
+            settled(cx) && !conflicted(cx, PROFILE_BACKGROUND)
+        });
+        assert!(
+            file.text().contains(&format!(
+                "[quake.profiles.default]\nbackground_opacity = {kept}"
+            )),
+            "{choice}: {}",
+            file.text()
+        );
+        let restored = file.text().replace(&format!("= {kept}"), "= 0.8");
+        std::fs::write(file.path(), &restored).unwrap();
+        with_view(&mut harness, SettingsView::reread);
+        harness.cx.run_until_parked();
+    }
 }

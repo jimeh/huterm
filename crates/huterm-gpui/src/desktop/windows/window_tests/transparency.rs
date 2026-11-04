@@ -6,14 +6,25 @@ fn workspace_root_and_client_frame_fill_only_opaque_backgrounds() {
     let theme = Config::default().theme;
     let bounds =
         Bounds::new(point(px(0.0), px(0.0)), size(px(800.0), px(600.0)));
-    for (alpha, opaque) in
-        [(1.0, true), (0.999, false), (0.6, false), (0.0, false)]
-    {
+    // Blur mode is translucent with an opaque background, through the
+    // root's opacity, so neither underlay may fill then.
+    for (alpha, translucent) in [
+        (1.0, false),
+        (1.0, true),
+        (0.999, true),
+        (0.6, true),
+        (0.0, true),
+    ] {
+        let opaque = !translucent;
         let background = color(theme.background).opacity(alpha);
         for decorated in [false, true] {
-            let mut root = workspace_root(decorated, background);
-            let mut panel =
-                client_frame_panel(bounds, background, tokens(&theme));
+            let mut root = workspace_root(decorated, background, translucent);
+            let mut panel = client_frame_panel(
+                bounds,
+                background,
+                translucent,
+                tokens(&theme),
+            );
             assert_eq!(
                 root.style().background.is_some(),
                 !decorated && opaque,
@@ -56,22 +67,22 @@ fn reload_changes_surface_and_paint_both_directions_without_replacing_terminals(
             let mut config = view.config.clone();
             config.window.background_opacity = background;
             config.window.foreground_opacity = 0.8;
-            config.window.background_blur = true;
+            config.window.blur = 20;
             let loaded = (config, view.family.clone(), view.metrics);
             view.apply_reload(Some(&loaded), &[], window, cx);
-            let expected = crate::transparency::appearance(
+            let expected = crate::transparency::resolve(
+                crate::transparency::Values::of(&loaded.0.window),
+                view.transparency_support,
                 Platform::current(),
                 view.window_frame().decorated(),
-                view.transparency_support,
-                background,
-                true,
             );
-            assert_eq!(view.background_appearance, Some(expected));
+            assert_eq!(view.transparency, expected);
+            assert_eq!(view.background_appearance, Some(expected.appearance));
             for tab in &view.tabs {
                 for pane in &tab.panes {
                     assert_eq!(
                         pane.view.read(cx).renderer.borrow().background(None).a,
-                        view.transparency_support.paint(loaded.0.window).0
+                        expected.background
                     );
                 }
             }
@@ -97,9 +108,10 @@ fn chrome_fills_and_dimming_preserve_background_alpha(cx: &mut TestAppContext) {
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_window();
     harness.wait_text(window, tab, "READY");
-    harness.update_view(window, |view, _, cx| {
+    harness.update_view(window, |view, window, cx| {
         // Keep this paint-policy test independent of the host compositor.
         view.transparency_support = crate::transparency::Support::Available;
+        view.refresh_transparency(window, cx);
         let colors = view.tab_colors();
         assert_eq!(colors.bar.a, 0.6);
         assert_eq!(colors.active.a, 0.6);
@@ -162,6 +174,7 @@ fn chrome_fills_and_dimming_preserve_background_alpha(cx: &mut TestAppContext) {
             "pane title tint must not add a background layer"
         );
         view.config.window.background_opacity = 1.0;
+        view.refresh_transparency(window, cx);
         view.configure_pane_paint(&terminal, false, 2, cx);
         assert_eq!(
             view.dim_layers(pane, PaneId::new(u64::MAX), 2, view.tab_colors())
@@ -322,6 +335,7 @@ fn translucent_client_frame_shadows_only_the_ring_outside_its_content() {
         let mut panel = client_frame_panel(
             content,
             color(theme.background).opacity(alpha),
+            alpha < 1.0,
             tokens(&theme),
         );
         panel.style().box_shadow.clone().unwrap_or_default()
@@ -353,5 +367,204 @@ fn translucent_client_frame_shadows_only_the_ring_outside_its_content() {
             usize::from(!inside && ring.contains(&sample)),
             "shadow masks at ({x}, {y})"
         );
+    }
+}
+
+impl DesktopHarness {
+    /// Gives `window` support and resolves its values again, so the test
+    /// does not depend on the host compositor.
+    pub(super) fn support_transparency(&mut self, window: AnyWindowHandle) {
+        self.update_view(window, |view, window, cx| {
+            view.transparency_support = crate::transparency::Support::Available;
+            view.refresh_transparency(window, cx);
+        });
+    }
+
+    /// Reloads `windows` with `change` applied to the configuration, as a
+    /// global reload reaches every window.
+    fn reload_transparency(
+        &mut self,
+        windows: &[AnyWindowHandle],
+        change: impl Fn(&mut Config),
+    ) {
+        for window in windows {
+            self.update_view(*window, |view, window, cx| {
+                let mut config = view.config.clone();
+                change(&mut config);
+                cx.global_mut::<Desktop>().config = config.clone();
+                let loaded = (config, view.family.clone(), view.metrics);
+                view.apply_reload(Some(&loaded), &[], window, cx);
+            });
+        }
+    }
+
+    /// The background alpha each of `window`'s panes paints after a frame.
+    pub(super) fn painted_backgrounds(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> Vec<f32> {
+        self.cx.update(|cx| {
+            window
+                .update(cx, |root, window, cx| {
+                    let _ = window.draw(cx);
+                    let view = root.downcast::<WorkspaceView>().unwrap();
+                    view.read(cx)
+                        .tabs
+                        .iter()
+                        .flat_map(|tab| &tab.panes)
+                        .map(|pane| {
+                            pane.view
+                                .read(cx)
+                                .renderer
+                                .borrow()
+                                .background(None)
+                                .a
+                        })
+                        .collect()
+                })
+                .unwrap()
+        })
+    }
+}
+
+/// Whether two colors share their red, green, and blue, whatever their
+/// alpha.
+fn same_rgb(left: gpui::Hsla, right: gpui::Hsla) -> bool {
+    let (left, right): (gpui::Rgba, gpui::Rgba) = (left.into(), right.into());
+    [left.r - right.r, left.g - right.g, left.b - right.b]
+        .iter()
+        .all(|delta| delta.abs() < 1e-3)
+}
+
+pub(super) fn close(left: f32, right: f32) -> bool {
+    (left - right).abs() < 1e-6
+}
+
+#[gpui::test]
+fn an_override_changes_one_window_and_a_reload_reaches_the_others(
+    cx: &mut TestAppContext,
+) {
+    use crate::transparency::Key;
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.background_opacity = 0.6;
+    });
+    let tab = harness.open_tab(ECHO);
+    let first = harness.attach_window();
+    let second = harness.attach_window();
+    for window in [first, second] {
+        harness.wait_text(window, tab, "READY");
+        harness.support_transparency(window);
+    }
+    harness.update_view(first, |view, window, cx| {
+        view.set_transparency_override(Key::Background, Some(0.3), window, cx);
+        view.set_transparency_override(Key::Opacity, Some(0.5), window, cx);
+    });
+    let state = |harness: &mut DesktopHarness, window| {
+        let painted = harness.painted_backgrounds(window);
+        let (background, opacity) =
+            harness.update_view(window, |view, _, _| {
+                (
+                    view.transparency.background,
+                    view.transparency_values.opacity,
+                )
+            });
+        assert!(painted.iter().all(|alpha| close(*alpha, background)));
+        (background, opacity)
+    };
+    assert_eq!(state(&mut harness, first), (0.3, 0.5));
+    assert_eq!(state(&mut harness, second), (0.6, 1.0), "the other window");
+    // A reload's new defaults reach every value a window does not
+    // override.
+    harness.reload_transparency(&[first, second], |config| {
+        config.window.background_opacity = 0.4;
+        config.window.opacity = 0.8;
+    });
+    assert_eq!(state(&mut harness, first), (0.3, 0.5));
+    assert_eq!(state(&mut harness, second), (0.4, 0.8));
+    // A reset value inherits the defaults again.
+    harness.update_view(first, |view, window, cx| {
+        view.set_transparency_override(Key::Background, None, window, cx);
+    });
+    assert_eq!(state(&mut harness, first), (0.4, 0.5));
+}
+
+#[gpui::test]
+fn blur_mode_over_an_opaque_background_paints_one_faded_background(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.opacity = 0.6;
+        config.window.blur = 20;
+        config.tabs.always_show = true;
+        config.panes.inactive_dim = 0.3;
+    });
+    let tab = harness.open_tab(ECHO);
+    let _ = harness.open_tab(ECHO);
+    let (window, left, _) = harness.split_window(tab);
+    harness.support_transparency(window);
+    let blurring = Platform::current() == Platform::MacOs;
+    let (terminal_at, bar_at, background, bar) =
+        harness.update_view(window, |view, window, cx| {
+            assert_eq!(view.transparency.translucent, blurring);
+            // No overlay dims an inactive pane under a faded root; it
+            // tints instead, as a translucent background does.
+            assert_eq!(
+                view.dim_layers(
+                    left,
+                    PaneId::new(u64::MAX),
+                    2,
+                    view.tab_colors()
+                )
+                .count(),
+                usize::from(!blurring)
+            );
+            // The sample lands in the focused pane, which no tint changes.
+            view.focus_pane(tab, left, window, cx);
+            let layout = view.chrome_layout(window);
+            cx.notify();
+            // The bottom padding of the pane, below its title bar.
+            let frame = view.drawn_frame(left).expect("the pane was drawn");
+            (
+                point(frame.left() + px(2.0), frame.bottom() - px(1.0)),
+                layout.tabs.origin + point(px(2.0), px(2.0)),
+                color(view.config.theme.background),
+                view.tab_colors().bar,
+            )
+        });
+    let painters = |harness: &mut DesktopHarness,
+                    at: gpui::Point<Pixels>,
+                    fill: gpui::Hsla| {
+        harness.cx.update(|cx| {
+            window
+                .update(cx, |_, window, cx| {
+                    let _ = window.draw(cx);
+                    let at = at.scale(window.scale_factor());
+                    window
+                        .painted_quads()
+                        .iter()
+                        .filter(|quad| {
+                            quad.bounds.contains(&at)
+                                && quad.content_mask.bounds.contains(&at)
+                                && quad
+                                    .background
+                                    .as_solid()
+                                    .is_some_and(|solid| same_rgb(solid, fill))
+                        })
+                        .map(|quad| quad.background.as_solid().unwrap().a)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        })
+    };
+    // The root's opacity multiplies every primitive, so each region has
+    // exactly one background painter, at the opacity.
+    let expected = if blurring { 0.6 } else { 1.0 };
+    for (label, at, fill) in [
+        ("terminal padding", terminal_at, background),
+        ("tab bar", bar_at, bar),
+    ] {
+        let found = painters(&mut harness, at, fill);
+        assert_eq!(found.len(), 1, "{label}: {found:?}");
+        assert!(close(found[0], expected), "{label}: {found:?}");
     }
 }

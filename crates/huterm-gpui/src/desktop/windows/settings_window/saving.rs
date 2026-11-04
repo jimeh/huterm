@@ -470,13 +470,52 @@ impl SettingsView {
         self.scan_fonts(cx);
     }
 
-    /// The value a control shows: a pending change, else the file's, else
-    /// the default.
+    /// The value a control shows, which rendering and stepping share: a
+    /// pending change, else the file's, else the inherited setting's own
+    /// shown value, else the default. A pending reset holds no value,
+    /// except that an inheriting setting shows and steps from what it
+    /// inherits.
     pub(super) fn value(&self, setting: &Setting) -> Option<Value> {
         match self.pending.get(setting.path.as_str()) {
-            Some(value) => value.clone(),
-            None => shown(setting, &self.file, &self.defaults),
+            Some(Some(value)) => Some(value.clone()),
+            Some(None) if setting.inherits.is_some() => {
+                self.default_value(setting)
+            }
+            Some(None) => None,
+            None => shown(
+                setting,
+                &self.file,
+                &self.defaults,
+                self.inherited(setting),
+            ),
         }
+    }
+
+    /// How a field shows the file's value, or what the setting shows while
+    /// the file leaves it unset.
+    pub(super) fn shown_text(&self, setting: &Setting) -> String {
+        field_text(shown(
+            setting,
+            &self.file,
+            &self.defaults,
+            self.inherited(setting),
+        ))
+    }
+
+    /// The shown value of the setting `setting` inherits, if it inherits.
+    pub(super) fn inherited(&self, setting: &Setting) -> Option<Value> {
+        let parent = self.model.setting(setting.inherits.as_deref()?)?;
+        self.value(parent).or_else(|| self.default_value(parent))
+    }
+
+    /// Whether `setting` shows what it inherits: it inherits, and neither a
+    /// pending change nor the file sets it.
+    pub(super) fn inheriting(&self, setting: &Setting) -> bool {
+        setting.inherits.is_some()
+            && match self.pending.get(setting.path.as_str()) {
+                Some(pending) => pending.is_none(),
+                None => !self.file.is_set(&setting.path),
+            }
     }
 
     /// Puts each field's text back to what the file and defaults show. A
@@ -507,9 +546,9 @@ impl SettingsView {
         else {
             return;
         };
-        let text = self.batch_baseline(setting, path).unwrap_or_else(|| {
-            field_text(shown(setting, &self.file, &self.defaults))
-        });
+        let text = self
+            .batch_baseline(setting, path)
+            .unwrap_or_else(|| self.shown_text(setting));
         let current = field.read(cx).text().to_owned();
         let draft = self
             .synced
@@ -1364,11 +1403,7 @@ impl SettingsView {
                 self.set_globals(written.keys.globals);
                 self.wrote(written.snapshot);
                 self.status.saved();
-                let saved = field_text(shown(
-                    change.setting,
-                    &self.file,
-                    &self.defaults,
-                ));
+                let saved = self.shown_text(change.setting);
                 self.adopt_saved_field(key, change.typed.as_deref(), saved, cx);
                 self.sync_fields(cx);
                 self.forget_gone_layouts(cx);
@@ -1643,12 +1678,10 @@ impl SettingsView {
         field_text(value.or_else(|| self.default_value(setting)))
     }
 
-    /// The value the setting takes when the file leaves it unset, if any.
+    /// The value the setting takes when the file leaves it unset, if any:
+    /// what it inherits, else its default.
     pub(super) fn default_value(&self, setting: &Setting) -> Option<Value> {
-        self.defaults
-            .get(setting.path.as_str())
-            .or(setting.default.as_ref())
-            .cloned()
+        values::unset(setting, &self.defaults, self.inherited(setting))
     }
 
     /// Whether writes are in flight or queued.

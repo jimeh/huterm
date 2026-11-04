@@ -210,6 +210,7 @@ mod tab_position;
 mod tab_strip;
 pub(super) mod tab_visibility;
 mod terminal_menu;
+mod transparency_panel;
 mod view_install;
 mod views;
 mod window_locator;
@@ -932,13 +933,6 @@ struct Desktop {
 }
 impl Global for Desktop {}
 
-pub(super) fn transparency_support(cx: &App) -> crate::transparency::Support {
-    cx.try_global::<Desktop>()
-        .map_or(crate::transparency::Support::Available, |desktop| {
-            desktop.transparency_support
-        })
-}
-
 /// Font fallbacks as Huterm last applied them, including terminal aliases.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct UnavailableFonts {
@@ -1638,7 +1632,7 @@ fn install_desktop(
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     let updater = native_updater::Updater::initialize(loaded.config.updates);
     let transparency_support = crate::transparency::support();
-    warn_transparency(loaded.config.window, transparency_support);
+    warn_transparency(&loaded.config, transparency_support);
     cx.set_global(Desktop {
         transparency_support,
         quake: quake_windows::Registry::default(),
@@ -2483,9 +2477,19 @@ fn open_window_with_profile(
     );
     let transparency_support = crate::transparency::support();
     cx.global_mut::<Desktop>().transparency_support = transparency_support;
+    // A new window has no overrides; a Quake window starts from its
+    // profile's keys.
+    let transparency_values = profile
+        .as_ref()
+        .map_or_else(crate::transparency::Layer::default, |(_, profile, _)| {
+            crate::transparency::Layer::of_profile(profile)
+        })
+        .over(crate::transparency::Values::of(&config.window));
     let result = cx.open_window(
         WindowOptions {
-            window_background: crate::transparency::appearance(
+            window_background: crate::transparency::resolve(
+                transparency_values,
+                transparency_support,
                 host.platform,
                 host.platform == Platform::Linux
                     && requested_decorations(
@@ -2495,10 +2499,8 @@ fn open_window_with_profile(
                     ) == gpui::WindowDecorations::Client
                     && transparency_support
                         == crate::transparency::Support::Available,
-                transparency_support,
-                config.window.background_opacity,
-                config.window.background_blur,
-            ),
+            )
+            .appearance,
             display_id,
             // AppKit activation maps a hidden host after installation settles.
             // X11 activation only sends EWMH focus, so that host shows now.
@@ -2593,19 +2595,9 @@ fn open_window_with_profile(
             let native_radii = pane_indicators::read_native_radii(window);
             #[cfg(not(target_os = "macos"))]
             let native_radii = NativeRadii::default();
+            // `refresh_transparency` configures it once the view exists.
             let native_alpha = crate::transparency::Alpha::default();
-            native_alpha.set_supported(
-                transparency_support == crate::transparency::Support::Available,
-            );
-            native_alpha.configure(
-                if transparency_support
-                    == crate::transparency::Support::Available
-                {
-                    f64::from(config.window.opacity)
-                } else {
-                    1.0
-                },
-            );
+            let blur = crate::transparency::Blur::default();
             let profile_requested = profile.is_some();
             let quake = profile.and_then(|(name, profile, display)| {
                 quake_windows::attach(
@@ -2614,6 +2606,7 @@ fn open_window_with_profile(
                     display,
                     reporter.clone(),
                     native_alpha.clone(),
+                    blur.clone(),
                     window,
                     cx,
                 )
@@ -2668,6 +2661,15 @@ fn open_window_with_profile(
             let view = cx.new(|cx| WorkspaceView {
                 native_alpha,
                 transparency_support,
+                transparency_values,
+                transparency: crate::transparency::Effective::default(),
+                root_opacity: crate::transparency::RootOpacity::default(),
+                blur,
+                panel: None,
+                panel_popover: Popover::new(),
+                panel_scrollbar: crate::ui::list_scrollbar::ListScrollbar::new(
+                    gpui::ScrollHandle::new(),
+                ),
                 background_appearance: None,
                 frame_clock,
                 quake,
@@ -2770,7 +2772,7 @@ fn open_window_with_profile(
                 drawn_dialog_groups: None,
             });
             view.update(cx, |view, cx| {
-                view.native_alpha.sync(window, cx);
+                view.refresh_transparency(window, cx);
                 view.frame_clock.observe(cx);
                 // A field's menu over Licenses reaches past its panel.
                 view.dialog.beneath(&view.popover);
@@ -2828,10 +2830,11 @@ fn open_window_with_profile(
                         view.cancel_reorder(window, cx);
                         view.cancel_pane_drag(window, cx);
                         view.drag_right_press = false;
-                        // An open menu closes, as AppKit menus and GTK
-                        // popovers do, and focus is on the terminal when
+                        // An open menu or panel closes, as AppKit menus and
+                        // GTK popovers do, and focus is on the terminal when
                         // the window comes back.
                         view.close_menu(MenuFocusReturn::Terminal, window, cx);
+                        view.close_panel(window, cx);
                     }
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
@@ -2962,6 +2965,7 @@ impl refresh::Animated for WorkspaceView {
         let mut next = self
             .tab_scrollbars
             .schedule(now)
+            .merge(self.panel_scrollbar.schedule(now))
             .merge(self.reveal.schedule(now))
             .merge(self.pane_bars.schedule(now))
             .merge(self.pane_grab.schedule());
@@ -3039,6 +3043,9 @@ impl refresh::Animated for WorkspaceView {
             cx.notify();
         }
         if self.pane_grab.tick(now) {
+            cx.notify();
+        }
+        if self.panel_scrollbar.advance(now) {
             cx.notify();
         }
         self.advance_spring(now, window, cx);
@@ -3865,6 +3872,19 @@ struct PointerReveal {
 struct WorkspaceView {
     native_alpha: crate::transparency::Alpha,
     pub(super) transparency_support: crate::transparency::Support,
+    /// The defaults, the Quake profile's keys, and this window's overrides,
+    /// layered as `refresh_transparency` last read them.
+    transparency_values: crate::transparency::Values,
+    /// What `sync_frame` resolved from `transparency_values`.
+    pub(super) transparency: crate::transparency::Effective,
+    /// The root element's opacity, which follows native alpha writes.
+    root_opacity: crate::transparency::RootOpacity,
+    blur: crate::transparency::Blur,
+    /// The Window Transparency panel, with its own popover so closing a
+    /// menu leaves it open.
+    panel: Option<transparency_panel::Panel>,
+    panel_popover: Popover,
+    panel_scrollbar: crate::ui::list_scrollbar::ListScrollbar,
     background_appearance: Option<gpui::WindowBackgroundAppearance>,
     frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
@@ -4663,6 +4683,7 @@ impl WorkspaceView {
             || self.close.confirmation.is_some()
             || self.menu.is_some()
             || self.about.is_some()
+            || self.panel.is_some()
     }
 
     /// Appends a tab's view and model entry, activating a spawned tab, then
@@ -5059,9 +5080,101 @@ impl WorkspaceView {
         elements
     }
 
+    /// The transparency keys of the Quake profile this window serves, by
+    /// its current name. A window shown as a regular one keeps them, and a
+    /// window whose profile is gone has none.
+    fn profile_transparency(&self) -> crate::transparency::Layer {
+        self.quake
+            .as_ref()
+            .and_then(|state| self.config.quake.profiles.get(&state.name))
+            .map_or_else(
+                crate::transparency::Layer::default,
+                crate::transparency::Layer::of_profile,
+            )
+    }
+
+    /// This window's own transparency overrides.
+    fn own_transparency(&self, cx: &App) -> crate::transparency::Layer {
+        self.record(cx)
+            .map_or_else(crate::transparency::Layer::default, |record| {
+                record.transparency
+            })
+    }
+
+    /// Layers the defaults, the profile, and this window's overrides again,
+    /// and applies the result. Nothing here restarts a running Quake fade:
+    /// the fade multiplies the configured factor it finds when it writes.
+    fn refresh_transparency(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.transparency_values =
+            self.own_transparency(cx)
+                .over(self.profile_transparency().over(
+                    crate::transparency::Values::of(&self.config.window),
+                ));
+        self.sync_frame(window);
+        self.sync_transparency(window, cx);
+        cx.notify();
+    }
+
+    /// Hands the resolved values to the native alpha, root opacity, and
+    /// blur owners. Render calls it on every frame; each owner writes only
+    /// what changed.
+    fn sync_transparency(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.native_alpha.set_supported(
+            self.transparency_support
+                == crate::transparency::Support::Available,
+        );
+        self.native_alpha.configure(self.transparency.native_alpha);
+        let pending =
+            self.native_alpha.sync(window, cx, |view: &mut Self, cx| {
+                if view.root_opacity.landed() {
+                    cx.notify();
+                }
+            });
+        self.root_opacity
+            .resolve(self.transparency.root_opacity, pending);
+        self.blur.set_desired(self.transparency.blur_radius);
+        self.blur.sync(window, cx);
+    }
+
+    /// Sets or clears this window's override of one value, then repaints.
+    fn set_transparency_override(
+        &mut self,
+        key: crate::transparency::Key,
+        value: Option<f64>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let mut layer = self.own_transparency(cx);
+        layer.set(key, value);
+        self.replace_transparency_overrides(layer, window, cx);
+    }
+
+    fn replace_transparency_overrides(
+        &mut self,
+        layer: crate::transparency::Layer,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if cx
+            .global_mut::<Desktop>()
+            .windows
+            .set_transparency(self.window, layer)
+        {
+            self.refresh_transparency(window, cx);
+        }
+    }
+
     fn tab_colors(&self) -> TabColors {
-        let alpha = self.transparency_support.paint(self.config.window).0;
-        TabColors::new(&self.config.theme).background_opacity(alpha)
+        TabColors::new(&self.config.theme)
+            .background_opacity(self.transparency.background)
     }
 
     /// Colors for drag cues that float over the bar or terminal content: the
@@ -5078,9 +5191,8 @@ impl WorkspaceView {
         shown: usize,
         cx: &mut Context<'_, Self>,
     ) {
-        let (background_alpha, foreground_alpha) =
-            self.transparency_support.paint(self.config.window);
-        let tint = if background_alpha < 1.0 && !focused && shown > 1 {
+        let transparency = self.transparency;
+        let tint = if transparency.translucent && !focused && shown > 1 {
             crate::transparency::Tint {
                 dim: self.config.panes.inactive_dim,
                 darken: self.config.panes.inactive_dim_background,
@@ -5090,8 +5202,9 @@ impl WorkspaceView {
         };
         view.update(cx, |view, cx| {
             if view.renderer.borrow_mut().set_opacity(
-                background_alpha,
-                foreground_alpha,
+                transparency.background,
+                transparency.foreground,
+                transparency.translucent,
                 tint,
             ) {
                 cx.notify();
@@ -5129,8 +5242,7 @@ impl WorkspaceView {
             drawn.darkened.push((pane, alpha));
             div().absolute().inset_0().bg(gpui::black().opacity(alpha))
         });
-        let translucent =
-            self.transparency_support.paint(self.config.window).0 < 1.0;
+        let translucent = self.transparency.translucent;
         [dim, background]
             .into_iter()
             .flatten()
@@ -6137,13 +6249,13 @@ impl WorkspaceView {
         let state_changed = self.frame_state != state;
         self.frame_state = state;
         let frame = self.window_frame();
-        let appearance = crate::transparency::appearance(
+        self.transparency = crate::transparency::resolve(
+            self.transparency_values,
+            self.transparency_support,
             Platform::current(),
             frame.decorated(),
-            self.transparency_support,
-            self.config.window.background_opacity,
-            self.config.window.background_blur,
         );
+        let appearance = self.transparency.appearance;
         if self.background_appearance != Some(appearance) {
             window.set_background_appearance(appearance);
             window.refresh();
@@ -8153,12 +8265,15 @@ impl WorkspaceView {
         let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
         let geometry = self.terminal_geometry(window);
         let terminal = cx.new(|cx| {
+            // The destination's paint state as it stands now, so a pane
+            // a transfer installs late honors a newer override.
             let mut terminal = TerminalView::new(
                 viewer,
                 Rc::clone(&self.frame_clock),
                 &self.config,
                 self.family.clone(),
                 self.metrics.at_scale(window.scale_factor()),
+                self.transparency,
                 window,
                 cx,
             );
@@ -8382,6 +8497,7 @@ impl WorkspaceView {
             ));
         }
         self.cancel_pane_drag(window, cx);
+        self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
 
         let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
@@ -8770,6 +8886,16 @@ impl WorkspaceView {
                 | ids::NOTICE_RUN_ACTION
                 | ids::NOTICE_DISMISS => self.notice_availability(command),
                 ids::OPEN_MENU => self.check_available(false),
+                ids::WINDOW_TRANSPARENCY => {
+                    if self.panel.is_some() {
+                        Ok(())
+                    } else {
+                        self.check_available(true)
+                    }
+                }
+                other if transparency_panel::is_panel_command(other) => {
+                    self.panel_availability()
+                }
                 ids::MENU_SELECT_NEXT
                 | ids::MENU_SELECT_PREVIOUS
                 | ids::MENU_SELECT_FIRST
@@ -9446,6 +9572,10 @@ impl WorkspaceView {
         if let Some(tab) = self.active_view(cx) {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
+        // The open panel's own keys, before any other overlay's.
+        if transparency_panel::is_panel_command(invocation.id) {
+            return self.run_panel_command(invocation.id, window, cx);
+        }
         // A shortcut pressed while the menu is open runs its command in
         // place of the menu.
         if !is_menu_command(invocation.id) {
@@ -9457,6 +9587,7 @@ impl WorkspaceView {
             }
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
+            ids::WINDOW_TRANSPARENCY => self.toggle_panel(window, cx),
             ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
             | ids::MENU_SELECT_FIRST
@@ -9805,6 +9936,12 @@ impl WorkspaceView {
         }
         self.dialog_shown = top;
         if top.is_some() {
+            // A dialog takes focus from the panel, which closes.
+            self.dismiss_panel(
+                transparency_panel::PanelFocus::Keep,
+                window,
+                cx,
+            );
             self.dialog.open(&self.focus);
             return;
         }
@@ -10234,6 +10371,8 @@ impl WorkspaceView {
                 self.notch_shelves,
             )
         {
+            // A native Space move can drop the window server's blur.
+            self.blur.invalidate();
             // Leaving fullscreen can restore a Linux client frame. Apply it
             // before the terminals resize, so no PTY is sized for the
             // windowed chrome inside the fullscreen frame.
@@ -10330,6 +10469,8 @@ impl WorkspaceView {
         self.clear_incoming(true, window, cx);
         quake_windows::close(self, cx);
         cx.global_mut::<Desktop>().windows.begin_close(self.window);
+        self.blur.close();
+        self.close_panel(window, cx);
         self.fullscreen_work.wake.stop();
         self.fullscreen.close();
         #[cfg(target_os = "macos")]
@@ -11382,7 +11523,7 @@ fn finish_reload(
             let desktop = cx.global_mut::<Desktop>();
             desktop.system_mode = system_appearance::Mode::of(dark);
             desktop.transparency_support = crate::transparency::support();
-            warn_transparency(config.window, desktop.transparency_support);
+            warn_transparency(&config, desktop.transparency_support);
             desktop.config = config.clone();
             desktop.config_report = ConfigReport::reloaded(
                 &config,
@@ -11513,20 +11654,9 @@ impl WorkspaceView {
             self.config = config.clone();
             self.transparency_support =
                 cx.global::<Desktop>().transparency_support;
-            self.native_alpha.set_supported(
-                self.transparency_support
-                    == crate::transparency::Support::Available,
-            );
-            self.native_alpha.configure(
-                if self.transparency_support
-                    == crate::transparency::Support::Available
-                {
-                    f64::from(config.window.opacity)
-                } else {
-                    1.0
-                },
-            );
-            self.native_alpha.sync(window, cx);
+            // A reload lets a failed blur write try once more.
+            self.blur.retry();
+            self.refresh_transparency(window, cx);
             self.pane_bars
                 .set_timing(PaneBarTiming::from_config(&config.panes));
             // A change of bar mode reveals or hides the hover bars.
@@ -11540,8 +11670,7 @@ impl WorkspaceView {
             self.family.clone_from(family);
             self.metrics = *metrics;
             // `layout_pending` resizes the views at the next sync.
-            let (background_alpha, foreground_alpha) =
-                self.transparency_support.paint(config.window);
+            let transparency = self.transparency;
             for (view, geometry) in self.pane_views_with_geometry(window, cx) {
                 view.update(cx, |view, cx| {
                     let metrics = metrics.at_scale(view.metrics.scale_factor);
@@ -11551,8 +11680,9 @@ impl WorkspaceView {
                         metrics,
                     );
                     view.renderer.borrow_mut().set_opacity(
-                        background_alpha,
-                        foreground_alpha,
+                        transparency.background,
+                        transparency.foreground,
+                        transparency.translucent,
                         crate::transparency::Tint::default(),
                     );
                     view.terminal_font.clone_from(family);
@@ -11619,22 +11749,27 @@ fn chrome_background(
     .inset_0()
 }
 
-fn warn_transparency(
-    config: huterm_config::WindowConfig,
-    support: crate::transparency::Support,
-) {
-    if (config.opacity < 1.0
-        || config.background_opacity < 1.0
-        || config.foreground_opacity < 1.0)
-        && let Some(note) = support.note()
+/// Warns about the transparency the configuration asks for that the
+/// platform cannot show: the defaults and every Quake profile's values
+/// layered over them.
+fn warn_transparency(config: &Config, support: crate::transparency::Support) {
+    let defaults = crate::transparency::Values::of(&config.window);
+    let resolved: Vec<_> = std::iter::once(defaults)
+        .chain(config.quake.profiles.values().map(|profile| {
+            crate::transparency::Layer::of_profile(profile).over(defaults)
+        }))
+        .collect();
+    if resolved.iter().any(|values| {
+        values.opacity < 1.0
+            || values.background < 1.0
+            || values.foreground < 1.0
+    }) && let Some(note) = support.note()
     {
         eprintln!("Window transparency: {note}");
     }
     #[cfg(target_os = "linux")]
-    if config.background_blur {
-        eprintln!(
-            "window.background_blur is unsupported on Linux (macOS only)"
-        );
+    if resolved.iter().any(|values| values.blur > 0) {
+        eprintln!("Window blur is unsupported on Linux (macOS only)");
     }
 }
 
@@ -12176,15 +12311,21 @@ fn pane_area_top_border(
                 })))
 }
 
-fn workspace_root(decorated: bool, background: gpui::Hsla) -> gpui::Div {
-    div().when(!decorated && background.a >= 1.0, |root| {
-        root.bg(background)
-    })
+/// The window's root, which fills an opaque undecorated window. A
+/// translucent one leaves its panes and chrome the only background
+/// painters, so no fill stacks under theirs.
+fn workspace_root(
+    decorated: bool,
+    background: gpui::Hsla,
+    translucent: bool,
+) -> gpui::Div {
+    div().when(!decorated && !translucent, |root| root.bg(background))
 }
 
 fn client_frame_panel(
     content: Bounds<Pixels>,
     background: gpui::Hsla,
+    translucent: bool,
     swatch: Swatch,
 ) -> gpui::Div {
     let panel = div()
@@ -12195,7 +12336,7 @@ fn client_frame_panel(
         .h(content.size.height)
         .rounded_tl(FRAME_RADIUS)
         .rounded_tr(FRAME_RADIUS);
-    if background.a >= 1.0 {
+    if !translucent {
         return panel.bg(background).shadow(swatch.frame_shadow());
     }
     // GPUI fills a drop shadow's whole blurred rectangle, interior included,
@@ -12263,7 +12404,7 @@ impl Render for WorkspaceView {
         }
         self.measure_tab_widths(window, cx);
         self.sync_frame(window);
-        self.native_alpha.sync(window, cx);
+        self.sync_transparency(window, cx);
         self.frame_appearance.sync(
             theme_is_dark(&self.config.theme),
             window,
@@ -12278,14 +12419,15 @@ impl Render for WorkspaceView {
         let layout = self.chrome_layout(window);
         let frame = layout.frame;
         let content = layout.content;
-        // Opaque windows retain their root/frame underlay. Below alpha 1,
-        // panes and in-flow chrome own disjoint background fills.
+        // Opaque windows retain their root/frame underlay. A translucent
+        // one, including blur mode's faded root over an opaque background,
+        // leaves panes and in-flow chrome disjoint background fills.
         let decorated = frame.decorated();
         let foreground = color(self.config.theme.foreground);
-        let (background_alpha, _) =
-            self.transparency_support.paint(self.config.window);
-        let background =
-            color(self.config.theme.background).opacity(background_alpha);
+        let translucent = self.transparency.translucent;
+        let background = color(self.config.theme.background)
+            .opacity(self.transparency.background);
+        let root_opacity = self.root_opacity.painted();
         let colors = self.tab_colors();
         let swatch = tokens(&self.config.theme);
         let menu_placement = self.menu_button_placement();
@@ -12301,7 +12443,11 @@ impl Render for WorkspaceView {
         // A dialog change that skipped `sync_dialog` still opens or closes
         // the slot before its guard reads it.
         self.sync_dialog(window, cx);
-        let mut root = workspace_root(decorated, background)
+        let mut root = workspace_root(decorated, background, translucent)
+            // Blur mode fades the window's contents here, since the window
+            // server's blur fades with native alpha. Popovers, menus, and
+            // tooltips draw outside the root and stay solid.
+            .when(root_opacity < 1.0, |root| root.opacity(root_opacity))
             .size_full()
             .relative()
             .text_color(foreground)
@@ -12377,7 +12523,12 @@ impl Render for WorkspaceView {
             ))
             .child(huterm_ui::focus::tracker());
         if decorated {
-            root = root.child(client_frame_panel(content, background, swatch));
+            root = root.child(client_frame_panel(
+                content,
+                background,
+                translucent,
+                swatch,
+            ));
         }
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
@@ -12593,6 +12744,14 @@ impl Render for WorkspaceView {
                 view.close_menu(MenuFocusReturn::Terminal, window, cx);
             });
         }));
+        // The panel's own guard: a press outside it, or before its first
+        // frame, closes it and stops there, as for a menu.
+        let panel_view = cx.entity().downgrade();
+        root = root.child(self.panel_popover.guard(move |_, window, cx| {
+            let _ = panel_view.update(cx, |view, cx| {
+                view.close_panel(window, cx);
+            });
+        }));
         // A dialog's guard stops every press and wheel event on its scrim
         // outside its panel, and anywhere before its first frame. None of
         // the window's dialogs closes on an outside press, so the reason it
@@ -12655,7 +12814,7 @@ impl Render for WorkspaceView {
                     .when(decorated, |bar| {
                         bar.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS)
                     })
-                    .when(background_alpha >= 1.0, |bar| {
+                    .when(!translucent, |bar| {
                         bar.bg(
                             if shelf_bar
                                 || top_chrome_uses_bar(
@@ -12670,7 +12829,7 @@ impl Render for WorkspaceView {
                             },
                         )
                     })
-                    .when(background_alpha < 1.0, |bar| {
+                    .when(translucent, |bar| {
                         bar.child(chrome_background(
                             title_row.bounds,
                             bar_drawn.then(|| {
@@ -12900,8 +13059,8 @@ impl Render for WorkspaceView {
                         - bar_lead
                         - layout.strip_trailing)
                     .h(layout.tabs.size.height)
-                    .when(background_alpha >= 1.0, |bar| bar.bg(colors.bar))
-                    .when(background_alpha < 1.0, |bar| {
+                    .when(!translucent, |bar| bar.bg(colors.bar))
+                    .when(translucent, |bar| {
                         bar.child(chrome_background(
                             Bounds::new(
                                 point(
@@ -13559,6 +13718,9 @@ impl Render for WorkspaceView {
         ));
         if let Some(notices) = self.render_notices(layout.terminal, cx) {
             root = root.child(notices);
+        }
+        if let Some(panel) = self.render_panel(&layout, window, cx) {
+            root = root.child(panel);
         }
         if let Some(menu) = self.render_menu(&layout, window, cx) {
             root = root.child(menu);
@@ -14282,7 +14444,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        // An opening menu ends a tab or pane drag; the menu then takes focus.
+        // An opening menu closes the panel and ends a tab or pane drag; the
+        // menu then takes focus.
+        self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
         self.clear_incoming(true, window, cx);
@@ -14999,6 +15163,33 @@ impl WorkspaceView {
         )
     }
 
+    /// Smoke output for transparency: native alpha and the surface, the
+    /// root opacity the window paints, the blur radius last written, and
+    /// the panel's state.
+    fn transparency_smoke_state(
+        &self,
+        prefix: &str,
+        alpha: &str,
+        window: &Window,
+        cx: &App,
+    ) -> String {
+        let panel = match self.panel_focus(window, cx) {
+            _ if self.panel.is_none() => "closed".to_owned(),
+            None => "unfocused".to_owned(),
+            Some(control) => format!("{control:?}"),
+        };
+        format!(
+            "{prefix}native_alpha={alpha} {prefix}background_appearance={:?} {prefix}root_opacity={} {prefix}blur_radius={} {prefix}transparency_overrides={} {prefix}transparency_panel={panel}",
+            self.background_appearance,
+            self.root_opacity.painted(),
+            self.blur.applied().map_or_else(
+                || "unknown".to_owned(),
+                |radius| radius.to_string()
+            ),
+            !self.own_transparency(cx).is_empty(),
+        )
+    }
+
     /// How many platform window moves the title row has started, for smokes.
     pub(super) fn title_row_move_count(&self) -> u32 {
         self.title_row_moves.get()
@@ -15245,10 +15436,8 @@ impl WorkspaceView {
             |_| "unavailable".to_owned(),
             |value| value.to_string(),
         );
-        let transparency = format!(
-            "{prefix}native_alpha={alpha} {prefix}background_appearance={:?}",
-            self.background_appearance
-        );
+        let transparency =
+            self.transparency_smoke_state(prefix, &alpha, window, cx);
         let licenses = self.licenses_smoke_state(prefix, window, cx);
         let menu = self.menu_smoke_state(prefix, window, cx);
         let dialog_focus = self.close_buttons.focused(window);

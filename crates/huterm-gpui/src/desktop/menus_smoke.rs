@@ -35,6 +35,8 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     shortcut("Cut", "x")?;
     shortcut("Copy", "c")?;
     marker("default-edit-shortcuts");
+    check_view_transparency()?;
+    marker("view-window-transparency");
     let mut config = Config {
         keybindings: vec![
             KeybindingEntry {
@@ -121,6 +123,24 @@ fn check(cx: &mut App) -> anyhow::Result<()> {
     );
     marker("reloaded-palette-shortcut");
     marker("reloaded-special-shortcuts");
+    Ok(())
+}
+
+/// Window Transparency… has no default shortcut and shares Toggle
+/// Fullscreen's group in the View menu, just before it.
+fn check_view_transparency() -> anyhow::Result<()> {
+    const TITLE: &str = "Window Transparency\u{2026}";
+    unbound_menu_item(TITLE)?;
+    let view = crate::native_quit::menu_titles("View")?;
+    let at = view.iter().position(|title| title == TITLE);
+    anyhow::ensure!(
+        at.is_some_and(|at| {
+            view.get(at + 1).map(String::as_str) == Some("Toggle Fullscreen")
+                && at > 0
+                && view.get(at - 1).is_some_and(String::is_empty)
+        }),
+        "View menu order: {view:?}"
+    );
     Ok(())
 }
 

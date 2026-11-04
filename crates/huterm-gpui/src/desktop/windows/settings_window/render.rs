@@ -18,7 +18,7 @@ use huterm_ui::components::input::Input;
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::item::Item;
 use huterm_ui::components::prose::Prose;
-use huterm_ui::components::scroll_area::ScrollArea;
+use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::tabs::Tabs;
 use huterm_ui::tokens::size;
 use huterm_ui::typography::ui;
@@ -506,7 +506,7 @@ impl SettingsView {
         let read_only = self.read_only_reason(setting);
         let foreign = foreign_note(setting);
         let note = apply_note(setting.apply).filter(|_| foreign.is_none());
-        let description = foreign.or_else(|| setting.description.clone());
+        let description = foreign.or_else(|| self.row_description_of(setting));
         let changed = self.file.is_set(path);
         let control =
             self.render_control(setting, read_only.clone(), swatch, window, cx);
@@ -606,6 +606,35 @@ impl SettingsView {
             .children(body)
             .children(conflict)
             .into_any_element()
+    }
+
+    /// A row's own description. An inheriting row that the file leaves
+    /// unset says where its value comes from instead, with that value, such
+    /// as "Uses Appearance > Transparency (60%).".
+    pub(super) fn row_description_of(
+        &self,
+        setting: &Setting,
+    ) -> Option<String> {
+        if self.inheriting(setting)
+            && let Some(parent) = setting
+                .inherits
+                .as_deref()
+                .and_then(|path| self.model.setting(path))
+        {
+            let shown = self
+                .inherited(setting)
+                .as_ref()
+                .and_then(super::super::super::settings::values::as_number)
+                .map_or_else(String::new, |value| {
+                    format!(" ({})", super::controls::readout(parent, value))
+                });
+            return Some(format!(
+                "Uses {} > {}{shown}.",
+                parent.section.title(),
+                parent.group
+            ));
+        }
+        setting.description.clone()
     }
 
     /// The warning under a row whose value changed in the file while an
@@ -955,14 +984,55 @@ impl SettingsView {
                     _ => vec![self.render_row(setting, swatch, window, cx)],
                 })
                 .collect();
-            cards.push(group_card(
+            let card = group_card(
                 id(format!("settings-group-{}-{}", section.id(), group.title)),
                 &group.title,
                 rows,
                 swatch,
-            ));
+            );
+            cards.push(
+                if !searching
+                    && self.reveal_group.as_deref() == Some(&group.title)
+                {
+                    self.revealing(card, cx)
+                } else {
+                    card
+                },
+            );
         }
         cards
+    }
+
+    /// `card` with a probe that scrolls the pane to it once it paints, then
+    /// forgets the request.
+    fn revealing(
+        &self,
+        card: AnyElement,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let view = cx.entity().downgrade();
+        let scroll = self.scroll.clone();
+        let probe = canvas(
+            |_, _, _| {},
+            move |bounds, (), window, _| {
+                // Recorded while the card paints, at the offset it was laid
+                // out with.
+                let target = ContentBounds::record(&scroll, bounds);
+                let view = view.clone();
+                window.on_next_frame(move |_, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.reveal_group = None;
+                        if ScrollArea::reveal(&view.scroll, target) {
+                            view.scrollbar.show();
+                        }
+                        cx.notify();
+                    });
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
+        div().relative().child(card).child(probe).into_any_element()
     }
 
     /// The button that shows or hides advanced settings in every section,

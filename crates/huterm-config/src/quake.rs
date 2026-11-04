@@ -173,6 +173,77 @@ pub struct Profile {
         ))
     )]
     pub animation_ms: u16,
+    /// How opaque this profile's windows are, text and chrome included, from
+    /// 0.1 to 1. Unset uses `[window] opacity`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(range(min = 0.1, max = 1), extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Transparency",
+            "x-huterm-label" = "Opacity",
+            "x-huterm-order" = 90,
+            "x-huterm-apply" = "live",
+            "x-huterm-control" = "slider",
+            "x-huterm-step" = 0.05,
+            "x-huterm-inherits" = "window.opacity"
+        ))
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    /// How opaque the background of this profile's windows is, from 0 to 1.
+    /// Unset uses `[window] background_opacity`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(range(min = 0, max = 1), extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Transparency",
+            "x-huterm-label" = "Background opacity",
+            "x-huterm-order" = 100,
+            "x-huterm-apply" = "live",
+            "x-huterm-control" = "slider",
+            "x-huterm-step" = 0.05,
+            "x-huterm-inherits" = "window.background_opacity"
+        ))
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_opacity: Option<f32>,
+    /// How opaque the text of this profile's windows is, from 0.1 to 1.
+    /// Unset uses `[window] foreground_opacity`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(range(min = 0.1, max = 1), extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Transparency",
+            "x-huterm-label" = "Text opacity",
+            "x-huterm-order" = 110,
+            "x-huterm-apply" = "live",
+            "x-huterm-control" = "slider",
+            "x-huterm-step" = 0.05,
+            "x-huterm-inherits" = "window.foreground_opacity"
+        ))
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground_opacity: Option<f32>,
+    /// The blur radius of this profile's windows while they are translucent,
+    /// from 0 (off) to 64 points, on macOS only. Unset uses `[window] blur`.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(range(min = 0, max = 64), extend(
+            "x-huterm-section" = "quake",
+            "x-huterm-group" = "Transparency",
+            "x-huterm-label" = "Blur",
+            "x-huterm-order" = 120,
+            "x-huterm-apply" = "live",
+            "x-huterm-platform" = "macos",
+            "x-huterm-control" = "slider",
+            "x-huterm-step" = 1,
+            "x-huterm-unit" = "pt",
+            "x-huterm-zero-label" = "Off",
+            "x-huterm-inherits" = "window.blur"
+        ))
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blur: Option<u8>,
 }
 impl Default for Profile {
     fn default() -> Self {
@@ -185,10 +256,29 @@ impl Default for Profile {
             hide_on_focus_loss: true,
             animation: Animation::Auto,
             animation_ms: 150,
+            opacity: None,
+            background_opacity: None,
+            foreground_opacity: None,
+            blur: None,
         }
     }
 }
 impl Profile {
+    /// Whether `other` shows and places its window as this one does: every
+    /// field but the transparency keys, which apply live without a new
+    /// show.
+    #[must_use]
+    pub fn same_presentation(&self, other: &Self) -> bool {
+        let presentation = |profile: &Self| Self {
+            opacity: None,
+            background_opacity: None,
+            foreground_opacity: None,
+            blur: None,
+            ..profile.clone()
+        };
+        presentation(self) == presentation(other)
+    }
+
     fn validate(&self) -> Result<(), String> {
         if [self.width, self.height]
             .iter()
@@ -200,6 +290,18 @@ impl Profile {
         }
         if self.animation_ms > 1000 {
             return Err("animation_ms must be between 0 and 1000".into());
+        }
+        for (key, value, min) in [
+            ("opacity", self.opacity, 0.1),
+            ("background_opacity", self.background_opacity, 0.0),
+            ("foreground_opacity", self.foreground_opacity, 0.1),
+        ] {
+            if value.is_some_and(|value| !(min..=1.0).contains(&value)) {
+                return Err(format!("{key} must be between {min} and 1"));
+            }
+        }
+        if self.blur.is_some_and(|blur| blur > crate::MAX_BLUR) {
+            return Err("blur must be between 0 and 64".into());
         }
         if !matches!(self.display.as_str(), "active" | "pointer" | "primary")
             && self
@@ -297,5 +399,48 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn transparency_keys_are_optional_ranged_and_outside_presentation() {
+        let unset: Profile = toml::from_str("").unwrap();
+        assert_eq!(
+            (
+                unset.opacity,
+                unset.background_opacity,
+                unset.foreground_opacity,
+                unset.blur
+            ),
+            (None, None, None, None)
+        );
+        assert!(
+            !toml::to_string(&unset).unwrap().contains("opacity"),
+            "unset keys stay out of a written profile"
+        );
+        let set: Profile = toml::from_str(
+            "opacity = 0.8\nbackground_opacity = 0\n\
+             foreground_opacity = 0.1\nblur = 64",
+        )
+        .unwrap();
+        set.validate().unwrap();
+        assert_eq!(set.blur, Some(64));
+        for (key, value) in [
+            ("opacity", "0.05"),
+            ("background_opacity", "1.5"),
+            ("foreground_opacity", "0"),
+            ("blur", "65"),
+        ] {
+            let profile: Profile =
+                toml::from_str(&format!("{key} = {value}")).unwrap();
+            assert!(
+                profile.validate().unwrap_err().contains(key),
+                "{key} = {value}"
+            );
+        }
+        assert!(set.same_presentation(&Profile::default()));
+        assert!(!set.same_presentation(&Profile {
+            height: 0.6,
+            ..set.clone()
+        }));
     }
 }

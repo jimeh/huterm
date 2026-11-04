@@ -6,6 +6,7 @@ export function checkNativeMenus(exitCode: number, output: string): void {
     "default-undo-shortcuts",
     "default-balance-shortcut",
     "default-edit-shortcuts",
+    "view-window-transparency",
     "startup-update-command",
     "startup-user-shortcut",
     "untouched-default-shortcut",

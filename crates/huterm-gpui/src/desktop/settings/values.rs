@@ -66,17 +66,34 @@ fn lookup<'a>(table: &'a Table, path: &str) -> Option<&'a Value> {
     Some(value)
 }
 
-/// What a setting's control shows: the file's value, else the default.
-/// `None` for an optional setting the file leaves unset.
+/// What a setting's control shows: the file's value, else [`unset`].
+/// `None` for an optional setting that inherits nothing and that the file
+/// leaves unset.
 pub(crate) fn shown(
     setting: &Setting,
     file: &FileValues,
     defaults: &Defaults,
+    inherited: Option<Value>,
 ) -> Option<Value> {
     file.get(&setting.path)
-        .or_else(|| defaults.get(&setting.path))
-        .or(setting.default.as_ref())
         .cloned()
+        .or_else(|| unset(setting, defaults, inherited))
+}
+
+/// What a setting shows while neither a pending change nor the file sets
+/// it: the value of the setting it inherits, as that setting's own row
+/// shows it, else the platform's or the schema's default.
+pub(crate) fn unset(
+    setting: &Setting,
+    defaults: &Defaults,
+    inherited: Option<Value>,
+) -> Option<Value> {
+    inherited.or_else(|| {
+        defaults
+            .get(&setting.path)
+            .or(setting.default.as_ref())
+            .cloned()
+    })
 }
 
 /// Checks a value a control produced against the setting's kind. Patterns
@@ -328,7 +345,7 @@ mod tests {
         assert!(file.is_set("font.size"));
         assert!(!file.is_set("font.family"));
         assert_eq!(
-            shown(setting("font.size"), &file, &defaults),
+            shown(setting("font.size"), &file, &defaults, None),
             Some(Value::Float(13.0))
         );
         let family = if cfg!(target_os = "macos") {
@@ -337,21 +354,26 @@ mod tests {
             "DejaVu Sans Mono"
         };
         assert_eq!(
-            shown(setting("font.family"), &file, &defaults),
+            shown(setting("font.family"), &file, &defaults, None),
             Some(Value::String(family.into()))
         );
         assert_eq!(
-            shown(setting("terminal.bell.visual"), &file, &defaults),
+            shown(setting("terminal.bell.visual"), &file, &defaults, None),
             Some(Value::Boolean(false))
         );
         // The schema leaves out a default that differs by platform.
         assert_eq!(setting("terminal.bell.audio").default, None);
         assert_eq!(
-            shown(setting("terminal.bell.audio"), &file, &defaults),
+            shown(setting("terminal.bell.audio"), &file, &defaults, None),
             Some(Value::Boolean(cfg!(target_os = "macos")))
         );
         assert_eq!(
-            shown(setting("updates.check_interval_hours"), &file, &defaults),
+            shown(
+                setting("updates.check_interval_hours"),
+                &file,
+                &defaults,
+                None
+            ),
             None
         );
         assert_eq!(FileValues::parse(None), Ok(FileValues::default()));

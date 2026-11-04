@@ -2,6 +2,11 @@
 
 Status: implemented
 
+The blur parts of this plan, the `background_blur` key and GPUI's `Blurred`
+appearance, are superseded by
+[blur with any transparency and per-window overrides](window-transparency-overrides.md),
+which replaces them with a `blur` radius and blur mode.
+
 Issue #39 (parent #16). Adds an overall window opacity, separate background
 and text (foreground) opacity, and optional background blur, applied live on
 reload.
@@ -20,7 +25,8 @@ Jim chose these from mockups on 2026-11-03:
   Backgrounds that programs set explicitly (SGR indexed or RGB colors, even
   one equal to the theme background, and inverse video) stay solid, as with
   Ghostty's and kitty's defaults.
-- Blur is macOS only. Huterm's GPUI build is X11-only and GPUI has no X11
+- Superseded: see the note at the top. Blur is macOS only. Huterm's GPUI
+  build is X11-only and GPUI has no X11
   blur. On Linux, `background_blur` is documented as unsupported, and a load
   that sets it logs one warning. Settings hides the row there, as it hides
   every foreign-platform setting the file does not set

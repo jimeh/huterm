@@ -552,6 +552,25 @@ Enter, and Tab bindings win.
 A repeated close shortcut while `confirming` must not confirm. Menus and
 dialogs return focus to the terminal when they close; the menu button never
 keeps it, or terminal bindings stop matching until the user clicks back in.
+
+The Window Transparency panel (`windows/transparency_panel.rs`) has its own
+modal `Popover` and guard, separate from the menus' one, mounted after the
+window-level listeners as the menu's is; `close_menu` leaves it alone. Opening
+a menu (`mount_menu`, `open_native_menu`), the palette, or a dialog
+(`sync_dialog`) closes it first, and opening it closes an open menu. Its keys
+are the `panel_*` Window-scope commands under the `Panel` context, with
+`Panel control=slider` and `Panel control=button` on its controls, so Page
+Up, Page Down, Home, End, and Reset bind on sliders alone and Enter and Space
+on buttons; `run_command` routes them to the panel before its generic menu
+dismissal. Settings' commands and contexts are not reused: `Settings` would
+bring Settings entries into the palette. It closes on Escape, the command
+again, an outside press (including one before its first frame), window
+deactivation, and a window or application close, and each close focuses the
+active terminal, which is the tab's focused pane once the pane focus was on
+has closed. `overlay_holds_focus` counts it, and a reload keeps it open: its
+rows are read at render. The root's blur-mode opacity reaches what the root
+draws in flow, so the palette and dialogs fade with it, while the deferred
+popovers, menus, and tooltips stay solid.
 Focus a toast gives up while a dialog shows goes back to the control the
 dialog opened on (`restore_tab_focus`), since the terminal's hand-back
 misses a change made between two frames.
@@ -1453,6 +1472,13 @@ Constraints, descriptions, and Settings metadata live on the config types:
 what no single type owns. Every schema property needs `x-huterm-label` unless
 it is a namespace object, or `SettingsModel::load` fails, and the coverage
 test in `desktop/settings.rs` fails until a new setting has a generic control,
-an override, or a file-only entry. Doc comments become schema descriptions
+an override, or a file-only entry. `x-huterm-inherits` names the setting an
+unset one shows, steps from, and describes ("Uses Appearance > Transparency
+(60%)."), as a Quake profile's `opacity` inherits `window.opacity`; the model
+refuses a reference to a missing setting or another kind. `SettingsView::value`
+and `default_value` resolve it, so a pending Reset or a pending change to the
+inherited setting shows at once, while the changed dot, Reset, and write
+conflicts still read the profile's own key, and the inherited value is never
+written. Doc comments become schema descriptions
 with their line breaks; editors render them as soft wraps, and the model joins
 each paragraph's lines.

@@ -5320,3 +5320,4 @@ mod synced_input;
 mod system_appearance;
 
 mod transparency;
+mod transparency_panel;

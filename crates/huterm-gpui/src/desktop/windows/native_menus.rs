@@ -89,6 +89,13 @@ impl WorkspaceView {
         else {
             return false;
         };
+        // The panel closes first. A native menu leaves GPUI focus where it
+        // is, so focus goes back to the terminal.
+        self.dismiss_panel(
+            super::transparency_panel::PanelFocus::Terminal,
+            window,
+            cx,
+        );
         let menu = spec.to_native(theme_is_dark(&self.config.theme));
         let opened = match presenter.present(&menu, anchor, window) {
             Ok(opened) => opened,

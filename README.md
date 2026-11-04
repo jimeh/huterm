@@ -52,8 +52,9 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
   themes, custom themes, and automatic reload without restarting shells. A
   Settings window edits it in place, keeping comments and formatting.
 
-- **Transparency:** live window, background and text opacity, with background
-  blur on macOS.
+- **Transparency:** live window, background and text opacity, with a blur
+  radius on macOS, per Quake profile and per window from the Window
+  Transparency panel.
 
 These are not available yet:
 

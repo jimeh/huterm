@@ -3,7 +3,9 @@
 //! window's width as a percent.
 //!
 //! Anatomy: a track filled in the accent up to a round thumb, and an
-//! optional readout of the value after it, such as "50%".
+//! optional readout of the value after it, such as "50%". A readout given a
+//! width right-aligns in it, so sliders stacked in a column keep equal
+//! tracks whatever their values read.
 //!
 //! Values: the slider moves along its [`Steps`] grid, clamped to the range,
 //! so it never reports a value outside it. A value the owner gives off the
@@ -73,6 +75,7 @@ pub struct Slider {
     focus: FocusHandle,
     tokens: Tokens,
     readout: Option<SharedString>,
+    readout_width: Option<Pixels>,
     disabled: Option<SharedString>,
     key_context: Option<SharedString>,
     on_change: Option<Change>,
@@ -110,6 +113,7 @@ impl Slider {
             focus: focus.clone(),
             tokens,
             readout: None,
+            readout_width: None,
             disabled: None,
             key_context: None,
             on_change: None,
@@ -121,6 +125,13 @@ impl Slider {
     #[must_use]
     pub fn readout(mut self, text: impl Into<SharedString>) -> Self {
         self.readout = Some(text.into());
+        self
+    }
+
+    /// The readout's width, in which it right-aligns.
+    #[must_use]
+    pub fn readout_width(mut self, width: Pixels) -> Self {
+        self.readout_width = Some(width);
         self
     }
 
@@ -375,6 +386,9 @@ impl RenderOnce for Slider {
                     slider.child(
                         div()
                             .flex_none()
+                            .when_some(self.readout_width, |text, width| {
+                                text.w(width).flex().justify_end()
+                            })
                             .text_size(size::TEXT_CONTROL)
                             .text_color(tokens.muted)
                             .child(readout),

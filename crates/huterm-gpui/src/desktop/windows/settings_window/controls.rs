@@ -679,7 +679,7 @@ impl SettingsView {
 
 /// A slider's readout: its zero label at 0, else the value with its unit,
 /// or without one a percent, as the Quake window's fractions read.
-fn readout(setting: &Setting, value: f64) -> String {
+pub(super) fn readout(setting: &Setting, value: f64) -> String {
     if let Some(label) = setting.zero_label.as_ref().filter(|_| value == 0.0) {
         return label.clone();
     }

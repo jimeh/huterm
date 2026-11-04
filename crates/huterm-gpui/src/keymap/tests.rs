@@ -1070,6 +1070,72 @@ fn menu_defaults_match_only_while_a_menu_has_focus() {
 }
 
 #[test]
+fn panel_defaults_match_only_their_panel_control() {
+    for (platform, reset) in [
+        (Platform::MacOs, "cmd-backspace"),
+        (Platform::Linux, "ctrl-backspace"),
+    ] {
+        let compiled = compile(platform, &[]).unwrap();
+        let keymap = Keymap::new(compiled.bindings.clone());
+        let panel = |control: &str| {
+            [
+                KeyContext::parse("Workspace").unwrap(),
+                KeyContext::parse("Panel").unwrap(),
+                KeyContext::parse(control).unwrap(),
+            ]
+        };
+        let slider = panel(PANEL_SLIDER_CONTEXT);
+        let button = panel(PANEL_BUTTON_CONTEXT);
+        let terminal = [
+            KeyContext::parse("Workspace").unwrap(),
+            KeyContext::parse("Terminal").unwrap(),
+        ];
+        let matched = |key: &str, contexts: &[KeyContext]| {
+            let (bindings, pending) =
+                keymap.bindings_for_input(&[keystroke(key)], contexts);
+            assert!(!pending, "{platform:?}: {key} left a pending chord");
+            bindings
+                .iter()
+                .map(command_of)
+                .filter(|command| command.as_str().starts_with("panel_"))
+                .collect::<Vec<_>>()
+        };
+        for (key, command, on_slider, on_button) in [
+            ("escape", ids::PANEL_CLOSE, true, true),
+            ("tab", ids::PANEL_FOCUS_NEXT, true, true),
+            ("shift-tab", ids::PANEL_FOCUS_PREVIOUS, true, true),
+            ("up", ids::PANEL_INCREASE, true, true),
+            ("right", ids::PANEL_INCREASE, true, true),
+            ("down", ids::PANEL_DECREASE, true, true),
+            ("left", ids::PANEL_DECREASE, true, true),
+            ("pageup", ids::PANEL_PAGE_UP, true, false),
+            ("pagedown", ids::PANEL_PAGE_DOWN, true, false),
+            ("home", ids::PANEL_FIRST, true, false),
+            ("end", ids::PANEL_LAST, true, false),
+            (reset, ids::PANEL_RESET, true, false),
+            ("enter", ids::PANEL_PRESS, false, true),
+            ("space", ids::PANEL_PRESS, false, true),
+        ] {
+            assert!(
+                !compiled.reserved.is_reserved(&keystroke(key)) || key == reset,
+                "{platform:?}: {key} reserved from terminal input"
+            );
+            for (name, contexts, expected) in [
+                ("slider", &slider[..], on_slider),
+                ("button", &button[..], on_button),
+                ("terminal", &terminal[..], false),
+            ] {
+                assert_eq!(
+                    matched(key, contexts),
+                    if expected { vec![command] } else { Vec::new() },
+                    "{platform:?}: {key} on a {name}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn linux_binds_ctrl_comma_to_open_settings_and_reserves_it() {
     let compiled = compile(Platform::Linux, &[]).unwrap();
     assert!(compiled.reserved.is_reserved(&keystroke("ctrl-,")));

@@ -831,14 +831,18 @@ pub struct WindowConfig {
         "x-huterm-step" = 0.05,
     ))) ]
     pub foreground_opacity: f32,
-    /// Blurs what shows through a translucent background, on macOS only. It
-    /// has no effect while the background is opaque.
-    #[cfg_attr(feature = "schema", schemars(extend(
+    /// How strongly what shows through the window blurs whenever the window
+    /// is translucent, as a radius from 0 (off) to 64 points, on macOS only.
+    /// While it blurs, opacity fades the window's contents instead of the
+    /// whole window, so overlapping translucent layers blend unevenly.
+    #[cfg_attr(feature = "schema", schemars(range(min = 0, max = 64), extend(
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
-        "x-huterm-label" = "Background blur", "x-huterm-order" = 39,
+        "x-huterm-label" = "Blur", "x-huterm-order" = 39,
         "x-huterm-apply" = "live", "x-huterm-platform" = "macos",
+        "x-huterm-control" = "slider", "x-huterm-step" = 1,
+        "x-huterm-unit" = "pt", "x-huterm-zero-label" = "Off",
     ))) ]
-    pub background_blur: bool,
+    pub blur: u8,
     /// The grid width new ordinary windows request, from 10 to 1000 cells.
     /// Large requests are limited to the display's available area.
     #[cfg_attr(feature = "schema", schemars(range(min = 10, max = 1000), extend(
@@ -1117,6 +1121,10 @@ pub struct UpdateConfig {
     pub check_interval_hours: Option<u32>,
 }
 
+/// The largest blur radius `[window] blur` and a Quake profile's `blur`
+/// accept.
+pub const MAX_BLUR: u8 = 64;
+
 impl WindowConfig {
     fn validate_opacity(self) -> Result<(), ConfigError> {
         if !(0.1..=1.0).contains(&self.opacity) {
@@ -1134,6 +1142,11 @@ impl WindowConfig {
                 "window.foreground_opacity must be between 0.1 and 1",
             ));
         }
+        if self.blur > MAX_BLUR {
+            return Err(ConfigError::Invalid(
+                "window.blur must be between 0 and 64",
+            ));
+        }
         Ok(())
     }
 }
@@ -1144,7 +1157,7 @@ impl Default for WindowConfig {
             opacity: 1.0,
             background_opacity: 1.0,
             foreground_opacity: 1.0,
-            background_blur: false,
+            blur: 0,
             initial_columns: 100,
             initial_rows: 32,
             macos_fullscreen_mode: MacosFullscreenMode::NonNative,
@@ -4269,9 +4282,9 @@ mod panes_tests {
                 defaults.window.opacity,
                 defaults.window.background_opacity,
                 defaults.window.foreground_opacity,
-                defaults.window.background_blur
+                defaults.window.blur
             ),
-            (1.0, 1.0, 1.0, false)
+            (1.0, 1.0, 1.0, 0)
         );
         for (key, min) in [
             ("opacity", 0.1),
@@ -4296,5 +4309,28 @@ mod panes_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn window_blur_is_a_radius_and_the_old_key_is_unknown() {
+        for value in [0, 20, 64] {
+            let raw: RawConfig =
+                toml::from_str(&format!("[window]\nblur = {value}")).unwrap();
+            raw.validate_values().unwrap();
+            assert_eq!(raw.window.blur, value);
+        }
+        let raw: RawConfig = toml::from_str("[window]\nblur = 65").unwrap();
+        assert!(
+            raw.validate_values()
+                .unwrap_err()
+                .to_string()
+                .contains("window.blur")
+        );
+        assert!(toml::from_str::<RawConfig>("[window]\nblur = -1").is_err());
+        let old =
+            toml::from_str::<RawConfig>("[window]\nbackground_blur = true")
+                .unwrap_err()
+                .to_string();
+        assert!(old.contains("background_blur"), "{old}");
     }
 }

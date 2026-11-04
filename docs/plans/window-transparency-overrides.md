@@ -1,6 +1,6 @@
 # Blur with any transparency, blur strength, and per-window overrides
 
-Status: approved
+Status: implemented
 
 Issue #399. Follows [window transparency](window-transparency.md) (#39,
 PR #392). Blur applies whenever a window is translucent, its strength becomes a
@@ -392,3 +392,32 @@ None. A Codex (`gpt-6.1-sol`) plan review on 2026-11-04 led to the panel's own
 popover, the `panel_*` commands, the renderer's `translucent` flag, the
 Settings displayed-value resolver, the mode-switch ordering, and the blur
 owner's applied-state rules.
+
+## Revisions during implementation
+
+- The panel's Blur readout reads "20", as mockup A shows, and "Off" at 0.
+  Settings keeps its "20 pt" readout.
+- `huterm_ui` `Slider` gained `readout_width`, which right-aligns the readout
+  in a fixed column, so the panel's four tracks line up as in mockup A.
+- The panel's Tab order follows its visual order: Close, then each row's
+  slider and its Reset while that value is overridden, then Reset All while
+  anything is overridden, then Edit Defaults in Settings, wrapping.
+- Edit Defaults in Settings opens Settings at Appearance and scrolls to the
+  Transparency card once it paints (`settings_window::open_at_group`).
+- The panel closes when the window starts closing through `remove_window`,
+  and through `sync_dialog` when a close confirmation shows, rather than at
+  the top of `request_close`. The behavior is the same, and `request_close`
+  stays within Clippy's length limit.
+- `warn_transparency` checks the defaults and every Quake profile's keys
+  layered over them. Window overrides need no warning: without support the
+  panel's sliders are disabled, and on Linux it has no Blur row.
+- `WindowRestore::transparency` is filled from the window's record by the
+  Quit capture, so #42 only has to persist it; nothing writes it to disk.
+- A pending Reset of a setting that inherits nothing still holds no value in
+  `SettingsView::value`, as before; only an inheriting row resolves a
+  pending Reset to the inherited value.
+- The profile transparency keys apply live, unlike the other profile keys,
+  and `quake::Profile::same_presentation` compares profiles without them.
+- Smoke state gained `root_opacity`, `blur_radius` (the radius last written,
+  or `unknown`), `transparency_overrides`, and `transparency_panel` (the
+  focused control, `unfocused`, or `closed`).

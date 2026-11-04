@@ -2225,3 +2225,102 @@ fn cross_window_close_retargets_a_projected_pane_without_a_view(
     });
     runtime.worker_hooks.release(Stage::Subscribe);
 }
+
+#[gpui::test]
+fn moved_panes_and_tabs_paint_their_destinations_override(
+    cx: &mut TestAppContext,
+) {
+    use crate::transparency::Key;
+    let (mut h, source, tab, destination, workspace, _, _locator) =
+        DesktopHarness::cross_fixture(cx);
+    for window in [source, destination] {
+        h.support_transparency(window);
+    }
+    h.update_view(destination, |view, window, cx| {
+        view.set_transparency_override(Key::Background, Some(0.5), window, cx);
+    });
+    // An override changed while the transfer waits is the one the moved
+    // pane paints.
+    h.runtime.worker_hooks.hold(Stage::Transfer);
+    let pane = h.cross_pane(tab);
+    h.cross_begin(source, tab);
+    h.cross_release(source);
+    let runtime = Arc::clone(&h.runtime);
+    h.wait_for("the transfer to wait", |_| {
+        runtime.worker_hooks.held(Stage::Transfer) == 1
+    });
+    h.update_view(destination, |view, window, cx| {
+        view.set_transparency_override(Key::Background, Some(0.3), window, cx);
+    });
+    h.runtime.worker_hooks.release(Stage::Transfer);
+    h.cross_idle(destination, pane);
+    let moved = h.update_view(destination, |view, _, cx| {
+        let view = view.tabs.iter().find(|view| view.id == tab).unwrap();
+        view.panes[0]
+            .view
+            .read(cx)
+            .renderer
+            .borrow()
+            .background(None)
+            .a
+    });
+    assert!(
+        super::transparency::close(moved, 0.3),
+        "the moved pane paints {moved}"
+    );
+    assert!(
+        h.painted_backgrounds(destination)
+            .iter()
+            .all(|alpha| super::transparency::close(*alpha, 0.3))
+    );
+    // A new pane in the destination starts from its override too.
+    let first = h.first_pane(tab);
+    let split = h
+        .runtime
+        .lock()
+        .split_pane(
+            workspace,
+            tab,
+            first,
+            SplitDirection::Right,
+            &fixture(ECHO),
+        )
+        .unwrap()
+        .pane
+        .id;
+    h.wait_for("the new pane's view", |cx| {
+        pane_view(cx, destination, tab, split).is_some()
+    });
+    let created = h.cx.update(|cx| {
+        pane_view(cx, destination, tab, split)
+            .unwrap()
+            .read(cx)
+            .renderer
+            .borrow()
+            .background(None)
+            .a
+    });
+    assert!(
+        super::transparency::close(created, 0.3),
+        "the new pane paints {created}"
+    );
+    // A torn-off tab's new window has no overrides.
+    h.activate(destination, tab);
+    h.invoke(destination, ids::MOVE_TAB_TO_NEW_WINDOW).unwrap();
+    let mut torn = None;
+    h.wait_for("the tab's new window", |cx| {
+        torn = cx
+            .windows()
+            .into_iter()
+            .find(|handle| ![source, destination].contains(handle));
+        torn.is_some_and(|torn| terminal(cx, torn, tab).is_some())
+    });
+    let torn = torn.unwrap();
+    h.update_view(torn, |view, _, cx| {
+        assert!(view.own_transparency(cx).is_empty());
+        assert!(super::transparency::close(
+            view.transparency_values.background,
+            1.0
+        ));
+    });
+}

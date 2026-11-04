@@ -1707,8 +1707,44 @@
   },
   {
     "name": "window transparency combined",
-    "toml": "[window]\nopacity = 0.7\nbackground_opacity = 0.6\nforeground_opacity = 0.8\nbackground_blur = true",
+    "toml": "[window]\nopacity = 0.7\nbackground_opacity = 0.6\nforeground_opacity = 0.8\nblur = 20",
     "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window blur at its maximum",
+    "toml": "[window]\nblur = 64",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window blur rejects 65",
+    "toml": "[window]\nblur = 65",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "window background_blur is unknown",
+    "toml": "[window]\nbackground_blur = true",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "quake profile transparency keys",
+    "toml": "[quake.profiles.default]\nopacity = 0.8\nbackground_opacity = 0\nforeground_opacity = 0.1\nblur = 20",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "quake profile opacity rejects 0.09",
+    "toml": "[quake.profiles.default]\nopacity = 0.09",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "quake profile blur rejects 65",
+    "toml": "[quake.profiles.default]\nblur = 65",
+    "valid": false,
     "theme": false
   },
   {

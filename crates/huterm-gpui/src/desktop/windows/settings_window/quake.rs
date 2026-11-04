@@ -999,11 +999,56 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Vec<AnyElement> {
-        vec![
+        let mut cards = vec![
             self.render_profile_bar(swatch, window, cx),
             self.render_profile(swatch, window, cx),
-            self.render_globals(swatch, cx),
-        ]
+        ];
+        cards.extend(self.render_profile_transparency(swatch, window, cx));
+        cards.push(self.render_globals(swatch, cx));
+        cards
+    }
+
+    /// The shown profile's settings in `group`, as this platform shows
+    /// them.
+    fn profile_group(
+        &self,
+        profile: &str,
+        group: &str,
+    ) -> Vec<&'static Setting> {
+        self.model
+            .profile_settings()
+            .iter()
+            .filter(|template| template.group == group)
+            .filter_map(|template| {
+                profile_setting(
+                    self.model,
+                    &format!("{PREFIX}{profile}.{}", template.path),
+                )
+            })
+            .filter(|setting| self.shows(setting, false))
+            .collect()
+    }
+
+    /// The profile's transparency keys, under its card. An unset key shows
+    /// the Appearance value it uses.
+    fn render_profile_transparency(
+        &mut self,
+        swatch: Swatch,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let profile = self.shown_profile();
+        if !bare(&profile) {
+            return None;
+        }
+        let rows: Vec<AnyElement> = self
+            .profile_group(&profile, "Transparency")
+            .into_iter()
+            .map(|setting| self.render_row(setting, swatch, window, cx))
+            .collect();
+        (!rows.is_empty()).then(|| {
+            group_card("settings-qtransparency", "Transparency", rows, swatch)
+        })
     }
 
     fn render_profile_bar(
@@ -1058,19 +1103,7 @@ impl SettingsView {
         let title = format!("Profile \u{201c}{profile}\u{201d}");
         let mut rows = Vec::new();
         if bare(&profile) {
-            let fields: Vec<&'static Setting> = self
-                .model
-                .profile_settings()
-                .iter()
-                .filter_map(|template| {
-                    profile_setting(
-                        self.model,
-                        &format!("{PREFIX}{profile}.{}", template.path),
-                    )
-                })
-                .filter(|setting| self.shows(setting, false))
-                .collect();
-            for setting in fields {
+            for setting in self.profile_group(&profile, "Profile") {
                 rows.push(self.render_row(setting, swatch, window, cx));
             }
         } else {

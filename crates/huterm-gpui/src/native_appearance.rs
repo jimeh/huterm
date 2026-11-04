@@ -108,6 +108,41 @@ pub(crate) mod macos {
             Ok(())
         }
 
+        /// Sets the window server's background blur radius, through the
+        /// private `CGSSetWindowBackgroundBlurRadius`, for this window's
+        /// current `windowNumber`. Without the symbols it logs once per
+        /// process and leaves blur unused.
+        pub(crate) fn set_blur_radius(&self, radius: u8) -> anyhow::Result<()> {
+            let Some(symbols) = blur_symbols() else {
+                static LOGGED: std::sync::Once = std::sync::Once::new();
+                LOGGED.call_once(|| {
+                    eprintln!(
+                        "Window blur: CGSSetWindowBackgroundBlurRadius is unavailable, so windows do not blur"
+                    );
+                });
+                return Ok(());
+            };
+            // SAFETY: A retained main-thread NSWindow; both symbols were
+            // resolved with their documented C signatures.
+            unsafe {
+                let number: isize = msg_send![self.0, windowNumber];
+                ensure!(number > 0, "the window has no window number");
+                let number = i32::try_from(number).context(
+                    "the window number does not fit a CGS window ID",
+                )?;
+                let status = (symbols.set_radius)(
+                    (symbols.connection)(),
+                    number,
+                    i32::from(radius),
+                );
+                ensure!(
+                    status == 0,
+                    "CGSSetWindowBackgroundBlurRadius returned {status}"
+                );
+            }
+            Ok(())
+        }
+
         pub(super) fn set_dark(&self, dark: bool) -> anyhow::Result<()> {
             let name = if dark {
                 c"NSAppearanceNameDarkAqua"
@@ -150,6 +185,56 @@ pub(crate) mod macos {
                     .into_owned())
             }
         }
+    }
+
+    struct BlurSymbols {
+        connection: unsafe extern "C" fn() -> i32,
+        set_radius: unsafe extern "C" fn(i32, i32, i32) -> i32,
+    }
+
+    /// The window server's private blur symbols, resolved once.
+    fn blur_symbols() -> Option<&'static BlurSymbols> {
+        unsafe extern "C" {
+            fn dlsym(
+                handle: *mut std::ffi::c_void,
+                symbol: *const std::ffi::c_char,
+            ) -> *mut std::ffi::c_void;
+        }
+        // `RTLD_DEFAULT` searches every loaded image.
+        const RTLD_DEFAULT: *mut std::ffi::c_void = -2_isize as _;
+        static SYMBOLS: std::sync::OnceLock<Option<BlurSymbols>> =
+            std::sync::OnceLock::new();
+        SYMBOLS
+            .get_or_init(|| {
+                // SAFETY: `dlsym` with `RTLD_DEFAULT` and NUL-terminated
+                // names; a non-null result is the named function, whose
+                // signature these types match.
+                unsafe {
+                    let connection =
+                        dlsym(RTLD_DEFAULT, c"CGSMainConnectionID".as_ptr());
+                    let set_radius = dlsym(
+                        RTLD_DEFAULT,
+                        c"CGSSetWindowBackgroundBlurRadius".as_ptr(),
+                    );
+                    (!connection.is_null() && !set_radius.is_null()).then(
+                        || BlurSymbols {
+                            connection: std::mem::transmute::<
+                                *mut std::ffi::c_void,
+                                unsafe extern "C" fn() -> i32,
+                            >(
+                                connection
+                            ),
+                            set_radius: std::mem::transmute::<
+                                *mut std::ffi::c_void,
+                                unsafe extern "C" fn(i32, i32, i32) -> i32,
+                            >(
+                                set_radius
+                            ),
+                        },
+                    )
+                }
+            })
+            .as_ref()
     }
 
     impl Drop for NativeWindow {

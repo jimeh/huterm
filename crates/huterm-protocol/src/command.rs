@@ -700,6 +700,9 @@ pub mod ids {
     pub const PREVIOUS_TAB: CommandId = CommandId::new("previous_tab");
     /// Activates a tab by position.
     pub const SELECT_TAB: CommandId = CommandId::new("select_tab");
+    /// Opens or closes this window's transparency panel.
+    pub const WINDOW_TRANSPARENCY: CommandId =
+        CommandId::new("window_transparency");
     /// Toggles window fullscreen.
     pub const TOGGLE_FULLSCREEN: CommandId =
         CommandId::new("toggle_fullscreen");
@@ -871,6 +874,29 @@ pub mod ids {
     pub const MENU_CONFIRM: CommandId = CommandId::new("menu_confirm");
     /// Closes the open menu.
     pub const MENU_CLOSE: CommandId = CommandId::new("menu_close");
+    /// Closes the open panel.
+    pub const PANEL_CLOSE: CommandId = CommandId::new("panel_close");
+    /// Moves panel focus to the next control.
+    pub const PANEL_FOCUS_NEXT: CommandId = CommandId::new("panel_focus_next");
+    /// Moves panel focus to the previous control.
+    pub const PANEL_FOCUS_PREVIOUS: CommandId =
+        CommandId::new("panel_focus_previous");
+    /// Steps the focused panel slider up.
+    pub const PANEL_INCREASE: CommandId = CommandId::new("panel_increase");
+    /// Steps the focused panel slider down.
+    pub const PANEL_DECREASE: CommandId = CommandId::new("panel_decrease");
+    /// Steps the focused panel slider up one page.
+    pub const PANEL_PAGE_UP: CommandId = CommandId::new("panel_page_up");
+    /// Steps the focused panel slider down one page.
+    pub const PANEL_PAGE_DOWN: CommandId = CommandId::new("panel_page_down");
+    /// Moves the focused panel slider to its minimum.
+    pub const PANEL_FIRST: CommandId = CommandId::new("panel_first");
+    /// Moves the focused panel slider to its maximum.
+    pub const PANEL_LAST: CommandId = CommandId::new("panel_last");
+    /// Presses the focused panel button.
+    pub const PANEL_PRESS: CommandId = CommandId::new("panel_press");
+    /// Resets the focused panel slider's value.
+    pub const PANEL_RESET: CommandId = CommandId::new("panel_reset");
     /// Moves the notice selection down.
     pub const NOTICE_NEXT: CommandId = CommandId::new("notice_next");
     /// Moves the notice selection up.
@@ -1250,6 +1276,14 @@ const CATALOG: &[CommandSpec] = &[
                 prompt: true,
             },
         ],
+    ),
+    spec(
+        ids::WINDOW_TRANSPARENCY,
+        CommandScope::Window,
+        "Window Transparency\u{2026}",
+        "Open or close this window's transparency panel, which overrides the \
+         defaults for this window only.",
+        &[],
     ),
     spec(
         ids::TOGGLE_FULLSCREEN,
@@ -1855,6 +1889,94 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Menu: Close",
         "Close the open menu.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_CLOSE,
+        CommandScope::Window,
+        "Panel: Close",
+        "Close the open panel and return focus to the terminal.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_FOCUS_NEXT,
+        CommandScope::Window,
+        "Panel: Next Control",
+        "Move panel focus to the next control.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_FOCUS_PREVIOUS,
+        CommandScope::Window,
+        "Panel: Previous Control",
+        "Move panel focus to the previous control.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_INCREASE,
+        CommandScope::Window,
+        "Panel: Increase",
+        "Step the focused slider up.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_DECREASE,
+        CommandScope::Window,
+        "Panel: Decrease",
+        "Step the focused slider down.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_PAGE_UP,
+        CommandScope::Window,
+        "Panel: Page Up",
+        "Step the focused slider up one page.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_PAGE_DOWN,
+        CommandScope::Window,
+        "Panel: Page Down",
+        "Step the focused slider down one page.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_FIRST,
+        CommandScope::Window,
+        "Panel: Minimum",
+        "Move the focused slider to its minimum.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_LAST,
+        CommandScope::Window,
+        "Panel: Maximum",
+        "Move the focused slider to its maximum.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_PRESS,
+        CommandScope::Window,
+        "Panel: Press Button",
+        "Press the focused button.",
+        &[],
+    ),
+    spec_in(
+        "Panel",
+        ids::PANEL_RESET,
+        CommandScope::Window,
+        "Panel: Reset",
+        "Reset the focused slider's value to the one beneath it.",
         &[],
     ),
     spec_in(

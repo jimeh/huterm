@@ -98,7 +98,8 @@ weight = "regular"
 opacity = 1.0 # 0.1 through 1
 background_opacity = 1.0 # 0 through 1
 foreground_opacity = 1.0 # 0.1 through 1
-background_blur = false # macOS only; only below background opacity 1
+# Blur radius behind a translucent window, 0 (off) through 64; macOS only.
+blur = 0
 # Grid size for new ordinary windows, limited to the available display area.
 initial_columns = 100 # 10 through 1000
 initial_rows = 32 # 3 through 1000
