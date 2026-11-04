@@ -79,8 +79,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   40495981661, job 122161417130), and again on x86_64 the same day (PR
   #279, run 40576556557, job 122444431856), and 2026-10-28 on x86_64 (PR
   #311 at `465f1dbc`, run 40693317698, job 122833434701), and again
-  that day (PR #320 at `667367e6`, run 40783118712, job 123149517765).
-  Every other Linux smoke in those jobs passed, and reruns passed.
+  that day (PR #320 at `667367e6`, run 40783118712, job 123149517765),
+  and 2026-11-04 on aarch64 (PR #388 at `f52c8334`, run 41788505093, job
+  126436114743). Every other Linux smoke in those jobs passed, and reruns
+  passed.
 - **Evidence:** the smoke prints its first `RENDERER_SMOKE prepared` line
   during the first prepare, and Rust line-buffers stdout even into a pipe,
   so an empty stdout means the process hung before its first prepare. It
@@ -126,6 +128,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   other 23 threads were sleeping. Mesa's llvmpipe compiles shaders on the
   calling thread, so this fits a first draw still compiling at the
   deadline, not a deadlock.
+- **Fifth thread dump:** the PR #388 run matched the first and third:
+  stdout stopped after `application started`, stderr was empty, and the
+  supervisor's SIGTERM came at 15.02 seconds. At the 15.01-second `threads`
+  event the main `renderer_smoke` thread (its thread ID equal to the process
+  ID) was in state `D` in `folio_wait_bit_common` with syscall `-1`. The
+  rerun passed. This is the first occurrence on aarch64 since 2026-10-26.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
