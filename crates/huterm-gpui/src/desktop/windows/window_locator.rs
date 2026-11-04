@@ -52,7 +52,7 @@ pub(super) fn identity(window: &Window) -> Option<u64> {
 
 /// A native stack complete over viewable windows wins; otherwise use
 /// the model's most-recently-active-first order in its entirety.
-#[cfg(any(test, not(target_os = "macos")))]
+#[cfg(any(all(test, feature = "test-support"), not(target_os = "macos")))]
 fn ordered(
     windows: &[(gpui::WindowId, u64)],
     stack: &[u64],
@@ -105,6 +105,7 @@ pub(super) fn target_visible(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "test-support")]
     use gpui::VisualContext as _;
 
     #[test]
@@ -115,6 +116,7 @@ mod tests {
         assert!(!target_visible(true, false, true));
     }
 
+    #[cfg(feature = "test-support")]
     #[gpui::test]
     fn a_missing_or_partial_stack_uses_the_activation_order(
         cx: &mut gpui::TestAppContext,
