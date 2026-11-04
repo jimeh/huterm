@@ -791,7 +791,7 @@ verify` before handoff.
   tab-record snapshots to point here.
 - `crates/huterm-gpui/src/desktop/windows/model.rs`: update the module
   comment that says core renames "reach the model with #98".
-- `CONTEXT.md`: add **Hierarchy projection** if review agrees it is a domain
+- `GLOSSARY.md`: add **Hierarchy projection** if review agrees it is a domain
   term rather than an implementation name.
 - Issue #44: once this work merges, reference the protocol event types and the
   contract items above as the client-side contract. Confirm with the user

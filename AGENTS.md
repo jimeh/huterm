@@ -13,7 +13,7 @@ and superseded plans are history, not current rules. Each plan opens with a
 `Status:` line (proposed, approved, in progress, implemented, or superseded);
 update it in the change that ships, revises, or replaces the plan.
 
-Read [CONTEXT.md](CONTEXT.md) for canonical terminology and
+Read [GLOSSARY.md](GLOSSARY.md) for canonical terminology and
 [the workspace plan](docs/plans/workspaces-windows-tabs.md) for the agreed
 direction and follow-up milestones. Core owns a logical socket scope with
 ordered sessions, workspaces, tabs, and terminal runtimes. Each desktop window

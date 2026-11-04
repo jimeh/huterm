@@ -3,7 +3,7 @@
 Status: in progress. The first desktop milestone and session ownership are
 implemented; follow-up
 scope remains below.
-Terminology is defined in [CONTEXT.md](../../CONTEXT.md).
+Terminology is defined in [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Session ownership supersession
 

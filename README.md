@@ -290,7 +290,7 @@ repeat. The core can move tabs between workspaces and workspaces between
 sessions while keeping their terminals, processes, and attachments. The
 desktop exposes renaming but not these moves yet.
 
-[CONTEXT.md](CONTEXT.md) defines the project's terms: socket, session,
+[GLOSSARY.md](GLOSSARY.md) defines the project's terms: socket, session,
 workspace, tab, pane, terminal, attachment, viewer, and more.
 
 ## License

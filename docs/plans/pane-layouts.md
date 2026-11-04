@@ -1236,7 +1236,7 @@ Three PRs, each leaving `main` consistent and shippable:
    including its dropdown in the Settings keybinding editor;
    next, previous, and balance with their default bindings; menus;
    notices; undo recording through #256; and the tier 1, tier 2, menu, and
-   native tests. Docs: `docs/keybindings.md`, `CONTEXT.md`, and the
+   native tests. Docs: `docs/keybindings.md`, `GLOSSARY.md`, and the
    guides.
 3. **PR 3, user-defined layouts,** split on 2026-10-28 into two PRs:
    - **PR 3a, the config file.** `[panes.layouts]` and `layout_cycle` in
@@ -1260,7 +1260,7 @@ batched save and rename dialogs of Quake profile rename (#311). Its
 
 ## Documentation
 
-- `CONTEXT.md`: **Named layout** (a built-in or user-defined layout that
+- `GLOSSARY.md`: **Named layout** (a built-in or user-defined layout that
   arranges a tab's panes), **Layout template** (the text that describes a
   named layout for any pane count), and **Balance** (equal weights at every
   split of a tab, keeping its shape).
