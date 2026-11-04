@@ -1,7 +1,8 @@
 # Command records and shell directories (#352)
 
-Status: approved. Ships #352 only. Navigation, selection, and failure tint
-stay with #38, command-finished notifications with #81, and restore with #42.
+Status: implemented in PR #398. Ships #352 only. Navigation, selection, and
+failure tint stay with #38, command-finished notifications with #81, and
+restore with #42.
 
 ## Outcome
 
