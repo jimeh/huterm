@@ -2,7 +2,7 @@
 
 Status: complete. Spike for [#394], run on 2026-11-04. The harness is
 throwaway code on the [`spike/394-handover-harness`][harness] branch
-(commit `f5a068d4`) and is never merged.
+(commit `ee28cf2d`) and is never merged.
 
 ## Result
 
@@ -59,9 +59,11 @@ socket, runs the scenarios, and checks the results.
   0600 socket with a token: manifest, `validated`, descriptors over
   `SCM_RIGHTS` in batches of 64, `ready`, `committed`, `owned`.
   - The old server then calls `_exit` without running destructors. Before the
-    commit, any failure kills the new process and resumes the old readers. So
-    does a socket that closes after the commit but before `owned`, since the
-    new server sends `owned` before it reads anything.
+    commit, any failure kills the new process and resumes the old readers.
+    The harness also resumes when the socket closes or fails after the commit
+    but before `owned`, since the new server sends `owned` before it reads
+    anything. Only a read timeout counts as owned. No scenario injects a
+    failure in that window.
   - Each terminal has a shim, the shell's real parent. The server opens the
     PTY and passes the slave to the shim on stdin and a status pipe on fd 3.
     The shim calls `setsid`, ignores SIGPIPE, and forks. Its child performs
@@ -133,7 +135,7 @@ the server PID changed.
 In scenario 2 each real program first went through a handover with no nudge,
 as a negative control. vim (`vim.tiny` on Linux) did not repaint its buffer,
 and htop with a 60-second refresh delay wrote 0 bytes. After a shrink nudge,
-vim repainted and htop wrote 3.5 to 7.5 KB.
+vim repainted and htop wrote 3.6 to 7.6 kB.
 
 In scenario 3 the generator writes little-endian 64-bit counters to a terminal
 in raw mode. The checker compares every 8-byte word, so a lost or repeated
@@ -179,7 +181,7 @@ connecting the new server happen before the blackout.
 
 Where the time goes at 128 terminals:
 
-- A: stopping readers takes 3.9 to 5.2 ms, `execve` until `main` takes 2.1
+- A: stopping readers takes 3.8 to 5.2 ms, `execve` until `main` takes 2.1
   to 4.6 ms, and starting 128 readers and 128 waiter threads takes 5.2 to
   6.5 ms. Writing and parsing the state takes 0.4 to 0.6 ms.
 - B: spawning and connecting the new server, then stopping 256 workers, takes
@@ -220,8 +222,9 @@ path.
 | New build crashes after receiving the state | The process dies, so every master closes and every shell gets SIGHUP. 0 of 3 survive. | The old server sees the socket close, kills the import process, and resumes. 3 of 3 usable. |
 | Shim killed (B only) | n/a | The shell keeps running and its terminal stays usable. The harness marks the terminal exited with an `unknown` status as soon as the status pipe closes, although the shell still runs. A real server should record the shim as lost and declare the exit only when the PTY hangs up. |
 
-A crash after the commit loses everything in both approaches, since the new
-server alone holds the masters.
+A crash after `execve` loses everything in A. In B the old server holds every
+master until the new server acknowledges ownership, so the loss starts at
+`owned`, or at the ack timeout if the new server hangs.
 
 ## Surprises
 
@@ -406,6 +409,7 @@ These are proposals for [#394], not edits to it:
 
 - The new build differed from the old one only by its flags, not by real
   version skew. Its schema change was simulated with a required field.
+- No scenario injects a failure between B's commit and its ownership ack.
 - Clients reconnected only by retrying each request. #44's version
   renegotiation, snapshot resync, and the persistence of the server ID were
   not asserted.
@@ -436,8 +440,8 @@ These are proposals for [#394], not edits to it:
 [#394]: https://github.com/jimeh/huterm/issues/394
 [#44]: https://github.com/jimeh/huterm/issues/44
 [#45]: https://github.com/jimeh/huterm/issues/45
-[harness]: https://github.com/jimeh/huterm/tree/f5a068d4224e3affaa5acf5a686f931107f0d0bb/spikes/handover
-[results]: https://github.com/jimeh/huterm/tree/f5a068d4224e3affaa5acf5a686f931107f0d0bb/spikes/handover/results
+[harness]: https://github.com/jimeh/huterm/tree/ee28cf2d7166bf2acc46c6d793ec98ac89c3cc6f/spikes/handover
+[results]: https://github.com/jimeh/huterm/tree/ee28cf2d7166bf2acc46c6d793ec98ac89c3cc6f/spikes/handover/results
 [herdr-handoff]: https://github.com/herdrdev/herdr/blob/master/src/server/handoff.rs
 [herdr-actor]: https://github.com/herdrdev/herdr/blob/master/src/pty/actor/unix.rs
 [herdr-docs]: https://herdr.dev/docs/session-state/
