@@ -562,6 +562,59 @@ pub enum TerminalInput {
     Mouse(MouseInput),
 }
 
+/// Whether core may inject shell integration at launch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ShellIntegrationMode {
+    /// Load integration for supported interactive shells.
+    #[default]
+    Detect,
+    /// Start the original command without injection.
+    Off,
+}
+
+/// Optional shell integration capabilities.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub enum ShellFeature {
+    /// Append Huterm's executable directory to the shell's search path.
+    Path,
+}
+
+/// A set of optional shell integration capabilities.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ShellFeatures(std::collections::BTreeSet<ShellFeature>);
+
+impl ShellFeatures {
+    /// Whether a feature is enabled.
+    #[must_use]
+    pub fn contains(&self, feature: ShellFeature) -> bool {
+        self.0.contains(&feature)
+    }
+}
+
+impl FromIterator<ShellFeature> for ShellFeatures {
+    fn from_iter<T: IntoIterator<Item = ShellFeature>>(features: T) -> Self {
+        Self(features.into_iter().collect())
+    }
+}
+
+/// Integration requested by the client for a newly started terminal.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ShellIntegration {
+    /// Launch policy.
+    pub mode: ShellIntegrationMode,
+    /// Optional capabilities.
+    pub features: ShellFeatures,
+}
+
+impl ShellIntegration {
+    /// No shell injection, used by command fixtures and explicit opt-out.
+    pub const OFF: Self = Self {
+        mode: ShellIntegrationMode::Off,
+        features: ShellFeatures(std::collections::BTreeSet::new()),
+    };
+}
+
 /// A command used to start a terminal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalCommand {
@@ -573,6 +626,8 @@ pub struct TerminalCommand {
     pub working_directory: PathBuf,
     /// Environment overrides.
     pub environment: Vec<(String, String)>,
+    /// Shell integration requested for this launch.
+    pub shell_integration: ShellIntegration,
     /// Initial character grid.
     pub grid_size: GridSize,
     /// Initial cell pixel size.

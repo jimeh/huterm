@@ -783,3 +783,68 @@ fn malformed_utf8_directory_reports_are_nonfatal_and_ignored() {
             .any(|effect| matches!(effect, EngineEffect::Directory(_)))
     );
 }
+
+#[test]
+fn kitty_shell_cwd_preserves_literal_paths_and_host_locality() {
+    use super::{DirectoryUpdate, normalize_directory};
+    for (host, local) in [
+        ("", true),
+        ("localhost", true),
+        ("SERVER.", true),
+        ("remote", false),
+    ] {
+        let report = format!("kitty-shell-cwd://{host}/tmp/literal path#?%20");
+        let DirectoryUpdate::Set(directory) =
+            normalize_directory(&report, Some("server"))
+        else {
+            panic!("{report}");
+        };
+        assert_eq!(directory.path(), "/tmp/literal path#?%20");
+        assert_eq!(directory.is_local(), local);
+    }
+    let mut engine = engine();
+    let sequence = b"\x1b]7;kitty-shell-cwd://localhost/tmp/literal #?%20\x07";
+    for byte in sequence {
+        for effect in engine.process(&[*byte]).unwrap() {
+            if let EngineEffect::Directory(Some(directory)) = effect {
+                assert_eq!(directory.path(), "/tmp/literal #?%20");
+                assert!(directory.is_local());
+                return;
+            }
+        }
+    }
+    panic!("literal OSC 7 did not reach the metadata callback");
+}
+
+#[test]
+fn kitty_shell_cwd_rejects_controls_missing_absolute_paths_and_oversize() {
+    use super::{DirectoryUpdate, normalize_directory};
+    for report in [
+        "kitty-shell-cwd://",
+        "kitty-shell-cwd://host",
+        "kitty-shell-cwd://relative",
+        "kitty-shell-cwd://host/path\n",
+        "kitty-shell-cwd://host/path\u{7f}",
+        "kitty-shell-cwd://host/path\u{80}",
+        "kitty-shell-cwd://ho\u{9f}st/path",
+    ] {
+        assert_eq!(
+            normalize_directory(report, None),
+            DirectoryUpdate::Ignore,
+            "{report:?}"
+        );
+    }
+    assert_eq!(
+        normalize_directory(
+            &format!("kitty-shell-cwd://host/{}", "x".repeat(4096)),
+            None
+        ),
+        DirectoryUpdate::Ignore
+    );
+    let DirectoryUpdate::Set(directory) =
+        normalize_directory("file://localhost/tmp/a%20b", None)
+    else {
+        panic!("file URI changed");
+    };
+    assert_eq!(directory.path(), "/tmp/a b");
+}

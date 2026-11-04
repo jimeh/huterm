@@ -22,6 +22,7 @@ pub use jobs::{COMMAND_LINE_MAX_CHARS, JobProcess, JobState};
 pub use limits::raise_open_file_limit;
 mod mux;
 mod pty;
+mod shell_integration;
 mod terminal;
 #[cfg(test)]
 mod test_support;

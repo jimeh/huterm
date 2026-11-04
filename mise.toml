@@ -5,6 +5,9 @@ minimum_release_age = "3d"
 [tools]
 actionlint = "1.7.12"
 bun = "1.4.4"
+"aqua:fish-shell/fish-shell" = "4.9.3"
+"aqua:nushell/nushell" = "0.116.1"
+"http:elvish" = { version = "0.21.0", url = 'https://dl.elv.sh/{{ os(macos="darwin") }}-{{ arch(x64="amd64") }}/elvish-v{{ version }}.tar.gz' }
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-auditable" = "0.7.7"
 "cargo:cargo-packager" = "0.11.8"
@@ -417,6 +420,7 @@ fi
 assert_file "$bundle/Contents/Resources/terminfo/xterm-huterm.terminfo" "Huterm terminfo source"
 assert_file "$bundle/Contents/Resources/terminfo/LICENSE-ncurses" "ncurses terminfo license"
 bun scripts/terminfo.ts check "$bundle/Contents/Resources/terminfo"
+bun scripts/shell-integration.ts assets/shell-integration "$bundle/Contents/Resources/shell-integration"
 if [ ! -x "$executable" ]; then
   echo "package verification failed: executable is missing or not executable at $executable" >&2
   exit 1

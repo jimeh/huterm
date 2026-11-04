@@ -50,7 +50,8 @@ const OVERRIDES: &[(&str, Special)] = &[
 ];
 
 /// Settings that Settings never edits, leaving them to `config.toml`.
-const FILE_ONLY: &[&str] = &["themes", "terminal.engine"];
+const FILE_ONLY: &[&str] =
+    &["themes", "terminal.engine", "shell_integration.features"];
 
 /// The special control for `path`, if any.
 pub(super) fn special(path: &str) -> Option<Special> {
@@ -78,6 +79,12 @@ mod tests {
     #[test]
     fn every_setting_has_a_control_or_stays_in_the_file() {
         let model = SettingsModel::load().unwrap();
+        let mode = model.setting("shell_integration.mode").unwrap();
+        assert!(generic(mode));
+        assert!(matches!(mode.kind, SettingKind::Choice(_)));
+        assert!(special(&mode.path).is_none());
+        assert!(!file_only(&mode.path));
+        assert!(file_only("shell_integration.features"));
         for setting in model.settings() {
             let path = setting.path.as_str();
             let overridden = special(path).is_some();

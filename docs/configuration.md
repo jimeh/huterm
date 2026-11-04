@@ -152,6 +152,244 @@ exited panes for their history. An exited pane allows selection, copy,
 scrolling, links, and resizing, but sends no input. Reloading this setting
 affects only later exits.
 
+## Shell integration
+
+Huterm loads prompt and working-directory integration in the bash, zsh, fish,
+and nushell process it starts. It reports OSC 7 directories and OSC 133 prompt,
+input, execution, and completion markers, including the command's exit status.
+These directory reports also feed **Copy Directory Path** and the existing
+`terminal.new_tab_directory = "inherit"` behavior.
+
+```toml
+[shell_integration]
+mode = "detect" # detect or off; default: detect
+features = []   # opt in with ["path"]
+```
+
+`mode` is available in Settings under Terminal. Edit `features` in the file.
+Unknown features are errors, and duplicate names collapse. Reload changes only
+terminals started afterwards. The `path` feature appends `HUTERM_BIN_DIR` to
+`PATH` after startup files have run, only if that directory is missing. It does
+not add a command-line interface.
+
+| Shell | Loading and startup order |
+| --- | --- |
+| zsh | A static `ZDOTDIR` stub in Huterm resources restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
+| bash | Every bash, Apple's `/bin/bash` 3.2 included, starts as `bash --rcfile <bootstrap> -i` with the other options it was given. For a login shell (`-l`, `--login`, or `l` in combined flags such as `-il`), the bootstrap emulates the login sequence: `/etc/profile`, then the first readable `.bash_profile`, `.bash_login`, or `.profile`. Other shells read `.bashrc` or the requested `--rcfile` as bash does. `--noprofile` is honored. `--norc` starts bash without integration, because an rcfile start cannot skip a distribution's system bashrc. Bash keeps its own `ENV`, `HISTFILE`, and option defaults. |
+| fish | A vendor `conf.d` bootstrap runs after user `conf.d` snippets and before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
+| nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.116.1 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
+| elvish | Huterm adds a module directory. Add the guarded `use` below to `rc.elv`; Elvish has no automatic loading hook. |
+
+For elvish, add this to `rc.elv`:
+
+```elvish
+if (has-env HUTERM_RESOURCES_DIR) {
+    try { use huterm-integration } catch { }
+}
+```
+
+Only the initial shell is admitted automatically. A nested shell, `exec`, `su`,
+or `sudo` starts without Huterm's injection. Subshells such as `( ... )` or
+`$( ... )` inherit functions but run no prompt hooks. For integration in nested
+shells, source the body explicitly from a startup file. Repeated sourcing in
+one process does not install duplicate hooks.
+
+Bash preserves the user's history policy, including `HISTCONTROL=ignorespace`,
+and uses its normal unexported `HISTFILE=$HOME/.bash_history` default when no
+history file was inherited. Huterm's entries in `PROMPT_COMMAND` sit on lines
+(or array elements) of their own: the prompt decoration is last, and on bash
+3.2 or with `promptvars` off a status capture is first. Huterm rebuilds this
+layout at every prompt, so an installer that replaces or appends to
+`PROMPT_COMMAND` at the first prompt keeps its entries. With bash-preexec
+loaded, the capture follows its first entry and the decoration precedes its
+last one, or its pending 0.7 installer. Each entry runs only in the shell that
+loaded Huterm: a nested shell that inherits an exported `PROMPT_COMMAND` skips
+it without an error and with its `$?` and `$_` unchanged.
+
+Bash 4.4 and later emit the execution marker from `PS0`. With `promptvars` on,
+the completion marker is part of the prompt string and expands `$?`, which bash
+restores to the command's status before expanding the prompt. User
+`PROMPT_COMMAND` entries and the prompt therefore see the same `$?`, `$_`, and
+`PIPESTATUS` as in a plain shell. Only Huterm's prompt hook arms `PS0`'s
+execution marker, and `PS0`'s expansion disarms it, so a command gets that
+marker only after a prompt Huterm decorated, and empty input gets no execution
+or completion marker. With `promptvars` on, Huterm's additions to `PS1` and
+`PS0` expand Huterm's own arrays, which bash never exports, so a nested shell
+that inherits an exported `PS1` or `PS0` shows none of Huterm's markers.
+Huterm puts back the prompt it decorated only while `PS1` or `PS0` still holds
+the exact value Huterm set; a prompt that the user or a theme replaced is
+decorated as it is. With `promptvars` off, the first entry captures the status
+and restores `$?` and `$_` for the entries after it, a rise in the prompt
+command number (`\#`) marks a command, and the prompts carry static markers.
+Bash 3.2 marks execution from a `DEBUG` trap, writing the marker to the
+terminal so that a redirected first command such as `{ ...; } > file` does not
+capture it. When a `DEBUG` trap exists after the startup files, on any version,
+Huterm's trap runs it verbatim for every simple command except Huterm's own,
+with the previous status, `$_`, and `extdebug` result. Preexec-style traps,
+such as prompt timers, therefore see only user commands. Huterm does not use
+bash-preexec's callbacks or change its history policy.
+
+Zsh keeps a status hook first in `precmd_functions`, which reports completion
+and the directory, and a decoration hook last, so it wraps the prompt that the
+other hooks build. Huterm restores both positions before each command, and a
+startup file that assigns the hook arrays gets Huterm's hooks back at the first
+prompt. Commands see the prompt without Huterm's markers. Huterm puts the
+undecorated prompt back only while `PROMPT` still equals the value Huterm set,
+so it never removes a framework's markers or a prompt the user changed. When
+other hooks
+follow the decoration hook, as on the first prompt after startup files add
+theme hooks, decoration runs as a `zsh/sched` command after all `precmd` hooks
+and before the prompt is expanded. Zsh uses no ZLE widgets and never resets the
+prompt, so `prompt_subst` commands expand once. With `prompt_percent` unset,
+zsh cannot mark text as zero-width, so Huterm prints the prompt marker directly
+and omits the input marker. Both shells detect framework markers in the final
+prompt string and keep OSC 7 and `path` when they suppress OSC 133.
+
+Fish, nushell, and elvish remove only Huterm's entry from `XDG_DATA_DIRS` if a
+startup file changed its value. If it still matches the injected value, they
+restore the inherited value exactly, including unset or empty. An unset or
+empty inherited value searches the XDG defaults `/usr/local/share:/usr/share`
+during startup. Fish user `conf.d` snippets run before Huterm's vendor
+bootstrap, so their additions are preserved during cleanup.
+
+Huterm exports `HUTERM_RESOURCES_DIR` and `HUTERM_BIN_DIR` even with `mode =
+"off"` and for unsupported shells. If resources cannot be found, the resources
+variable is absent. Use a guard when sourcing manually:
+
+```bash
+# ~/.bashrc
+if [ -n "${HUTERM_RESOURCES_DIR:-}" ]; then
+    source "$HUTERM_RESOURCES_DIR/shell-integration/bash/huterm.bash"
+fi
+```
+
+```zsh
+# ~/.zshrc
+if [[ -n ${HUTERM_RESOURCES_DIR-} ]]; then
+    source "$HUTERM_RESOURCES_DIR/shell-integration/zsh/huterm.zsh"
+fi
+```
+
+```fish
+# config.fish
+if set -q HUTERM_RESOURCES_DIR
+    source "$HUTERM_RESOURCES_DIR/shell-integration/fish/huterm.fish"
+end
+```
+
+Nushell's `source` needs a parse-time constant. Put this in `config.nu`:
+
+```nu
+const huterm_body = '/path/to/resources/shell-integration/nushell/huterm.nu'
+source $huterm_body
+```
+
+Replace `/path/to/resources` with the value of `HUTERM_RESOURCES_DIR`. Use that
+literal only in a Huterm-specific config, or when the same path is installed
+wherever that config runs. A runtime `if` cannot protect an unavailable source
+file, and `$env` is not a parse-time constant. Nushell's native OSC 133 remains
+controlled by `$env.config.shell_integration.osc133`. If
+`$env.config.shell_integration.osc7` is true when Huterm's module loads, Huterm
+turns it off and reports `kitty-shell-cwd://<host><path>` at each prompt and on
+PWD changes. This preserves spaces, `#`, `?`, and `%` that nushell 0.116.1 puts
+unencoded in `file://` reports. Reports are skipped when the host or path
+contains a control character. If `osc7` is false at load, Huterm emits no OSC 7.
+
+Limitations:
+
+- A bash login shell is emulated, on every platform and version: `shopt
+  login_shell` is off, `logout` refuses, and `.bash_logout` does not run.
+  Non-login starts read `.bashrc` as bash itself does.
+- Apple bash 3.2's `DEBUG` trap reduces `PIPESTATUS` to the last command's
+  status. For example, after `false | true`, it reports `0` instead of `1 0`.
+  Every DEBUG-trap integration on that version, including bash-preexec, has
+  this limitation. Bash 4.4 and later keep the full pipeline status for
+  commands and prompts.
+- A user `DEBUG` trap that exists after the startup files runs inside Huterm's
+  trap, on every bash version, and sees `PIPESTATUS` holding only the previous
+  command's status. A trap that uses `extdebug` to skip commands based on
+  `PIPESTATUS` can therefore decide differently than in a plain shell.
+- With `promptvars` off and a scalar `PROMPT_COMMAND`, Huterm's status capture
+  runs first, so user prompt hooks see `PIPESTATUS` holding only the previous
+  command's status. Turning `promptvars` off during a session, with `shopt -u
+  promptvars`, gives that one command a completion marker without a status.
+- At the first prompt, bash's `$_` and `PIPESTATUS` come from Huterm's
+  bootstrap sourcing the last startup file: `$_` is that file's path. `$?`
+  matches a plain start. In zsh, a prompt decorated by the scheduled command
+  shows only `$?` in `pipestatus`. That happens at the first prompt when
+  startup files add `precmd` hooks or assign the hook arrays, and after a
+  command that adds `precmd` hooks.
+- A user `DEBUG` trap sees three bootstrap statements after the startup
+  files: the one that saves the trap, the one that sets it aside, and the
+  final `: "$_"` that keeps the startup status. A trap that changes `$_` leaves
+  that value at the first prompt.
+- A startup file that sets `set -e` and ends with a nonzero status exits the
+  shell before the first prompt, because the bootstrap's `source` returns
+  that status. A plain start keeps the shell. A `DEBUG` trap
+  installed after startup on bash 4.4 or later also sees Huterm's final
+  `PROMPT_COMMAND` entry.
+- When readline redraws the whole prompt, as for Ctrl-L or a terminal resize,
+  bash resends the prompt's markers, including the completion marker, so a
+  completion marker can repeat without a new execution marker. In zsh, a
+  `zle reset-prompt`, as async git prompts and transient prompts use, resends
+  the prompt and input markers.
+- Bash on distributions such as Debian, Ubuntu, and Arch reads its system
+  bashrc, such as `/etc/bash.bashrc`, for every interactive start that has an
+  rcfile. An emulated login shell therefore runs it once more than a plain
+  login start: twice when `/etc/profile` also reads it, and once with
+  `--noprofile`.
+  Huterm starts non-login bash on Linux, which matches a plain start.
+- Re-sourcing a bash startup file that replaces `PROMPT_COMMAND` removes
+  Huterm's hook from that shell: the re-sourcing command gets an execution
+  marker without a completion marker, and later prompts and commands get none.
+  With `promptvars` off, the static `PS0` marker keeps marking execution
+  without completion. A re-sourced file that keeps Huterm's entries, for
+  example by adding to `PROMPT_COMMAND`, keeps integration, and Huterm
+  decorates the file's new `PS1`. On bash 3.2, or with `promptvars` off, a
+  re-sourced file that prepends to `PROMPT_COMMAND`, as in
+  `PROMPT_COMMAND="history -a; $PROMPT_COMMAND"`, gives the next command's
+  completion marker the prepended command's status for one cycle. In zsh,
+  re-sourcing a `.zshrc` that assigns
+  `precmd_functions` loses one prompt cycle: the re-sourcing command has no
+  completion marker and the next prompt has no prompt markers. The next
+  command restores Huterm's hooks.
+- A nested bash that inherits an exported `PROMPT_COMMAND` keeps `$?` and `$_`
+  through Huterm's inherited entries, but a later entry sees `PIPESTATUS`
+  holding only `$?` after a failing command, and each inherited entry forks
+  once after a status above 1. A preexec-style `DEBUG` trap there that does
+  not skip `PROMPT_COMMAND` lines, as bash-preexec does, sees the entries as
+  commands. With `promptvars` off in the parent, an exported `PS1` or `PS0`
+  carries Huterm's static markers into nested shells; with `promptvars` off in
+  the nested shell, an inherited decorated `PS1` shows Huterm's
+  `${_huterm_bash_...-}` text.
+- With bash-preexec 0.7 on bash older than 5.1, Huterm decorates the first
+  prompt before bash-preexec installs itself, so that prompt has no Huterm
+  markers when a `precmd` function rebuilds `PS1`.
+- A standalone subshell command such as `( false )` has no execution or
+  completion markers on bash 3.2. Bash does not run the parent's DEBUG trap
+  for a subshell compound command. Enabling function tracing would change
+  user traps and still leave the parent's completion state unchanged.
+- Elvish emits A, C, D, and OSC 7, with no B marker because its asynchronous
+  prompt renderer filters control sequences. Its guarded `use` keeps a broken
+  module from stopping the rest of `rc.elv`.
+- An `/etc/zshenv` that changes `ZDOTDIR` before the stub can bypass loading.
+  Startup files that replace `XDG_DATA_DIRS` before fish or nushell discover
+  vendor files can also bypass it.
+- Bash and zsh skip their OSC 133 stream for a prompt containing another
+  framework's markers, including escaped spellings. A framework that prints
+  markers from hooks cannot be detected. OSC 7 and `path` remain active.
+- A missing bootstrap starts the original command and prints a core warning
+  at most once per process.
+  Body parse/load errors print one `huterm: shell integration failed to load:
+  <path>` line and preserve startup. Arbitrary corruption of a bootstrap before
+  its restoration code can prevent Bash's emulated startup or Zsh's restored
+  startup directory. Packaging verifies that shipped files match the source
+  at build time; runtime corruption is not detected.
+
+Huterm's own directory reports use `kitty-shell-cwd://host/literal path`.
+Spaces, `#`, `?`, and `%` stay literal. Reports containing control characters
+are skipped rather than changed. Native fish and nushell may use `file://`.
+
 ## Panes
 
 A tab splits into panes, each with its own shell; the split, focus, resize,

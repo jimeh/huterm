@@ -1,3 +1,4 @@
+import { copyShellIntegration, verifyShellIntegration } from "./shell-integration.ts";
 /** Build and verify relocatable Linux tarballs and AppImages. */
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -442,6 +443,7 @@ async function stageBundle(bundle: string, executable: string, architecture: Lin
     await copyFile(libraryPolicy.licenseSource, licenseTarget);
     privateLibraries.push({ file: relative(bundle, destination), soname, sha256: await sha256(destination), ...provenance, licenseFile: relative(bundle, licenseTarget) });
   }
+  await copyShellIntegration(join(repoRoot, "assets/shell-integration"), join(bundle, "share/huterm/shell-integration"));
   await copyMetadata(bundle);
   await copyNotices(bundle, policy);
   await runInherited("bun", ["scripts/terminfo.ts", "prepare", join(bundle, "share/huterm/terminfo")]);
@@ -500,6 +502,7 @@ async function verifyBundle(bundle: string, expectedVersion: string, expectedArc
   const policy = await readPackagePolicy();
   const tools = await readToolManifest();
   const binary = join(bundle, "bin/huterm");
+  await verifyShellIntegration(join(repoRoot, "assets/shell-integration"), join(bundle, "share/huterm/shell-integration"));
   await runInherited("bun", ["scripts/terminfo.ts", "check", join(bundle, "share/huterm/terminfo")]);
   const binaryHandle = await open(binary, constants.O_RDONLY | constants.O_NOFOLLOW);
   let binaryBytes: Buffer;

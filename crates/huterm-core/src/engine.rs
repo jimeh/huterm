@@ -47,6 +47,9 @@ fn normalize_directory(
             false,
         ));
     }
+    if let Some(literal) = reported.strip_prefix("kitty-shell-cwd://") {
+        return literal_directory(literal, server_hostname);
+    }
     let Ok(uri) = url::Url::parse(reported) else {
         return DirectoryUpdate::Ignore;
     };
@@ -66,7 +69,53 @@ fn normalize_directory(
         return DirectoryUpdate::Ignore;
     }
     let host = uri.host_str().filter(|host| !host.is_empty());
-    let local = host.is_none_or(|host| {
+    let local = directory_is_local(host, server_hostname);
+    DirectoryUpdate::Set(TerminalDirectory::new(
+        host.map(str::to_owned),
+        path,
+        local,
+    ))
+}
+
+// This format deliberately preserves spaces, URI delimiters, and percent bytes.
+fn literal_directory(
+    reported: &str,
+    server_hostname: Option<&str>,
+) -> DirectoryUpdate {
+    if reported.chars().any(char::is_control) {
+        return DirectoryUpdate::Ignore;
+    }
+    let Some(slash) = reported.find('/') else {
+        return DirectoryUpdate::Ignore;
+    };
+    let (host, path) = reported.split_at(slash);
+    let valid_host = if let Some(ipv6) = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+    {
+        ipv6.parse::<std::net::Ipv6Addr>().is_ok()
+    } else {
+        host.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')
+        })
+    };
+    if !valid_host {
+        return DirectoryUpdate::Ignore;
+    }
+    let host = (!host.is_empty()).then_some(host);
+    let local = directory_is_local(host, server_hostname);
+    DirectoryUpdate::Set(TerminalDirectory::new(
+        host.map(str::to_owned),
+        path.into(),
+        local,
+    ))
+}
+
+fn directory_is_local(
+    host: Option<&str>,
+    server_hostname: Option<&str>,
+) -> bool {
+    host.is_none_or(|host| {
         let host = host.strip_suffix('.').unwrap_or(host);
         host.eq_ignore_ascii_case("localhost")
             || server_hostname.is_some_and(|server| {
@@ -74,12 +123,7 @@ fn normalize_directory(
                     server.strip_suffix('.').unwrap_or(server),
                 )
             })
-    });
-    DirectoryUpdate::Set(TerminalDirectory::new(
-        host.map(str::to_owned),
-        path,
-        local,
-    ))
+    })
 }
 
 fn percent_decode(value: &str) -> Option<String> {

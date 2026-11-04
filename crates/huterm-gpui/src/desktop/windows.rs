@@ -7400,6 +7400,7 @@ impl WorkspaceView {
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
             self.config.terminal,
+            &self.config.shell_integration,
             self.config.window,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
@@ -7712,6 +7713,7 @@ impl WorkspaceView {
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
             self.config.terminal,
+            &self.config.shell_integration,
             self.config.window,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;

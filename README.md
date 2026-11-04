@@ -13,6 +13,9 @@ and on Linux x86_64 and aarch64 under X11 or XWayland. Every terminal uses
 [Ghostty](https://ghostty.org)'s `libghostty-vt` for terminal emulation and
 GPUI for rendering.
 
+Huterm automatically loads [shell integration](docs/configuration.md#shell-integration)
+for bash, zsh, fish, and nushell, with an opt-in Elvish module.
+
 ## What works today
 
 - **Terminals:** 24-bit color, runtime-owned scrollback with configurable row

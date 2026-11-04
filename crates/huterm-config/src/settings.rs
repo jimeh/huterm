@@ -1038,6 +1038,7 @@ mod tests {
                 "Mouse",
                 "Clipboard",
                 "Bell",
+                "Shell integration",
                 "Compatibility"
             ]
         );
@@ -1142,6 +1143,7 @@ mod tests {
             general: crate::GeneralConfig::default(),
             settings: crate::SettingsConfig::default(),
             terminal: crate::RawTerminal::default(),
+            shell_integration: crate::ShellIntegrationConfig::default(),
             font: crate::RawFont::default(),
             window: crate::WindowConfig::default(),
             tabs: crate::TabsConfig::default(),
