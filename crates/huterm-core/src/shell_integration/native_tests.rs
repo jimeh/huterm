@@ -1911,7 +1911,8 @@ trap fixture_debug DEBUG
             );
             // After the startup files, the bootstrap's first statement saves
             // the status and the trap; the next one removes the trap. The
-            // user's trap sees nothing else of Huterm's.
+            // user's trap also sees the bootstrap's final `: "$_"`, which
+            // the documentation lists; nothing else of Huterm's.
             let internals = fs::read_to_string(home.0.join("internals"))
                 .unwrap_or_default();
             assert!(

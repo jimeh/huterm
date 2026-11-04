@@ -26,9 +26,9 @@ if [[ $_huterm_bash_login == 1 ]]; then
 elif [[ -r $_huterm_bash_rcfile ]]; then
     source "$_huterm_bash_rcfile"
 fi
-# A user's DEBUG trap sees only these two statements: the first saves the
-# status, $_, and the trap, and the second sets the trap aside for Huterm's
-# own. Sourcing has already replaced $_ and PIPESTATUS from the file's last
+# A user's DEBUG trap sees these two statements and the final `: "$_"`: the
+# first saves the status, $_, and the trap, and the second sets the trap aside
+# for Huterm's own. Sourcing has already replaced $_ and PIPESTATUS from the file's last
 # command, which a plain start would show at the first prompt.
 _huterm_bash_last=$_ _huterm_bash_saved_debug=$(printf '%s:' "$?"; trap -p DEBUG)
 trap - DEBUG

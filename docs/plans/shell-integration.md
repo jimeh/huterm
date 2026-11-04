@@ -576,7 +576,10 @@ Jim approved a small finishing fix after the final dual review.
   non-login bash on Linux.
 - **ERR traps and errexit.** Huterm's two status restores, at the end of the
   bootstrap and in the wrapper around a user `DEBUG` trap, now run inside an
-  `&&` list, so a restored nonzero status no longer fires an ERR trap or exits
-  a `set -e` shell.
+  `&&` list, so a restored nonzero status no longer fires an ERR trap, and the
+  `DEBUG` wrapper no longer exits a `set -e` shell. A startup file that sets
+  `set -e` and ends nonzero still exits the shell through the bootstrap's
+  `source`, and a user `DEBUG` trap sees the final `: "$_"`; both are
+  documented P3 limitations from the verification review.
 - **Tests.** The empty-rcfile test waits for Huterm's input marker, since
   Ubuntu's system bashrc replaces the fixture's prompt even in a plain start.

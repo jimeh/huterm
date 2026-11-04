@@ -319,8 +319,13 @@ Limitations:
   shows only `$?` in `pipestatus`. That happens at the first prompt when
   startup files add `precmd` hooks or assign the hook arrays, and after a
   command that adds `precmd` hooks.
-- A user `DEBUG` trap sees two bootstrap statements after the startup files:
-  the one that saves the trap and the one that sets it aside. A `DEBUG` trap
+- A user `DEBUG` trap sees three bootstrap statements after the startup
+  files: the one that saves the trap, the one that sets it aside, and the
+  final `: "$_"` that keeps the startup status. A trap that changes `$_` leaves
+  that value at the first prompt.
+- A startup file that sets `set -e` and ends with a nonzero status exits the
+  shell before the first prompt, because the bootstrap's `source` returns
+  that status. A plain start keeps the shell. A `DEBUG` trap
   installed after startup on bash 4.4 or later also sees Huterm's final
   `PROMPT_COMMAND` entry.
 - When readline redraws the whole prompt, as for Ctrl-L or a terminal resize,
@@ -328,10 +333,11 @@ Limitations:
   completion marker can repeat without a new execution marker. In zsh, a
   `zle reset-prompt`, as async git prompts and transient prompts use, resends
   the prompt and input markers.
-- Debian-family bash (Debian, Ubuntu, Arch) reads its system bashrc, such as
-  `/etc/bash.bashrc`, for every interactive start that has an rcfile. An
-  emulated login shell therefore runs it once more than a plain login start:
-  twice when `/etc/profile` also reads it, and once with `--noprofile`.
+- Bash on distributions such as Debian, Ubuntu, and Arch reads its system
+  bashrc, such as `/etc/bash.bashrc`, for every interactive start that has an
+  rcfile. An emulated login shell therefore runs it once more than a plain
+  login start: twice when `/etc/profile` also reads it, and once with
+  `--noprofile`.
   Huterm starts non-login bash on Linux, which matches a plain start.
 - Re-sourcing a bash startup file that replaces `PROMPT_COMMAND` removes
   Huterm's hook from that shell: the re-sourcing command gets an execution
