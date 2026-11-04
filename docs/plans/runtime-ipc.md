@@ -231,7 +231,8 @@ future-framing endpoint before it parses a frame.
 
 After the preamble, the stream is a sequence of frames. A frame is a
 little-endian `u32` length, then a flags byte (final, abort), a varint
-message stream ID, and up to the frame limit of message bytes. A zero
+message stream ID, and message bytes. The length counts everything after
+itself, header included, and never exceeds the frame limit. A zero
 length, a length above the frame limit, or an unknown flag is a protocol
 violation that closes the connection, because a byte stream cannot
 resynchronize after a bad header. The frame limit is `HANDSHAKE_FRAME_LIMIT`
@@ -247,37 +248,54 @@ a frame all use the same mechanism, so there is one framing rule rather
 than one per payload kind:
 
 - **Streams.** The sender picks a stream ID for each message from IDs it
-  has no message in flight on. Frames of different streams interleave, so a
+  has no message in flight on; the first frame on a free ID starts a new
+  message. Frames of different streams interleave, so a
   large snapshot cannot hold up a keystroke echo in another terminal. Each
   direction may have at most `MAX_OPEN_STREAMS` (4) unfinished messages; a
   sender waits rather than open a fifth, and receiving a fifth is a protocol
   violation. One viewer's updates are serialized (see terminal updates).
-- **Caps, not declared totals.** No message declares its size. The first
-  bytes of a message are its kind, and every kind has a byte cap
-  (`MessageCaps` in `huterm-wire`). The receiver checks the cap as each
-  frame arrives, so it never trusts a sender's claim, and decoding checks
-  every length prefix inside the message against its field cap before
-  allocating. A message over its cap, or a frame for a stream after its
-  final frame, is a protocol violation. Decoding may be incremental or run
-  once the final frame arrives; the caps bound memory either way.
-- **Where caps come from.** For payloads the user supplies (pastes,
-  selection text, clipboard writes, effect responses), the cap is a fixed
-  constant, and the sender checks it first, refusing an oversized payload
-  locally with `LimitExceeded`, as the desktop refuses an oversized paste
-  today. For state the server sends (hierarchy snapshots, terminal status,
-  and terminal updates), core invariants keep every valid state under its
-  kind's cap, so the server never has state it cannot send. "Bounds and
-  backpressure" lists each invariant and cap.
+- **Caps, not trusted lengths.** The first bytes of a message are its kind,
+  and every kind has a byte cap (`MessageCaps` in `huterm-wire`). A message's
+  record still starts with its length, but the receiver checks that length
+  against the kind's cap before buffering, checks the cap again as each frame
+  arrives, and checks every length prefix inside the message against its field
+  cap before allocating, so it never reserves memory on a sender's word. A
+  message over its cap is a protocol violation. Decoding may be incremental or
+  run once the final frame arrives; the caps bound memory either way.
+- **Where caps come from.** Payload limits and message caps are separate.
+  A payload limit bounds what a user or terminal supplies: paste bytes,
+  selection text, clipboard text, effect responses. Core invariants bound
+  server state: grid cells, cell text, names, hierarchy items, status text.
+  A message cap is computed by one function in `huterm-wire` from those
+  limits plus the worst-case encoding overhead of its kind: varint length
+  prefixes, record headers, run headers, style-table entries, and effect or
+  request metadata. A payload at its limit, or state at every invariant's
+  limit, therefore always fits its message. A sender checks payload limits
+  first and refuses an oversized payload locally with `LimitExceeded`, as
+  the desktop refuses an oversized paste today. For each kind, slice tests
+  encode the worst case the limits allow and check it fits the computed
+  cap.
+- **Caps follow the negotiated minor version.** `MessageCaps` is a
+  function of the negotiated minor version, and `Welcome` advertises the
+  caps that bind the client. A minor version that appends fields to a kind
+  a peer on an older minor version receives must fit those fields within
+  the older version's cap, or project them away for that peer, so a newer
+  sender never pushes an older receiver over its cap.
 - **Server memory.** The server holds at most `SERVER_REASSEMBLY_BUDGET`
-  (4 MiB) of unfinished client messages, which `Welcome` advertises with
-  every cap that binds the client. A client waits rather than exceed it, so
-  a well-behaved client never meets the limit, and exceeding it is a
-  protocol violation.
+  of unfinished client messages: `MAX_OPEN_STREAMS` times the largest client
+  message cap, which is a paste at its limit, so a little over 4 MiB.
+  `Welcome` advertises it with every cap that binds the client. A client
+  waits rather than exceed it, so a well-behaved client never meets the
+  limit, and exceeding it is a protocol violation.
 - **Abort and idle.** A sender abandons an unfinished message with a frame
-  that sets the abort flag, at a frame boundary, and the receiver frees the
-  stream. A stream that receives no frame for `STREAM_IDLE_DEADLINE` (30 s)
-  is a protocol violation; the server pauses that clock while it has itself
-  stopped reading the connection.
+  that sets the abort flag, after the frame already being written, and the
+  receiver frees the stream. The sender queues a large message's frames one at
+  a time, each a copy of at most `max_frame` bytes, so abandoning a message
+  releases its source, such as a host effect's reservation, immediately; only
+  the frame already in the writer remains, and the writer-stall rule bounds
+  how long that frame can take. A stream that receives no frame for
+  `STREAM_IDLE_DEADLINE` (30 s) is a protocol violation; the server pauses
+  that clock while it has itself stopped reading the connection.
 
 A message is a message kind, as a varint, followed by that message's record.
 The primitives:
@@ -593,6 +611,15 @@ same validation as in process and returns its `ViewerId`, the current
 requested capabilities against the client kind, and a disconnect drops every
 viewer the connection holds.
 
+A terminal whose runtime stopped on its own, by a panic or a fatal I/O
+failure, stays in Mux, but core refuses to register a viewer on its closed
+registry (`Registry::register`, `TerminalViewer::subscribe`). Its final
+status stays readable after close. `SubscribeTerminal` on such a terminal
+therefore answers `Stopped` together with that final status, read under the
+same attachment and session check as a subscription, so a client still
+learns the terminal's exit and failures, including after a reconnect. Core
+gains that authorized read of a closed registry's status.
+
 **Engine damage, publication, and wire updates stay separate.** Core keeps
 consuming engine damage when it builds a snapshot, under its own publication
 ownership, exactly as today. The server turns snapshots into wire updates
@@ -738,9 +765,9 @@ that order.
   therefore holds across a refusal. The server sends `InputCapacity` when
   staging falls below half, and the client resends from the refused
   sequence. Refused input never reached core, so resending it is safe.
-- A paste larger than one frame is a multi-frame message that the server
-  reassembles into one `TerminalInput::Paste` before admission, so
-  bracketed paste stays atomic.
+- A paste larger than one frame, up to exactly `PASTE_PAYLOAD_LIMIT`, is a
+  multi-frame message that the server reassembles into one
+  `TerminalInput::Paste` before admission, so bracketed paste stays atomic.
 - Focus and geometry reports keep their in-process rules: focus is ordered
   with input and outside the byte budget, and geometry is latest-wins.
 
@@ -783,25 +810,25 @@ A disconnect never closes a terminal, workspace, or session.
 | `OUTBOUND_BUDGET` per connection | 8 MiB | Producers wait; inbound reading pauses |
 | `WRITER_STALL_DEADLINE` | 30 s | Disconnect |
 | `MAX_OPEN_STREAMS` per direction per connection | 4 | Sender waits; receiving more is a protocol violation |
-| `SERVER_REASSEMBLY_BUDGET` per connection, advertised in `Welcome` | 4 MiB | Sender waits; receiving more is a protocol violation |
+| `SERVER_REASSEMBLY_BUDGET` per connection, advertised in `Welcome` | `MAX_OPEN_STREAMS` times the paste message cap, about 4 MiB | Sender waits; receiving more is a protocol violation |
 | `STREAM_IDLE_DEADLINE` | 30 s, paused while the server is not reading | Protocol violation |
-| `CLIPBOARD_MESSAGE_CAP`, `SELECTION_MESSAGE_CAP` | 64 MiB each | Sender refuses with `LimitExceeded`; receiving more is a protocol violation |
-| `PASTE_MESSAGE_CAP` | `VIEWER_INPUT_BUDGET` | Sender refuses with `LimitExceeded`; receiving more is a protocol violation |
-| `EFFECT_RESPONSE_CAP` | 64 KiB | Sender refuses with `LimitExceeded`; receiving more is a protocol violation |
-| `REQUEST_MESSAGE_CAP`, for every other client message | 64 KiB | Protocol violation |
+| `CLIPBOARD_PAYLOAD_LIMIT`, `SELECTION_PAYLOAD_LIMIT` | 64 MiB of text each | Sender refuses with `LimitExceeded` |
+| `PASTE_PAYLOAD_LIMIT` | `VIEWER_INPUT_BUDGET` | Sender refuses with `LimitExceeded` |
+| `EFFECT_RESPONSE_PAYLOAD_LIMIT` | 64 KiB | Sender refuses with `LimitExceeded` |
+| `MessageCaps`, per kind and negotiated minor version | The kind's payload limit or core invariants plus its worst-case encoding overhead; 64 KiB for requests without a payload | Receiving more is a protocol violation |
 | `MAX_GRID_CELLS`, a core invariant | 1,048,576 cells | Core clamps every grid it is given: spawn, split, resize, and geometry reports |
 | `MAX_CELL_TEXT_BYTES`, a core invariant | 1 KiB | Core truncates at row extraction |
-| `UPDATE_MESSAGE_CAP` | Derived from the grid an update's header declares, cells times the cell-text limit plus fixed overhead | Protocol violation |
+| Update message cap | From the grid an update's header declares: per cell, the cell-text limit plus its length prefix, run header, and style-table entry; per row and per update, their headers | Protocol violation |
 | `MAX_NAME_BYTES`, a core invariant | 256 bytes | Custom names: `InvalidName`; fallback names: truncated |
 | `MAX_HIERARCHY_ITEMS`, a core invariant | 16,384 sessions, workspaces, tabs, panes, and splits together | `LimitExceeded` from the structural operation |
-| `HIERARCHY_MESSAGE_CAP` | 16 MiB, above the largest state the two invariants above allow | Protocol violation |
+| Hierarchy message cap | Computed from the two invariants above and the encoding overhead per item | Protocol violation |
 | `MAX_STATUS_TEXT_BYTES`, a core invariant | 4 KiB per title, metadata string, and failure message | Core truncates when it publishes status |
-| `STATUS_MESSAGE_CAP` | 64 KiB | Protocol violation |
+| Status message cap | Computed from `MAX_STATUS_TEXT_BYTES` for each text field and the failure log's 8 entries | Protocol violation |
 | `MAX_CLOSE_TICKETS` per connection | 16 | `LimitExceeded` |
 | `MAX_HISTORY_SLOTS` per connection | 64 | Least recently used slot evicted; `StaleUndo` |
-| `HOST_EFFECT_DELIVERY_DEADLINE` | 2 s to the first frame | Effect dropped |
+| `HOST_EFFECT_DELIVERY_DEADLINE` | 2 s from the head of the lane to the first frame | Effect dropped |
 | `HOST_EFFECT_MIN_THROUGHPUT` | Completion within the deadline plus 1 s per 8 MiB | Message aborted, effect dropped |
-| `CONNECTION_EFFECT_LIMIT` per connection per terminal | 2 of a terminal's 8 effects | Later effects for that connection's recipients denied |
+| `CONNECTION_EFFECT_SHARE` per connection per terminal | All 8 with one connection; 8 divided by the connections with recipients, at least 2, otherwise | Later effects for that connection's recipients denied |
 | `MAX_PENDING_EFFECT_RESPONSES` per connection | 8 | Fallback answer, as for a missing client |
 | `HIERARCHY_DIGEST_INTERVAL`, `UPDATE_DIGEST_INTERVAL` | 256 events, 64 deltas | Not a limit |
 
@@ -813,6 +840,15 @@ while the queue is over it, pumps and large results wait, and the server
 stops reading that connection's inbound frames, so a client that floods
 requests without reading meets socket backpressure instead of a growing
 pile of `Busy` results.
+
+Encoding memory is bounded too. A producer takes a stream slot and
+reserves the message's first frame against `OUTBOUND_BUDGET` before it
+encodes anything, and then encodes one frame at a time, each reserved the
+same way. A deterministic sizing pass computes the record length that opens
+the message without building it. A pump keeps its snapshot, an `Arc` core
+already holds, rather than an encoded copy, so a connection's encoded
+output never exceeds `OUTBOUND_BUDGET` plus one frame per open stream,
+however many viewers it has.
 
 The server disconnects a client when either condition lasts for
 `WRITER_STALL_DEADLINE`: bytes are pending and the socket accepts none, or
@@ -877,10 +913,18 @@ same wake that publications use. Every time a viewer's task wakes, it checks
 status, offers the recipient's queued effects to the connection's
 host-effect lane, and only then considers an update, which needs credit. A
 hidden viewer with no credit therefore still delivers its effects, as the
-embedded desktop does when it drains effects on every refresh. The lane
-holds one effect at a time; when it frees, it takes the next queued effect
-from the connection's recipients with pending effects, so an effect queued
-behind a large write is delivered without another wake.
+embedded desktop does when it drains effects on every refresh. Offering
+effects never waits for an update: the pump encodes one frame at a time, so
+it reaches the lane between frames of a long update. The lane holds one
+effect at a time; when it frees, it takes the next queued effect from the
+connection's recipients with pending effects, so an effect queued behind a
+large write is delivered without another wake.
+
+**Effect frames go first.** The writer sends the lane's next frame ahead of
+queued update and result frames, and the lane reserves its own one-frame
+slot rather than waiting on `OUTBOUND_BUDGET`. A busy connection therefore
+delays an effect's first frame by at most the frame already in the
+writer.
 
 The lane pops a delivery, rechecks `is_current`, assigns a
 connection-scoped `EffectId`, and sends `HostEffect { effect, viewer,
@@ -903,31 +947,40 @@ payloads span frames like any message.
   the connection's recipients, which clears their queues, and nothing is
   ever re-sent on a later connection. A client ignores effect frames it
   cannot match to its current connection.
-- **Delivery deadlines.** An effect whose first frame has not been written to
-  the socket within `HOST_EFFECT_DELIVERY_DEADLINE` (2 s) after admission is
-  dropped. Core records each effect's admission time for this, which
-  `PendingHostEffect` does not hold today. An effect whose last frame has not
-  been written within that deadline plus one second per
-  `HOST_EFFECT_MIN_THROUGHPUT` (8 MiB) of payload, 10 s for a 64 MiB write, is
-  aborted at the next frame boundary and dropped, releasing its reservations. A
-  legitimate maximum-size write on a busy connection therefore completes, and a
-  stalled remote recipient holds the terminal's effect and byte budgets for at
-  most that long, rather than denying every other recipient indefinitely, which
-  the viewers plan flagged.
+- **Delivery deadlines.** Core records each effect's admission time, which
+  `PendingHostEffect` does not hold today. An effect waits in its
+  recipient's queue only behind earlier effects in the lane, each bounded by
+  its own deadlines below. Once an effect reaches the head of the lane, its
+  first frame must be written within `HOST_EFFECT_DELIVERY_DEADLINE` (2 s),
+  and its last frame within that deadline plus one second per
+  `HOST_EFFECT_MIN_THROUGHPUT` (8 MiB) of payload, 10 s for a 64 MiB write.
+  An effect that misses either deadline is dropped at once, releasing its
+  reservations, and its message is aborted after the frame already in the
+  writer. A healthy client therefore receives every effect, including one
+  queued behind a maximum-size write, and a stalled remote recipient holds
+  the terminal's effect and byte budgets for a bounded time, rather than
+  denying every other recipient indefinitely, which the viewers plan
+  flagged.
 - **Budgets.** Each connection gets its own process-level budget, as each
-  `DesktopHostEffectClient` does today (32 effects and 128 MiB). Within a
-  terminal's budget, all of one connection's recipients together may hold at
-  most `CONNECTION_EFFECT_LIMIT` (2) of the 8 queued effects, so one connection
-  cannot exhaust another's count by spreading effects across its viewers. Bytes
-  stay shared up to the terminal's 64 MiB, the Kitty protocol's minimum write
-  size, so a recipient that stops reading in the middle of a maximum-size write
-  can deny other recipients' writes to that terminal until the completion
-  deadline, at most 10 s.
+  `DesktopHostEffectClient` does today (32 effects and 128 MiB). A terminal
+  queues at most 8 effects, as today. While recipients from only one
+  connection are registered on a terminal, that connection may use all 8,
+  so a lone client keeps today's queue depth for bursts such as a clear
+  followed by several sets. While recipients from several connections are
+  registered, each connection's recipients together may hold at most
+  `CONNECTION_EFFECT_SHARE` of them: 8 divided by the number of those
+  connections, and at least 2. A connection over its share when another
+  registers keeps its queued effects, which drain within their deadlines,
+  and its new effects are denied until it is under its share. Bytes stay
+  shared up to the terminal's 64 MiB, the Kitty protocol's minimum write
+  size, so a recipient that stops reading in the middle of a maximum-size
+  write can deny other recipients' writes to that terminal until its
+  completion deadline, at most 10 s after it reached the head of the lane.
 - **Response correlation.** An effect that needs an answer carries a
   response deadline. The server keeps a bounded pending entry per effect and
   answers the terminal with the effect's documented fallback on timeout,
   disconnect, or a refusal. A client that cannot send its answer within
-  `EFFECT_RESPONSE_CAP` sends an explicit refusal. A late or unknown
+  `EFFECT_RESPONSE_PAYLOAD_LIMIT` sends an explicit refusal. A late or unknown
   `HostEffectResult` is ignored.
   OSC 52 writes need no response; their fallback for a missing or
   incapable client is to drop the write, as in process.
@@ -1036,12 +1089,16 @@ reading only `Hello`'s frozen leading fields to do so; a minor-0 decoder
 reads a record from the test-only minor version, skipping its appended field,
 and a test-only-minor decoder reads a minor-0 record, filling the appended
 field's default, while rejecting a record cut short before a minor-0 field;
+a paste exactly at `PASTE_PAYLOAD_LIMIT` and a clipboard message exactly at
+`CLIPBOARD_PAYLOAD_LIMIT` fit their computed caps, and one byte more is
+refused locally by the sender; caps for the test-only minor version fit
+within minor 0's for every kind a minor-0 peer receives;
 a fifth open stream, a message over its kind's cap, a client message past
 the advertised reassembly budget, and an idle stream are rejected by the
 receiver, while a conforming sender waits or refuses locally with
 `LimitExceeded`; an abort frees the receiver's stream; any message split at
 every byte offset decodes identically; a hierarchy at `MAX_HIERARCHY_ITEMS`
-with every name at `MAX_NAME_BYTES` encodes under `HIERARCHY_MESSAGE_CAP`
+with every name at `MAX_NAME_BYTES` encodes under its computed cap
 and round-trips at 64 KiB frames; a client of another major version reads
 `Reject { IncompatibleMajor }`; an ID from another `RuntimeId` refuses to
 encode; the wasm check passes; the gate fails when a dependency is added to
@@ -1077,6 +1134,10 @@ Acceptance:
   table, a run whose cell counts do not fill its row, and an update whose
   header declares a grid above `MAX_GRID_CELLS` or whose bytes exceed the
   cap derived from its grid are each rejected.
+- A worst-case update, with every cell at `MAX_CELL_TEXT_BYTES` and its own
+  style, fits the cap derived from its grid at a mid-size grid and at
+  `MAX_GRID_CELLS`, and a status with every text field at
+  `MAX_STATUS_TEXT_BYTES` and 8 failures fits its cap.
 - A spawn, split, or resize above `MAX_GRID_CELLS` is clamped in core, and
   its first update encodes under its cap.
 - A grapheme longer than `MAX_CELL_TEXT_BYTES` reaches in-process and wire
@@ -1164,8 +1225,13 @@ Acceptance:
 - A credit grant to a notified viewer with no credit sends the pending
   update even when no further output arrives.
 - A client that reconnects to the same incarnation reports an exit, bells,
-  and failures that happened while it was disconnected, and one that
-  reconnects to a new incarnation starts fresh baselines.
+  and failures that happened while it was disconnected, including on a
+  terminal whose runtime stopped on a fatal failure meanwhile, which answers
+  `Stopped` with its final status; one that reconnects to a new incarnation
+  starts fresh baselines.
+- With 256 viewers on large grids under heavy output, a connection's
+  encoded output stays within `OUTBOUND_BUDGET` plus one frame per open
+  stream.
 - A scroll the server refuses does not let later typing undo a scroll the
   user made after it.
 - A scroll during a multi-frame update arrives after that update, and the
@@ -1189,19 +1255,25 @@ Acceptance:
   executed, including after a re-grant that arrives before it is handled,
   and later effects are executed normally after any number of permission
   changes.
-- A 64 MiB clipboard write whose first frame is written in time completes
-  on a busy connection; one that waits past the deadline for its first
-  frame is dropped; one whose recipient stops reading mid-message is
-  aborted at the completion deadline, after which another recipient's write
-  to the same terminal is admitted.
-- A connection at `CONNECTION_EFFECT_LIMIT` on a terminal, whatever number
-  of its viewers are recipients, does not deny effects to another
-  connection's recipient.
+- On the injected clock: a 64 MiB clipboard write, exactly at
+  `CLIPBOARD_PAYLOAD_LIMIT`, that takes 8 s on a reading client completes;
+  a small effect for another terminal on the same connection, queued behind
+  it, is delivered after it; an effect's first frame on a connection with
+  queued update frames goes out after at most the frame already in the
+  writer; and an effect whose client stops reading, including one that
+  trickles a byte at a time mid-frame, is dropped at its deadline with its
+  reservations released at once, after which another recipient's write to
+  the same terminal is admitted and the connection's framing stays valid.
+- With one connection attached, a burst of three or more OSC 52 writes in
+  one read batch is admitted, and the client ends with the last write; with
+  two connections, one at its `CONNECTION_EFFECT_SHARE` does not deny
+  effects to the other, whatever number of its viewers are recipients.
 - A hidden viewer with no credit receives an OSC 52 write, and an effect
   queued behind a 64 MiB write on the same connection is delivered once
   that write completes, with no further wake.
-- A completion-deadline abort happens at a frame boundary, releases the
-  effect's reservations, and leaves the connection's framing valid.
+- Response correlation ignores a result with an unknown or stale
+  `EffectId`, ignores a late result after its deadline's fallback, and
+  answers the fallback at once on disconnect.
 - A recipient that stops reading cannot block later effects for other
   recipients.
 - A timed-out response produces the fallback without stalling terminal
