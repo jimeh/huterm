@@ -481,6 +481,8 @@ command = "open_context_menu"
     await key("end");
     await state("w0.menu=true", "w0.menu_selection=move_tab_to_pane");
     await key("up");
+    await state("w0.menu=true", "w0.menu_selection=move_tab_to_new_window");
+    await key("up");
     await state("w0.menu=true", "w0.menu_selection=close_tabs_after");
     await key("enter");
     await state("w0.menu=false", "w0.tabs=1", "w0.active_index=0", "w0.confirming=false", "w0.terminal_focused=true", 'w0.window_title="alpha — Huterm"');
