@@ -5,10 +5,22 @@ if (has-env HUTERM_SHELL_INTEGRATION) {
 }
 if (has-env HUTERM_ORIG_XDG_DATA_DIRS) {
     var original = $E:HUTERM_ORIG_XDG_DATA_DIRS
-    if (str:has-prefix $original 1) {
-        set-env XDG_DATA_DIRS (str:trim-prefix $original 1)
-    } else {
-        unset-env XDG_DATA_DIRS
+    var saved = ''
+    if (str:has-prefix $original 1) { set saved = (str:trim-prefix $original 1) }
+    var base = $saved
+    if (eq $base '') { set base = /usr/local/share:/usr/share }
+    var current = ''
+    if (has-env XDG_DATA_DIRS) { set current = $E:XDG_DATA_DIRS }
+    var entry = $E:HUTERM_XDG_ENTRY
+    if (eq $current $entry':'$base) {
+        if (str:has-prefix $original 1) {
+            set-env XDG_DATA_DIRS $saved
+        } else {
+            unset-env XDG_DATA_DIRS
+        }
+    } elif (has-env XDG_DATA_DIRS) {
+        var kept = [(str:split : $current | each {|part| if (not (eq $part $entry)) { put $part } })]
+        set-env XDG_DATA_DIRS (str:join : $kept)
     }
     unset-env HUTERM_ORIG_XDG_DATA_DIRS
 }

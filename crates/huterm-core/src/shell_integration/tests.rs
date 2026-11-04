@@ -133,13 +133,20 @@ fn planner_uses_shell_specific_xdg_roots_and_default_search_path() {
     for (shell, root) in
         [("fish", "fish"), ("nu", "nushell"), ("elvish", "elvish")]
     {
-        let plan = planned(&command(shell), &[], false, "", true);
-        let root = format!("/resources/shell-integration/{root}/xdg");
-        assert_eq!(value(&plan, "HUTERM_XDG_ENTRY"), Some(OsStr::new(&root)));
-        assert_eq!(
-            value(&plan, "XDG_DATA_DIRS"),
-            Some(OsStr::new(&format!("{root}:/usr/local/share:/usr/share")))
-        );
+        for environment in [vec![], vec![("XDG_DATA_DIRS", "")]] {
+            let plan = planned(&command(shell), &environment, false, "", true);
+            let root = format!("/resources/shell-integration/{root}/xdg");
+            assert_eq!(
+                value(&plan, "HUTERM_XDG_ENTRY"),
+                Some(OsStr::new(&root))
+            );
+            assert_eq!(
+                value(&plan, "XDG_DATA_DIRS"),
+                Some(OsStr::new(&format!(
+                    "{root}:/usr/local/share:/usr/share"
+                )))
+            );
+        }
     }
 }
 
@@ -176,7 +183,7 @@ fn planner_apple_bash_carries_startup_options_and_combined_login_flags() {
 }
 
 #[test]
-fn planner_missing_bootstrap_warns_once_without_injection() {
+fn planner_missing_bootstrap_starts_plain() {
     let command = command("zsh");
     let plan = planned(&command, &[], false, "", false);
     assert!(plan.warning.unwrap().contains("starting plain"));
@@ -201,6 +208,7 @@ fn planner_path_is_opt_in_and_resources_are_executable_relative() {
         "/repo/target/release/huterm",
         "/repo/target/debug/examples/smoke",
         "/repo/target/debug/deps/test",
+        "/repo/target/ghostty-releasesafe/debug/deps/test",
     ] {
         assert!(
             resource_candidates(Path::new(binary), false)
@@ -279,5 +287,65 @@ fn planner_resolver_matches_child_path_cwd_and_invocation_identity() {
         )
         .arguments,
         [] as [String; 0]
+    );
+}
+
+#[test]
+fn planner_distinguishes_options_from_command_and_script_invocations() {
+    for (shell, args, skip) in [
+        ("bash", vec!["script.sh"], true),
+        ("bash", vec!["--rcfile", "custom", "-i"], false),
+        ("bash", vec!["--rcfile", "", "-i"], false),
+        ("bash", vec!["-O", "extglob", "-i"], false),
+        ("bash", vec!["-ic", "true"], true),
+        ("zsh", vec!["-ilc", "true"], true),
+        ("zsh", vec!["--", "script.zsh"], true),
+        ("zsh", vec!["-o", "emacs", "-i"], false),
+        ("fish", vec!["-ic", "true"], true),
+        ("fish", vec!["--init-command", "true", "-i"], false),
+        ("fish", vec!["script.fish"], true),
+        ("fish", vec!["+script.fish"], true),
+        ("nu", vec!["script.nu"], true),
+        ("nu", vec!["+script.nu"], true),
+        ("nu", vec!["--commands=true"], true),
+        ("nu", vec!["-c", "true"], true),
+        ("nu", vec!["--config", "config.nu"], false),
+        ("elvish", vec!["-norc"], false),
+        ("elvish", vec!["-rc", "custom.elv"], false),
+        ("elvish", vec!["-c", "true"], true),
+        ("elvish", vec!["-compileonly", "script.elv"], true),
+    ] {
+        let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(noninteractive(shell, &args), skip, "{shell} {args:?}");
+    }
+}
+
+#[test]
+fn resources_find_assets_above_nested_target_directories() {
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = std::env::temp_dir()
+        .join(format!("huterm-shell-resources-{}", std::process::id()));
+    let _cleanup = Cleanup(root.clone());
+    let assets = root.join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    let binary = root.join("target/ghostty-releasesafe/debug/deps/core-test");
+    assert_eq!(
+        resources(&binary, false),
+        None,
+        "an assets directory alone is not a shell payload"
+    );
+    std::fs::create_dir(assets.join("shell-integration")).unwrap();
+    assert_eq!(resources(&binary, false), Some(assets));
+    let packaged = root.join("app/share/huterm");
+    std::fs::create_dir_all(&packaged).unwrap();
+    assert_eq!(
+        resources(&root.join("app/bin/huterm"), false),
+        Some(packaged),
+        "packaged identity wins even when its bootstrap is missing"
     );
 }

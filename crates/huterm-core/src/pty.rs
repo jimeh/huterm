@@ -332,6 +332,13 @@ pub(crate) fn spawn_with_plan_isolated(
     spawn_planned(command, plan, false)
 }
 
+static SHELL_WARNING_PRINTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn first_shell_warning(printed: &std::sync::atomic::AtomicBool) -> bool {
+    !printed.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn spawn_planned(
     command: &TerminalCommand,
     plan: crate::shell_integration::LaunchPlan,
@@ -365,7 +372,9 @@ fn spawn_planned(
     for (name, value) in plan.set {
         builder.env(name, value);
     }
-    if let Some(warning) = plan.warning {
+    if let Some(warning) = plan.warning
+        && first_shell_warning(&SHELL_WARNING_PRINTED)
+    {
         eprintln!("{warning}");
     }
     // Children start with the limit Huterm had before raising its own.

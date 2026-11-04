@@ -1,10 +1,10 @@
 /** The complete shell integration payload shared by package builders. */
-import { cp, readFile, stat } from "node:fs/promises";
+import { cp, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const SHELL_INTEGRATION_FILES = [
   "README.md",
-  "bash/bootstrap.bash", "bash/huterm.bash", "bash/bash-preexec.sh",
+  "bash/bootstrap.bash", "bash/huterm.bash",
   "zsh/.zshenv", "zsh/huterm.zsh",
   "fish/huterm.fish", "fish/xdg/fish/vendor_conf.d/huterm.fish",
   "nushell/huterm.nu", "nushell/xdg/nushell/vendor/autoload/huterm.nu",
@@ -14,9 +14,14 @@ export const SHELL_INTEGRATION_FILES = [
 export async function verifyShellIntegration(source: string, destination: string): Promise<void> {
   for (const name of SHELL_INTEGRATION_FILES) {
     const target = join(destination, name);
-    if (!(await stat(target)).isFile()) throw new Error(`missing shell integration file: ${name}`);
-    if (!(await readFile(target)).equals(await readFile(join(source, name)))) {
-      throw new Error(`shell integration file differs: ${name}`);
+    const handle = await open(target, "r");
+    try {
+      if (!(await handle.stat()).isFile()) throw new Error(`missing shell integration file: ${name}`);
+      if (!(await handle.readFile()).equals(await readFile(join(source, name)))) {
+        throw new Error(`shell integration file differs: ${name}`);
+      }
+    } finally {
+      await handle.close();
     }
   }
 }

@@ -11,7 +11,10 @@ if [[ ${HUTERM_SHELL_INTEGRATION-} == zsh ]]; then
     if [[ -o interactive ]]; then
         _huterm_zsh_body=$HUTERM_RESOURCES_DIR/shell-integration/zsh/huterm.zsh
         {
-            if ( command zsh -n "$_huterm_zsh_body" ) 2>/dev/null; then
+            # Parse a function definition without executing it or finding zsh
+            # on PATH. Strict syntax rejects incomplete short-loop constructs.
+            if ( unsetopt shortloops; eval "_huterm_zsh_load() { $(<"$_huterm_zsh_body")
+}" ) 2>/dev/null; then
                 source "$_huterm_zsh_body"
             else
                 false

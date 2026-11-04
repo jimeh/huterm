@@ -247,7 +247,9 @@ fn executable(name: &str) -> Option<PathBuf> {
 
     if result.is_none() {
         assert!(
-            std::env::var_os("HUTERM_REQUIRE_SHELLS").is_none(),
+            std::env::var_os("HUTERM_REQUIRE_SHELLS").is_none()
+                // macOS CI requires Apple Bash; Linux requires Bash 5.
+                || (name == "bash" && cfg!(target_os = "macos")),
             "required shell missing: {name}"
         );
         eprintln!("skipping shell integration: {name} missing");
@@ -266,7 +268,7 @@ fn fixture(shell: &str, login: bool) -> (Directory, TerminalCommand) {
         ("PATH".into(), std::env::var("PATH").unwrap()),
         ("HOME".into(), home.to_string()),
         ("ZDOTDIR".into(), home.to_string()),
-        ("XDG_DATA_DIRS".into(), String::new()),
+        ("XDG_DATA_DIRS".into(), "/fixture/data".into()),
         ("XDG_CONFIG_HOME".into(), format!("{home}/.config")),
         ("TERM".into(), "xterm-256color".into()),
         ("PS1".into(), "READY> ".into()),
@@ -287,10 +289,15 @@ fn fixture(shell: &str, login: bool) -> (Directory, TerminalCommand) {
         }
         "zsh" => {
             for name in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
-                directory.write(name, &format!("print -r -- {name} >> \"$HOME/order\"\nPROMPT='READY> '\n"));
+                directory.write(name, &format!("skip_global_compinit=1\nprint -r -- {name} >> \"$HOME/order\"\nPROMPT='READY> '\n"));
             }
         }
-        "fish" => directory.write(".config/fish/config.fish", "echo fish >> $HOME/order\nfunction fish_prompt; printf 'READY> '; end\n"),
+        "fish" => {
+            // Ubuntu snapd mutates XDG paths in a system vendor snippet. Shadow
+            // it so unset/empty fixtures test restoration without distro policy.
+            directory.write(".config/fish/conf.d/snapd.fish", "# No system snapd setup in this fixture.\n");
+            directory.write(".config/fish/config.fish", "echo fish >> $HOME/order\nfunction fish_prompt; printf 'READY> '; end\n");
+        },
         "nu" => directory.write(".config/nushell/config.nu", "'nu' | save --append ($env.HOME | path join order)\n$env.config.show_banner = false\n$env.PROMPT_COMMAND = {|| 'READY> ' }\n$env.PROMPT_COMMAND_RIGHT = {|| '' }\n$env.PROMPT_INDICATOR = ''\n"),
         "elvish" => directory.write(".config/elvish/rc.elv", "echo elvish >> $E:HOME/order\ntry { use huterm-integration } catch { }\nset edit:prompt = { put 'READY> ' }\nset edit:rprompt = { }\n"),
         _ => unreachable!(),
@@ -368,6 +375,7 @@ fn run_shell(name: &str) {
         }
         let env = shell.capture_env(name, &home);
         assert_environment(name, &env, true);
+        assert_restored(&command, &home, &env);
         let resources = resources(
             &std::env::current_exe().unwrap(),
             cfg!(target_os = "macos"),
@@ -506,19 +514,6 @@ fn assert_environment(name: &str, env: &str, path_enabled: bool) {
             assert!(!env.contains_key(key), "{name}: leaked {key}");
         }
     }
-    assert_eq!(
-        env.get("XDG_DATA_DIRS"),
-        Some(&""),
-        "{name}: XDG_DATA_DIRS restoration"
-    );
-    if matches!(name, "bash" | "/bin/bash") {
-        assert_eq!(env.get("ENV"), Some(&""), "{name}: ENV restoration");
-        assert_eq!(
-            env.get("HISTFILE"),
-            Some(&""),
-            "{name}: HISTFILE restoration"
-        );
-    }
     let bin = env["HUTERM_BIN_DIR"];
     assert_eq!(
         env["PATH"]
@@ -558,6 +553,7 @@ fn run_path_and_nested(name: &str) {
         shell.prompt();
         let env = shell.capture_env(name, &home);
         assert_environment(name, &env, already_present);
+        assert_restored(&command, &home, &env);
     }
     let (home, mut command) = fixture(name, false);
     command.program.clone_from(&binary);
@@ -796,6 +792,7 @@ fn run_off(name: &str) {
     shell.prompt();
     let env = shell.capture_env(name, &home);
     assert_environment(name, &env, false);
+    assert_restored(&command, &home, &env);
     assert!(
         !env.lines()
             .any(|line| line.starts_with("HUTERM_SHELL_FEATURES="))
@@ -1012,5 +1009,379 @@ fn native_directory_reports_preserve_literal_paths_and_skip_controls() {
                 );
             }
         }
+    }
+}
+
+// Compare with this host's normal startup, including system vendor snippets.
+fn assert_restored(
+    command: &TerminalCommand,
+    home: &Directory,
+    integrated: &str,
+) {
+    let mut plain = command.clone();
+    plain.shell_integration = huterm_protocol::ShellIntegration::OFF;
+    let mut shell = Shell::spawn(&plain);
+    shell.prompt();
+    let baseline = shell.capture_env(
+        command.program.file_name().unwrap().to_str().unwrap(),
+        home,
+    );
+    let values = |text: &str| -> std::collections::BTreeMap<String, String> {
+        text.lines()
+            .filter_map(|line| line.split_once('='))
+            .filter(|(name, _)| {
+                matches!(
+                    *name,
+                    "ZDOTDIR" | "ENV" | "HISTFILE" | "XDG_DATA_DIRS"
+                )
+            })
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect()
+    };
+    assert_eq!(
+        values(integrated),
+        values(&baseline),
+        "{}: startup environment restoration",
+        command.program.display()
+    );
+}
+
+fn finish(shell: &mut Shell) {
+    shell.send("exit\n");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut buffer = [0; 4096];
+    loop {
+        assert!(Instant::now() < deadline, "shell did not exit");
+        match shell.reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if error.raw_os_error() == Some(nix::libc::EIO) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                shell
+                    .waiter
+                    .wait(Some(
+                        deadline.saturating_duration_since(Instant::now()),
+                    ))
+                    .unwrap();
+            }
+            Err(error) => panic!("exit read: {error}"),
+        }
+    }
+}
+
+#[test]
+fn native_bash_history_persists_and_preserves_ignorespace() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        for login in [false, true] {
+            for integrated in [false, true] {
+                let (home, mut command) = fixture(name, login);
+                command.program.clone_from(&binary);
+                command.environment.retain(|(key, _)| {
+                    !matches!(key.as_str(), "HISTFILE" | "ENV")
+                });
+                command
+                    .environment
+                    .push(("HISTCONTROL".into(), "ignorespace".into()));
+                if !integrated {
+                    command.shell_integration =
+                        huterm_protocol::ShellIntegration::OFF;
+                }
+                home.write(".bash_history", "echo HUTERM_HISTORY_SEED\n");
+                let mut shell = Shell::spawn(&command);
+                shell.prompt();
+                shell.plain("echo HUTERM_HISTORY_SAVED");
+                shell.plain(" echo HUTERM_HISTORY_PRIVATE");
+                finish(&mut shell);
+                let history =
+                    fs::read_to_string(home.0.join(".bash_history")).unwrap();
+                assert!(
+                    history.contains("echo HUTERM_HISTORY_SAVED"),
+                    "{name} login={login} integrated={integrated}: history was not saved"
+                );
+                assert!(
+                    !history.contains("HUTERM_HISTORY_PRIVATE"),
+                    "{name}: ignorespace was weakened"
+                );
+                let mut shell = Shell::spawn(&command);
+                shell.prompt();
+                shell.plain("history > \"$HOME/seen-history\"");
+                let seen =
+                    fs::read_to_string(home.0.join("seen-history")).unwrap();
+                assert!(
+                    seen.contains("HUTERM_HISTORY_SEED")
+                        && seen.contains("HUTERM_HISTORY_SAVED"),
+                    "{name}: history was not read"
+                );
+                finish(&mut shell);
+            }
+        }
+    }
+}
+
+#[test]
+fn native_prompt_rebuilding_hooks_run_before_markers() {
+    for name in ["bash", "/bin/bash", "zsh"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        for framework in [false, true] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            let prompt = if framework {
+                "$'\\e]133;A\\aREADY> \\e]133;B\\a'"
+            } else {
+                "'READY> '"
+            };
+            let startup = if framework {
+                let theme = format!(
+                    "theme() {{ local code=$?; if [[ ${{_fixture_framework_running-0}} == 1 ]]; then printf '\\e]133;D;%s\\a' \"$code\"; fi; _fixture_framework_running=0; {}={prompt}; }}\n",
+                    if name == "zsh" { "PROMPT" } else { "PS1" }
+                );
+                if name == "zsh" {
+                    format!(
+                        "{theme}framework_preexec() {{ printf '\\e]133;C\\a'; _fixture_framework_running=1; }}\npreexec_functions+=(framework_preexec)\nprecmd_functions+=(theme)\n"
+                    )
+                } else {
+                    format!(
+                        "{theme}PROMPT_COMMAND=theme\ntrap \"printf '\\e]133;C\\a'; _fixture_framework_running=1\" DEBUG\n"
+                    )
+                }
+            } else if name == "zsh" {
+                format!(
+                    "theme() {{ PROMPT={prompt}; return 42; }}\nprecmd_functions+=(theme)\n"
+                )
+            } else {
+                format!(
+                    "theme() {{ PS1={prompt}; return 42; }}\nPROMPT_COMMAND=theme\n"
+                )
+            };
+            home.write(
+                if name == "zsh" { ".zshrc" } else { ".bashrc" },
+                &startup,
+            );
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            for _ in 0..2 {
+                assert_stream(&mut shell, name, "false", "1");
+            }
+        }
+    }
+}
+
+#[test]
+fn native_absolute_shells_with_restricted_path_and_unset_environment() {
+    for name in ["zsh", "fish", "nu", "elvish"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let (home, mut command) = fixture(name, false);
+        command.program = binary;
+        command.environment.retain(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "ZDOTDIR" | "ENV" | "HISTFILE" | "XDG_DATA_DIRS" | "PATH"
+            )
+        });
+        let restricted = home.0.join("restricted-bin");
+        fs::create_dir(&restricted).unwrap();
+        for tool in [
+            "locale", "hostname", "uname", "getconf", "tty", "false", "true",
+        ] {
+            if let Some(source) = resolve(
+                Path::new(tool),
+                &home.0,
+                std::env::var_os("PATH").as_deref(),
+            ) {
+                std::os::unix::fs::symlink(source, restricted.join(tool))
+                    .unwrap();
+            }
+        }
+        let search = restricted.to_string_lossy().into_owned();
+        assert!(
+            resolve(Path::new(name), &home.0, Some(OsStr::new(&search)))
+                .is_none()
+        );
+        command.environment.push(("PATH".into(), search));
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        assert!(
+            !String::from_utf8_lossy(&shell.transcript)
+                .contains("failed to load"),
+            "{name}: {:?}",
+            String::from_utf8_lossy(&shell.transcript)
+        );
+        let env = shell.capture_env(name, &home);
+        assert_environment(name, &env, true);
+        assert_restored(&command, &home, &env);
+        assert_stream(
+            &mut shell,
+            name,
+            if name == "nu" { "^false" } else { "false" },
+            "1",
+        );
+    }
+}
+
+#[test]
+fn native_xdg_startup_changes_survive_restoration() {
+    for name in ["fish", "nu", "elvish"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        for original in [None, Some(""), Some("/fixture/original")] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            command
+                .environment
+                .retain(|(key, _)| key != "XDG_DATA_DIRS");
+            if let Some(value) = original {
+                command
+                    .environment
+                    .push(("XDG_DATA_DIRS".into(), value.into()));
+            }
+            match name {
+                "fish" => home.write(".config/fish/conf.d/user.fish", "set -gx XDG_DATA_DIRS /user/flatpak:$XDG_DATA_DIRS\n"),
+                "nu" => home.write(".config/nushell/env.nu", "$env.XDG_DATA_DIRS = '/user/flatpak:' + ($env.XDG_DATA_DIRS? | default '')\n"),
+                "elvish" => {
+                    let rc = fs::read_to_string(home.0.join(".config/elvish/rc.elv")).unwrap();
+                    home.write(".config/elvish/rc.elv", &format!("set-env XDG_DATA_DIRS /user/flatpak:$E:XDG_DATA_DIRS\n{rc}"));
+                },
+                _ => unreachable!(),
+            }
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            let env = shell.capture_env(name, &home);
+            let xdg = env
+                .lines()
+                .find_map(|line| line.strip_prefix("XDG_DATA_DIRS="))
+                .expect("startup XDG_DATA_DIRS was discarded");
+            assert!(
+                xdg.starts_with("/user/flatpak:"),
+                "{name}: lost startup XDG change"
+            );
+            assert!(
+                !xdg.contains("shell-integration"),
+                "{name}: injection entry leaked"
+            );
+            if original.is_none_or(str::is_empty) {
+                assert!(
+                    xdg.contains("/usr/local/share:/usr/share"),
+                    "{name}: missing XDG defaults"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_nushell_partial_install_is_rolled_back() {
+    let Some(binary) = executable("nu") else {
+        return;
+    };
+    let assets = Directory::new();
+    let original =
+        resources(&std::env::current_exe().unwrap(), cfg!(target_os = "macos"))
+            .unwrap();
+    copy_tree(
+        &original.join("shell-integration"),
+        &assets.0.join("shell-integration"),
+    );
+    let body = assets.0.join("shell-integration/nushell/huterm.nu");
+    let mut text = fs::read_to_string(&body).unwrap();
+    text.push_str("\nerror make {msg: 'partial install'}\n");
+    fs::write(body, text).unwrap();
+    let (home, mut command) = fixture("nu", false);
+    command.program = binary;
+    let config = home.0.join(".config/nushell/config.nu");
+    let mut startup = fs::read_to_string(&config).unwrap();
+    startup.push_str("$env.config.hooks.pre_prompt = []\n$env.config.hooks.env_change.PWD = []\n");
+    fs::write(config, startup).unwrap();
+    let process = crate::pty::spawn_with_plan_isolated(
+        &command,
+        launch_plan(&command, Some(assets.0.clone())),
+    )
+    .unwrap();
+    let mut shell = Shell::from_process(&command, process);
+    shell.prompt();
+    assert_eq!(
+        String::from_utf8_lossy(&shell.transcript)
+            .matches("huterm: shell integration failed to load:")
+            .count(),
+        1
+    );
+    shell.plain("[$env.config.shell_integration.osc7 ($env.config.hooks.pre_prompt | length) ($env.config.hooks.env_change.PWD | length) ($env.HUTERM_BIN_DIR in $env.PATH)] | to nuon | save state");
+    assert_eq!(
+        fs::read_to_string(home.0.join("state")).unwrap().trim(),
+        "[true, 0, 0, false]"
+    );
+    assert!(
+        !String::from_utf8_lossy(&shell.transcript).contains("failed to load")
+    );
+}
+
+#[test]
+fn native_bash_explicit_empty_rcfile_reads_no_startup_file() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let (home, mut command) = fixture(name, false);
+        command.program = binary;
+        command.arguments = vec!["--rcfile".into(), String::new()];
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        assert!(
+            !home.0.join("order").exists(),
+            "{name}: empty rcfile fell back to .bashrc"
+        );
+        assert_stream(&mut shell, name, "true", "0");
+    }
+}
+
+#[test]
+fn native_xdg_restores_unset_and_empty_values() {
+    for name in ["fish", "nu", "elvish"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        for original in [None, Some("")] {
+            let (home, mut command) = fixture(name, false);
+            command.program.clone_from(&binary);
+            command
+                .environment
+                .retain(|(key, _)| key != "XDG_DATA_DIRS");
+            if let Some(value) = original {
+                command
+                    .environment
+                    .push(("XDG_DATA_DIRS".into(), value.into()));
+            }
+            let mut shell = Shell::spawn(&command);
+            shell.prompt();
+            let env = shell.capture_env(name, &home);
+            assert_environment(name, &env, true);
+            assert_restored(&command, &home, &env);
+        }
+    }
+}
+
+#[test]
+fn native_bash_prompt_command_arrays_preserve_shell_version_behavior() {
+    for name in ["bash", "/bin/bash"] {
+        let Some(binary) = executable(name) else {
+            continue;
+        };
+        let (home, mut command) = fixture(name, false);
+        command.program = binary;
+        home.write(
+            ".bashrc",
+            "theme() { PS1='READY> '; }\nPROMPT_COMMAND=(theme false)\n",
+        );
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        assert_stream(&mut shell, name, "true", "0");
+        assert_stream(&mut shell, name, "false", "1");
     }
 }

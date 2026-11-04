@@ -45,7 +45,7 @@ describe("Linux package policy", () => {
       }
       await writeFile(join(destination, "zsh/.zshenv"), "altered");
       await expect(verifyShellIntegration(source, destination)).rejects.toThrow("differs");
-      await rm(join(destination, "bash/bash-preexec.sh"));
+      await rm(join(destination, "bash/huterm.bash"));
       await expect(verifyShellIntegration(source, destination)).rejects.toThrow();
     } finally { await rm(root, { recursive: true, force: true }); }
   });

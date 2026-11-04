@@ -626,3 +626,11 @@ fn reaper_spawn_failure_keeps_child_for_synchronous_emergency_wait() {
     assert!(!completion.recv_timeout(Duration::from_secs(3)).unwrap());
     worker.join().unwrap();
 }
+
+#[test]
+fn shell_integration_warning_is_gated_once() {
+    let printed = std::sync::atomic::AtomicBool::new(false);
+    assert!(super::first_shell_warning(&printed));
+    assert!(!super::first_shell_warning(&printed));
+    assert!(!super::first_shell_warning(&printed));
+}

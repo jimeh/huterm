@@ -18,9 +18,10 @@ optional features. The only feature for now is `path`.
 Jim settled these on 2026-11-03.
 
 - **Huterm writes all five scripts itself**, from each shell's documentation.
-  The only vendored code is bash-preexec 0.7.0 (MIT, upstream commit
+  The only vendored code was to be bash-preexec 0.7.0 (MIT, upstream commit
   `d866eeefdb8dfce075cbd4e37dc73c4deb4b0bd2`), shipped unmodified with its
-  license. Ghostty's bash and zsh scripts are GPLv3 because they derive from
+  license; review removed it (see "Revisions during review"). Ghostty's
+  bash and zsh scripts are GPLv3 because they derive from
   Kitty's, so the implementation must not copy from, or consult, Kitty's or
   Ghostty's bash and zsh integration files. It must not copy code from any
   other terminal's scripts either. Shell-level mechanisms such as a `ZDOTDIR`
@@ -298,7 +299,6 @@ when it is not already a component.
 XDG root per XDG shell.
 
 - Every file opens with a Huterm header.
-- bash-preexec ships unmodified with its upstream header.
 - Files are `0644` and directories searchable.
 
 ### Packaging
@@ -306,15 +306,13 @@ XDG root per XDG shell.
 - macOS: add `{ src = "assets/shell-integration", target =
   "shell-integration" }` to the packager resources in `Cargo.toml`.
   `package:macos:bundle` (`mise.toml`) asserts every shipped file, including
-  `.zshenv` and `bash-preexec.sh`.
+  `.zshenv`.
 - Linux: `scripts/package-linux.ts` copies the tree to
   `share/huterm/shell-integration`, verifies the same files, and keeps its
   normalized modes. Its tests cover the copy.
 
-**Notices:** add `third-party/bash-preexec/`. It holds the MIT license, plus a
-README recording the version, the commit, and the source URL. Register it in
-`third-party/licenses/components.json`, then run `mise run licenses:generate`
-and `mise run license`.
+**Notices:** none. The first implementation vendored bash-preexec with notices
+in `third-party/bash-preexec/`; review removed both.
 
 ### Docs
 
@@ -376,3 +374,37 @@ interaction. A running-app spot check with the dev build and zsh confirms that
 
 None. If a pinned shell's native markers differ from what was observed above,
 the implementer records the finding and follows the exactly-one-stream rule.
+
+## Revisions during review
+
+Recorded on 2026-11-04 from the dual review of PR #385 and its first CI run.
+
+- **bash-preexec removed.** It drops `ignorespace` from `HISTCONTROL` and turns
+  `ignoreboth` into `ignoredups`, so commands typed with a leading space were
+  saved. The bash body now marks execution through `PS0` on bash 4.4 and later,
+  and through a `DEBUG` trap on bash 3.2 that still runs any `DEBUG` trap the
+  user had installed. It never reads history. Huterm now vendors no shell code.
+- **Hook order.** Exit status is captured before user prompt hooks run, but
+  marker decisions happen after the prompt is built. Bash appends its
+  decoration as the last `PROMPT_COMMAND` entry. zsh adds `A` and `B` from a
+  `line-init` ZLE widget, after every `precmd` hook. A theme that rebuilds the
+  prompt keeps a complete marker stream, and a prompt that already carries
+  OSC 133 gets none.
+- **History.** When `HISTFILE` was not exported, bash ends startup with its
+  native unexported default, so history persists as in a plain start.
+- **`XDG_DATA_DIRS`.** fish, nushell, and elvish remove only Huterm's entry, and
+  restore the saved original only while the value is still exactly what core
+  injected. A change the user's startup files made survives. An empty inherited
+  value counts as unset when Huterm builds the injected value.
+- **Syntax checks.** fish checks with `status fish-path` and zsh parses the body
+  inside the running shell, so neither depends on `PATH`.
+- **Development resources.** Discovery searches the executable's ancestors, with
+  a bound, for `assets/shell-integration`, so nested target directories such as
+  ReleaseSafe's find the scripts.
+- **CI shells.** macOS requires Apple bash 3.2. Bash 5 is required only on
+  Linux, which covers the `--posix` and `ENV` path, login starts included.
+- **Smaller fixes.** The missing-bootstrap warning prints once per process.
+  Non-interactive detection follows each shell's option syntax and skips script
+  operands. An explicit `--rcfile ""` stays distinct from no rcfile. A failed
+  nushell body restores the hooks and settings it changed. The package verifier
+  checks and reads each file through one handle.

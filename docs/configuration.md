@@ -174,10 +174,10 @@ not add a command-line interface.
 
 | Shell | Loading and startup order |
 | --- | --- |
-| zsh | A temporary `ZDOTDIR` stub restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
+| zsh | A static `ZDOTDIR` stub in Huterm resources restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
 | bash | POSIX `ENV` bootstrap leaves POSIX mode and restores the environment. Login shells read `/etc/profile` and the first readable `.bash_profile`, `.bash_login`, or `.profile`; other shells read `.bashrc` or the requested `--rcfile`. `--norc` and `--noprofile` are honored. |
 | Apple's `/bin/bash` 3.2 | Uses `--rcfile` and emulates the login startup sequence because Apple bash ignores `ENV` in POSIX mode. |
-| fish | A vendor `conf.d` bootstrap runs before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
+| fish | A vendor `conf.d` bootstrap runs after user `conf.d` snippets and before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
 | nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.116.1 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
 | elvish | Huterm adds a module directory. Add the guarded `use` below to `rc.elv`; Elvish has no automatic loading hook. |
 
@@ -194,6 +194,19 @@ or `sudo` starts without Huterm's injection. Subshells such as `( ... )` or
 `$( ... )` inherit functions but run no prompt hooks. For integration in nested
 shells, source the body explicitly from a startup file. Repeated sourcing in
 one process does not install duplicate hooks.
+
+Bash preserves the user's history policy, including `HISTCONTROL=ignorespace`,
+and uses its normal unexported `HISTFILE=$HOME/.bash_history` default when no
+history file was inherited. Bash decorates prompts after `PROMPT_COMMAND`;
+zsh decorates the final prompt when ZLE starts, after `precmd` hooks finish.
+Both capture the command's status before user prompt construction.
+
+Fish, nushell, and elvish remove only Huterm's entry from `XDG_DATA_DIRS` if a
+startup file changed its value. If it still matches the injected value, they
+restore the inherited value exactly, including unset or empty. An unset or
+empty inherited value searches the XDG defaults `/usr/local/share:/usr/share`
+during startup. Fish user `conf.d` snippets run before Huterm's vendor
+bootstrap, so their additions are preserved during cleanup.
 
 Huterm exports `HUTERM_RESOURCES_DIR` and `HUTERM_BIN_DIR` even with `mode =
 "off"` and for unsupported shells. If resources cannot be found, the resources
@@ -251,11 +264,13 @@ Limitations:
 - Bash and zsh skip their OSC 133 stream for a prompt containing another
   framework's markers, including escaped spellings. A framework that prints
   markers from hooks cannot be detected. OSC 7 and `path` remain active.
-- A missing bootstrap starts the original command and prints one core warning.
+- A missing bootstrap starts the original command and prints a core warning
+  at most once per process.
   Body parse/load errors print one `huterm: shell integration failed to load:
   <path>` line and preserve startup. Arbitrary corruption of a bootstrap before
   its restoration code can prevent Bash's emulated startup or Zsh's restored
-  startup directory; package verification detects altered asset bytes.
+  startup directory. Packaging verifies that shipped files match the source
+  at build time; runtime corruption is not detected.
 
 Huterm's own directory reports use `kitty-shell-cwd://host/literal path`.
 Spaces, `#`, `?`, and `%` stay literal. Reports containing control characters

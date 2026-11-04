@@ -51,10 +51,18 @@ replaces enabled native OSC 7 with literal reports because its unencoded
 
 Huterm's shell scripts must be independently written from shell documentation.
 Never consult or copy Kitty or Ghostty bash/zsh scripts, which are GPLv3, or any
-other terminal's shell scripts. Only unmodified MIT bash-preexec is vendored.
-Provenance and hashes live in `assets/shell-integration/README.md` and
-`third-party/bash-preexec/README.md`. Native PTY tests cover the launch boundary;
-`HUTERM_REQUIRE_SHELLS=1` makes shell availability mandatory in CI Checks only.
+other terminal's shell scripts. The scripts are all Huterm-authored; their shell
+manual references live in `assets/shell-integration/README.md`. Bash's PS0 and DEBUG
+hooks do not read history or change `HISTCONTROL`. Capture command status
+before prompt construction and decorate only after user prompt hooks finish.
+Native PTY tests cover the launch boundary. `HUTERM_REQUIRE_SHELLS=1` makes
+shell availability mandatory in CI Checks: Apple Bash 3.2 is required on macOS,
+where Bash 5 is optional; Linux requires Bash 5, including its POSIX ENV login
+path. Fixture `.zshenv` disables global compinit, and restoration assertions
+compare against the same shell's plain startup to account for system snippets.
+Development resource discovery searches up to six executable-directory
+ancestors for `assets/shell-integration`, after packaged layouts, to cover
+custom Cargo target directories within the checkout.
 
 ## PTY I/O and descriptor limits
 

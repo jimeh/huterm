@@ -4,10 +4,18 @@ module huterm {
         if ($env.HUTERM_SHELL_INTEGRATION? | default '') == 'nu' {
             hide-env HUTERM_SHELL_INTEGRATION
             let original = ($env.HUTERM_ORIG_XDG_DATA_DIRS? | default '0')
-            if ($original | str starts-with '1') {
-                $env.XDG_DATA_DIRS = ($original | str substring 1..)
-            } else {
-                hide-env -i XDG_DATA_DIRS
+            let saved = ($original | str substring 1..)
+            let base = if $saved == '' { '/usr/local/share:/usr/share' } else { $saved }
+            let entry = $env.HUTERM_XDG_ENTRY
+            let current = ($env.XDG_DATA_DIRS? | default '')
+            if $current == ($entry + ':' + $base) {
+                if ($original | str starts-with '1') {
+                    $env.XDG_DATA_DIRS = $saved
+                } else {
+                    hide-env -i XDG_DATA_DIRS
+                }
+            } else if $env.XDG_DATA_DIRS? != null {
+                $env.XDG_DATA_DIRS = ($current | split row ':' | where {|part| $part != $entry } | str join ':')
             }
             hide-env -i HUTERM_ORIG_XDG_DATA_DIRS HUTERM_XDG_ENTRY
             let body = ($env.HUTERM_RESOURCES_DIR | path join 'shell-integration' 'nushell' 'huterm.nu')
@@ -25,7 +33,17 @@ module huterm {
                 } else { '' }
                 let once = '# huterm-once
 $env.config.hooks.pre_prompt = ($env.config.hooks.pre_prompt | where {|hook| if ($hook | describe) == "string" { not ($hook | str starts-with "# huterm-once") } else { true } })'
-                let hook = $once + (char nl) + $restore_osc7 + (char nl) + $'try { source ($quoted) } catch { print -e ($message) }'
+                let snapshot = 'let huterm_before_prompt = $env.config.hooks.pre_prompt
+let huterm_before_change = $env.config.hooks.env_change
+let huterm_before_osc7 = $env.config.shell_integration.osc7
+let huterm_before_path = $env.PATH'
+                let hook = $once + (char nl) + $restore_osc7 + (char nl) + $snapshot + (char nl) + $'try { source ($quoted) } catch {
+$env.config.hooks.pre_prompt = $huterm_before_prompt
+$env.config.hooks.env_change = $huterm_before_change
+$env.config.shell_integration.osc7 = $huterm_before_osc7
+$env.PATH = $huterm_before_path
+print -e ($message)
+}'
                 $env.config.hooks.pre_prompt = ($env.config.hooks.pre_prompt | append $hook)
             } else {
                 print -e $failure

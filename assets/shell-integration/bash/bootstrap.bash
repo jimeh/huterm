@@ -4,7 +4,7 @@
 unset HUTERM_SHELL_INTEGRATION
 _huterm_bash_flags=${HUTERM_BASH_INJECT-}
 _huterm_bash_login=${HUTERM_BASH_LOGIN-}
-_huterm_bash_rcfile=${HUTERM_BASH_RCFILE-}
+_huterm_bash_rcfile=${HUTERM_BASH_RCFILE-$HOME/.bashrc}
 unset HUTERM_BASH_INJECT HUTERM_BASH_LOGIN HUTERM_BASH_RCFILE
 if [[ ${HUTERM_ORIG_ENV-} == 1* ]]; then
     export ENV=${HUTERM_ORIG_ENV#?}
@@ -13,8 +13,11 @@ else
 fi
 if [[ ${HUTERM_ORIG_HISTFILE-} == 1* ]]; then
     export HISTFILE=${HUTERM_ORIG_HISTFILE#?}
-else
-    unset HISTFILE
+elif [[ -o posix ]]; then
+    # Core exported an empty value to suppress the POSIX ~/.sh_history default.
+    # Native bash uses an unexported ~/.bash_history when none was inherited.
+    export -n HISTFILE
+    HISTFILE=$HOME/.bash_history
 fi
 unset HUTERM_ORIG_ENV HUTERM_ORIG_HISTFILE
 set +o posix
@@ -29,7 +32,6 @@ if [[ $_huterm_bash_login == 1 ]] || shopt -q login_shell; then
         done
     fi
 elif [[ $_huterm_bash_flags != *r* ]]; then
-    _huterm_bash_rcfile=${_huterm_bash_rcfile:-$HOME/.bashrc}
     [[ ! -r $_huterm_bash_rcfile ]] || source "$_huterm_bash_rcfile"
 fi
 unset _huterm_bash_flags _huterm_bash_login _huterm_bash_rcfile _huterm_bash_profile

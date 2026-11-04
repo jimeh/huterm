@@ -132,9 +132,13 @@ pub(crate) fn plan(command: &TerminalCommand, host: &Host<'_>) -> LaunchPlan {
                 result.set("HUTERM_XDG_ENTRY", root);
                 let mut value = root.as_os_str().to_owned();
                 value.push(":");
-                value.push((host.environment)("XDG_DATA_DIRS").unwrap_or_else(
-                    || OsString::from("/usr/local/share:/usr/share"),
-                ));
+                value.push(
+                    (host.environment)("XDG_DATA_DIRS")
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| {
+                            OsString::from("/usr/local/share:/usr/share")
+                        }),
+                );
                 result.set("XDG_DATA_DIRS", value);
             }
             if shell == "nu" {
@@ -149,15 +153,138 @@ pub(crate) fn plan(command: &TerminalCommand, host: &Host<'_>) -> LaunchPlan {
 }
 
 fn noninteractive(shell: &str, arguments: &[String]) -> bool {
-    arguments.iter().any(|arg| {
-        arg == "-c"
-            || arg.starts_with("--command")
-            || arg == "--lsp"
-            || (shell == "bash" && arg == "--posix")
-            || (arg.starts_with('-')
-                && !arg.starts_with("--")
-                && arg[1..].contains('c'))
-    })
+    // Parse invocation options, not arbitrary letters in single-dash long names.
+    // Options taking a value must consume it before looking for a script operand.
+    let mut args = arguments.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            return args.next().is_some();
+        }
+        let option_prefix = arg.starts_with('-')
+            || (matches!(shell, "bash" | "zsh") && arg.starts_with('+'));
+        if !option_prefix || arg == "-" {
+            return true;
+        }
+        let (option, attached) = arg
+            .split_once('=')
+            .map_or((arg.as_str(), false), |(key, _)| (key, true));
+        if exits_before_prompt(shell, option) {
+            return true;
+        }
+        let takes_value = option_takes_value(shell, option);
+        if takes_value {
+            if !attached {
+                args.next();
+            }
+            continue;
+        }
+        if matches!(shell, "bash" | "zsh" | "fish") {
+            if matches!(option, "--command" | "--commands") {
+                return true;
+            }
+            if arg.starts_with('-') && !arg.starts_with("--") {
+                // o/O (bash/zsh) and C (fish) consume the remaining letters or
+                // the next argument as their value, rather than more flags.
+                for (index, flag) in arg[1..].char_indices() {
+                    if flag == 'c' {
+                        return true;
+                    }
+                    if (matches!(shell, "bash" | "zsh")
+                        && matches!(flag, 'o' | 'O'))
+                        || (shell == "fish"
+                            && matches!(flag, 'C' | 'd' | 'o' | 'p'))
+                    {
+                        if index + 2 == arg.len() {
+                            args.next();
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn exits_before_prompt(shell: &str, option: &str) -> bool {
+    match shell {
+        "bash" => matches!(
+            option,
+            "--posix"
+                | "--help"
+                | "--version"
+                | "--dump-strings"
+                | "--dump-po-strings"
+        ),
+        "nu" => {
+            matches!(
+                option,
+                "-c" | "--commands"
+                    | "--lsp"
+                    | "--dap"
+                    | "--mcp"
+                    | "--help"
+                    | "-h"
+                    | "--version"
+                    | "-v"
+            ) || option.starts_with("--ide-")
+        }
+        "elvish" => matches!(
+            option,
+            "-c" | "-compileonly"
+                | "-lsp"
+                | "-daemon"
+                | "-help"
+                | "-version"
+                | "-buildinfo"
+        ),
+        _ => false,
+    }
+}
+
+fn option_takes_value(shell: &str, option: &str) -> bool {
+    match shell {
+        "bash" => matches!(
+            option,
+            "--rcfile" | "--init-file" | "-o" | "+o" | "-O" | "+O"
+        ),
+        "zsh" => matches!(option, "-o" | "+o"),
+        "fish" => matches!(
+            option,
+            "--init-command"
+                | "--features"
+                | "--debug"
+                | "--debug-output"
+                | "--profile"
+                | "--profile-startup"
+                | "-C"
+                | "-d"
+                | "-o"
+                | "-p"
+        ),
+        "nu" => matches!(
+            option,
+            "-e" | "--execute"
+                | "-I"
+                | "--include-path"
+                | "-m"
+                | "--table-mode"
+                | "--error-style"
+                | "--config"
+                | "--env-config"
+                | "--config-home"
+                | "--log-level"
+                | "--log-target"
+                | "--log-file"
+                | "--threads"
+                | "-t"
+        ),
+        "elvish" => matches!(
+            option,
+            "-rc" | "-db" | "-log" | "-sock" | "-deprecation-level"
+        ),
+        _ => false,
+    }
 }
 
 fn bash_plan(
@@ -254,7 +381,15 @@ pub(crate) fn resolve(
 pub(crate) fn resources(executable: &Path, macos: bool) -> Option<PathBuf> {
     resource_candidates(executable, macos)
         .into_iter()
-        .find(|directory| directory.is_dir())
+        .find(|directory| {
+            // Packaged identity remains useful even if its bootstrap is missing.
+            // Development candidates must contain the payload, not just assets.
+            if directory.file_name() == Some(OsStr::new("assets")) {
+                directory.join("shell-integration").is_dir()
+            } else {
+                directory.is_dir()
+            }
+        })
 }
 
 fn resource_candidates(executable: &Path, macos: bool) -> Vec<PathBuf> {
@@ -268,16 +403,10 @@ fn resource_candidates(executable: &Path, macos: bool) -> Vec<PathBuf> {
         }
         candidates.push(parent.join("share/huterm"));
     }
-    let profile = if matches!(
-        bin.file_name().and_then(OsStr::to_str),
-        Some("examples" | "deps")
-    ) {
-        bin.parent()
-    } else {
-        Some(bin)
-    };
-    if let Some(root) = profile.and_then(Path::parent).and_then(Path::parent) {
-        candidates.push(root.join("assets"));
+    // Custom target directories can add several levels below the repository.
+    // Keep installed resource layouts ahead of development discovery.
+    for ancestor in bin.ancestors().take(6) {
+        candidates.push(ancestor.join("assets"));
     }
     candidates
 }
