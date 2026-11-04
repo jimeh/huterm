@@ -175,8 +175,35 @@ pub(super) fn open_at_group(cx: &mut App, section: SectionId, group: &str) {
     let group = group.to_owned();
     let _ = handle.update(cx, |view, _, cx| {
         view.select_section(section, cx);
-        view.reveal_group = Some(group);
+        view.reveal_group = Some(GroupReveal::new(group));
     });
+}
+
+/// A group card of the shown section that the pane scrolls to the top once
+/// the section's layout settles.
+struct GroupReveal {
+    /// The group's title.
+    title: String,
+    /// Where the card last painted in the pane's content, so the reveal
+    /// waits for two frames that agree.
+    last: Option<ContentBounds>,
+    /// Frames that drew the card with nothing loading, so a layout that
+    /// keeps moving still scrolls after [`REVEAL_FRAMES`].
+    frames: u8,
+}
+
+/// The most frames a group reveal waits for the card to stay put once
+/// nothing loads.
+const REVEAL_FRAMES: u8 = 8;
+
+impl GroupReveal {
+    fn new(title: String) -> Self {
+        Self {
+            title,
+            last: None,
+            frames: 0,
+        }
+    }
 }
 
 /// Tells the Settings window that a reload finished, so it rereads the
@@ -357,6 +384,9 @@ pub(super) struct SettingsView {
     /// Reads and theme scans started; only the latest of each applies.
     reads: u64,
     scans: u64,
+    /// The theme scan that last applied; one short of `scans` while the
+    /// latest runs.
+    themes_scanned: u64,
     /// Reads still running.
     loading: u32,
     /// A read finished while writes were pending and was dropped; the file
@@ -426,10 +456,10 @@ pub(super) struct SettingsView {
     /// A section just selected, whose tab the next frame scrolls the
     /// sidebar to show.
     reveal_section: Option<SectionId>,
-    /// A group card of the shown section that the pane scrolls to once it
-    /// paints, such as Appearance's Transparency for the terminal window's
-    /// panel.
-    reveal_group: Option<String>,
+    /// A group card of the shown section that the pane scrolls to the top
+    /// once its layout settles, such as Appearance's Transparency for the
+    /// terminal window's panel.
+    reveal_group: Option<GroupReveal>,
     /// Whether a primary press on the title strip waits for the drag that
     /// moves the window.
     title_press: Rc<Cell<bool>>,
@@ -540,6 +570,7 @@ impl SettingsView {
             epoch: 0,
             reads: 0,
             scans: 0,
+            themes_scanned: 0,
             loading: 0,
             reread: false,
             fresh: None,
@@ -1169,6 +1200,7 @@ impl SettingsView {
         self.field_menus.native = None;
         self.section = section;
         self.reveal_section = Some(section);
+        self.reveal_group = None;
         self.search.update(cx, |search, cx| search.set_text("", cx));
         self.scroll.set_offset(point(px(0.0), px(0.0)));
         cx.notify();
@@ -3400,6 +3432,19 @@ impl SettingsView {
     /// Where the sidebar's search field last painted.
     pub(super) fn search_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.painted.borrow().search
+    }
+
+    /// Whether a group reveal, such as the terminal window panel's Edit
+    /// Defaults in Settings, still waits to scroll the pane.
+    #[cfg(test)]
+    pub(super) fn group_reveal_pending(&self) -> bool {
+        self.reveal_group.is_some()
+    }
+
+    /// How far the pane can scroll down.
+    #[cfg(test)]
+    pub(super) fn pane_scroll_limit(&self) -> gpui::Pixels {
+        self.scroll.max_offset().y
     }
 
     /// How far the pane has scrolled down.

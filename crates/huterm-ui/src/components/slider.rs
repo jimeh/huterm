@@ -27,8 +27,9 @@
 //! ends a drag in progress; re-enabling does not resume it.
 //!
 //! Accessibility: a horizontal `Slider` named by its label, reporting its
-//! numeric value, minimum, maximum, and step, the readout as its value, and
-//! its disabled state; Increment and Decrement actions step it.
+//! numeric value, minimum, maximum, and step, the readout as its value, any
+//! description, and its disabled state; Increment and Decrement actions
+//! step it. A disabled slider's reason replaces its description.
 //!
 //! Reference: WAI-ARIA's slider pattern and Radix's Slider.
 
@@ -76,6 +77,7 @@ pub struct Slider {
     tokens: Tokens,
     readout: Option<SharedString>,
     readout_width: Option<Pixels>,
+    description: Option<SharedString>,
     disabled: Option<SharedString>,
     key_context: Option<SharedString>,
     on_change: Option<Change>,
@@ -88,6 +90,7 @@ impl std::fmt::Debug for Slider {
             .field("label", &self.label)
             .field("value", &self.value)
             .field("steps", &self.steps)
+            .field("description", &self.description)
             .field("disabled", &self.disabled)
             .finish_non_exhaustive()
     }
@@ -114,6 +117,7 @@ impl Slider {
             tokens,
             readout: None,
             readout_width: None,
+            description: None,
             disabled: None,
             key_context: None,
             on_change: None,
@@ -132,6 +136,14 @@ impl Slider {
     #[must_use]
     pub fn readout_width(mut self, width: Pixels) -> Self {
         self.readout_width = Some(width);
+        self
+    }
+
+    /// The slider's accessible description, such as where its value comes
+    /// from. A disabled slider reports its reason instead.
+    #[must_use]
+    pub fn description(mut self, text: impl Into<SharedString>) -> Self {
+        self.description = Some(text.into());
         self
     }
 
@@ -337,6 +349,7 @@ impl RenderOnce for Slider {
         let (steps, value) = (self.steps, self.value);
         let focus = self.focus.clone().tab_stop(enabled);
         let reason = self.disabled.clone().filter(|reason| !reason.is_empty());
+        let description = reason.clone().or(self.description.clone());
         let drag = window.use_keyed_state(
             ElementId::NamedChild(
                 std::sync::Arc::new(self.id.clone()),
@@ -354,76 +367,78 @@ impl RenderOnce for Slider {
         }
         let change = self.on_change.clone().filter(|_| enabled);
         let area = self.area(&drag, change.clone(), &focus, window, cx);
-        let slider =
-            div()
-                .id(self.id)
-                .role(gpui::Role::Slider)
-                .aria_label(self.label)
-                .aria_orientation(gpui::accesskit::Orientation::Horizontal)
-                .aria_numeric_value(value)
-                .aria_min_numeric_value(steps.min())
-                .aria_max_numeric_value(steps.max())
-                .aria_numeric_value_step(steps.step())
-                .when_some(self.readout.clone(), |slider, readout| {
-                    slider.aria_value(readout)
+        let slider = div()
+            .id(self.id)
+            .role(gpui::Role::Slider)
+            .aria_label(self.label)
+            .aria_orientation(gpui::accesskit::Orientation::Horizontal)
+            .aria_numeric_value(value)
+            .aria_min_numeric_value(steps.min())
+            .aria_max_numeric_value(steps.max())
+            .aria_numeric_value_step(steps.step())
+            .when_some(self.readout.clone(), |slider, readout| {
+                slider.aria_value(readout)
+            })
+            .when_some(description, |slider, description| {
+                slider.aria_description(description)
+            })
+            .when_some(reason, |slider, reason| {
+                slider.tooltip(move |_, cx| {
+                    Tooltip::view(reason.clone(), tokens, cx)
                 })
-                .when_some(reason, |slider, reason| {
-                    slider.aria_description(reason.clone()).tooltip(
-                        move |_, cx| Tooltip::view(reason.clone(), tokens, cx),
-                    )
-                })
-                .track_focus(&focus)
-                .when_some(self.key_context, |slider, context| {
-                    slider.key_context(context.as_ref())
-                })
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .w_full()
-                .h(size::CONTROL_HEIGHT)
-                .child(area)
-                .when_some(self.readout, |slider, readout| {
-                    slider.child(
-                        div()
-                            .flex_none()
-                            .when_some(self.readout_width, |text, width| {
-                                text.w(width).flex().justify_end()
-                            })
-                            .text_size(size::TEXT_CONTROL)
-                            .text_color(tokens.muted)
-                            .child(readout),
-                    )
-                })
-                .when(!enabled, |slider| {
-                    slider.opacity(0.5).on_mouse_down(
-                        MouseButton::Left,
-                        |_, window, _| {
-                            window.prevent_default();
+            })
+            .track_focus(&focus)
+            .when_some(self.key_context, |slider, context| {
+                slider.key_context(context.as_ref())
+            })
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .w_full()
+            .h(size::CONTROL_HEIGHT)
+            .child(area)
+            .when_some(self.readout, |slider, readout| {
+                slider.child(
+                    div()
+                        .flex_none()
+                        .when_some(self.readout_width, |text, width| {
+                            text.w(width).flex().justify_end()
+                        })
+                        .text_size(size::TEXT_CONTROL)
+                        .text_color(tokens.muted)
+                        .child(readout),
+                )
+            })
+            .when(!enabled, |slider| {
+                slider.opacity(0.5).on_mouse_down(
+                    MouseButton::Left,
+                    |_, window, _| {
+                        window.prevent_default();
+                    },
+                )
+            })
+            .when_some(change, |slider, change| {
+                let (increase, decrease) = (change.clone(), change);
+                slider
+                    .on_a11y_action(
+                        AccessibleAction::Increment,
+                        move |_, window, cx| {
+                            let next = steps.increment(value);
+                            if moved(value, next) {
+                                increase(next, window, cx);
+                            }
                         },
                     )
-                })
-                .when_some(change, |slider, change| {
-                    let (increase, decrease) = (change.clone(), change);
-                    slider
-                        .on_a11y_action(
-                            AccessibleAction::Increment,
-                            move |_, window, cx| {
-                                let next = steps.increment(value);
-                                if moved(value, next) {
-                                    increase(next, window, cx);
-                                }
-                            },
-                        )
-                        .on_a11y_action(
-                            AccessibleAction::Decrement,
-                            move |_, window, cx| {
-                                let next = steps.decrement(value);
-                                if moved(value, next) {
-                                    decrease(next, window, cx);
-                                }
-                            },
-                        )
-                });
+                    .on_a11y_action(
+                        AccessibleAction::Decrement,
+                        move |_, window, cx| {
+                            let next = steps.decrement(value);
+                            if moved(value, next) {
+                                decrease(next, window, cx);
+                            }
+                        },
+                    )
+            });
         States {
             disabled: !enabled,
             ..States::default()

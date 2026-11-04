@@ -1,8 +1,11 @@
 //! The Window Transparency panel: opening and closing, real key dispatch,
 //! focus return, outside presses, and its states.
-use super::super::transparency_panel::Control;
+use super::super::transparency_panel::{Control, keys};
+use super::settings::{ScratchConfig, settings, settled, with_view};
 use super::*;
 use crate::transparency::{Key, Layer, Support};
+use huterm_config::settings::SectionId;
+use huterm_ui::components::scroll_area::REVEAL_CLEARANCE;
 use serde_json::Value;
 
 impl DesktopHarness {
@@ -400,4 +403,206 @@ fn a_short_window_scrolls_the_rows_and_keeps_the_footer(
         footer.bottom() <= panel.bottom() && footer.top() >= panel.top(),
         "the footer {footer:?} stays inside the panel {panel:?}"
     );
+}
+
+#[gpui::test]
+fn each_slider_describes_where_its_value_comes_from(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.opacity = 0.6;
+    });
+    let (window, _) = harness.panel_window();
+    harness.update_view(window, |view, window, cx| {
+        view.transparency_support = Support::Available;
+        view.refresh_transparency(window, cx);
+    });
+    harness.open_panel(window);
+    let described = |harness: &mut DesktopHarness| {
+        harness.cx.update(|cx| {
+            let slider = labelled(cx, window, "Slider", "Opacity").unwrap();
+            slider["aria"]["description"].clone()
+        })
+    };
+    assert_eq!(described(&mut harness), "Uses the default");
+    harness.press(window, "up");
+    assert_eq!(described(&mut harness), "Set for this window");
+    // A reload keeps the override and its description.
+    harness.update_view(window, |view, window, cx| {
+        let mut config = view.config.clone();
+        config.window.opacity = 0.5;
+        let loaded = (config, view.family.clone(), view.metrics);
+        view.apply_reload(Some(&loaded), &[], window, cx);
+    });
+    harness.cx.run_until_parked();
+    assert_eq!(described(&mut harness), "Set for this window");
+    let reset = match Platform::current() {
+        Platform::MacOs => "cmd-backspace",
+        Platform::Linux => "ctrl-backspace",
+    };
+    harness.press(window, reset);
+    assert_eq!(described(&mut harness), "Uses the default");
+}
+
+/// The row of the panel's focused control, if it sits in one, and whether
+/// that row shows whole in the panel's body.
+fn focused_row_shown(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> Option<(Key, bool)> {
+    let key = match harness.panel_state(window).1? {
+        Control::Slider(key) | Control::Reset(key) => key,
+        Control::Close | Control::ResetAll | Control::Settings => return None,
+    };
+    let viewport = harness
+        .update_view(window, |view, _, _| view.panel_viewport())
+        .unwrap();
+    let selector = match key {
+        Key::Opacity => "transparency-panel-row-opacity",
+        Key::Background => "transparency-panel-row-background_opacity",
+        Key::Foreground => "transparency-panel-row-foreground_opacity",
+        Key::Blur => "transparency-panel-row-blur",
+    };
+    let row = bounds_of(harness, window, selector).unwrap();
+    Some((
+        key,
+        row.top() >= viewport.top() && row.bottom() <= viewport.bottom(),
+    ))
+}
+
+#[gpui::test]
+fn keyboard_focus_scrolls_a_short_panel_to_show_the_focused_row(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.panel_window();
+    harness.update_view(window, |view, window, cx| {
+        view.transparency_support = Support::Available;
+        view.refresh_transparency(window, cx);
+    });
+    // The reviewer's window, which shows only the first two rows.
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(size(px(408.0), px(233.0)));
+    harness.open_panel(window);
+    let last = *keys(Platform::current()).last().unwrap();
+    assert_eq!(
+        focused_row_shown(&mut harness, window),
+        Some((Key::Opacity, true))
+    );
+    let mut steps = 0;
+    while harness.panel_state(window).1 != Some(Control::Slider(last)) {
+        harness.press(window, "tab");
+        if let Some((key, shown)) = focused_row_shown(&mut harness, window) {
+            assert!(shown, "Tab left the {key:?} row out of view");
+        }
+        steps += 1;
+        assert!(steps < 10, "Tab never reached the {last:?} slider");
+    }
+    let scrolled = |harness: &mut DesktopHarness| {
+        let viewport = harness
+            .update_view(window, |view, _, _| view.panel_viewport())
+            .unwrap();
+        bounds_of(harness, window, "transparency-panel-row-opacity")
+            .unwrap()
+            .top()
+            < viewport.top()
+    };
+    assert!(scrolled(&mut harness), "the body never scrolled");
+    // Shift-Tab back up reveals each row above the fold.
+    while harness.panel_state(window).1 != Some(Control::Slider(Key::Opacity)) {
+        harness.press(window, "shift-tab");
+        if let Some((key, shown)) = focused_row_shown(&mut harness, window) {
+            assert!(shown, "Shift-Tab left the {key:?} row out of view");
+        }
+    }
+    assert!(!scrolled(&mut harness), "the Opacity row shows");
+    // Reset All, from the bottom row, returns focus to the top row and
+    // shows it.
+    harness.press(window, "shift-tab shift-tab");
+    assert_eq!(harness.panel_state(window).1, Some(Control::Settings));
+    harness.press(window, "shift-tab");
+    assert_eq!(harness.panel_state(window).1, Some(Control::Slider(last)));
+    // Off the bound the default sits at: Blur's 0, or Linux Foreground's 1.
+    harness.press(window, if last == Key::Blur { "up" } else { "down" });
+    harness.press(window, "tab");
+    assert_eq!(harness.panel_state(window).1, Some(Control::Reset(last)));
+    harness.press(window, "tab");
+    assert_eq!(harness.panel_state(window).1, Some(Control::ResetAll));
+    harness.press(window, "enter");
+    assert_eq!(
+        focused_row_shown(&mut harness, window),
+        Some((Key::Opacity, true))
+    );
+}
+
+/// Presses Edit Defaults in Settings from the keyboard and waits for
+/// Settings to read its file and finish revealing the group.
+fn edit_defaults(harness: &mut DesktopHarness, window: AnyWindowHandle) {
+    harness.open_panel(window);
+    // Shift-Tab from the first slider reaches Close, then wraps to the link.
+    harness.press(window, "shift-tab shift-tab");
+    assert_eq!(harness.panel_state(window).1, Some(Control::Settings));
+    harness.press(window, "enter");
+    assert!(!harness.panel_state(window).0, "the link closes the panel");
+    harness.wait_for("Settings to reveal Transparency", |cx| {
+        settled(cx)
+            && settings(cx).is_some_and(|handle| {
+                handle
+                    .read_with(cx, |view, _| {
+                        view.shown_section() == SectionId::Appearance
+                            && !view.group_reveal_pending()
+                    })
+                    .unwrap_or(false)
+            })
+    });
+}
+
+/// Asserts that Appearance's Transparency card starts at the top of the
+/// Settings pane, the reveal's clearance below it, or that the pane
+/// scrolled as far as it can toward that.
+fn assert_transparency_at_top(harness: &mut DesktopHarness, case: &str) {
+    let handle = harness.cx.update(|cx| settings(cx).unwrap());
+    let card = VisualTestContext::from_window(handle.into(), &harness.cx)
+        .debug_bounds("settings-group-Transparency")
+        .unwrap_or_else(|| panic!("{case}: the card painted"));
+    let (viewport, scrolled, limit) = with_view(harness, |view, _| {
+        (
+            view.pane_viewport(),
+            view.pane_scrolled(),
+            view.pane_scroll_limit(),
+        )
+    });
+    let gap = card.top() - viewport.top();
+    assert!(
+        scrolled > px(0.0),
+        "{case}: the pane never scrolled; the card sits {gap:?} down"
+    );
+    assert!(
+        (gap - REVEAL_CLEARANCE).abs() < px(0.5) || scrolled == limit,
+        "{case}: the card sits {gap:?} below the pane's top, scrolled \
+         {scrolled:?} of {limit:?}"
+    );
+}
+
+#[gpui::test]
+fn edit_defaults_shows_transparency_at_the_top_of_a_new_or_open_settings(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("panel-edit-defaults", "");
+    let mut harness = DesktopHarness::new(cx);
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().config_path = file.path();
+    });
+    let (window, tab) = harness.panel_window();
+    // A new Settings window reads its file and scans its themes after it
+    // opens, which grows the theme gallery above the card.
+    edit_defaults(&mut harness, window);
+    assert_transparency_at_top(&mut harness, "a new window");
+    // An open one, showing another section scrolled elsewhere.
+    with_view(&mut harness, |view, cx| {
+        view.show_section(SectionId::Terminal, cx);
+    });
+    harness.cx.run_until_parked();
+    with_view(&mut harness, |view, _| view.scroll_pane_to(px(120.0)));
+    harness.activate(window, tab);
+    edit_defaults(&mut harness, window);
+    assert_transparency_at_top(&mut harness, "an open window");
 }

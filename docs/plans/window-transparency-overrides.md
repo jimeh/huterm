@@ -402,8 +402,19 @@ owner's applied-state rules.
 - The panel's Tab order follows its visual order: Close, then each row's
   slider and its Reset while that value is overridden, then Reset All while
   anything is overridden, then Edit Defaults in Settings, wrapping.
-- Edit Defaults in Settings opens Settings at Appearance and scrolls to the
-  Transparency card once it paints (`settings_window::open_at_group`).
+- Edit Defaults in Settings opens Settings at Appearance and scrolls the
+  Transparency card's heading to the top of the pane, or as far as the pane
+  scrolls, once the section's layout settles
+  (`settings_window::open_at_group`). A new window's theme scan grows the
+  gallery above the card after its first frame, so the reveal waits for the
+  file read and theme scan to finish and for two frames that agree.
+- Each panel slider's accessible description names its value's source:
+  "Uses the default", "Set by the Quake profile", or "Set for this window".
+  A disabled slider's reason replaces it, through `huterm_ui` `Slider`'s new
+  `description`.
+- In a panel too short for its rows, every keyboard focus move, including
+  the slider that takes focus after Reset or Reset All, scrolls the body to
+  show the focused control's whole row.
 - The panel closes when the window starts closing through `remove_window`,
   and through `sync_dialog` when a close confirmation shows, rather than at
   the top of `request_close`. The behavior is the same, and `request_close`

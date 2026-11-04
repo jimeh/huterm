@@ -568,7 +568,11 @@ again, an outside press (including one before its first frame), window
 deactivation, and a window or application close, and each close focuses the
 active terminal, which is the tab's focused pane once the pane focus was on
 has closed. `overlay_holds_focus` counts it, and a reload keeps it open: its
-rows are read at render. The root's blur-mode opacity reaches what the root
+rows are read at render. Each row records its content bounds through a
+`canvas` probe as it paints, and `focus_panel_control`, which every keyboard
+move and Reset's or Reset All's hand-back goes through, reveals the focused
+control's whole row from them; a row's bounds do not depend on focus, so the
+last paint's stand. The root's blur-mode opacity reaches what the root
 draws in flow, so the palette and dialogs fade with it, while the deferred
 popovers, menus, and tooltips stay solid.
 Focus a toast gives up while a dialog shows goes back to the control the
@@ -1044,7 +1048,11 @@ only sets the offset, so the owner redraws when it returns true.
 `focus::ring` and `ring_inset` add such a probe to the control whose ring
 they draw, and `focus::ring_bounds` reports where it last painted; a
 control that draws its focus some other way adds `focus::probe` itself, or
-Tab to it never scrolls.
+Tab to it never scrolls. `ScrollArea::scroll_to_top` puts a target's top at
+the viewport's top instead, for leading with a section. A reveal that waits
+for a frame callback judges at render whether the layout can still change,
+not in the callback: a read that finishes between the paint and the callback
+leaves the recorded bounds stale while the view already looks settled.
 
 Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
 or `AlertDialog` as the last child of the area it covers while it is open, and
@@ -1121,7 +1129,13 @@ the ring painted inside the pane's columns, and no dialog or menu is open. A
 row whose label sits apart from its controls, such as a user layout's name
 above its template, Rename, and Delete, draws `reveal_group` over itself with
 their handles, and the reveal shows the row with the ring. Smoke state reports
-`settings.scroll` and `settings.in_view` for it. The pane is a
+`settings.scroll` and `settings.in_view` for it. `open_at_group` names a
+group card, such as Appearance's Transparency for the terminal window
+panel's Edit Defaults in Settings; `select_section` drops the request.
+`settle_group_reveal` scrolls the card to the pane's top only from a frame
+drawn with no file read or theme scan running and once two such frames
+drew it in one place, since a new window scans its themes after its first
+frame and the gallery then grows above the card. The pane is a
 `ScrollArea::fill` under a fixed header that names the section, or "Search
 results"; the view owns its `ListScrollbar`, advances it in `animate_lists` on
 the suggestion lists' wake, and shows it when a reveal scrolls. Its viewport

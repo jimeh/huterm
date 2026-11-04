@@ -22,20 +22,25 @@
 //! Keyboard: the `panel_*` commands under the `Panel` context. Tab and
 //! Shift-Tab move through the enabled controls, the arrows step the focused
 //! slider, Page Up, Page Down, Home, End, and Reset act on a slider, and
-//! Enter and Space press a button.
+//! Enter and Space press a button. Each keyboard move, and the slider that
+//! takes focus after a Reset or Reset All, scrolls a short panel's body to
+//! show the focused control's whole row.
 //!
 //! Accessibility: a `Group` named "Window Transparency"; each slider is
-//! named by its row's label and reports its readout, and each Reset is
-//! named for its row.
+//! named by its row's label, reports its readout, and describes where its
+//! value comes from, and each Reset is named for its row.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Context, FocusHandle, IntoElement, ParentElement,
-    ScrollHandle, Styled, Window, div, prelude::*, px, svg,
+    ScrollHandle, Styled, Window, canvas, div, prelude::*, px, svg,
 };
 use huterm_protocol::{CommandId, ids};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::popover::{Anchor, Placement};
-use huterm_ui::components::scroll_area::ScrollArea;
+use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::separator;
 use huterm_ui::components::slider::Slider;
 use huterm_ui::steps::Steps;
@@ -93,7 +98,8 @@ pub(super) enum PanelFocus {
     Keep,
 }
 
-/// The open panel's focus handles and scroll position.
+/// The open panel's focus handles, scroll position, and where its rows
+/// last painted.
 pub(super) struct Panel {
     close: FocusHandle,
     sliders: [FocusHandle; 4],
@@ -101,6 +107,9 @@ pub(super) struct Panel {
     reset_all: FocusHandle,
     settings: FocusHandle,
     scroll: ScrollHandle,
+    /// Each row's bounds within the body, by key, recorded as it paints,
+    /// so a keyboard move can scroll the row it lands in into view.
+    rows: Rc<RefCell<[Option<ContentBounds>; 4]>>,
 }
 
 impl Panel {
@@ -113,6 +122,7 @@ impl Panel {
             reset_all: handle(),
             settings: handle(),
             scroll: ScrollHandle::new(),
+            rows: Rc::default(),
         }
     }
 
@@ -406,16 +416,28 @@ impl WorkspaceView {
         Ok(CommandOutcome::Completed)
     }
 
+    /// Moves focus to `control` and scrolls the body to show its row with
+    /// its ring. The header and footer never scroll, and a row's bounds do
+    /// not depend on focus, so the last paint's bounds stand.
     fn focus_panel_control(
         &mut self,
         control: Control,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(panel) = &self.panel {
-            panel.handle(control).clone().focus(window, cx);
-            cx.notify();
+        let Some(panel) = &self.panel else {
+            return;
+        };
+        panel.handle(control).clone().focus(window, cx);
+        let key = match control {
+            Control::Slider(key) | Control::Reset(key) => Some(key),
+            Control::Close | Control::ResetAll | Control::Settings => None,
+        };
+        let row = key.and_then(|key| panel.rows.borrow()[index(key)]);
+        if row.is_some_and(|row| ScrollArea::reveal(&panel.scroll, row)) {
+            self.panel_scrollbar.show();
         }
+        cx.notify();
     }
 
     /// What a click on a button, or `panel_press` on it, does.
@@ -691,6 +713,7 @@ impl WorkspaceView {
         )
         .readout(readout(key, row.value))
         .readout_width(px(READOUT_WIDTH))
+        .description(source_description(row.source))
         .key_context(PANEL_SLIDER_CONTEXT)
         .when_some(reason, |slider, reason| {
             slider.disabled(Some(reason.into()))
@@ -718,7 +741,23 @@ impl WorkspaceView {
             .flex_none()
             .size(huterm_ui::tokens::size::CONTROL_HEIGHT)
             .children(reset);
+        let probe = {
+            let rows = panel.rows.clone();
+            let scroll = panel.scroll.clone();
+            canvas(
+                |_, _, _| {},
+                move |bounds, (), _, _| {
+                    // Recorded while the row paints, at the offset it was
+                    // laid out with.
+                    rows.borrow_mut()[index(key)] =
+                        Some(ContentBounds::record(&scroll, bounds));
+                },
+            )
+            .absolute()
+            .inset_0()
+        };
         div()
+            .relative()
             .flex()
             .flex_col()
             .px(px(PADDING_X))
@@ -743,6 +782,7 @@ impl WorkspaceView {
                     .child(div().flex_1().min_w_0().child(slider))
                     .child(reset_slot),
             )
+            .child(probe)
             .into_any_element()
     }
 
@@ -755,6 +795,22 @@ impl WorkspaceView {
     ) -> Option<Control> {
         let controls = self.panel_controls(cx);
         self.panel.as_ref()?.focused(&controls, window)
+    }
+
+    /// The body's visible bounds in the window, while the panel is open.
+    #[cfg(test)]
+    pub(super) fn panel_viewport(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.panel.as_ref().map(|panel| panel.scroll.bounds())
+    }
+}
+
+/// A slider's accessible description: where its row's value comes from,
+/// which the row shows beside its label.
+fn source_description(source: Source) -> &'static str {
+    match source {
+        Source::Default => "Uses the default",
+        Source::Profile => "Set by the Quake profile",
+        Source::Window => "Set for this window",
     }
 }
 
@@ -849,5 +905,18 @@ mod tests {
             rows(values, Layer::default(), Layer::default(), Platform::MacOs);
         assert!(!controls(&plain, true).contains(&Control::ResetAll));
         assert_eq!(controls(&mac, false), [Control::Close, Control::Settings]);
+    }
+
+    #[test]
+    fn each_source_has_its_own_description() {
+        assert_eq!(
+            [Source::Default, Source::Profile, Source::Window]
+                .map(source_description),
+            [
+                "Uses the default",
+                "Set by the Quake profile",
+                "Set for this window"
+            ]
+        );
     }
 }

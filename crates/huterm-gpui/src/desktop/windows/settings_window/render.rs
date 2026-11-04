@@ -992,7 +992,10 @@ impl SettingsView {
             );
             cards.push(
                 if !searching
-                    && self.reveal_group.as_deref() == Some(&group.title)
+                    && self
+                        .reveal_group
+                        .as_ref()
+                        .is_some_and(|reveal| reveal.title == group.title)
                 {
                     self.revealing(card, cx)
                 } else {
@@ -1003,8 +1006,9 @@ impl SettingsView {
         cards
     }
 
-    /// `card` with a probe that scrolls the pane to it once it paints, then
-    /// forgets the request.
+    /// `card` with a probe that reports where it paints to
+    /// `settle_group_reveal`, which scrolls the pane to it once its layout
+    /// settles.
     fn revealing(
         &self,
         card: AnyElement,
@@ -1012,6 +1016,10 @@ impl SettingsView {
     ) -> AnyElement {
         let view = cx.entity().downgrade();
         let scroll = self.scroll.clone();
+        // Whether this frame's layout may still change, judged as it draws:
+        // a read or scan that ends before the next frame's callbacks leaves
+        // this frame's bounds stale.
+        let loading = self.loading > 0 || self.themes_scanned != self.scans;
         let probe = canvas(
             |_, _, _| {},
             move |bounds, (), window, _| {
@@ -1021,11 +1029,7 @@ impl SettingsView {
                 let view = view.clone();
                 window.on_next_frame(move |_, cx| {
                     let _ = view.update(cx, |view, cx| {
-                        view.reveal_group = None;
-                        if ScrollArea::reveal(&view.scroll, target) {
-                            view.scrollbar.show();
-                        }
-                        cx.notify();
+                        view.settle_group_reveal(target, loading, cx);
                     });
                 });
             },
@@ -1033,6 +1037,42 @@ impl SettingsView {
         .absolute()
         .inset_0();
         div().relative().child(card).child(probe).into_any_element()
+    }
+
+    /// Scrolls the pane to put the card `reveal_group` names, which painted
+    /// at `target`, at its top once the section's layout settles: no read
+    /// or theme scan was running when the frame drew, since either can
+    /// refill the section, such as the theme gallery above Appearance's
+    /// Transparency, and two frames in a row drew the card at the same
+    /// place. A card that keeps moving scrolls after `REVEAL_FRAMES` frames
+    /// anyway.
+    fn settle_group_reveal(
+        &mut self,
+        target: ContentBounds,
+        loading: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(reveal) = &mut self.reveal_group else {
+            return;
+        };
+        let settled = !loading && reveal.last == Some(target);
+        reveal.last = Some(target);
+        if !loading {
+            reveal.frames = reveal.frames.saturating_add(1);
+        }
+        if !settled && reveal.frames < super::REVEAL_FRAMES {
+            // A read or scan that finishes redraws by itself; a card that
+            // just moved needs one more frame to show it stays.
+            if !loading {
+                cx.notify();
+            }
+            return;
+        }
+        self.reveal_group = None;
+        if ScrollArea::scroll_to_top(&self.scroll, target) {
+            self.scrollbar.show();
+        }
+        cx.notify();
     }
 
     /// The button that shows or hides advanced settings in every section,
@@ -1094,8 +1134,10 @@ pub(super) fn group_card(
     rows: Vec<AnyElement>,
     swatch: Swatch,
 ) -> AnyElement {
+    let selector = format!("settings-group-{title}");
     div()
         .mb(px(12.0))
+        .debug_selector(move || selector)
         .child(
             Card::new(id, swatch)
                 .title(title.to_uppercase())

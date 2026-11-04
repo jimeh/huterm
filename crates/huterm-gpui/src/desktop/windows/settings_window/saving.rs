@@ -397,6 +397,7 @@ impl SettingsView {
             let _ = view.update(cx, |view, cx| {
                 if view.scans == scan {
                     view.themes = themes;
+                    view.themes_scanned = scan;
                     cx.notify();
                 }
             });
