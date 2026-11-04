@@ -99,6 +99,10 @@ pub(super) fn tab_menu(
         )));
     }
     rows.push(MenuRow::Item(MenuItem::new(
+        ids::MOVE_TAB_TO_NEW_WINDOW.as_str(),
+        "Move Tab to New Window",
+    )));
+    rows.push(MenuRow::Item(MenuItem::new(
         ids::MOVE_TAB_TO_PANE.as_str(),
         "Move Tab into Pane…",
     )));
@@ -181,6 +185,7 @@ mod tests {
                 ("close_tab", "Close Tab", true),
                 ("close_other_tabs", "Close Other Tabs", true),
                 ("close_tabs_after", "Close Tabs to the Right", true),
+                ("move_tab_to_new_window", "Move Tab to New Window", true),
                 ("move_tab_to_pane", "Move Tab into Pane…", true),
             ]
         );
@@ -192,7 +197,7 @@ mod tests {
             matches!(model.rows[6], MenuRow::Separator),
             "one separator before the move"
         );
-        assert_eq!(model.rows.len(), 8);
+        assert_eq!(model.rows.len(), 9);
     }
 
     #[test]
@@ -203,16 +208,22 @@ mod tests {
                 .map(|item| item.enabled)
                 .collect()
         };
-        assert_eq!(enabled(&input(0, 3)), [true, true, true, true, true, true]);
-        assert_eq!(enabled(&input(1, 3)), [true, true, true, true, true, true]);
+        assert_eq!(
+            enabled(&input(0, 3)),
+            [true, true, true, true, true, true, true]
+        );
+        assert_eq!(
+            enabled(&input(1, 3)),
+            [true, true, true, true, true, true, true]
+        );
         assert_eq!(
             enabled(&input(2, 3)),
-            [true, true, true, true, false, true],
+            [true, true, true, true, false, true, true],
             "the last tab has nothing to its right"
         );
         assert_eq!(
             enabled(&input(0, 1)),
-            [true, true, true, false, false, true],
+            [true, true, true, false, false, true, true],
             "a single tab has no others and nothing after it, and can still \
              move into a pane of another workspace"
         );
@@ -282,7 +293,14 @@ mod tests {
             .iter()
             .map(|item| item.id.as_ref())
             .collect();
-        assert_eq!(last, ["toggle_pane_input_sync", "move_tab_to_pane"]);
+        assert_eq!(
+            last,
+            [
+                "toggle_pane_input_sync",
+                "move_tab_to_new_window",
+                "move_tab_to_pane"
+            ]
+        );
     }
 
     #[test]

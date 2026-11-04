@@ -131,6 +131,12 @@ pub(super) fn open(cx: &mut App) {
             ..WindowOptions::default()
         },
         |window, cx| {
+            if let Some(native) = super::window_locator::identity(window) {
+                cx.global_mut::<Desktop>()
+                    .cross
+                    .windows
+                    .insert(0, (window.window_handle().window_id(), native));
+            }
             // AppKit centres the buttons in its 28-point title bar; centre
             // them in the header strip instead, at AppKit's left inset.
             #[cfg(target_os = "macos")]
@@ -559,6 +565,9 @@ impl SettingsView {
         // window looks when it comes forward.
         cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
+                cx.global_mut::<Desktop>()
+                    .cross
+                    .activated(window.window_handle().window_id());
                 view.check_disk(cx);
                 // A font installed while the window was in the background
                 // shows in its list.

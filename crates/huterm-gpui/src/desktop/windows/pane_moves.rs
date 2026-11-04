@@ -56,7 +56,7 @@ impl PaneMove {
 
 impl DesktopRuntime {
     /// Commits `change` under the Mux lock, refusing during teardown.
-    fn commit_pane_move(
+    pub(super) fn commit_pane_move(
         &self,
         change: PaneMove,
     ) -> Committed<Result<LayoutChange, MuxError>> {

@@ -55,7 +55,7 @@ initial creation fails. Window close and orphaned spawn cleanup delete that
 window's initial private session. Names and tab structure reach GPUI through
 the [hierarchy projection](hierarchy-projection.md), so core renames update
 labels without locking Mux during rendering. Shared views, session and
-workspace switching, drag transfers, persistence, and revised close policies
+workspace switching, persistence, and revised close policies
 remain deferred to the roadmap follow-ups.
 
 ## Product direction
@@ -231,3 +231,13 @@ handoff; a green unit suite alone does not prove native focus or geometry.
 
 These decisions do not block the first PR. The initial close policy above is
 specific to private backing workspaces, not a permanent rule for server clients.
+
+## Cross-window drag transfers
+
+[Cross-window drags](cross-window-drags.md) is in progress for #31. Tabs and
+panes move between a window's private sessions through the existing atomic Mux
+moves, retaining terminal identities and processes. A transfer reserves both
+windows until projection and destination view installation settle. The emptied
+source closes without stopping a terminal. Tabs can tear off into regular
+windows, and `move_tab_to_new_window` shares that path. Cross-window transfers
+are excluded from each window's layout history. Workspace moves remain deferred.

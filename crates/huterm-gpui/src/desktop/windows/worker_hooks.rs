@@ -24,10 +24,12 @@ pub(super) enum Stage {
     /// A layout commit queue job whose runtime call returned, before its
     /// completion waits for the projection and records history.
     LayoutCommitted,
+    /// Cross-window transfer before acquiring the Mux lock.
+    Transfer,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 7]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 8]>);
 
 #[derive(Default)]
 struct StageHooks {

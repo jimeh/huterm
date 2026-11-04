@@ -120,10 +120,24 @@ impl WorkspaceView {
         let requested = targets.clone();
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
-            runtime
+            if runtime
                 .worker_hooks
                 .enter(worker_hooks::Stage::Subscribe)
-                .await;
+                .await
+            {
+                return Committed {
+                    result: requested
+                        .iter()
+                        .map(|_| {
+                            Err(RuntimeError::Invariant(
+                                "injected viewer subscription failure",
+                            )
+                            .into())
+                        })
+                        .collect(),
+                    seq: runtime.lock().hierarchy_seq(),
+                };
+            }
             runtime.subscribe_panes(attachment, &requested, clipboard_allowed)
         });
         let id = self.window;
@@ -185,7 +199,7 @@ impl WorkspaceView {
             cx.notify();
         }
         if let Some(next) = reactivation(active, self.active_pane(cx)) {
-            let focus = !self.overlay_holds_focus();
+            let focus = !self.overlay_holds_focus() && self.transfer.is_none();
             self.select_tab(next, focus, window, cx);
         }
         if pushed {
@@ -199,6 +213,7 @@ impl WorkspaceView {
             self.restore_focus = None;
             self.focus_restored_pane(pane, window, cx);
         }
+        self.finish_transfer_install(window, cx);
         // A pane split into a tab while its install was in flight was
         // excluded then; installs that failed stay excluded.
         if current {
@@ -217,14 +232,16 @@ impl WorkspaceView {
         match (self.active_tab(cx), self.tabs.first()) {
             (None, Some(first)) => {
                 let first = first.id;
-                let focus = !self.overlay_holds_focus();
+                let focus =
+                    !self.overlay_holds_focus() && self.transfer.is_none();
                 self.select_tab(first, focus, window, cx);
             }
             // Hidden views still report their geometry, and a shown tab
             // that gained a pane shows it.
             (Some(active), _) => {
                 self.sync_tab_layout(window, cx);
-                let focus = !self.overlay_holds_focus();
+                let focus =
+                    !self.overlay_holds_focus() && self.transfer.is_none();
                 self.select_tab(active, focus, window, cx);
             }
             (None, None) => {}
@@ -279,7 +296,7 @@ impl WorkspaceView {
                         if target.replace {
                             gone_panes.push(target.pane);
                         }
-                        if !stale_install(&error) {
+                        if !stale_install(&error) || self.transfer.is_some() {
                             self.notify(
                                 NoticeContent::command_failure(
                                     "Cannot show tab",

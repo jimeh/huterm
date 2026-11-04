@@ -41,6 +41,26 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     let result = if command == "shutdown" {
                         cx.update(|cx| cx.quit());
                         Ok(())
+                    } else if let Some(id) = command.strip_prefix("invoke\t") {
+                        cx.update(|cx| {
+                            let spec = huterm_protocol::lookup(id).ok_or_else(
+                                || {
+                                    anyhow::anyhow!(
+                                        "unknown smoke command {id}"
+                                    )
+                                },
+                            )?;
+                            super::Desktop::invoke(
+                                cx,
+                                &huterm_protocol::CommandInvocation::new(
+                                    spec.id,
+                                    Vec::new(),
+                                ),
+                                cx.active_window(),
+                            )
+                            .map(|_| ())
+                            .map_err(anyhow::Error::from)
+                        })
                     } else if let Some(text) =
                         command.strip_prefix("clipboard\t")
                     {
@@ -127,8 +147,9 @@ fn read_state(cx: &mut gpui::App) -> String {
         .copied()
         .and_then(|window| window.update(cx, pane_state).ok())
         .unwrap_or_default();
+    let windows = super::cross_window::smoke_state(cx);
     format!(
-        "policy={policy} reloading={reloading} watching={watching} reconciliations={reconciliations} bindings={bindings} tabs={tabs} selection={selection} pending={pending} exited={exited} ready={ready} active={active} {panes}"
+        "{windows}policy={policy} reloading={reloading} watching={watching} reconciliations={reconciliations} bindings={bindings} tabs={tabs} selection={selection} pending={pending} exited={exited} ready={ready} active={active} {panes}"
     )
 }
 

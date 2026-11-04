@@ -330,18 +330,19 @@ on the Huterm-drawn title row to open a new tab at the end of the workspace.
 hit testing and the drop highlight: the macOS traffic-light inset, Linux
 leading/trailing button groups, and the menu button slot stay out. The row
 requires `title_row() > 0`, so fullscreen, Quake, and Linux server decorations
-offer no target. It neither spring-loads nor autoscrolls. Like tab-bar pane
-drops, it stays within the source window. Capture owns motion and release;
+offer no target. It neither spring-loads nor autoscrolls. Incoming tab and
+pane drags can use the same row, including a lone pane from another window.
+Capture owns motion and release;
 a press begun on a pane never arms the title row's window-move gesture.
 
 A reorder enters pane mode only over a pane of the active tab, which is not
 the dragged tab, at least `PANE_DROP_DEPTH` (32 points) past the bar's inner
 edge. Its preview then returns to the tab's slot, dimmed, and the bar does
 not autoscroll; an edge nests the tab with `move_tab_to_pane`, and a centre
-or refused zone does nothing. Everywhere else a reorder projects onto the
-bar as before, including a release outside the window, so a sloppy reorder
-cannot become a nest. Blur and an opening menu cancel a reorder as they
-cancel a pane drag, so a release afterwards nests nothing.
+or refused zone does nothing. Elsewhere within the source window a reorder
+projects onto the bar as before, so a sloppy reorder cannot become a nest.
+Blur and an opening menu cancel a reorder as they cancel a pane drag, so a
+release afterwards nests nothing.
 
 A pane drag resting on an inactive label arms `SpringLoad`, which reports one
 deadline, `SPRING_LOAD_DELAY` (500 ms), through the window's animation
@@ -357,6 +358,36 @@ request, or a refused commit, switches back to the tab it started in when
 the sprung tab is still active, without taking focus from an overlay. A
 render that finds the dragged pane gone from its tab, or an unexpected
 active tab, defers the cancel, so a drag also ends while the pointer rests.
+
+### Cross-window drags
+
+`windows/cross_window.rs` coordinates source-owned capture with destination
+previews. Resolve each event's source-local point through `window_locator`;
+never use the cached mouse position or GPUI's X11 window origin. AppKit converts
+through NSWindow and asks the window server for the topmost window, so other
+applications occlude Huterm. X11 uses TranslateCoordinates and the EWMH client
+stack, falling back to activation order when that stack is missing, empty, or
+incomplete. Other applications do not occlude targets on X11. GPUI runs through
+XWayland in Wayland sessions, where this is best effort.
+
+Preview callbacks carry a gesture generation and sample number and run deferred.
+Destination spring loading selects without moving keyboard focus and springs
+back on cancellation. Its own animation schedule owns stationary autoscroll and
+spring deadlines. Hidden, minimized, busy, closing, confirming, and transitioning
+Quake windows take no drop. Pane centres never accept a cross-window swap.
+
+Resolve again at release. Reserve both windows before dispatching a worker, and
+keep the destination busy until every moved pane has an installed viewer. Only
+a successful move clears local zoom; cross-window moves add no layout-history
+entry. Pane close requests queued in the source follow their pane IDs and
+resume after destination installation. A failed move restores the destination
+preview selection and scroll without taking focus. A failed install retains
+the reservation and notice until ordinary
+reconcile retries it. An emptied source closes without stopping its terminals.
+Tear-off creates a shell-less regular destination first and rolls back only its
+empty session on failure. A lone tab never tears off. Native input fixtures use
+window-addressed events, including negative source-local coordinates, and
+publish per-window identities and cross-window drop labels.
 
 ## Modifier pane drags
 

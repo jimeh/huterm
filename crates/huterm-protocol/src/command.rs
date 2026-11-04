@@ -806,6 +806,9 @@ pub mod ids {
         CommandId::new("move_pane_to_new_tab");
     /// Moves a whole tab beside a chosen pane of another tab.
     pub const MOVE_TAB_TO_PANE: CommandId = CommandId::new("move_tab_to_pane");
+    /// Moves a tab into a new desktop window without restarting it.
+    pub const MOVE_TAB_TO_NEW_WINDOW: CommandId =
+        CommandId::new("move_tab_to_new_window");
     /// Arranges the active tab's panes into a named layout.
     pub const ARRANGE_PANES: CommandId = CommandId::new("arrange_panes");
     /// Arranges the active tab's panes into the next layout of the cycle.
@@ -1619,6 +1622,18 @@ const CATALOG: &[CommandSpec] = &[
             kind: ArgumentKind::Workspace,
             required: Requirement::Optional,
             prompt: true,
+        }],
+    ),
+    spec(
+        ids::MOVE_TAB_TO_NEW_WINDOW,
+        CommandScope::Window,
+        "Move Tab to New Window",
+        "Move a tab into a new window, keeping its terminals running.",
+        &[ArgumentSpec {
+            name: "tab",
+            kind: ArgumentKind::Tab,
+            required: Requirement::Optional,
+            prompt: false,
         }],
     ),
     spec(

@@ -1,7 +1,8 @@
 //! Pane drags from a title bar, tab drags that nest a tab into a pane, and
 //! spring-loaded tabs. A drag resolves its target from the last drawn frame
 //! on each motion, draws the result it would have, and on release commits
-//! one Mux operation through the same path as the pane move commands.
+//! one Mux operation. Local drops share the pane move command path;
+//! cross-window transfers coordinate through `cross_window`.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
@@ -157,7 +158,7 @@ impl PaneDrag {
         self.sprung.unwrap_or(self.tab)
     }
 
-    fn back(&self) -> Option<SpringBack> {
+    pub(super) fn back(&self) -> Option<SpringBack> {
         self.sprung.map(|sprung| SpringBack {
             origin: self.tab,
             sprung,
@@ -281,6 +282,15 @@ impl WorkspaceView {
         if !was_scrolling {
             self.last_scroll = Instant::now();
         }
+        if self.route_cross_drag(pointer, window, cx) {
+            if let Some(drag) = &mut self.pane_drag {
+                drag.over_bar = false;
+                drag.target = None;
+                drag.spring = SpringLoad::default();
+            }
+            cx.notify();
+            return;
+        }
         self.retarget_pane_drag(Instant::now(), false, window, cx);
         cx.notify();
     }
@@ -322,6 +332,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.cross_outside(cx) {
+            return;
+        }
         let Some(before) = self
             .pane_drag
             .as_ref()
@@ -338,7 +351,7 @@ impl WorkspaceView {
 
     /// Whether `pointer` is over the drawn tab strip: the bar without the
     /// window buttons or title-row controls at either end.
-    fn over_tab_bar(
+    pub(super) fn over_tab_bar(
         &self,
         pointer: gpui::Point<Pixels>,
         window: &Window,
@@ -419,7 +432,7 @@ impl WorkspaceView {
     }
 
     /// The drawn pane of the active tab under `pointer`, with its tab.
-    fn drawn_pane_at(
+    pub(super) fn drawn_pane_at(
         &self,
         pointer: gpui::Point<Pixels>,
     ) -> Option<(TabId, PaneRect)> {
@@ -509,6 +522,15 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.update_pane_drag(pointer, window, cx);
+        if self.finish_cross_drag(window, cx) {
+            if let Some(drag) = self.pane_drag.take()
+                && !self.busy
+            {
+                self.end_pane_drag(&drag, window, cx);
+            }
+            cx.notify();
+            return;
+        }
         let Some(drag) = self.pane_drag.take() else {
             return;
         };
@@ -544,6 +566,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.end_cross_drag(true, cx);
         if let Some(drag) = self.pane_drag.take() {
             self.end_pane_drag(&drag, window, cx);
         }
@@ -638,9 +661,12 @@ impl WorkspaceView {
         &mut self,
         now: Instant,
         window: &Window,
-        cx: &App,
+        cx: &mut App,
     ) {
-        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+        self.retarget_incoming(now, true, window, cx);
+        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            && !self.cross_outside(cx)
+        {
             self.retarget_pane_drag(now, true, window, cx);
         }
     }
@@ -759,7 +785,23 @@ impl WorkspaceView {
         cx: &App,
     ) -> Vec<gpui::AnyElement> {
         let mut elements = Vec::new();
-        let (target, pointer, title, source) = if let Some(drag) =
+        let (target, pointer, title, source) = if let Some(incoming) =
+            &self.incoming
+        {
+            (
+                incoming.target,
+                incoming.pointer,
+                incoming.payload.title.clone(),
+                None,
+            )
+        } else if self.cross_outside(cx) {
+            *self.drawn_drop.borrow_mut() = Some(if self.tear_off_cue(cx) {
+                "tear_off".into()
+            } else {
+                "none".into()
+            });
+            return elements;
+        } else if let Some(drag) =
             self.pane_drag.as_ref().filter(|drag| drag.dragging)
         {
             let tab = self.tabs.iter().find(|view| view.id == drag.tab);
@@ -896,7 +938,10 @@ impl WorkspaceView {
 /// target pane's index in its tab's traversal order, `slot:<index>`,
 /// `title_row`, `spring:<tab index>`, or `none`. A refused zone ends in
 /// `:refused`.
-fn drop_label(target: Option<DropTarget>, tabs: &[TabView]) -> String {
+pub(super) fn drop_label(
+    target: Option<DropTarget>,
+    tabs: &[TabView],
+) -> String {
     match target {
         None => "none".to_owned(),
         Some(DropTarget::Slot(index)) => format!("slot:{index}"),
