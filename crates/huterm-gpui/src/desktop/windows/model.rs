@@ -77,6 +77,9 @@ pub(super) struct WindowRecord {
     /// The window is being removed. Its own view can still read the record,
     /// but profile rows, Quit dialog titles, and Quit capture skip it.
     pub(super) closing: bool,
+    /// The window's own transparency overrides, runtime state over the
+    /// configured defaults and its Quake profile.
+    pub(super) transparency: crate::transparency::Layer,
 }
 
 impl WindowRecord {
@@ -112,6 +115,7 @@ pub(super) struct WindowRestore {
     pub(super) tab_position: TabPosition,
     pub(super) sidebar_width: Pixels,
     pub(super) quake_profile: Option<String>,
+    pub(super) transparency: crate::transparency::Layer,
 }
 
 /// A quake profile rename Settings is writing or wrote, until the reloads
@@ -177,6 +181,7 @@ impl WindowModel {
             layout,
             layout_history: LayoutHistory::default(),
             closing: false,
+            transparency: crate::transparency::Layer::default(),
         });
     }
 
@@ -441,6 +446,18 @@ impl WindowModel {
         }
     }
 
+    /// Replaces a window's transparency overrides; returns whether they
+    /// changed.
+    pub(super) fn set_transparency(
+        &mut self,
+        id: WindowId,
+        layer: crate::transparency::Layer,
+    ) -> bool {
+        self.record_mut(id).is_some_and(|record| {
+            std::mem::replace(&mut record.transparency, layer) != layer
+        })
+    }
+
     pub(super) fn set_sidebar_width(&mut self, id: WindowId, width: Pixels) {
         if let Some(record) = self.record_mut(id) {
             record.layout.sidebar_width = width;
@@ -613,6 +630,7 @@ impl WindowModel {
                         .quake
                         .as_ref()
                         .map(|quake| quake.profile.clone()),
+                    transparency: record.transparency,
                 })
             })
             .collect()

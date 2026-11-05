@@ -414,9 +414,14 @@ fn complete(
         Ok(outcome) => {
             let _ = handle.update(cx, |root, _, cx| {
                 if let Ok(root) = root.downcast::<WorkspaceView>() {
-                    root.update(cx, |view, _| {
+                    root.update(cx, |view, cx| {
                         if let Some(state) = &mut view.quake {
                             state.work.failure.clear();
+                        }
+                        // A style change left the blur radius to write
+                        // again, which the next frame does.
+                        if view.blur.wants_write() {
+                            cx.notify();
                         }
                     });
                 }

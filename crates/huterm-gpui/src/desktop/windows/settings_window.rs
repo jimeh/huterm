@@ -47,7 +47,7 @@ use crate::native_appearance::FrameAppearance;
 use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
 use huterm_ui::components::input::{
-    Changed, Chrome, ContextMenu as FieldContextMenu, Input,
+    Changed, Chrome, ContextMenu as FieldContextMenu, Edited, Input,
 };
 use huterm_ui::components::menu::{
     Menu as MenuView, MenuEvent, Role as MenuRole, min_width, select_width,
@@ -161,6 +161,47 @@ pub(super) fn open(cx: &mut App) {
                 cx,
                 &format!("Cannot open Settings: {error}"),
             );
+        }
+    }
+}
+
+/// Opens Settings, or brings it forward, at `section`, scrolled to its
+/// group titled `group`.
+pub(super) fn open_at_group(cx: &mut App, section: SectionId, group: &str) {
+    open(cx);
+    let Some(handle) = cx.global::<Desktop>().settings else {
+        return;
+    };
+    let group = group.to_owned();
+    let _ = handle.update(cx, |view, _, cx| {
+        view.select_section(section, cx);
+        view.reveal_group = Some(GroupReveal::new(group));
+    });
+}
+
+/// A group card of the shown section that the pane scrolls to the top once
+/// the section's layout settles.
+struct GroupReveal {
+    /// The group's title.
+    title: String,
+    /// Where the card last painted in the pane's content, so the reveal
+    /// waits for two frames that agree.
+    last: Option<ContentBounds>,
+    /// Frames that drew the card with nothing loading, so a layout that
+    /// keeps moving still scrolls after [`REVEAL_FRAMES`].
+    frames: u8,
+}
+
+/// The most frames a group reveal waits for the card to stay put once
+/// nothing loads.
+const REVEAL_FRAMES: u8 = 8;
+
+impl GroupReveal {
+    fn new(title: String) -> Self {
+        Self {
+            title,
+            last: None,
+            frames: 0,
         }
     }
 }
@@ -343,6 +384,9 @@ pub(super) struct SettingsView {
     /// Reads and theme scans started; only the latest of each applies.
     reads: u64,
     scans: u64,
+    /// The theme scan that last applied; one short of `scans` while the
+    /// latest runs.
+    themes_scanned: u64,
     /// Reads still running.
     loading: u32,
     /// A read finished while writes were pending and was dropped; the file
@@ -412,6 +456,10 @@ pub(super) struct SettingsView {
     /// A section just selected, whose tab the next frame scrolls the
     /// sidebar to show.
     reveal_section: Option<SectionId>,
+    /// A group card of the shown section that the pane scrolls to the top
+    /// once its layout settles, such as Appearance's Transparency for the
+    /// terminal window's panel.
+    reveal_group: Option<GroupReveal>,
     /// Whether a primary press on the title strip waits for the drag that
     /// moves the window.
     title_press: Rc<Cell<bool>>,
@@ -440,6 +488,13 @@ impl SettingsView {
         cx.subscribe(&search, |view, _, _: &Changed, cx| {
             view.scroll.set_offset(point(px(0.0), px(0.0)));
             cx.notify();
+        })
+        .detach();
+        // Typing a query replaces the pane a pending group reveal waited
+        // for. Only the user's edits cancel it: selecting a section clears
+        // the query just before Edit Defaults asks for its reveal.
+        cx.subscribe(&search, |view, _, _: &Edited, _| {
+            view.reveal_group = None;
         })
         .detach();
         search
@@ -522,6 +577,7 @@ impl SettingsView {
             epoch: 0,
             reads: 0,
             scans: 0,
+            themes_scanned: 0,
             loading: 0,
             reread: false,
             fresh: None,
@@ -543,6 +599,7 @@ impl SettingsView {
             nav_scrollbar: ListScrollbar::new(nav_scroll.clone()),
             nav_scroll,
             reveal_section: None,
+            reveal_group: None,
             title_press: Rc::default(),
             painted: Rc::default(),
         };
@@ -730,7 +787,7 @@ impl SettingsView {
         // is copying to the profile's new name.
         let text = match self.pending.get(path) {
             Some(value) => self.display(setting, value.clone()),
-            None => field_text(shown(setting, &self.file, &self.defaults)),
+            None => self.shown_text(setting),
         };
         self.show_text(path, text, cx);
         self.synced.insert(path, text_for(field.read(cx)));
@@ -1112,7 +1169,13 @@ impl SettingsView {
         setting.visible_when.is_empty()
             || setting.visible_when.iter().any(|condition| {
                 self.setting_at(&condition.setting).is_some_and(|other| {
-                    shown(other, &self.file, &self.defaults).as_ref()
+                    shown(
+                        other,
+                        &self.file,
+                        &self.defaults,
+                        self.inherited(other),
+                    )
+                    .as_ref()
                         == Some(&condition.equals)
                 })
             })
@@ -1144,6 +1207,7 @@ impl SettingsView {
         self.field_menus.native = None;
         self.section = section;
         self.reveal_section = Some(section);
+        self.reveal_group = None;
         self.search.update(cx, |search, cx| search.set_text("", cx));
         self.scroll.set_offset(point(px(0.0), px(0.0)));
         cx.notify();
@@ -3377,6 +3441,19 @@ impl SettingsView {
         self.painted.borrow().search
     }
 
+    /// Whether a group reveal, such as the terminal window panel's Edit
+    /// Defaults in Settings, still waits to scroll the pane.
+    #[cfg(test)]
+    pub(super) fn group_reveal_pending(&self) -> bool {
+        self.reveal_group.is_some()
+    }
+
+    /// How far the pane can scroll down.
+    #[cfg(test)]
+    pub(super) fn pane_scroll_limit(&self) -> gpui::Pixels {
+        self.scroll.max_offset().y
+    }
+
     /// How far the pane has scrolled down.
     pub(super) fn pane_scrolled(&self) -> gpui::Pixels {
         -self.scroll.offset().y
@@ -3553,6 +3630,29 @@ impl SettingsView {
 
     pub(super) fn conflicted(&self, path: &str) -> bool {
         self.conflicts.contains_key(path)
+    }
+
+    /// The value the setting's control shows, as a slider shows a pending
+    /// reset.
+    pub(super) fn shown_value(&self, path: &str) -> Option<Value> {
+        let setting = self.setting_at(path).expect("a known setting");
+        self.value(setting).or_else(|| self.default_value(setting))
+    }
+
+    /// The description the setting's row shows.
+    pub(super) fn row_description(&self, path: &str) -> Option<String> {
+        self.row_description_of(self.setting_at(path).expect("a known setting"))
+    }
+
+    /// Steps the setting as the arrows on its focused control do.
+    pub(super) fn step_at(
+        &mut self,
+        path: &str,
+        forward: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let setting = self.setting_at(path).expect("a known setting");
+        self.step_setting(setting, Jump::Step(forward), cx);
     }
 
     /// Saves `value` for the setting at `path`, or resets it when `None`.
@@ -3806,7 +3906,7 @@ mod transparency_tests {
     fn linux_blur_row_is_hidden_unless_set_and_remains_foreign() {
         use huterm_config::settings::Platform;
         let model = huterm_config::settings::SettingsModel::load().unwrap();
-        let blur = model.setting("window.background_blur").unwrap();
+        let blur = model.setting("window.blur").unwrap();
         assert!(!available_on(blur, Platform::Linux, false));
         assert!(available_on(blur, Platform::Linux, true));
         assert_eq!(blur.platform, Some(Platform::Macos));
@@ -3817,6 +3917,18 @@ mod transparency_tests {
         );
         assert!(foreign_note_on(blur, Platform::Macos).is_none());
         assert!(available_on(blur, Platform::Macos, false));
+        // A profile's blur row follows the same rule.
+        let profile =
+            quake::profile_setting(model, "quake.profiles.default.blur")
+                .unwrap();
+        assert!(!available_on(profile, Platform::Linux, false));
+        assert!(available_on(profile, Platform::Linux, true));
+        assert!(
+            foreign_note_on(profile, Platform::Linux)
+                .unwrap()
+                .starts_with("macOS only")
+        );
+        assert_eq!(profile.inherits.as_deref(), Some("window.blur"));
     }
 
     #[test]
@@ -3826,11 +3938,15 @@ mod transparency_tests {
             "window.opacity",
             "window.background_opacity",
             "window.foreground_opacity",
-            "window.background_blur",
+            "window.blur",
         ] {
             let setting = model.setting(path).unwrap();
             assert!(SettingsView::matches(setting, "transparency"), "{path}");
         }
+        // Search lowercases its query; the row reads "Blur".
+        let blur = model.setting("window.blur").unwrap();
+        assert_eq!(blur.label, "Blur");
+        assert!(SettingsView::matches(blur, "blur"));
         let padding = model.setting("window.padding_x").unwrap();
         assert!(!SettingsView::matches(padding, "transparency"));
     }

@@ -19,7 +19,10 @@
 //! before the area repaints. A control it scrolls to stops
 //! [`REVEAL_CLEARANCE`] from the edge, or as far as the area leaves room
 //! for, so a window's edge or hairline cannot cover the ring. A control
-//! taller than the area shows from its top.
+//! taller than the area shows from its top. To lead with a section rather
+//! than show a control, [`ScrollArea::scroll_to_top`] puts its top at the
+//! area's top, the same clearance below the edge, or as near as the content
+//! scrolls.
 //!
 //! Accessibility: a `ScrollView` node; the content reports its own nodes.
 
@@ -80,6 +83,26 @@ impl ScrollArea {
     pub fn reveal(scroll: &ScrollHandle, target: ContentBounds) -> bool {
         let offset = scroll.offset();
         let y = reveal_offset(
+            scroll.bounds(),
+            target.0 + offset,
+            offset.y,
+            scroll.max_offset().y,
+        );
+        if y == offset.y {
+            return false;
+        }
+        scroll.set_offset(point(offset.x, y));
+        true
+    }
+
+    /// Scrolls the area `scroll` tracks so that `target`, such as a
+    /// section's bounds within its content, starts [`REVEAL_CLEARANCE`]
+    /// below the viewport's top, or as near as the content scrolls. Returns
+    /// whether it scrolled; the owner then redraws.
+    #[must_use = "the owner redraws when the area scrolled"]
+    pub fn scroll_to_top(scroll: &ScrollHandle, target: ContentBounds) -> bool {
+        let offset = scroll.offset();
+        let y = top_offset(
             scroll.bounds(),
             target.0 + offset,
             offset.y,
@@ -193,6 +216,20 @@ pub fn reveal_offset(
     (offset + shift).clamp(-max, Pixels::ZERO)
 }
 
+/// The vertical offset, from the current `offset` (zero or less, down to
+/// `-max`), that puts `target`'s top [`REVEAL_CLEARANCE`] below
+/// `viewport`'s top, clamped to the content.
+#[must_use]
+pub fn top_offset(
+    viewport: Bounds<Pixels>,
+    target: Bounds<Pixels>,
+    offset: Pixels,
+    max: Pixels,
+) -> Pixels {
+    let shift = viewport.top() + REVEAL_CLEARANCE - target.top();
+    (offset + shift).clamp(-max, Pixels::ZERO)
+}
+
 impl std::fmt::Debug for ScrollArea {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScrollArea")
@@ -217,7 +254,9 @@ mod tests {
         point, prelude::*, px, size,
     };
 
-    use super::{ContentBounds, REVEAL_CLEARANCE, ScrollArea, reveal_offset};
+    use super::{
+        ContentBounds, REVEAL_CLEARANCE, ScrollArea, reveal_offset, top_offset,
+    };
     use crate::list_scrollbar::ListScrollbar;
     use crate::testing::{a11y_node, tokens};
 
@@ -360,6 +399,27 @@ mod tests {
         // The offset stays within the content.
         assert_eq!(reveal(40.0, 20.0, -5.0, 300.0), 0.0);
         assert_eq!(reveal(400.0, 20.0, -40.0, 300.0), -300.0);
+    }
+
+    #[test]
+    fn scroll_to_top_starts_the_target_at_the_top_within_the_content() {
+        let at = |top: f32, offset: f32| {
+            let viewport = Bounds::new(
+                point(px(0.0), px(50.0)),
+                size(px(200.0), px(100.0)),
+            );
+            let target =
+                Bounds::new(point(px(0.0), px(top)), size(px(200.0), px(20.0)));
+            top_offset(viewport, target, px(offset), px(300.0)).as_f32()
+        };
+        // Below or above: its top stops the clearance under the top.
+        assert_eq!(at(140.0, -40.0), -122.0);
+        assert_eq!(at(40.0, -40.0), -22.0);
+        // Already there: nothing moves.
+        assert_eq!(at(58.0, -40.0), -40.0);
+        // The offset stays within the content.
+        assert_eq!(at(500.0, -40.0), -300.0);
+        assert_eq!(at(55.0, -2.0), 0.0);
     }
 
     #[gpui::test]

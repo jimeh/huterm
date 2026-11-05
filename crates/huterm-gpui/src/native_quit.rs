@@ -290,6 +290,45 @@ pub(crate) fn menu_shortcut(title: &str) -> anyhow::Result<MenuShortcut> {
     matches.pop().context("menu item disappeared")
 }
 
+/// The item titles of the main menu's submenu titled `name`, in order,
+/// with separators as empty titles.
+pub(crate) fn menu_titles(name: &str) -> anyhow::Result<Vec<String>> {
+    ensure!(
+        is_main_thread()?,
+        "menu inspection requires the main thread"
+    );
+    let application = application()?;
+    // SAFETY: AppKit owns mainMenu and its items during this synchronous
+    // main-thread read; titles are copied before returning.
+    unsafe {
+        let menu: *mut Object = msg_send![application, mainMenu];
+        ensure!(!menu.is_null(), "AppKit main menu is unavailable");
+        let count: usize = msg_send![menu, numberOfItems];
+        for index in 0..count {
+            let item: *mut Object = msg_send![menu, itemAtIndex: index];
+            ensure!(!item.is_null(), "AppKit returned a null menu item");
+            let submenu: *mut Object = msg_send![item, submenu];
+            if submenu.is_null() {
+                continue;
+            }
+            let title: *mut Object = msg_send![submenu, title];
+            if native_string(title)? != name {
+                continue;
+            }
+            let items: usize = msg_send![submenu, numberOfItems];
+            let mut titles = Vec::with_capacity(items);
+            for index in 0..items {
+                let item: *mut Object = msg_send![submenu, itemAtIndex: index];
+                ensure!(!item.is_null(), "AppKit returned a null menu item");
+                let title: *mut Object = msg_send![item, title];
+                titles.push(native_string(title)?);
+            }
+            return Ok(titles);
+        }
+    }
+    anyhow::bail!("no {name:?} menu")
+}
+
 unsafe fn find_menu_shortcuts(
     menu: *mut Object,
     title: &str,

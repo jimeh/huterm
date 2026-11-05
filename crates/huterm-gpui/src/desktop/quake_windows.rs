@@ -168,6 +168,7 @@ pub(super) struct Presentation {
     generation: Rc<Cell<u64>>,
     pub(super) native: native::Window,
     alpha: crate::transparency::Alpha,
+    blur: crate::transparency::Blur,
     model: policy::Model,
     /// A move to another display in regular presentation.
     pin: Option<placement::Pin>,
@@ -267,6 +268,7 @@ enum NativeOp {
 }
 struct NativeEffect {
     alpha: crate::transparency::Alpha,
+    blur: crate::transparency::Blur,
     native: native::Window,
     reporter: Option<WeakEntity<WorkspaceView>>,
     gate: Rc<Cell<u64>>,
@@ -287,6 +289,7 @@ impl NativeEffect {
         Self {
             native: state.native.clone(),
             alpha: state.alpha.clone(),
+            blur: state.blur.clone(),
             reporter: state.reporter.clone(),
             gate: Rc::clone(&state.generation),
             generation: state.generation.get(),
@@ -333,11 +336,15 @@ impl NativeEffect {
                 }
                 match operation {
                     NativeOp::Frame(frame) => self.native.set_frame(frame)?,
+                    // A style change or a Space move can replace the
+                    // window server's blur, so the next sync writes it.
                     NativeOp::Quake(enabled) => {
                         self.native.set_quake(enabled)?;
+                        self.blur.invalidate();
                     }
                     NativeOp::Fullscreen(enabled) => {
                         self.native.set_fullscreen(enabled)?;
+                        self.blur.invalidate();
                     }
                     NativeOp::Opacity(value) => self
                         .alpha
@@ -563,7 +570,7 @@ fn invoke_now(
                 }
                 let unchanged = show && native_idle && !state.regular
                     && state.stage == Stage::Idle && state.transition.visible()
-                    && state.profile == config
+                    && state.profile.same_presentation(&config)
                     && state.native.visible().map_err(|error| error.to_string())?
                     && state.native.fullscreen().map_err(|error| error.to_string())? == config.fullscreen
                     && near(state.native.frame().map_err(|error| error.to_string())?, config.geometry(&state.display));
@@ -624,12 +631,17 @@ fn place(
         .ok_or_else(|| anyhow::anyhow!("no display available"))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Quake window shares its view's native alpha and blur owners"
+)]
 pub(super) fn attach(
     name: String,
     profile: Profile,
     display: Display,
     reporter: Option<WeakEntity<WorkspaceView>>,
     alpha: crate::transparency::Alpha,
+    blur: crate::transparency::Blur,
     window: &Window,
     cx: &mut App,
 ) -> Result<Presentation, String> {
@@ -662,6 +674,7 @@ pub(super) fn attach(
         Work::new(&native, &platform).map_err(|error| error.to_string())?;
     Ok(Presentation {
         alpha,
+        blur,
         name,
         reporter,
         generation: Rc::new(Cell::new(0)),
@@ -903,6 +916,8 @@ fn step_transition(
         cx.global_mut::<Desktop>()
             .windows
             .set_layout_bounds(view.window, window.window_bounds());
+        // The profile's transparency keys no longer apply.
+        view.refresh_transparency(window, cx);
         view.sync_quake_visibility(window, cx);
         return None;
     }

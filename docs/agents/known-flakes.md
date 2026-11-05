@@ -270,7 +270,14 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   drag work, which changes no `huterm-core` code, one local `mise run
   verify` failed `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
   ("terminal child did not report exit"); the rerun passed at a load
-  average near 22.
+  average near 22. On 2026-11-04, during the per-window transparency work
+  (#399), which changes no `huterm-core` code, two consecutive local `mise
+  run test` runs failed
+  `foreground_exit_and_unavailable_runtime_are_assessed_conservatively`
+  at a load average near 6, and a `mux::` filtered run then failed the
+  orphan test. It passed in 3 isolated reruns, the whole `huterm-core`
+  suite passed with `--test-threads=4`, and a third full workspace run
+  passed it.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.

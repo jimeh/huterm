@@ -85,7 +85,39 @@ before terminal handlers and reconcile after gesture ownership changes.
 ## Native window handles
 
 `transparency::Alpha` owns native alpha for ordinary and Quake windows:
-configured opacity times normalized fade. Native writes must preserve and
+the configured factor, `transparency::resolve`'s `native_alpha`, times the
+normalized fade. Blur mode (macOS, `blur > 0`, and `opacity` or
+`background_opacity` below 1) pins the configured factor at 1 and moves
+`opacity` to the root element's GPUI opacity, because the window server's
+blur fades with native alpha: on macOS 27.0.1 a probe behind a clear window
+with radius 20 measured stripe sharpness 0.25 at alpha 1, 31.75 at 0.5, and
+50.75 at 0.2, against 63.75 without blur. Structural underlay checks read
+`Effective::translucent`, never `background < 1`, so the faded root over an
+opaque background still paints one background per region. The Quake fade
+stays a native-alpha factor in both modes.
+`transparency::RootOpacity` keeps the root opacity the view paints apart
+from the resolved one, so the painted root follows the native alpha write:
+entering blur mode, native alpha goes to 1 first and the root takes the
+opacity in the continuation `Alpha::sync` runs after a successful write;
+leaving, the root drops to 1 in that same continuation. A failed write
+publishes nothing, so the root keeps its old opacity. This orders the state,
+not the screen. The native alpha write and the GPUI frame that carries the
+new root opacity present separately, so a mode switch can still show one
+frame at the old combination (`opacity` squared, or 1). Without a scheduled
+write, as in tests or after a failed handle lookup, both apply at once.
+`transparency::Blur` owns the radius
+(`CGSSetWindowBackgroundBlurRadius`, resolved once with `dlsym`, on the
+`windowNumber` read at the write). It writes on a later foreground turn and
+reads the desired radius then; only a successful write records the applied
+radius, and a failure leaves it unknown, logs once per window, and waits for
+the next change, reload, or style change to try once more, with no timer.
+Without the private symbols it writes nothing, keeps the radius unknown, and
+reports `blur_radius=unsupported` in smoke state.
+It never writes 0 to a window that never blurred or already has 0, which
+avoids a radius-0 lockout reported elsewhere (it did not reproduce on macOS
+27.0.1). A Quake style change, a conversion, and a native fullscreen change
+mark the radius unknown, so the next frame writes it again; closing the
+window drops the pending write. Native writes must preserve and
 reconcile factors changed by reentrant callbacks. Opacity reload keeps the
 Quake effect generation: effects read the live configured factor, and cancelling
 them can discard an already-issued Show or Hide. Progress and deadlines stay
@@ -98,6 +130,12 @@ readback instead of asserting it at publication. Background appearance
 follows the shared pure policy at open, reload and decoration changes; refresh
 after applying it because GPUI's native setters do not redraw.
 Pane creation reads cached transparency support instead of probing X11.
+Only desktop install, window open, and reload probe; a reload copies
+`Desktop::transparency_support` into every window. Paint reads the resolved
+`WorkspaceView::transparency`, not the support field, so a test that changes
+support must resolve again and must set the desktop's cache too, or the next
+reload reverts it. `DesktopHarness::support_transparency` does both. Linux CI
+has no `DISPLAY`, so its probe reports `Unavailable`.
 
 Window-only startup captures can be stale while AppKit reports the window
 occluded. `isVisible` only means the window is ordered on screen; check

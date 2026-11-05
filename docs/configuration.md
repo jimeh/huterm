@@ -684,7 +684,7 @@ the `[window]` and `[tabs]` settings with their defaults:
 opacity = 1.0
 background_opacity = 1.0
 foreground_opacity = 1.0
-background_blur = false # macOS only
+blur = 0 # 0 (off) to 64; macOS only
 padding_x = 4.0
 padding_y = 4.0
 padding_balance = false
@@ -774,7 +774,7 @@ with their defaults; in Settings they are under Appearance > Transparency:
 opacity = 1.0            # 0.1 to 1: fades the whole window evenly
 background_opacity = 1.0 # 0 to 1: the terminal background and chrome bars
 foreground_opacity = 1.0 # 0.1 to 1: terminal text, labelled Text opacity
-background_blur = false  # macOS only
+blur = 0                 # 0 (off) to 64: blur radius, macOS only
 ```
 
 `opacity` fades everything in the window together, chrome, text, cursor and
@@ -802,10 +802,44 @@ dimmed, and emoji keep full strength at reduced text opacity. Where box-drawing
 characters overlap, reduced text opacity can show the overlap. The visual bell's
 flash briefly looks more solid.
 
-`background_blur` blurs what shows through a translucent background, using the
-system's blur, whose strength is fixed. It has no effect while
-`background_opacity` is 1. Linux has no blur: Huterm logs a warning when the
-file turns it on, and Settings shows the row only when the file sets it.
+`blur` blurs what shows through the window whenever the window is
+translucent, that is while `opacity` or `background_opacity` is below 1. It
+is the window server's blur radius in points, from 0 (off) to 64, and
+changes apply to open windows at once. An opaque window never blurs.
+
+The window server fades its blur together with the whole window, so while a
+window blurs Huterm keeps the window itself fully opaque and fades its
+contents by `opacity` instead. Every part of the window fades evenly, but
+where translucent layers overlap, such as a program's background color over
+the default background or text over a translucent bar, the overlap shows a
+little more solid than it does without blur. Menus, tooltips, and other
+popups stay solid in blur mode. With `blur = 0`, `opacity` fades the whole
+window as one, as before. The Quake fade animates the whole window in both
+modes.
+
+Linux has no blur: Huterm logs a warning when the file or a Quake profile
+sets a radius, and Settings and the transparency panel show no blur control,
+except that Settings shows a row the file sets.
+
+### Per-window transparency
+
+View > Window Transparency… (`window_transparency` in the palette, with no
+default binding) opens a panel at the top right of the terminal area that
+changes these four values for the focused window alone. Each row shows where
+its value comes from: Default (Appearance > Transparency), Profile (the
+window's Quake profile), or This window, an override with a dot. Dragging or
+stepping a slider overrides that value at once, Reset puts back the value
+beneath it, Reset All clears every override, and Edit Defaults in Settings…
+opens Settings at Appearance > Transparency. Escape, the command again, or a
+click outside the panel closes it. Each value is layered on its own: the
+defaults, then the window's Quake profile, then the window's override. A
+later change to a default reaches every window that does not override that
+value. Overrides last as long as the window and are not saved; a tab torn
+off into a new window starts without any. The [keybindings
+reference](keybindings.md#window-transparency-panel) lists the panel's keys.
+
+Without transparency support the panel's sliders are disabled and the panel
+says why.
 
 On Linux, transparency needs an X11 compositing manager and a 32-bit color
 visual. Without either, windows stay opaque, Huterm logs which one is missing,
@@ -1005,6 +1039,10 @@ display = "active"          # active, pointer, primary, or id:<platform identifi
 hide_on_focus_loss = true
 animation = "auto"
 animation_ms = 150          # 0 through 1000; zero is immediate
+# opacity = 0.9             # optional; unset uses [window] opacity
+# background_opacity = 0.8  # optional; unset uses [window] background_opacity
+# foreground_opacity = 1.0  # optional; unset uses [window] foreground_opacity
+# blur = 20                 # optional, macOS only; unset uses [window] blur
 
 [[global_keybinding]]
 key = "ctrl-alt-t"
@@ -1032,6 +1070,17 @@ application. Auto-hide does not take focus back from an application you
 switched to. On macOS, launcher panels that take keyboard focus without
 activating their application, such as 1Password Quick Access or Alfred, do not
 hide the quake window.
+
+A profile's `opacity`, `background_opacity`, `foreground_opacity`, and
+`blur` override the [`[window]` transparency](#transparency) values for its
+window, each on its own, and a window's own overrides from the transparency
+panel come on top. An unset key uses the `[window]` value; Settings shows it
+in the profile's Transparency card as, for example, "Uses Appearance >
+Transparency (60%).", and Reset there removes the key so the profile follows
+the default again. A change to these keys applies to the window at once
+without showing, hiding, or moving it. The window keeps its profile's values
+while shown as a regular window, and the Quake fade ends at the window's
+resolved opacity.
 
 `toggle_fullscreen` switches a quake window between quake and regular framed
 presentation. Regular presentation suspends auto-hide and keeps your placement.

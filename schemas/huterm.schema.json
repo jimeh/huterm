@@ -1088,6 +1088,39 @@
           "x-huterm-section": "quake",
           "x-huterm-unit": "ms"
         },
+        "background_opacity": {
+          "description": "How opaque the background of this profile's windows is, from 0 to 1.\nUnset uses `[window] background_opacity`.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-inherits": "window.background_opacity",
+          "x-huterm-label": "Background opacity",
+          "x-huterm-order": 100,
+          "x-huterm-section": "quake",
+          "x-huterm-step": 0.05
+        },
+        "blur": {
+          "description": "The blur radius of this profile's windows while they are translucent,\nfrom 0 (off) to 64 points, on macOS only. Unset uses `[window] blur`.",
+          "format": "uint8",
+          "maximum": 64,
+          "minimum": 0,
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-inherits": "window.blur",
+          "x-huterm-label": "Blur",
+          "x-huterm-order": 120,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "quake",
+          "x-huterm-step": 1,
+          "x-huterm-unit": "pt",
+          "x-huterm-zero-label": "Off"
+        },
         "display": {
           "default": "active",
           "description": "The display each show uses: the active one, the one under the\npointer, the primary one, or `id:` and a display identifier.",
@@ -1098,6 +1131,21 @@
           "x-huterm-label": "Display",
           "x-huterm-order": 50,
           "x-huterm-section": "quake"
+        },
+        "foreground_opacity": {
+          "description": "How opaque the text of this profile's windows is, from 0.1 to 1.\nUnset uses `[window] foreground_opacity`.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0.1,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-inherits": "window.foreground_opacity",
+          "x-huterm-label": "Text opacity",
+          "x-huterm-order": 110,
+          "x-huterm-section": "quake",
+          "x-huterm-step": 0.05
         },
         "fullscreen": {
           "default": false,
@@ -1137,6 +1185,21 @@
           "x-huterm-label": "Hide when it loses focus",
           "x-huterm-order": 60,
           "x-huterm-section": "quake"
+        },
+        "opacity": {
+          "description": "How opaque this profile's windows are, text and chrome included, from\n0.1 to 1. Unset uses `[window] opacity`.",
+          "format": "float",
+          "maximum": 1,
+          "minimum": 0.1,
+          "type": "number",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-inherits": "window.opacity",
+          "x-huterm-label": "Opacity",
+          "x-huterm-order": 90,
+          "x-huterm-section": "quake",
+          "x-huterm-step": 0.05
         },
         "position": {
           "allOf": [
@@ -1310,6 +1373,7 @@
                 "next_tab",
                 "previous_tab",
                 "select_tab",
+                "window_transparency",
                 "toggle_fullscreen",
                 "toggle_native_fullscreen",
                 "toggle_non_native_fullscreen",
@@ -1385,6 +1449,17 @@
                 "menu_select_left",
                 "menu_confirm",
                 "menu_close",
+                "panel_close",
+                "panel_focus_next",
+                "panel_focus_previous",
+                "panel_increase",
+                "panel_decrease",
+                "panel_page_up",
+                "panel_page_down",
+                "panel_first",
+                "panel_last",
+                "panel_press",
+                "panel_reset",
                 "notice_next",
                 "notice_previous",
                 "notice_run_action",
@@ -2573,6 +2648,57 @@
               "command": {
                 "const": "select_tab",
                 "description": "Activate a tab by position from a keybinding, or choose one.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "window_transparency"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open or close this window's transparency panel, which overrides the defaults for this window only.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "window_transparency",
+                "description": "Open or close this window's transparency panel, which overrides the defaults for this window only.",
                 "type": "string"
               },
               "description": {
@@ -6495,6 +6621,567 @@
           "if": {
             "properties": {
               "command": {
+                "const": "panel_close"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Close the open panel and return focus to the terminal.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_close",
+                "description": "Close the open panel and return focus to the terminal.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_focus_next"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move panel focus to the next control.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_focus_next",
+                "description": "Move panel focus to the next control.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_focus_previous"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move panel focus to the previous control.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_focus_previous",
+                "description": "Move panel focus to the previous control.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_increase"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Step the focused slider up.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_increase",
+                "description": "Step the focused slider up.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_decrease"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Step the focused slider down.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_decrease",
+                "description": "Step the focused slider down.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_page_up"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Step the focused slider up one page.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_page_up",
+                "description": "Step the focused slider up one page.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_page_down"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Step the focused slider down one page.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_page_down",
+                "description": "Step the focused slider down one page.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_first"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move the focused slider to its minimum.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_first",
+                "description": "Move the focused slider to its minimum.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_last"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move the focused slider to its maximum.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_last",
+                "description": "Move the focused slider to its maximum.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_press"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Press the focused button.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_press",
+                "description": "Press the focused button.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "panel_reset"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Reset the focused slider's value to the one beneath it.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "panel_reset",
+                "description": "Reset the focused slider's value to the one beneath it.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
                 "const": "notice_next"
               }
             },
@@ -10132,17 +10819,6 @@
     "WindowConfig": {
       "additionalProperties": false,
       "properties": {
-        "background_blur": {
-          "default": false,
-          "description": "Blurs what shows through a translucent background, on macOS only. It\nhas no effect while the background is opaque.",
-          "type": "boolean",
-          "x-huterm-apply": "live",
-          "x-huterm-group": "Transparency",
-          "x-huterm-label": "Background blur",
-          "x-huterm-order": 39,
-          "x-huterm-platform": "macos",
-          "x-huterm-section": "appearance"
-        },
         "background_opacity": {
           "default": 1.0,
           "description": "How opaque the terminal's default background, the tab bar and pane\ntitle bars are, from 0 to 1. Text, and colors that programs set, stay\nsolid.",
@@ -10157,6 +10833,24 @@
           "x-huterm-order": 37,
           "x-huterm-section": "appearance",
           "x-huterm-step": 0.05
+        },
+        "blur": {
+          "default": 0,
+          "description": "How strongly what shows through the window blurs whenever the window\nis translucent, as a radius from 0 (off) to 64 points, on macOS only.\nWhile it blurs, opacity fades the window's contents instead of the\nwhole window, so overlapping translucent layers blend unevenly.",
+          "format": "uint8",
+          "maximum": 64,
+          "minimum": 0,
+          "type": "integer",
+          "x-huterm-apply": "live",
+          "x-huterm-control": "slider",
+          "x-huterm-group": "Transparency",
+          "x-huterm-label": "Blur",
+          "x-huterm-order": 39,
+          "x-huterm-platform": "macos",
+          "x-huterm-section": "appearance",
+          "x-huterm-step": 1,
+          "x-huterm-unit": "pt",
+          "x-huterm-zero-label": "Off"
         },
         "foreground_opacity": {
           "default": 1.0,

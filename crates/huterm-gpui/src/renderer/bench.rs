@@ -81,13 +81,20 @@ impl PaintOptions {
             Ok("opaque") => gpui::WindowBackgroundAppearance::Opaque,
             Ok("transparent") => gpui::WindowBackgroundAppearance::Transparent,
             Ok("blurred") => gpui::WindowBackgroundAppearance::Blurred,
-            Err(_) => crate::transparency::appearance(
-                crate::keymap::Platform::current(),
-                false,
-                crate::transparency::Support::Available,
-                background,
-                false,
-            ),
+            Err(_) => {
+                crate::transparency::resolve(
+                    crate::transparency::Values {
+                        opacity: 1.0,
+                        background,
+                        foreground,
+                        blur: 0,
+                    },
+                    crate::transparency::Support::Available,
+                    crate::keymap::Platform::current(),
+                    false,
+                )
+                .appearance
+            }
             _ => bail!(
                 "HUTERM_BENCH_APPEARANCE must be opaque, transparent or blurred"
             ),
@@ -526,6 +533,7 @@ impl Fixture {
         renderer.set_opacity(
             paint_options.background,
             paint_options.foreground,
+            paint_options.background < 1.0,
             crate::transparency::Tint::default(),
         );
         Self {

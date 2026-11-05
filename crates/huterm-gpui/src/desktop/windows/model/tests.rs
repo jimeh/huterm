@@ -456,6 +456,7 @@ fn restore_capture_takes_open_attached_windows_in_opening_order() {
                 tab_position: TabPosition::Left,
                 sidebar_width: px(220.0),
                 quake_profile: None,
+                transparency: crate::transparency::Layer::default(),
             },
             WindowRestore {
                 attachment: AttachmentId::new(3),
@@ -465,6 +466,7 @@ fn restore_capture_takes_open_attached_windows_in_opening_order() {
                 tab_position: TabPosition::Left,
                 sidebar_width: px(180.0),
                 quake_profile: Some("logs".to_owned()),
+                transparency: crate::transparency::Layer::default(),
             },
         ]
     );
@@ -491,4 +493,17 @@ fn every_reader_answers_from_the_model_alone() {
     assert_eq!(model.recent_tab(window(1)), Some(TabId::new(1)));
     assert_eq!(model.tab_titles(TitleScope::Open).len(), 3);
     assert_eq!(model.restore_windows(TabPosition::Top).len(), 1);
+}
+
+#[test]
+fn transparency_overrides_belong_to_one_window_and_report_changes() {
+    let mut model = attached(1);
+    model.open(window(2), None, layout(10.0));
+    let mut layer = crate::transparency::Layer::default();
+    layer.set(crate::transparency::Key::Opacity, Some(0.5));
+    assert!(model.set_transparency(window(1), layer));
+    assert!(!model.set_transparency(window(1), layer), "unchanged");
+    assert_eq!(model.record(window(1)).unwrap().transparency, layer);
+    assert!(model.record(window(2)).unwrap().transparency.is_empty());
+    assert!(!model.set_transparency(window(9), layer), "unknown window");
 }

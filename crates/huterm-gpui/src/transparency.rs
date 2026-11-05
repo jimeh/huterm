@@ -1,7 +1,9 @@
-//! Paint policy and the single native-alpha owner shared with Quake fades.
-use std::{cell::Cell, rc::Rc};
+//! Paint policy, the layered transparency values each window resolves, the
+//! single native-alpha owner shared with Quake fades, and the native blur
+//! owner.
+use std::{cell::Cell, cell::RefCell, rc::Rc};
 
-use gpui::{Context, Hsla, Window, WindowBackgroundAppearance};
+use gpui::{Context, Hsla, Task, Window, WindowBackgroundAppearance};
 use huterm_config::WindowConfig;
 
 use crate::keymap::Platform;
@@ -41,13 +43,6 @@ impl Support {
             ),
         }
     }
-    pub(crate) fn paint(self, config: WindowConfig) -> (f32, f32) {
-        if self == Self::Available {
-            (config.background_opacity, config.foreground_opacity)
-        } else {
-            (1.0, 1.0)
-        }
-    }
 }
 
 pub(crate) fn support() -> Support {
@@ -58,24 +53,290 @@ pub(crate) fn support() -> Support {
     Support::Available
 }
 
-/// Overall opacity never changes the surface's appearance.
-pub(crate) fn appearance(
+/// One of the four values a window's transparency layers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Key {
+    Opacity,
+    Background,
+    Foreground,
+    Blur,
+}
+impl Key {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Opacity,
+        Self::Background,
+        Self::Foreground,
+        Self::Blur,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Opacity => "Opacity",
+            Self::Background => "Background opacity",
+            Self::Foreground => "Text opacity",
+            Self::Blur => "Blur",
+        }
+    }
+
+    /// The `[window]` key, which a Quake profile's key shares.
+    pub(crate) fn config_key(self) -> &'static str {
+        match self {
+            Self::Opacity => "opacity",
+            Self::Background => "background_opacity",
+            Self::Foreground => "foreground_opacity",
+            Self::Blur => "blur",
+        }
+    }
+}
+
+/// The four transparency values one window uses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Values {
+    pub(crate) opacity: f32,
+    pub(crate) background: f32,
+    pub(crate) foreground: f32,
+    pub(crate) blur: u8,
+}
+impl Values {
+    pub(crate) fn of(config: &WindowConfig) -> Self {
+        Self {
+            opacity: config.opacity,
+            background: config.background_opacity,
+            foreground: config.foreground_opacity,
+            blur: config.blur,
+        }
+    }
+
+    pub(crate) fn get(self, key: Key) -> f64 {
+        match key {
+            Key::Opacity => f64::from(self.opacity),
+            Key::Background => f64::from(self.background),
+            Key::Foreground => f64::from(self.foreground),
+            Key::Blur => f64::from(self.blur),
+        }
+    }
+}
+
+/// Values that override the layer beneath, each on its own: a Quake
+/// profile's keys over the global defaults, and a window's overrides over
+/// both.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Layer {
+    pub(crate) opacity: Option<f32>,
+    pub(crate) background: Option<f32>,
+    pub(crate) foreground: Option<f32>,
+    pub(crate) blur: Option<u8>,
+}
+impl Layer {
+    pub(crate) fn of_profile(profile: &huterm_config::quake::Profile) -> Self {
+        Self {
+            opacity: profile.opacity,
+            background: profile.background_opacity,
+            foreground: profile.foreground_opacity,
+            blur: profile.blur,
+        }
+    }
+
+    pub(crate) fn over(self, values: Values) -> Values {
+        Values {
+            opacity: self.opacity.unwrap_or(values.opacity),
+            background: self.background.unwrap_or(values.background),
+            foreground: self.foreground.unwrap_or(values.foreground),
+            blur: self.blur.unwrap_or(values.blur),
+        }
+    }
+
+    pub(crate) fn is_set(self, key: Key) -> bool {
+        match key {
+            Key::Opacity => self.opacity.is_some(),
+            Key::Background => self.background.is_some(),
+            Key::Foreground => self.foreground.is_some(),
+            Key::Blur => self.blur.is_some(),
+        }
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self == Self::default()
+    }
+
+    /// Sets or, with `None`, clears one value. A value is clamped to its
+    /// key's range, so an override always resolves.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "each value is clamped to its key's small range first"
+    )]
+    pub(crate) fn set(&mut self, key: Key, value: Option<f64>) {
+        let fraction =
+            |min: f64| value.map(|value| value.clamp(min, 1.0) as f32);
+        match key {
+            Key::Opacity => self.opacity = fraction(0.1),
+            Key::Background => self.background = fraction(0.0),
+            Key::Foreground => self.foreground = fraction(0.1),
+            Key::Blur => {
+                self.blur = value.map(|value| {
+                    value.round().clamp(0.0, f64::from(huterm_config::MAX_BLUR))
+                        as u8
+                });
+            }
+        }
+    }
+}
+
+/// Where a window's effective value for one key comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// `[window]` in the configuration.
+    Default,
+    /// The window's Quake profile.
+    Profile,
+    /// The window's own override.
+    Window,
+}
+impl Source {
+    pub(crate) fn of(key: Key, profile: Layer, window: Layer) -> Self {
+        if window.is_set(key) {
+            Self::Window
+        } else if profile.is_set(key) {
+            Self::Profile
+        } else {
+            Self::Default
+        }
+    }
+}
+
+/// What a window applies for its resolved values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Effective {
+    /// The configured factor of the native window alpha, which a Quake fade
+    /// multiplies.
+    pub(crate) native_alpha: f64,
+    /// The opacity GPUI applies to the window's root element, below 1 only
+    /// while blurring.
+    pub(crate) root_opacity: f32,
+    /// The paint alpha of default backgrounds and bars.
+    pub(crate) background: f32,
+    pub(crate) foreground: f32,
+    /// Whether anything shows through, so structural underlays must not
+    /// stack translucent fills.
+    pub(crate) translucent: bool,
+    /// The window server's background blur radius, 0 for none.
+    pub(crate) blur_radius: u8,
+    pub(crate) appearance: WindowBackgroundAppearance,
+}
+impl Default for Effective {
+    fn default() -> Self {
+        resolve(
+            Values::of(&WindowConfig::default()),
+            Support::Available,
+            Platform::current(),
+            false,
+        )
+    }
+}
+
+/// Resolves a window's values against what the platform supports. Blur
+/// mode, on macOS with a radius and any translucency, keeps native alpha at
+/// 1 and fades the root element instead, because the window server's blur
+/// fades with native alpha.
+pub(crate) fn resolve(
+    values: Values,
+    support: Support,
     platform: Platform,
     decorated: bool,
-    support: Support,
-    background: f32,
-    blur: bool,
-) -> WindowBackgroundAppearance {
-    if support != Support::Available || background >= 1.0 {
-        if decorated {
-            WindowBackgroundAppearance::Transparent
-        } else {
-            WindowBackgroundAppearance::Opaque
-        }
-    } else if platform == Platform::MacOs && background < 1.0 && blur {
-        WindowBackgroundAppearance::Blurred
-    } else {
+) -> Effective {
+    let opaque_surface = if decorated {
         WindowBackgroundAppearance::Transparent
+    } else {
+        WindowBackgroundAppearance::Opaque
+    };
+    if support != Support::Available {
+        return Effective {
+            native_alpha: 1.0,
+            root_opacity: 1.0,
+            background: 1.0,
+            foreground: 1.0,
+            translucent: false,
+            blur_radius: 0,
+            appearance: opaque_surface,
+        };
+    }
+    let blur = platform == Platform::MacOs
+        && values.blur > 0
+        && (values.opacity < 1.0 || values.background < 1.0);
+    if blur {
+        return Effective {
+            native_alpha: 1.0,
+            root_opacity: values.opacity,
+            background: values.background,
+            foreground: values.foreground,
+            translucent: true,
+            blur_radius: values.blur,
+            appearance: WindowBackgroundAppearance::Transparent,
+        };
+    }
+    Effective {
+        native_alpha: f64::from(values.opacity),
+        root_opacity: 1.0,
+        background: values.background,
+        foreground: values.foreground,
+        translucent: values.background < 1.0,
+        blur_radius: 0,
+        // Overall opacity never changes the surface's appearance.
+        appearance: if values.background >= 1.0 {
+            opaque_surface
+        } else {
+            WindowBackgroundAppearance::Transparent
+        },
+    }
+}
+
+/// The opacity a window's root element paints. It follows the native alpha
+/// writes: entering blur mode, native alpha goes to 1 first; leaving, the
+/// root opacity drops to 1 as native alpha takes the opacity back. That
+/// orders the state only. The native write and the GPUI frame present
+/// separately, so a switch can show one frame of both factors (`opacity`
+/// squared) or of opacity 1. Without a pending native write both apply at
+/// once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RootOpacity {
+    resolved: f32,
+    painted: f32,
+}
+impl Default for RootOpacity {
+    fn default() -> Self {
+        Self {
+            resolved: 1.0,
+            painted: 1.0,
+        }
+    }
+}
+impl RootOpacity {
+    /// Takes the resolved root opacity. It paints at once unless a native
+    /// alpha write is still pending. Returns whether the painted value
+    /// changed.
+    pub(crate) fn resolve(
+        &mut self,
+        resolved: f32,
+        native_pending: bool,
+    ) -> bool {
+        self.resolved = resolved;
+        if native_pending {
+            return false;
+        }
+        self.landed()
+    }
+
+    /// The native alpha write landed. Returns whether the painted value
+    /// changed.
+    pub(crate) fn landed(&mut self) -> bool {
+        let changed = self.painted.to_bits() != self.resolved.to_bits();
+        self.painted = self.resolved;
+        changed
+    }
+
+    pub(crate) fn painted(self) -> f32 {
+        self.painted
     }
 }
 
@@ -174,14 +435,37 @@ impl Alpha {
             });
         }
     }
+    /// Whether a native write is still owed.
+    pub(crate) fn pending(&self) -> bool {
+        let factors = self.0.get();
+        factors.effective().to_bits() != factors.applied.to_bits()
+    }
+
+    /// Writes what is owed through `write` and reports whether it all
+    /// landed. A failure logs and leaves the write owed.
+    fn settle(&self, write: impl FnMut(f64) -> anyhow::Result<()>) -> bool {
+        match self.apply(write) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("Window opacity: {error}");
+                false
+            }
+        }
+    }
+
+    /// Writes the native alpha on a later foreground turn, then runs
+    /// `landed` on the view once the write succeeds; a failed write never
+    /// runs it, so the painted root opacity stays where it was. Returns
+    /// whether a write was scheduled; without one, as when the window has
+    /// no native handle, nothing waits on it.
     pub(crate) fn sync<V: 'static>(
         &self,
         window: &Window,
         cx: &mut Context<'_, V>,
-    ) {
-        let factors = self.0.get();
-        if factors.effective().to_bits() == factors.applied.to_bits() {
-            return;
+        landed: impl FnOnce(&mut V, &mut Context<'_, V>) + 'static,
+    ) -> bool {
+        if !self.pending() {
+            return false;
         }
         #[cfg(target_os = "macos")]
         let native = crate::native_appearance::macos::NativeWindow::of(window);
@@ -191,18 +475,205 @@ impl Alpha {
         match native {
             Ok(native) => {
                 let owner = self.clone();
-                cx.spawn(async move |_, _| {
-                    if let Err(error) =
-                        owner.apply(|value| native.opacity(value))
-                    {
-                        eprintln!("Window opacity: {error}");
+                cx.spawn(async move |view, cx| {
+                    if owner.settle(|value| native.opacity(value)) {
+                        let _ = view.update(cx, landed);
                     }
                 })
                 .detach();
+                true
             }
-            Err(error) => eprintln!("Window opacity: {error}"),
+            Err(error) => {
+                eprintln!("Window opacity: {error}");
+                false
+            }
         }
     }
+}
+
+/// What one blur radius write did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    all(not(target_os = "macos"), not(test)),
+    expect(dead_code, reason = "only the macOS blur writer reports a write")
+)]
+pub(crate) enum BlurWrite {
+    /// The window server took the radius.
+    Written,
+    /// The process cannot set a radius, so nothing was written.
+    Unsupported,
+}
+
+/// The window server's background blur radius for one window. It writes on
+/// a later foreground turn, outside GPUI update borrows, reading the live
+/// desired radius when it runs. Only a successful write records the
+/// applied radius. A failed write leaves it unknown and waits for the next
+/// change, reload, or style change to retry once. A write the process
+/// cannot make leaves it unknown and stops writing. It never writes 0 to a
+/// window that never blurred or already has 0, and closing the window drops
+/// pending work.
+#[derive(Clone, Default)]
+pub(crate) struct Blur(Rc<RefCell<BlurState>>);
+#[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the window's blur"
+)]
+struct BlurState {
+    desired: u8,
+    /// `None` while unknown: before the first write, after a failure, and
+    /// after a style change.
+    applied: Option<u8>,
+    blurred: bool,
+    failed: bool,
+    /// The process cannot set a radius; nothing changes that.
+    unsupported: bool,
+    logged: bool,
+    closed: bool,
+    scheduled: bool,
+    /// The latest scheduled write; dropping it cancels the write.
+    task: Option<Task<()>>,
+}
+impl BlurState {
+    fn wants_write(&self) -> bool {
+        !self.failed
+            && !self.unsupported
+            && !self.closed
+            && match self.applied {
+                Some(applied) => applied != self.desired,
+                None => self.desired > 0 || self.blurred,
+            }
+    }
+}
+impl Blur {
+    pub(crate) fn set_desired(&self, radius: u8) {
+        let mut state = self.0.borrow_mut();
+        if state.desired != radius {
+            state.desired = radius;
+            state.failed = false;
+        }
+    }
+
+    /// A reload lets a failed write try again once.
+    pub(crate) fn retry(&self) {
+        self.0.borrow_mut().failed = false;
+    }
+
+    /// A Quake style change, a conversion, or native fullscreen may have
+    /// replaced the window server's state, so the next sync writes again.
+    pub(crate) fn invalidate(&self) {
+        let mut state = self.0.borrow_mut();
+        state.applied = None;
+        state.failed = false;
+    }
+
+    pub(crate) fn close(&self) {
+        let mut state = self.0.borrow_mut();
+        state.closed = true;
+        state.scheduled = false;
+        state.task = None;
+    }
+
+    /// Whether the next sync has a radius to write.
+    pub(crate) fn wants_write(&self) -> bool {
+        let state = self.0.borrow();
+        !state.scheduled && state.wants_write()
+    }
+
+    pub(crate) fn applied(&self) -> Option<u8> {
+        self.0.borrow().applied
+    }
+
+    /// Whether a write found that the process cannot set a radius.
+    pub(crate) fn unsupported(&self) -> bool {
+        self.0.borrow().unsupported
+    }
+
+    pub(crate) fn sync<V: 'static>(
+        &self,
+        window: &Window,
+        cx: &mut Context<'_, V>,
+    ) {
+        {
+            let state = self.0.borrow();
+            if state.scheduled || !state.wants_write() {
+                return;
+            }
+        }
+        match blur_writer(window) {
+            Ok(write) => {
+                let state = Rc::downgrade(&self.0);
+                let task = cx.spawn(async move |_, _| {
+                    if let Some(state) = state.upgrade() {
+                        state.borrow_mut().scheduled = false;
+                        Self(state).apply(write);
+                    }
+                });
+                let mut state = self.0.borrow_mut();
+                state.scheduled = true;
+                state.task = Some(task);
+            }
+            Err(error) => self.failed(&error),
+        }
+    }
+
+    fn failed(&self, error: &anyhow::Error) {
+        let mut state = self.0.borrow_mut();
+        state.applied = None;
+        state.failed = true;
+        if !std::mem::replace(&mut state.logged, true) {
+            eprintln!("Window blur: {error:#}");
+        }
+    }
+
+    /// Writes the desired radius until it holds, outside any borrow of the
+    /// state, since a native setter may reenter.
+    fn apply(&self, mut write: impl FnMut(u8) -> anyhow::Result<BlurWrite>) {
+        loop {
+            let radius = {
+                let state = self.0.borrow();
+                if !state.wants_write() {
+                    return;
+                }
+                state.desired
+            };
+            match write(radius) {
+                Ok(BlurWrite::Written) => {
+                    let mut state = self.0.borrow_mut();
+                    state.applied = Some(radius);
+                    state.blurred |= radius > 0;
+                }
+                Ok(BlurWrite::Unsupported) => {
+                    let mut state = self.0.borrow_mut();
+                    state.applied = None;
+                    state.unsupported = true;
+                    return;
+                }
+                Err(error) => {
+                    self.failed(&error);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The writer of `window`'s window server blur radius.
+#[cfg(target_os = "macos")]
+fn blur_writer(
+    window: &Window,
+) -> anyhow::Result<impl FnMut(u8) -> anyhow::Result<BlurWrite> + 'static> {
+    let native = crate::native_appearance::macos::NativeWindow::of(window)?;
+    Ok(move |radius| native.set_blur_radius(radius))
+}
+
+/// Linux has no window server blur, and `resolve` never asks it for a
+/// radius, so no write reaches this.
+#[cfg(not(target_os = "macos"))]
+fn blur_writer(
+    _: &Window,
+) -> anyhow::Result<fn(u8) -> anyhow::Result<BlurWrite>> {
+    anyhow::bail!("this platform has no window server blur")
 }
 
 pub(crate) fn native_alpha(
@@ -391,46 +862,330 @@ mod tests {
         }
     }
 
+    fn values(opacity: f32, background: f32, blur: u8) -> Values {
+        Values {
+            opacity,
+            background,
+            foreground: 0.8,
+            blur,
+        }
+    }
+
     #[test]
-    fn appearance_and_effective_alpha_follow_platform_support() {
-        use WindowBackgroundAppearance::{Blurred, Opaque, Transparent};
+    fn resolve_switches_blur_mode_on_translucency_and_a_radius() {
+        use WindowBackgroundAppearance::{Opaque, Transparent};
         assert!(Support::Unavailable.note().is_some());
-        for platform in [Platform::MacOs, Platform::Linux] {
+        let mac = |values, decorated| {
+            resolve(values, Support::Available, Platform::MacOs, decorated)
+        };
+        // Either translucency blurs with a radius, with native alpha at 1
+        // and the opacity on the root element.
+        for (opacity, background) in [(0.6, 1.0), (1.0, 0.6), (0.6, 0.6)] {
+            let effective = mac(values(opacity, background, 20), false);
             assert_eq!(
-                appearance(platform, false, Support::Available, 1.0, true),
-                Opaque
-            );
-            assert_eq!(
-                appearance(platform, false, Support::Available, 0.6, false),
-                Transparent
-            );
-            assert_eq!(
-                appearance(platform, true, Support::NoCompositor, 0.6, true),
-                Transparent
-            );
-            assert_eq!(
-                appearance(platform, false, Support::NoArgbVisual, 0.6, false),
-                Opaque
+                effective,
+                Effective {
+                    native_alpha: 1.0,
+                    root_opacity: opacity,
+                    background,
+                    foreground: 0.8,
+                    translucent: true,
+                    blur_radius: 20,
+                    appearance: Transparent,
+                },
+                "opacity {opacity}, background {background}"
             );
         }
+        // An opaque window never blurs, whatever the radius.
+        let opaque = mac(values(1.0, 1.0, 20), false);
         assert_eq!(
-            appearance(Platform::MacOs, false, Support::Available, 0.6, true),
-            Blurred
+            (opaque.blur_radius, opaque.translucent, opaque.appearance),
+            (0, false, Opaque)
+        );
+        // Without a radius, opacity stays native alpha, as before blur.
+        let faded = mac(values(0.6, 1.0, 0), false);
+        assert_eq!(
+            (
+                faded.native_alpha,
+                faded.root_opacity,
+                faded.translucent,
+                faded.blur_radius,
+                faded.appearance
+            ),
+            ((0.6_f32).into(), 1.0, false, 0, Opaque)
+        );
+        assert_eq!(mac(values(0.6, 1.0, 0), true).appearance, Transparent);
+        let background = mac(values(1.0, 0.6, 0), false);
+        assert_eq!(
+            (background.translucent, background.appearance),
+            (true, Transparent)
+        );
+        // Linux never blurs: opacity stays native alpha.
+        let linux = resolve(
+            values(0.6, 0.6, 20),
+            Support::Available,
+            Platform::Linux,
+            false,
         );
         assert_eq!(
-            appearance(Platform::Linux, false, Support::Available, 0.6, true),
-            Transparent
+            (
+                linux.native_alpha,
+                linux.root_opacity,
+                linux.blur_radius,
+                linux.translucent
+            ),
+            ((0.6_f32).into(), 1.0, 0, true)
         );
-        let config = WindowConfig {
-            opacity: 0.7,
-            background_opacity: 0.6,
-            foreground_opacity: 0.8,
-            ..WindowConfig::default()
+        // Without support every window paints opaque and never blurs.
+        for platform in [Platform::MacOs, Platform::Linux] {
+            for (support, decorated, appearance) in [
+                (Support::NoCompositor, true, Transparent),
+                (Support::NoArgbVisual, false, Opaque),
+            ] {
+                assert_eq!(
+                    resolve(values(0.6, 0.6, 20), support, platform, decorated),
+                    Effective {
+                        native_alpha: 1.0,
+                        root_opacity: 1.0,
+                        background: 1.0,
+                        foreground: 1.0,
+                        translucent: false,
+                        blur_radius: 0,
+                        appearance,
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn layers_override_each_value_on_its_own_and_report_their_source() {
+        let defaults = values(0.6, 0.6, 0);
+        let profile = Layer {
+            opacity: Some(0.8),
+            blur: Some(10),
+            ..Layer::default()
         };
-        let (bg, fg) = Support::Available.paint(config);
-        assert!((config.opacity * bg - 0.42).abs() < 1e-6);
-        assert!((config.opacity * fg - 0.56).abs() < 1e-6);
-        assert_eq!(Support::NoCompositor.paint(config), (1.0, 1.0));
+        let mut window = Layer::default();
+        window.set(Key::Opacity, Some(0.5));
+        window.set(Key::Background, Some(0.3));
+        let resolved = window.over(profile.over(defaults));
+        assert_eq!(
+            resolved,
+            Values {
+                opacity: 0.5,
+                background: 0.3,
+                foreground: 0.8,
+                blur: 10,
+            }
+        );
+        assert_eq!(
+            Key::ALL.map(|key| Source::of(key, profile, window)),
+            [
+                Source::Window,
+                Source::Window,
+                Source::Default,
+                Source::Profile
+            ]
+        );
+        // A cleared override inherits again, and a later change to the
+        // layer beneath reaches it.
+        window.set(Key::Opacity, None);
+        assert_eq!(Source::of(Key::Opacity, profile, window), Source::Profile);
+        assert_eq!(window.over(profile.over(defaults)).opacity, 0.8);
+        assert_eq!(
+            window
+                .over(Layer::default().over(values(0.4, 0.6, 0)))
+                .opacity,
+            0.4
+        );
+        // Values clamp to their key's range.
+        window.set(Key::Opacity, Some(0.0));
+        window.set(Key::Blur, Some(80.4));
+        assert_eq!((window.opacity, window.blur), (Some(0.1), Some(64)));
+        assert!(!window.is_empty());
+        assert!(Layer::default().is_empty());
+        let file: huterm_config::quake::Profile =
+            toml::from_str("opacity = 0.8\nblur = 10").unwrap();
+        assert_eq!(Layer::of_profile(&file), profile);
+    }
+
+    /// What the screen shows of a window: native alpha times the root
+    /// opacity it paints.
+    fn visible(alpha: &Alpha, root: RootOpacity) -> f64 {
+        alpha.0.get().applied * f64::from(root.painted())
+    }
+
+    #[test]
+    fn root_opacity_follows_the_native_alpha_write_in_both_mode_switches() {
+        for fade in [1.0, 0.5] {
+            let alpha = Alpha::default();
+            let mut root = RootOpacity::default();
+            let write = |alpha: &Alpha| {
+                alpha.apply(|_| Ok(())).unwrap();
+            };
+            alpha.fade(fade, |_| Ok(())).unwrap();
+            let expected = 0.6 * fade;
+            // Blur off: opacity is native alpha.
+            alpha.configure(0.6);
+            root.resolve(1.0, alpha.pending());
+            write(&alpha);
+            root.landed();
+            assert!((visible(&alpha, root) - expected).abs() < 1e-6);
+            // Entering blur mode: native alpha goes to 1 first; the root
+            // takes the opacity once that write lands.
+            alpha.configure(1.0);
+            root.resolve(0.6, alpha.pending());
+            assert!(
+                (visible(&alpha, root) - expected).abs() < 1e-6,
+                "before the write, fade {fade}"
+            );
+            write(&alpha);
+            root.landed();
+            assert!(
+                (visible(&alpha, root) - expected).abs() < 1e-6,
+                "after entering, fade {fade}"
+            );
+            // Leaving: the root drops to 1 as native alpha takes it back.
+            alpha.configure(0.6);
+            root.resolve(1.0, alpha.pending());
+            assert!(
+                (visible(&alpha, root) - expected).abs() < 1e-6,
+                "before leaving, fade {fade}"
+            );
+            write(&alpha);
+            root.landed();
+            assert!(
+                (visible(&alpha, root) - expected).abs() < 1e-6,
+                "after leaving, fade {fade}"
+            );
+            // A change within blur mode writes nothing native and paints
+            // at once.
+            alpha.configure(1.0);
+            write(&alpha);
+            root.resolve(0.6, alpha.pending());
+            root.landed();
+            assert!(!alpha.pending());
+            assert!(root.resolve(0.5, false));
+            assert_eq!(root.painted(), 0.5);
+        }
+    }
+
+    #[test]
+    fn a_failed_native_write_keeps_the_painted_root_opacity() {
+        let alpha = Alpha::default();
+        let mut root = RootOpacity::default();
+        alpha.configure(0.6);
+        assert!(alpha.settle(|_| Ok(())));
+        // Entering blur mode: native alpha owes a write to 1, and the root
+        // waits for it.
+        alpha.configure(1.0);
+        root.resolve(0.6, alpha.pending());
+        if alpha.settle(|_| Err(anyhow::anyhow!("refused"))) {
+            root.landed();
+        }
+        assert_eq!(root.painted(), 1.0, "the root never paints at 0.6");
+        assert!(alpha.pending(), "the write is still owed");
+        assert!((visible(&alpha, root) - 0.6).abs() < 1e-6);
+        // The next successful write publishes it.
+        if alpha.settle(|_| Ok(())) {
+            root.landed();
+        }
+        assert_eq!(root.painted(), 0.6);
+        assert!((visible(&alpha, root) - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn blur_mode_fades_quake_from_a_configured_one_and_keeps_the_fade() {
+        let alpha = Alpha::default();
+        let written = Cell::new(1.0);
+        let write = |value| {
+            written.set(value);
+            Ok(())
+        };
+        alpha.configure(0.8);
+        alpha.fade(0.5, write).unwrap();
+        assert!((written.get() - 0.4).abs() < 1e-9);
+        // A switch to blur mode mid-fade keeps the fade's progress.
+        alpha.configure(1.0);
+        alpha.apply(write).unwrap();
+        assert_eq!(written.get(), 0.5);
+        alpha.fade(1.0, write).unwrap();
+        assert_eq!(written.get(), 1.0);
+        // And back: the fade ends at the effective opacity.
+        alpha.fade(0.25, write).unwrap();
+        alpha.configure(0.8);
+        alpha.apply(write).unwrap();
+        assert!((written.get() - 0.2).abs() < 1e-9);
+        alpha.fade(1.0, write).unwrap();
+        assert!((written.get() - 0.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blur_owner_writes_changes_once_and_recovers_from_failure_on_request() {
+        let writes = RefCell::new(Vec::new());
+        let ok = |radius| {
+            writes.borrow_mut().push(radius);
+            Ok(BlurWrite::Written)
+        };
+        let blur = Blur::default();
+        // A window that never blurred is never written 0.
+        blur.apply(ok);
+        blur.set_desired(0);
+        blur.apply(ok);
+        blur.invalidate();
+        blur.apply(ok);
+        assert!(writes.borrow().is_empty());
+        blur.set_desired(20);
+        blur.apply(ok);
+        blur.apply(ok);
+        assert_eq!(*writes.borrow(), [20]);
+        assert_eq!(blur.applied(), Some(20));
+        // A style change makes the radius unknown, so it is written again.
+        blur.invalidate();
+        blur.apply(ok);
+        assert_eq!(*writes.borrow(), [20, 20]);
+        // Off writes 0 to a window that blurred, once.
+        blur.set_desired(0);
+        blur.apply(ok);
+        blur.apply(ok);
+        assert_eq!(*writes.borrow(), [20, 20, 0]);
+        // A failure leaves the radius unknown and waits for a request.
+        let failing = |_| Err(anyhow::anyhow!("refused"));
+        blur.set_desired(30);
+        blur.apply(failing);
+        assert_eq!(blur.applied(), None);
+        blur.apply(ok);
+        assert_eq!(*writes.borrow(), [20, 20, 0], "no retry loop");
+        blur.retry();
+        blur.apply(ok);
+        assert_eq!(*writes.borrow(), [20, 20, 0, 30]);
+        // Closing drops pending work.
+        blur.set_desired(40);
+        blur.close();
+        blur.apply(ok);
+        assert_eq!(*writes.borrow(), [20, 20, 0, 30]);
+    }
+
+    #[test]
+    fn blur_owner_without_the_window_server_symbols_records_no_radius() {
+        let attempts = Cell::new(0);
+        let unsupported = |_| {
+            attempts.set(attempts.get() + 1);
+            Ok(BlurWrite::Unsupported)
+        };
+        let blur = Blur::default();
+        blur.set_desired(20);
+        blur.apply(unsupported);
+        assert_eq!(blur.applied(), None, "no radius was written");
+        assert!(blur.unsupported());
+        // Nothing asks again: not a new radius, a reload, or a style change.
+        blur.set_desired(30);
+        blur.retry();
+        blur.invalidate();
+        assert!(!blur.wants_write());
+        blur.apply(unsupported);
+        assert_eq!((attempts.get(), blur.applied()), (1, None));
     }
 
     #[test]

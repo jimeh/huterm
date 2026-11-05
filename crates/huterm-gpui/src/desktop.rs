@@ -219,6 +219,7 @@ fn install_menus(cx: &mut App) {
                 item(ids::SCROLL_PAGE_DOWN),
                 item(ids::SCROLL_TO_BOTTOM),
                 MenuItem::separator(),
+                item(ids::WINDOW_TRANSPARENCY),
                 item(ids::TOGGLE_FULLSCREEN),
             ],
         },
@@ -628,12 +629,19 @@ pub(super) struct TerminalFailure {
 
 impl TerminalView {
     #[allow(clippy::too_many_lines)]
+    /// A view over `viewer` that paints with `paint`, its window's resolved
+    /// transparency, from its first frame.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a terminal view takes its window's configuration, font, metrics, and paint state"
+    )]
     fn new(
         viewer: TerminalViewer,
         frame_clock: Rc<refresh::FrameClock>,
         config: &Config,
         terminal_font: TerminalFont,
         metrics: GridMetrics,
+        paint: crate::transparency::Effective,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
@@ -746,23 +754,16 @@ impl TerminalView {
             theme.clone(),
             metrics,
         );
-        let support = windows::transparency_support(cx);
-        let (background, foreground) = support.paint(config.window);
         if renderer.records_stats() {
             eprintln!(
-                "huterm-render transparency background_alpha={background} foreground_alpha={foreground} appearance={:?}",
-                crate::transparency::appearance(
-                    crate::keymap::Platform::current(),
-                    false,
-                    support,
-                    background,
-                    config.window.background_blur
-                )
+                "huterm-render transparency background_alpha={} foreground_alpha={} appearance={:?}",
+                paint.background, paint.foreground, paint.appearance
             );
         }
         renderer.set_opacity(
-            background,
-            foreground,
+            paint.background,
+            paint.foreground,
+            paint.translucent,
             crate::transparency::Tint::default(),
         );
         let mut view = TerminalView {

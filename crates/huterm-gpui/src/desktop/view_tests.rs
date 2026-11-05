@@ -132,6 +132,7 @@ impl ViewHarness {
                     &config,
                     "Huterm Test".into(),
                     GridMetrics::fixed(CELL_WIDTH, CELL_HEIGHT),
+                    crate::transparency::Effective::default(),
                     window,
                     cx,
                 )

@@ -121,6 +121,10 @@ pub(super) struct TerminalRenderer {
     cursor_outline: bool,
     background_opacity: f32,
     foreground_opacity: f32,
+    /// Whether the window lets anything show through, including blur
+    /// mode's root opacity over an opaque background. Solid runs then tint
+    /// instead of stacking overlays.
+    translucent: bool,
     tint: crate::transparency::Tint,
     stats: Option<RendererStats>,
     scroll_benchmark: Option<ScrollBenchmarkStats>,
@@ -187,6 +191,7 @@ impl TerminalRenderer {
             cursor_outline: false,
             background_opacity: 1.0,
             foreground_opacity: 1.0,
+            translucent: false,
             tint: crate::transparency::Tint::default(),
             stats,
             scroll_benchmark,
@@ -289,13 +294,18 @@ impl TerminalRenderer {
         &mut self,
         background: f32,
         foreground: f32,
+        translucent: bool,
         tint: crate::transparency::Tint,
     ) -> bool {
-        let changed =
-            (self.background_opacity, self.foreground_opacity, self.tint)
-                != (background, foreground, tint);
+        let changed = (
+            self.background_opacity,
+            self.foreground_opacity,
+            self.translucent,
+            self.tint,
+        ) != (background, foreground, translucent, tint);
         self.background_opacity = background;
         self.foreground_opacity = foreground;
+        self.translucent = translucent;
         self.tint = tint;
         changed
     }
@@ -477,7 +487,7 @@ impl TerminalRenderer {
         window.paint_layer(grid, |window| {
             // Only an unfocused translucent pane tints its solid runs and
             // selection, so other paints do no per-run tint work.
-            if self.background_opacity < 1.0
+            if self.translucent
                 && self.tint != crate::transparency::Tint::default()
             {
                 self.paint_background_layer::<true>(
@@ -541,7 +551,7 @@ impl TerminalRenderer {
     }
 
     fn solid_color(&self, color: Hsla) -> Hsla {
-        if self.background_opacity < 1.0 {
+        if self.translucent {
             self.tint_color(color)
         } else {
             color

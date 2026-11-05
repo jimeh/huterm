@@ -18,7 +18,7 @@ use huterm_ui::components::input::Input;
 use huterm_ui::components::input_group::{Addon, InputGroup};
 use huterm_ui::components::item::Item;
 use huterm_ui::components::prose::Prose;
-use huterm_ui::components::scroll_area::ScrollArea;
+use huterm_ui::components::scroll_area::{ContentBounds, ScrollArea};
 use huterm_ui::components::tabs::Tabs;
 use huterm_ui::tokens::size;
 use huterm_ui::typography::ui;
@@ -506,7 +506,7 @@ impl SettingsView {
         let read_only = self.read_only_reason(setting);
         let foreign = foreign_note(setting);
         let note = apply_note(setting.apply).filter(|_| foreign.is_none());
-        let description = foreign.or_else(|| setting.description.clone());
+        let description = foreign.or_else(|| self.row_description_of(setting));
         let changed = self.file.is_set(path);
         let control =
             self.render_control(setting, read_only.clone(), swatch, window, cx);
@@ -606,6 +606,35 @@ impl SettingsView {
             .children(body)
             .children(conflict)
             .into_any_element()
+    }
+
+    /// A row's own description. An inheriting row that the file leaves
+    /// unset says where its value comes from instead, with that value, such
+    /// as "Uses Appearance > Transparency (60%).".
+    pub(super) fn row_description_of(
+        &self,
+        setting: &Setting,
+    ) -> Option<String> {
+        if self.inheriting(setting)
+            && let Some(parent) = setting
+                .inherits
+                .as_deref()
+                .and_then(|path| self.model.setting(path))
+        {
+            let shown = self
+                .inherited(setting)
+                .as_ref()
+                .and_then(super::super::super::settings::values::as_number)
+                .map_or_else(String::new, |value| {
+                    format!(" ({})", super::controls::readout(parent, value))
+                });
+            return Some(format!(
+                "Uses {} > {}{shown}.",
+                parent.section.title(),
+                parent.group
+            ));
+        }
+        setting.description.clone()
     }
 
     /// The warning under a row whose value changed in the file while an
@@ -855,7 +884,19 @@ impl SettingsView {
                 &view,
                 |view| &mut view.scrollbar,
                 cx,
-            );
+            )
+            // The user's own scroll wins over a pending group reveal, and
+            // so does any press in the pane. A scrollbar press and release
+            // can both land between two frames, before the reveal's next
+            // check could see a drag.
+            .on_scroll(cx.listener(|view, _: &gpui::ScrollEvent, _, _| {
+                view.reveal_group = None;
+            }))
+            .capture_any_mouse_down(cx.listener(
+                |view, _: &gpui::MouseDownEvent, _, _| {
+                    view.reveal_group = None;
+                },
+            ));
         div()
             .flex()
             .flex_col()
@@ -955,14 +996,95 @@ impl SettingsView {
                     _ => vec![self.render_row(setting, swatch, window, cx)],
                 })
                 .collect();
-            cards.push(group_card(
+            let card = group_card(
                 id(format!("settings-group-{}-{}", section.id(), group.title)),
                 &group.title,
                 rows,
                 swatch,
-            ));
+            );
+            cards.push(
+                if !searching
+                    && self
+                        .reveal_group
+                        .as_ref()
+                        .is_some_and(|reveal| reveal.title == group.title)
+                {
+                    self.revealing(card, cx)
+                } else {
+                    card
+                },
+            );
         }
         cards
+    }
+
+    /// `card` with a probe that reports where it paints to
+    /// `settle_group_reveal`, which scrolls the pane to it once its layout
+    /// settles.
+    fn revealing(
+        &self,
+        card: AnyElement,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let view = cx.entity().downgrade();
+        let scroll = self.scroll.clone();
+        // Whether this frame's layout may still change, judged as it draws:
+        // a read or scan that ends before the next frame's callbacks leaves
+        // this frame's bounds stale.
+        let loading = self.loading > 0 || self.themes_scanned != self.scans;
+        let probe = canvas(
+            |_, _, _| {},
+            move |bounds, (), window, _| {
+                // Recorded while the card paints, at the offset it was laid
+                // out with.
+                let target = ContentBounds::record(&scroll, bounds);
+                let view = view.clone();
+                window.on_next_frame(move |_, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.settle_group_reveal(target, loading, cx);
+                    });
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
+        div().relative().child(card).child(probe).into_any_element()
+    }
+
+    /// Scrolls the pane to put the card `reveal_group` names, which painted
+    /// at `target`, at its top once the section's layout settles: no read
+    /// or theme scan was running when the frame drew, since either can
+    /// refill the section, such as the theme gallery above Appearance's
+    /// Transparency, and two frames in a row drew the card at the same
+    /// place. A card that keeps moving scrolls after `REVEAL_FRAMES` frames
+    /// anyway.
+    fn settle_group_reveal(
+        &mut self,
+        target: ContentBounds,
+        loading: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(reveal) = &mut self.reveal_group else {
+            return;
+        };
+        let settled = !loading && reveal.last == Some(target);
+        reveal.last = Some(target);
+        if !loading {
+            reveal.frames = reveal.frames.saturating_add(1);
+        }
+        if !settled && reveal.frames < super::REVEAL_FRAMES {
+            // A read or scan that finishes redraws by itself; a card that
+            // just moved needs one more frame to show it stays.
+            if !loading {
+                cx.notify();
+            }
+            return;
+        }
+        self.reveal_group = None;
+        if ScrollArea::scroll_to_top(&self.scroll, target) {
+            self.scrollbar.show();
+        }
+        cx.notify();
     }
 
     /// The button that shows or hides advanced settings in every section,
@@ -1024,8 +1146,10 @@ pub(super) fn group_card(
     rows: Vec<AnyElement>,
     swatch: Swatch,
 ) -> AnyElement {
+    let selector = format!("settings-group-{title}");
     div()
         .mb(px(12.0))
+        .debug_selector(move || selector)
         .child(
             Card::new(id, swatch)
                 .title(title.to_uppercase())

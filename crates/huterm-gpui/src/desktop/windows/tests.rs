@@ -1165,6 +1165,7 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
         tab_position: TabPosition::Left,
         sidebar_width: px(220.0),
         quake_profile: None,
+        transparency: crate::transparency::Layer::default(),
     }];
     let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
