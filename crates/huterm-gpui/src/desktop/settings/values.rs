@@ -3,7 +3,7 @@
 
 use huterm_config::RawConfig;
 use huterm_config::document::Patch;
-use huterm_config::settings::{Setting, SettingKind};
+use huterm_config::settings::{Control, Setting, SettingKind};
 use huterm_ui::components::number_field::EmptyStep;
 use huterm_ui::steps::Steps;
 use toml::{Table, Value};
@@ -234,24 +234,36 @@ fn bounds(setting: &Setting) -> Option<(Option<f64>, Option<f64>, f64, bool)> {
     })
 }
 
+/// How far a slider that reads as a percent pages: ten percentage points.
+const PERCENT_PAGE: f64 = 0.1;
+
 /// The range and grid a number setting steps along, from its [`bounds`].
 /// A missing bound lies far enough away to never be reached. A range the
 /// schema bounds pages by about a tenth of itself, as sliders
-/// conventionally do, and any other by ten steps. `None` for any other
-/// kind.
+/// conventionally do, except that a slider without a unit, which reads as
+/// a percent, pages by ten percentage points so a range such as 10% to
+/// 100% does not page by 9%. Any other range pages by ten steps. `None`
+/// for any other kind.
 pub(crate) fn steps(setting: &Setting) -> Option<Steps> {
     let (min, max, step, bounded) = bounds(setting)?;
     let far = step * UNBOUNDED_STEPS;
     let steps = Steps::new(min.unwrap_or(-far), max.unwrap_or(far), step);
     Some(match (min, max) {
         (Some(min), Some(max)) if bounded => {
+            let percent = setting.control == Some(Control::Slider)
+                && setting.unit.is_none();
+            let page = if percent {
+                PERCENT_PAGE
+            } else {
+                (max - min) / 10.0
+            };
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
-                reason = "a tenth of a bounded range's step count fits a u32"
+                reason = "a page of a bounded range's step count fits a u32"
             )]
-            let tenth = ((max - min) / step / 10.0).round().max(1.0) as u32;
-            steps.page(tenth)
+            let page = (page / step).round().max(1.0) as u32;
+            steps.page(page)
         }
         _ => steps,
     })
@@ -428,8 +440,8 @@ mod tests {
             .find(|setting| setting.path == "width")
             .unwrap();
         let grid = steps(width).unwrap();
-        assert_eq!((grid.min(), grid.max(), grid.step()), (0.05, 1.0, 0.05));
-        assert_eq!(parse_number(width, "0"), Ok(Some(Value::Float(0.05))));
+        assert_eq!((grid.min(), grid.max(), grid.step()), (0.01, 1.0, 0.01));
+        assert_eq!(parse_number(width, "0"), Ok(Some(Value::Float(0.01))));
         // A missing bound is never reached.
         let hours = steps(setting("updates.check_interval_hours")).unwrap();
         assert_eq!(hours.increment(1_000_000.0), 1_000_001.0);
@@ -437,6 +449,21 @@ mod tests {
             number_value(setting("updates.check_interval_hours"), 2.0),
             Value::Integer(2)
         );
+    }
+
+    #[test]
+    fn percent_sliders_step_by_one_point_and_page_by_ten() {
+        // Opacity spans 10% to 100%, so a tenth of it would page by 9%.
+        let opacity = steps(setting("window.opacity")).unwrap();
+        assert_eq!(opacity.increment(0.5), 0.51);
+        assert_eq!(opacity.page_down(1.0), 0.9);
+        assert_eq!(opacity.page_up(0.1), 0.2);
+        // A half range pages by ten points too, not five.
+        let darken = steps(setting("panes.inactive_dim_background")).unwrap();
+        assert_eq!(darken.page_up(0.0), 0.1);
+        // A slider with a unit still pages by a tenth of its range.
+        let blur = steps(setting("window.blur")).unwrap();
+        assert_eq!(blur.page_up(0.0), 6.0);
     }
 
     #[test]

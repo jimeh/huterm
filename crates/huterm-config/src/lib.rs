@@ -261,7 +261,7 @@ pub struct BellConfig {
         "x-huterm-order" = 73,
         "x-huterm-apply" = "live",
         "x-huterm-platform" = "macos",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
         "x-huterm-control" = "slider",
         "x-huterm-visible-when" = {"setting": "terminal.bell.audio", "equals": true},
     )))]
@@ -824,7 +824,7 @@ pub struct WindowConfig {
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
         "x-huterm-label" = "Opacity", "x-huterm-order" = 36,
         "x-huterm-apply" = "live", "x-huterm-control" = "slider",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
     ))) ]
     pub opacity: f32,
     /// How opaque the terminal's default background, the tab bar and pane
@@ -834,7 +834,7 @@ pub struct WindowConfig {
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
         "x-huterm-label" = "Background opacity", "x-huterm-order" = 37,
         "x-huterm-apply" = "live", "x-huterm-control" = "slider",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
     ))) ]
     pub background_opacity: f32,
     /// How opaque terminal text and its underlines are, from 0.1 to 1.
@@ -842,7 +842,7 @@ pub struct WindowConfig {
         "x-huterm-section" = "appearance", "x-huterm-group" = "Transparency",
         "x-huterm-label" = "Text opacity", "x-huterm-order" = 38,
         "x-huterm-apply" = "live", "x-huterm-control" = "slider",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
     ))) ]
     pub foreground_opacity: f32,
     /// How strongly what shows through the window blurs whenever the window
@@ -1525,7 +1525,7 @@ pub struct SyncIndicatorConfig {
         "x-huterm-label" = "Sync indicator opacity",
         "x-huterm-order" = 44,
         "x-huterm-apply" = "live",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
         "x-huterm-control" = "slider",
         "x-huterm-visible-when" = [
             {"setting": "panes.sync_indicator.style", "equals": "outline"},
@@ -1614,7 +1614,7 @@ pub struct ZoomIndicatorConfig {
         "x-huterm-label" = "Zoom indicator opacity",
         "x-huterm-order" = 48,
         "x-huterm-apply" = "live",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
         "x-huterm-control" = "slider",
         "x-huterm-visible-when" = [
             {"setting": "panes.zoom_indicator.style", "equals": "outline"},
@@ -1754,7 +1754,7 @@ pub struct PanesConfig {
         "x-huterm-label" = "Focus accent",
         "x-huterm-order" = 37,
         "x-huterm-apply" = "live",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
         "x-huterm-control" = "slider",
         "x-huterm-zero-label" = "Off",
         "x-huterm-visible-when" = [
@@ -1770,7 +1770,7 @@ pub struct PanesConfig {
         "x-huterm-label" = "Dim unfocused panes",
         "x-huterm-order" = 38,
         "x-huterm-apply" = "live",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
         "x-huterm-control" = "slider",
         "x-huterm-zero-label" = "Off",
     )))]
@@ -1783,7 +1783,7 @@ pub struct PanesConfig {
         "x-huterm-label" = "Darken unfocused panes",
         "x-huterm-order" = 39,
         "x-huterm-apply" = "live",
-        "x-huterm-step" = 0.05,
+        "x-huterm-step" = 0.01,
         "x-huterm-control" = "slider",
         "x-huterm-zero-label" = "Off",
     )))]

@@ -191,8 +191,10 @@ pub(super) fn steps(key: Key) -> Steps {
             Key::Blur => {
                 Steps::new(0.0, f64::from(huterm_config::MAX_BLUR), 1.0)
             }
-            Key::Background => Steps::new(0.0, 1.0, 0.05),
-            Key::Opacity | Key::Foreground => Steps::new(0.1, 1.0, 0.05),
+            Key::Background => Steps::new(0.0, 1.0, 0.01).page(10),
+            Key::Opacity | Key::Foreground => {
+                Steps::new(0.1, 1.0, 0.01).page(10)
+            }
         })
 }
 
@@ -875,7 +877,7 @@ mod tests {
             [Key::Opacity, Key::Background, Key::Foreground]
         );
         assert_eq!(steps(Key::Blur), Steps::new(0.0, 64.0, 1.0).page(6));
-        assert_eq!(steps(Key::Opacity).step(), 0.05);
+        assert_eq!(steps(Key::Opacity), Steps::new(0.1, 1.0, 0.01).page(10));
         assert_eq!(
             [
                 readout(Key::Opacity, 0.8),

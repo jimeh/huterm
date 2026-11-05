@@ -1195,7 +1195,7 @@ mod tests {
         // Each profile's copy carries the template's slider.
         assert_eq!(
             (width.control, width.step),
-            (Some(Control::Slider), Some(0.05))
+            (Some(Control::Slider), Some(0.01))
         );
         assert_eq!(
             width.visible_when,
@@ -1469,7 +1469,7 @@ mod tests {
                 model.setting(&format!("panes.{table}.opacity")).unwrap();
             assert_eq!(
                 (opacity.control, opacity.step),
-                (Some(Control::Slider), Some(0.05)),
+                (Some(Control::Slider), Some(0.01)),
                 "{table}"
             );
         }
@@ -1717,7 +1717,7 @@ mod tests {
             assert_eq!(setting.section, SectionId::Appearance);
             assert_eq!(setting.order, order);
             assert_eq!(setting.control, Some(Control::Slider));
-            assert_eq!(setting.step, Some(0.05));
+            assert_eq!(setting.step, Some(0.01));
             assert_eq!(setting.unit, None);
             assert_eq!(setting.apply, Apply::Live);
         }

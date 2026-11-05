@@ -123,7 +123,7 @@
           "x-huterm-order": 73,
           "x-huterm-platform": "macos",
           "x-huterm-section": "terminal",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-visible-when": {
             "equals": true,
             "setting": "terminal.bell.audio"
@@ -804,7 +804,7 @@
           "x-huterm-label": "Focus accent",
           "x-huterm-order": 37,
           "x-huterm-section": "panes",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-visible-when": [
             {
               "equals": "hover",
@@ -830,7 +830,7 @@
           "x-huterm-label": "Dim unfocused panes",
           "x-huterm-order": 38,
           "x-huterm-section": "panes",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-zero-label": "Off"
         },
         "inactive_dim_background": {
@@ -846,7 +846,7 @@
           "x-huterm-label": "Darken unfocused panes",
           "x-huterm-order": 39,
           "x-huterm-section": "panes",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-zero-label": "Off"
         },
         "layout_cycle": {
@@ -1111,7 +1111,7 @@
           "x-huterm-label": "Background opacity",
           "x-huterm-order": 100,
           "x-huterm-section": "quake",
-          "x-huterm-step": 0.05
+          "x-huterm-step": 0.01
         },
         "blur": {
           "description": "The blur radius of this profile's windows while they are translucent,\nfrom 0 (off) to 64 points, on macOS only. Unset uses `[window] blur`.",
@@ -1155,7 +1155,7 @@
           "x-huterm-label": "Text opacity",
           "x-huterm-order": 110,
           "x-huterm-section": "quake",
-          "x-huterm-step": 0.05
+          "x-huterm-step": 0.01
         },
         "fullscreen": {
           "default": false,
@@ -1180,7 +1180,7 @@
           "x-huterm-label": "Height",
           "x-huterm-order": 40,
           "x-huterm-section": "quake",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-visible-when": {
             "equals": false,
             "setting": "fullscreen"
@@ -1209,7 +1209,7 @@
           "x-huterm-label": "Opacity",
           "x-huterm-order": 90,
           "x-huterm-section": "quake",
-          "x-huterm-step": 0.05
+          "x-huterm-step": 0.01
         },
         "position": {
           "allOf": [
@@ -1248,7 +1248,7 @@
           "x-huterm-label": "Width",
           "x-huterm-order": 30,
           "x-huterm-section": "quake",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-visible-when": {
             "equals": false,
             "setting": "fullscreen"
@@ -10205,7 +10205,7 @@
           "x-huterm-label": "Sync indicator opacity",
           "x-huterm-order": 44,
           "x-huterm-section": "panes",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-visible-when": [
             {
               "equals": "outline",
@@ -10842,7 +10842,7 @@
           "x-huterm-label": "Background opacity",
           "x-huterm-order": 37,
           "x-huterm-section": "appearance",
-          "x-huterm-step": 0.05
+          "x-huterm-step": 0.01
         },
         "blur": {
           "default": 0,
@@ -10875,7 +10875,7 @@
           "x-huterm-label": "Text opacity",
           "x-huterm-order": 38,
           "x-huterm-section": "appearance",
-          "x-huterm-step": 0.05
+          "x-huterm-step": 0.01
         },
         "initial_columns": {
           "default": 100,
@@ -10951,7 +10951,7 @@
           "x-huterm-label": "Opacity",
           "x-huterm-order": 36,
           "x-huterm-section": "appearance",
-          "x-huterm-step": 0.05
+          "x-huterm-step": 0.01
         },
         "padding_balance": {
           "default": false,
@@ -11057,7 +11057,7 @@
           "x-huterm-label": "Zoom indicator opacity",
           "x-huterm-order": 48,
           "x-huterm-section": "panes",
-          "x-huterm-step": 0.05,
+          "x-huterm-step": 0.01,
           "x-huterm-visible-when": [
             {
               "equals": "outline",

@@ -96,7 +96,7 @@ pub struct Profile {
             "x-huterm-label" = "Width",
             "x-huterm-order" = 30,
             "x-huterm-apply" = "later_events",
-            "x-huterm-step" = 0.05,
+            "x-huterm-step" = 0.01,
             "x-huterm-control" = "slider",
             "x-huterm-visible-when" = {"setting": "fullscreen", "equals": false}
         ))
@@ -116,7 +116,7 @@ pub struct Profile {
             "x-huterm-label" = "Height",
             "x-huterm-order" = 40,
             "x-huterm-apply" = "later_events",
-            "x-huterm-step" = 0.05,
+            "x-huterm-step" = 0.01,
             "x-huterm-control" = "slider",
             "x-huterm-visible-when" = {"setting": "fullscreen", "equals": false}
         ))
@@ -184,7 +184,7 @@ pub struct Profile {
             "x-huterm-order" = 90,
             "x-huterm-apply" = "live",
             "x-huterm-control" = "slider",
-            "x-huterm-step" = 0.05,
+            "x-huterm-step" = 0.01,
             "x-huterm-inherits" = "window.opacity"
         ))
     )]
@@ -201,7 +201,7 @@ pub struct Profile {
             "x-huterm-order" = 100,
             "x-huterm-apply" = "live",
             "x-huterm-control" = "slider",
-            "x-huterm-step" = 0.05,
+            "x-huterm-step" = 0.01,
             "x-huterm-inherits" = "window.background_opacity"
         ))
     )]
@@ -218,7 +218,7 @@ pub struct Profile {
             "x-huterm-order" = 110,
             "x-huterm-apply" = "live",
             "x-huterm-control" = "slider",
-            "x-huterm-step" = 0.05,
+            "x-huterm-step" = 0.01,
             "x-huterm-inherits" = "window.foreground_opacity"
         ))
     )]

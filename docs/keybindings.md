@@ -332,8 +332,8 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `panel_focus_previous` | Window | Bound only while `Panel`. |
 | `panel_increase` | Window | Bound only while `Panel`. Steps the focused slider up; buttons ignore it. |
 | `panel_decrease` | Window | Bound only while `Panel`. Steps the focused slider down; buttons ignore it. |
-| `panel_page_up` | Window | Bound only while `Panel`. Steps the focused slider up one page, a tenth of its range. |
-| `panel_page_down` | Window | Bound only while `Panel`. Steps the focused slider down one page, a tenth of its range. |
+| `panel_page_up` | Window | Bound only while `Panel`. Steps the focused slider up one page: 10% on an opacity, a tenth of the range on blur. |
+| `panel_page_down` | Window | Bound only while `Panel`. Steps the focused slider down one page: 10% on an opacity, a tenth of the range on blur. |
 | `panel_first` | Window | Bound only while `Panel`. Moves the focused slider to its minimum. |
 | `panel_last` | Window | Bound only while `Panel`. Moves the focused slider to its maximum. |
 | `panel_press` | Window | Bound only while `Panel`. Presses the focused button. |
@@ -348,8 +348,8 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `settings_toggle` | Window | Bound only while `SettingsControl`. Toggles a switch or modifier chip, opens a select, presses a button, or shows the focused section. |
 | `settings_increase` | Window | Bound only while `SettingsControl`. Steps the focused control; a switch, section, theme card, or modifier chip ignores it. |
 | `settings_decrease` | Window | Bound only while `SettingsControl`. Steps the focused control back; a switch, section, theme card, or modifier chip ignores it. |
-| `settings_page_up` | Window | Bound only while `SettingsControl`. Steps the focused slider up one page, a tenth of its range; other controls ignore it. |
-| `settings_page_down` | Window | Bound only while `SettingsControl`. Steps the focused slider down one page, a tenth of its range; other controls ignore it. |
+| `settings_page_up` | Window | Bound only while `SettingsControl`. Steps the focused slider up one page: 10% on a percent slider, else a tenth of its range; other controls ignore it. |
+| `settings_page_down` | Window | Bound only while `SettingsControl`. Steps the focused slider down one page: 10% on a percent slider, else a tenth of its range; other controls ignore it. |
 | `settings_first` | Window | Bound only while `SettingsControl`. Moves the focused slider to its minimum; other controls ignore it. |
 | `settings_last` | Window | Bound only while `SettingsControl`. Moves the focused slider to its maximum; other controls ignore it. |
 | `settings_next` | Window | Bound only while `SettingsGroup`. Moves to the next section, theme, or modifier chip of the focused group, wrapping from the last to the first; a section or theme it reaches is shown or chosen. Other controls ignore it. |
@@ -678,9 +678,10 @@ back or clears the search. A field's draft stays a draft while its context
 menu is open; it saves when focus moves elsewhere, as it does on leaving the
 field.
 Home and End keep moving the caret in a number field. `settings_increase` and
-`settings_decrease` step a Quake width or height slider by 5%, stopping at 5%
-and 100%; on a slider, `settings_page_up` and `settings_page_down` page it by
-10%, and `settings_first` and `settings_last` move it to 5% and 100%. Their
+`settings_decrease` step a percent slider, such as a Quake width or height,
+by 1%, stopping at the ends of its range, 1% and 100% for a Quake width or
+height; on a slider, `settings_page_up` and `settings_page_down` page it by
+10%, and `settings_first` and `settings_last` move it to those ends. Their
 default keys carry `when = "control == slider"`, so Page Up, Page Down, Home,
 and End stay unbound on other Settings controls. In a
 shortcut's `when` field and the font family field, `text_next` and

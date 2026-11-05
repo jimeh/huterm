@@ -527,7 +527,7 @@ fn group_bindings_leave_a_select_a_switch_and_a_slider_their_arrows(
     });
     keys(&harness, "down");
     harness.wait_for("the slider's step", |cx| {
-        settled(cx) && file.text().contains("width = 0.45")
+        settled(cx) && file.text().contains("width = 0.49")
     });
 }
 
@@ -629,7 +629,7 @@ fn a_stepping_arrow_without_a_condition_leaves_the_groups_their_arrows(
     });
     keys(&harness, "down");
     harness.wait_for("the slider's step", |cx| {
-        settled(cx) && file.text().contains("width = 0.55")
+        settled(cx) && file.text().contains("width = 0.51")
     });
 }
 
@@ -694,7 +694,7 @@ fn a_rebound_settings_next_moves_groups_and_leaves_steppers_alone(
     // Down still steps the slider.
     keys(&harness, "down");
     harness.wait_for("the slider's step", |cx| {
-        settled(cx) && file.text().contains("width = 0.45")
+        settled(cx) && file.text().contains("width = 0.49")
     });
 }
 

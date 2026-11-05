@@ -7,7 +7,7 @@
 //! Every result is clamped to the range: a value below the minimum steps to
 //! the minimum in either direction, because that is the nearest valid
 //! value. An exclusive bound is modelled as the nearest grid value inside
-//! it, as the Quake width's 5% floor is for its exclusive 0.
+//! it, as the Quake width's 1% floor is for its exclusive 0.
 
 /// A closed range and the step grid inside it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,6 +21,11 @@ pub struct Steps {
 /// Grid values are rounded to this many decimal places, so repeated steps
 /// such as `0.05 * 3` do not drift off the grid.
 const PRECISION: f64 = 1e9;
+
+/// How close to a grid value, as a fraction of a step, a value counts as
+/// on it. An `f32` opacity widened to `f64` sits a few millionths of a 1%
+/// step off its grid value, and must step as the value it was saved as.
+const ON_GRID: f64 = 1e-3;
 
 impl Steps {
     /// The range `min..=max` in steps of `step`, paging by ten steps.
@@ -96,7 +101,7 @@ impl Steps {
         }
         let position = (value - self.min) / self.step;
         let nearest = position.round();
-        let on_grid = (position - nearest).abs() < 1e-6;
+        let on_grid = (position - nearest).abs() < ON_GRID;
         let index = match (on_grid, steps > 0) {
             (true, _) => nearest + f64::from(steps),
             (false, true) => position.ceil() + f64::from(steps - 1),
@@ -161,8 +166,8 @@ impl Steps {
 mod tests {
     use super::Steps;
 
-    /// The Quake width and height: greater than 0 and at most 1, in 5%
-    /// steps, so the floor is one step.
+    /// A range greater than 0 and at most 1, in 5% steps, so the floor is
+    /// one step.
     fn quake() -> Steps {
         Steps::new(0.05, 1.0, 0.05)
     }
@@ -201,6 +206,17 @@ mod tests {
         // Below the floor, the floor is the nearest valid value either way.
         assert_eq!(steps.increment(0.02), 0.05);
         assert_eq!(steps.decrement(0.02), 0.05);
+    }
+
+    #[test]
+    fn a_widened_f32_grid_value_steps_as_one_on_the_grid() {
+        // An f32 opacity of 0.61 widens to 0.6100000143, more than a
+        // millionth of a 1% step off the grid, and stepping down from it
+        // stayed at 0.61.
+        let steps = Steps::new(0.1, 1.0, 0.01);
+        let value = f64::from(0.61_f32);
+        assert_eq!(steps.decrement(value), 0.6);
+        assert_eq!(steps.increment(value), 0.62);
     }
 
     #[test]
