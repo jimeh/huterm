@@ -289,7 +289,7 @@ spawning would need a pending-terminal state in core and is a non-goal.
 | `runtime.json` corrupt, over bounds, or invalid | Renamed `.corrupt` (one kept); `desktop.json` ignored | Running, fresh `scope_id` | Fresh window; persistent notice |
 | `runtime.json` newer version | Untouched | Off | Fresh window; persistent notice |
 | `runtime.json` unreadable (I/O error) | Untouched | Off | Fresh window; persistent notice |
-| `desktop.json` corrupt, newer, or mismatched | Corrupt one renamed; a newer one is left untouched and never overwritten, while runtime saves continue | Running | Default windows per session; info notice |
+| `desktop.json` corrupt, newer, unreadable, or mismatched | Corrupt one renamed; a newer or unreadable one is left untouched and never overwritten or set aside, while runtime saves continue | Running | Default windows per session; info notice |
 | Rename aside fails | Untouched | Off | Persistent notice |
 | Leftover `restore-attempt` | Both renamed `.corrupt` | Running, fresh state | Fresh window; persistent notice |
 | A pane fails to spawn | Next checkpoint drops it | Running | Persistent warning in its window |
@@ -388,7 +388,7 @@ Directory fill-in for server spawns stays with #45.
 | Quit differs from last-window close | GPUI tests: Quit writes the session; closing the last window writes an empty set before exit, without advancing the debounce clock |
 | Write ordering | `Persistence` tests with a controllable writer: checkpoint paused before rename, then Quit; repeated termination; setting off with a write in flight |
 | Generation binding | `huterm-state` test interrupting between the two renames; a layout against a replaced runtime file is ignored |
-| Corrupt, oversize, deep, duplicate-ID, newer-version files | `huterm-state` tests: rejected before allocation; renamed or left as the table says |
+| Corrupt, oversize, deep, duplicate-ID, newer-version files | `huterm-state` tests: an oversize file is rejected before its body is read, an overlong list while parsing, and the rest at validation; renamed or left as the table says |
 | Interrupted write keeps the old file | `huterm-state` test failing between temp write and rename |
 | Second process cannot write | `huterm-state` test holding the lock from a child process; GPUI loser starts no shell |
 | Crash-loop guard and Quit during restore | GPUI bootstrap tests with a controlled spawn hook; PTY test proves spawned children are reaped |

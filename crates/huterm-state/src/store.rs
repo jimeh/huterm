@@ -94,7 +94,7 @@ pub enum DesktopLoad {
     /// A valid layout from another save than the runtime file's, or with
     /// no runtime file to name, so its identities cannot be trusted.
     Mismatched,
-    /// The file exists but could not be read.
+    /// The file exists but could not be read. Saves leave it in place.
     Unreadable(String),
 }
 
@@ -120,8 +120,9 @@ pub struct Store {
     identity: Option<(ScopeId, u64)>,
     /// Whether a save may replace `runtime.json`.
     runtime_guard: RuntimeGuard,
-    /// A load found a newer `desktop.json`, which saves never overwrite.
-    newer_desktop: bool,
+    /// A load found `desktop.json` newer or unreadable, so saves leave it
+    /// in place and it is never set aside.
+    keep_desktop: bool,
     _lock: ScopeLock,
 }
 
@@ -162,7 +163,7 @@ impl Store {
             socket_name: socket_name.into(),
             identity: None,
             runtime_guard: RuntimeGuard::Unresolved,
-            newer_desktop: false,
+            keep_desktop: false,
             _lock: lock,
         })
     }
@@ -233,7 +234,10 @@ impl Store {
                 Decoded::Newer(reason) => DesktopLoad::Newer(reason),
             },
         };
-        self.newer_desktop |= matches!(desktop, DesktopLoad::Newer(_));
+        self.keep_desktop |= matches!(
+            desktop,
+            DesktopLoad::Newer(_) | DesktopLoad::Unreadable(_)
+        );
         Loaded { runtime, desktop }
     }
 
@@ -241,8 +245,9 @@ impl Store {
     /// identity (a new one when no runtime file loaded) and the next
     /// generation, which it returns. Both are validated before either is
     /// written. A failure leaves every file not yet replaced as it was, so
-    /// a layout from an earlier save then no longer matches. A newer
-    /// `desktop.json` is left in place and only `runtime.json` is written.
+    /// a layout from an earlier save then no longer matches. A newer or
+    /// unreadable `desktop.json` is left in place and only `runtime.json`
+    /// is written.
     ///
     /// # Errors
     /// Refuses a capture or layout over a bound or invalid, refuses until a
@@ -294,7 +299,7 @@ impl Store {
             |_| before_rename(StateFile::Runtime),
         )?;
         self.identity = Some((scope_id, generation));
-        if self.newer_desktop {
+        if self.keep_desktop {
             return Ok(generation);
         }
         atomic::write_with(
@@ -308,12 +313,23 @@ impl Store {
 
     /// Renames `file` to its `.corrupt` name, replacing an older copy. A
     /// missing file is left alone. Once a runtime file is set aside, the
-    /// next save may write one, with a new scope identity, unless a load
-    /// found a newer one.
+    /// next save may write one, with a new scope identity.
     ///
     /// # Errors
-    /// Reports a failed rename or directory sync.
+    /// Refuses a file a load found newer (or, for the layout, unreadable),
+    /// which stays where it is, and
+    /// reports a failed rename or directory sync.
     pub fn set_aside(&mut self, file: StateFile) -> io::Result<()> {
+        let newer = match file {
+            StateFile::Runtime => self.runtime_guard == RuntimeGuard::Newer,
+            StateFile::Desktop => self.keep_desktop,
+        };
+        if newer {
+            return Err(io::Error::other(format!(
+                "{} came from a newer Huterm and stays in place",
+                file.name()
+            )));
+        }
         match atomic::rename(&self.directory, file.name(), file.corrupt_name())
         {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -321,9 +337,7 @@ impl Store {
         }
         if file == StateFile::Runtime {
             self.identity = None;
-            if self.runtime_guard != RuntimeGuard::Newer {
-                self.runtime_guard = RuntimeGuard::Replaceable;
-            }
+            self.runtime_guard = RuntimeGuard::Replaceable;
         }
         Ok(())
     }

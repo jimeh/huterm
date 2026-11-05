@@ -351,6 +351,10 @@ fn a_failed_spawn_leaves_its_pane_and_an_emptied_tab_and_reports_both() {
     let tab = restored.tab(editor).unwrap();
     assert_eq!(tab.layout().pane_count(), 2);
     assert_eq!(tab.zoomed(), None);
+    // Restored panes take fallback names from their launched commands.
+    for pane in tab.layout().panes() {
+        assert_eq!(pane.fallback_name, "sh");
+    }
     assert!(restored.tab(unviewed_tab).is_none());
     assert_eq!(restored.session(unviewed).unwrap().workspaces.len(), 1);
     assert_eq!(restored.terminal_count(), 4);

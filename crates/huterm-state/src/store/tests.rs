@@ -448,6 +448,18 @@ fn unreadable_content_is_classified_and_newer_files_are_never_overwritten() {
     assert_eq!(loaded.desktop, DesktopLoad::Newer("version 7".into()));
     store.save(&capture, &layout).unwrap();
     assert_eq!(fs::read_to_string(&desktop).unwrap(), newer);
+    // A newer file is never set aside either.
+    assert!(store.set_aside(StateFile::Desktop).is_err());
+    assert_eq!(fs::read_to_string(&desktop).unwrap(), newer);
+
+    // A layout that cannot be read is left in place as well.
+    drop(store);
+    fs::remove_file(&desktop).unwrap();
+    fs::create_dir(&desktop).unwrap();
+    let mut store = Store::open(root.path(), "default").unwrap();
+    assert!(matches!(store.load().desktop, DesktopLoad::Unreadable(_)));
+    store.save(&capture, &layout).unwrap();
+    assert!(desktop.is_dir());
 }
 
 #[test]
@@ -482,6 +494,9 @@ fn saves_wait_until_the_runtime_file_is_known_safe_to_replace() {
         store.save(&capture, &layout),
         Err(SaveError::NewerVersion)
     ));
+    assert_eq!(fs::read_to_string(&runtime).unwrap(), valid);
+    // A store that found the runtime file newer never sets it aside.
+    assert!(store.set_aside(StateFile::Runtime).is_err());
     assert_eq!(fs::read_to_string(&runtime).unwrap(), valid);
     drop(store);
 
