@@ -134,6 +134,13 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   event the main `renderer_smoke` thread (its thread ID equal to the process
   ID) was in state `D` in `folio_wait_bit_common` with syscall `-1`. The
   rerun passed. This is the first occurrence on aarch64 since 2026-10-26.
+- **Sixth thread dump:** on 2026-11-05 on x86_64 (PR #412 at `766d4bd9`,
+  run 42099318070, job 127498303513), which changes terminal selection and
+  not the renderer, stdout again stopped after `application started`, with
+  empty stderr and SIGTERM at 15.02 seconds. At the 15.01-second `threads`
+  event the main thread (the lowest thread ID) was in state `D` in
+  `folio_wait_bit_common` with syscall `-1`, and the other 11 threads were
+  sleeping.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
