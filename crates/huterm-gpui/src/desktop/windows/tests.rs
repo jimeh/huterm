@@ -524,23 +524,30 @@ fn terminal_failures_are_routed_with_their_tab() {
 #[test]
 fn copy_is_unavailable_without_selection() {
     assert_eq!(
-        copy_availability(None),
+        copy_availability(None, false),
         Err(CommandError::Unavailable("no selection".to_owned()))
     );
+    let start = BufferPoint {
+        rows_from_live_bottom: 0,
+        column: 0,
+    };
     assert_eq!(
-        copy_availability(Some(Selection {
-            generation: 1,
-            anchor: BufferPoint {
-                rows_from_live_bottom: 0,
-                column: 0,
-            },
-            head: BufferPoint {
-                rows_from_live_bottom: 0,
-                column: 1,
-            },
-        })),
+        copy_availability(
+            Some(Selection::cells(
+                1,
+                start,
+                BufferPoint { column: 1, ..start },
+            )),
+            false
+        ),
         Ok(())
     );
+    // A word the runtime is still expanding has no range yet, but a
+    // right-click must copy it rather than paste over it.
+    let word =
+        Selection::new(1, start, Some(huterm_protocol::SelectionUnit::Word));
+    assert!(copy_availability(Some(word), false).is_err());
+    assert_eq!(copy_availability(Some(word), true), Ok(()));
 }
 
 #[test]

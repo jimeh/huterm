@@ -300,6 +300,24 @@ pub struct GhosttySelection {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalSelectWordBetweenOptions {
+    pub size: usize,
+    pub start: GhosttyGridRef,
+    pub end: GhosttyGridRef,
+    pub boundary_codepoints: *const u32,
+    pub boundary_codepoints_len: usize,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalSelectLineOptions {
+    pub size: usize,
+    pub ref_: GhosttyGridRef,
+    pub whitespace: *const u32,
+    pub whitespace_len: usize,
+    pub semantic_prompt_boundary: bool,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct GhosttyTerminalSelectionFormatOptions {
     pub size: usize,
     pub emit: GhosttyFormatterFormat,
@@ -1220,6 +1238,24 @@ impl Default for GhosttySelection {
         }
     }
 }
+impl Default for GhosttyTerminalSelectWordBetweenOptions {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl Default for GhosttyTerminalSelectLineOptions {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
 impl Default for GhosttyTerminalSelectionFormatOptions {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
@@ -1355,6 +1391,16 @@ unsafe extern "C" {
         buf_len: usize,
         out_len: *mut usize,
     ) -> GhosttyResult;
+    pub fn ghostty_terminal_select_word_between(
+        terminal: GhosttyTerminal,
+        options: *const GhosttyTerminalSelectWordBetweenOptions,
+        out_selection: *mut GhosttySelection,
+    ) -> GhosttyResult;
+    pub fn ghostty_terminal_select_line(
+        terminal: GhosttyTerminal,
+        options: *const GhosttyTerminalSelectLineOptions,
+        out_selection: *mut GhosttySelection,
+    ) -> GhosttyResult;
     pub fn ghostty_terminal_selection_format_alloc(
         terminal: GhosttyTerminal,
         allocator: *const GhosttyAllocator,
@@ -1421,6 +1467,12 @@ unsafe extern "C" {
         terminal: GhosttyTerminal,
         point: GhosttyPoint,
         out_ref: *mut GhosttyTrackedGridRef,
+    ) -> GhosttyResult;
+    pub fn ghostty_terminal_point_from_grid_ref(
+        terminal: GhosttyTerminal,
+        ref_: *const GhosttyGridRef,
+        tag: GhosttyPointTag,
+        out: *mut GhosttyPointCoordinate,
     ) -> GhosttyResult;
     pub fn ghostty_render_state_new(
         allocator: *const GhosttyAllocator,

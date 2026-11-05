@@ -843,6 +843,33 @@ impl BufferRange {
             }
         }
     }
+
+    /// The smallest range that covers both ranges and everything between
+    /// them.
+    #[must_use]
+    pub fn cover(self, other: Self) -> Self {
+        let start = if buffer_point_precedes(self.start, other.start) {
+            self.start
+        } else {
+            other.start
+        };
+        let end = if buffer_point_precedes(self.end, other.end) {
+            other.end
+        } else {
+            self.end
+        };
+        Self { start, end }
+    }
+}
+
+/// The unit a multi-click selection grows by: a double-click selects
+/// words and a triple-click selects logical lines, which span soft wraps.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SelectionUnit {
+    /// A run of word characters, a run of word boundaries, or a link.
+    Word,
+    /// A logical line across its soft wraps.
+    Line,
 }
 
 fn buffer_point_precedes(first: BufferPoint, second: BufferPoint) -> bool {

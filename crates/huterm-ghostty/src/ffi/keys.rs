@@ -914,6 +914,18 @@ impl super::SizedStruct for ffi::GhosttySelection {
     }
 }
 
+impl super::SizedStruct for ffi::GhosttyTerminalSelectWordBetweenOptions {
+    fn size_mut(&mut self) -> &mut usize {
+        &mut self.size
+    }
+}
+
+impl super::SizedStruct for ffi::GhosttyTerminalSelectLineOptions {
+    fn size_mut(&mut self) -> &mut usize {
+        &mut self.size
+    }
+}
+
 impl super::SizedStruct for ffi::GhosttyTerminalSelectionFormatOptions {
     fn size_mut(&mut self) -> &mut usize {
         &mut self.size

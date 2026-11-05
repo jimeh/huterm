@@ -19,12 +19,13 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
 ## What works today
 
 - **Terminals:** 24-bit color, runtime-owned scrollback with configurable row
-  and size limits, selection, copy and
-  paste, application mouse reporting, clickable links, file drops, clipboard
-  writes from applications (OSC 52, OSC 1337 `Copy`, and Kitty's OSC 5522),
-  color and geometry queries, the Kitty keyboard protocol's disambiguation
-  and alternate-key flags, an audible bell on macOS, an optional visual bell,
-  and an opt-in private `xterm-huterm` terminfo entry.
+  and size limits, selection by dragging, double-clicking a word, or
+  triple-clicking a line, copy and paste, application mouse reporting,
+  clickable links, file drops, clipboard writes from applications (OSC 52,
+  OSC 1337 `Copy`, and Kitty's OSC 5522), color and geometry queries, the
+  Kitty keyboard protocol's disambiguation and alternate-key flags, an audible
+  bell on macOS, an optional visual bell, and an opt-in private `xterm-huterm`
+  terminfo entry.
 - **Windows and tabs:** several windows, each with ordered tabs in a top,
   bottom, left, or right bar or merged into the title bar. Tabs can be
   reordered by dragging, renamed, and labelled by program, title, or working

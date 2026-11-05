@@ -256,6 +256,24 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send("mouse\t1\t200\t80");
     await send("mouse\t2\t200\t80");
     await state("selection=false");
+    // AppKit's click counts select by word and by line: double- and
+    // triple-clicks on the fixture's "selection" select without a drag, and
+    // a plain click elsewhere clears them.
+    const fixture = await currentState();
+    const [fixtureX, fixtureY] = field(fixture, "grid_origin").split(",").map(Number);
+    const [fixtureWidth, fixtureHeight] = field(fixture, "cell").split(",").map(Number);
+    const wordX = fixtureX! + fixtureWidth! * 9.5;
+    const wordY = fixtureY! + fixtureHeight! * 0.5;
+    for (const count of [2, 3]) {
+      for (let clicks = 1; clicks <= count; clicks++) {
+        await send(`mouse\t1\t${wordX}\t${wordY}\t0\t${clicks}`);
+        await send(`mouse\t2\t${wordX}\t${wordY}\t0\t${clicks}`);
+      }
+      await state("selection=true");
+      await send("mouse\t1\t200\t80");
+      await send("mouse\t2\t200\t80");
+      await state("selection=false");
+    }
     await key(4, control, "\x08", "h");
     await key(15, option, "®", "r");
     await state("pending=true");

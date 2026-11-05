@@ -205,6 +205,19 @@ Protocol selection ranges include both endpoints. Keep a mouse-down anchor
 without exposing a range until dragging reaches another cell; use that same
 optional range for highlighting and text extraction.
 
+GPUI's `click_count` picks the selection unit: two clicks select words and
+three or more select logical lines. The runtime expands them on the owner
+thread with Ghostty's `select_word_between` and `select_line`, and a word
+press inside a recognized link takes the whole link, because Ghostty's word
+boundaries include `:`. A unit selection has no range until the first reply,
+so key contexts and highlighting wait for it, but Copy and the CopyOrPaste
+right-click treat it as selected, or a right-click would paste. Keep one
+expansion request in flight per gesture and send only the latest head when it
+completes. Match each reply to its gesture and viewer epoch; a release, blur,
+or hide caches the text only once no request is in flight or wanted. A Copy
+while expanding asks for the range itself, because the right-click clears the
+selection straight after.
+
 Use the same inset track for painting and drag mapping. Indicator visibility
 depends on recent interaction, including at offset zero; schedule its hold
 deadline and frame-driven fade so idle terminals redraw it. Keep the label

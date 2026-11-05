@@ -60,18 +60,74 @@ fn resolve_inner(
     let row = top + point.row as usize;
     let column =
         u16::try_from(point.column).map_err(|_| LinkLookup::Unavailable)?;
+    let projection = Projection {
+        columns: snapshot.size.columns,
+        top,
+        rows,
+    };
+    resolve_at(buffer, projection, total, row, column)
+}
+
+/// The first and last cell of the link at the buffer's absolute `row` and
+/// `column`, as `(row, column)` pairs in absolute rows, however far the
+/// link reaches beyond the viewport. `None` when no link is there or the
+/// lookup could not finish within its limits.
+pub(super) fn bounds(
+    buffer: &mut impl LinkBuffer,
+    columns: u16,
+    row: usize,
+    column: u16,
+) -> Option<((usize, u16), (usize, u16))> {
+    let total = buffer.total_rows().ok()?;
+    if row >= total || column >= columns {
+        return None;
+    }
+    let projection = Projection {
+        columns,
+        top: 0,
+        rows: total,
+    };
+    let Ok(LinkLookup::Match(link)) =
+        resolve_at(buffer, projection, total, row, column)
+    else {
+        return None;
+    };
+    let cell = |cell: &LinkCell| {
+        Some((
+            usize::try_from(cell.position.row).ok()?,
+            u16::try_from(cell.position.column).ok()?,
+        ))
+    };
+    Some((cell(link.cells.first()?)?, cell(link.cells.last()?)?))
+}
+
+/// The rows a lookup reports its link cells in: `rows` rows from absolute
+/// row `top` of a grid `columns` wide. Cell positions are relative to `top`.
+#[derive(Clone, Copy)]
+struct Projection {
+    columns: u16,
+    top: usize,
+    rows: usize,
+}
+
+fn resolve_at(
+    buffer: &mut impl LinkBuffer,
+    projection: Projection,
+    total: usize,
+    row: usize,
+    column: u16,
+) -> Result<LinkLookup, LinkLookup> {
     if let Some(destination) = buffer.hyperlink(row, column)? {
         return resolve_explicit(
             buffer,
-            snapshot,
+            projection,
             destination,
-            top,
             total,
             row,
             column,
         );
     }
-    resolve_plain(buffer, snapshot, top, total, row, column)
+    resolve_plain(buffer, projection, total, row, column)
 }
 
 /// Resolves a plain-text URL from the token under the pointer.
@@ -82,13 +138,12 @@ fn resolve_inner(
 /// scan limits apply to this window.
 fn resolve_plain(
     buffer: &mut impl LinkBuffer,
-    snapshot: &TerminalSnapshot,
-    top: usize,
+    projection: Projection,
     total: usize,
     row: usize,
     column: u16,
 ) -> Result<LinkLookup, LinkLookup> {
-    let columns = snapshot.size.columns;
+    let columns = projection.columns;
     let mut window = Window {
         cells: 0,
         bytes: 0,
@@ -172,8 +227,8 @@ fn resolve_plain(
         &text,
         mapping,
         target_offset,
-        top,
-        usize::from(snapshot.size.rows),
+        projection.top,
+        projection.rows,
     ))
 }
 
@@ -269,15 +324,14 @@ fn plain_link(
 
 fn resolve_explicit(
     buffer: &mut impl LinkBuffer,
-    snapshot: &TerminalSnapshot,
+    projection: Projection,
     destination: String,
-    top: usize,
     total: usize,
     row: usize,
     column: u16,
 ) -> Result<LinkLookup, LinkLookup> {
-    let columns = usize::from(snapshot.size.columns);
-    let rows = usize::from(snapshot.size.rows);
+    let columns = usize::from(projection.columns);
+    let Projection { top, rows, .. } = projection;
     if !valid_destination(&destination) {
         return Ok(LinkLookup::NoMatch);
     }

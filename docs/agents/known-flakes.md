@@ -277,7 +277,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   at a load average near 6, and a `mux::` filtered run then failed the
   orphan test. It passed in 3 isolated reruns, the whole `huterm-core`
   suite passed with `--test-threads=4`, and a third full workspace run
-  passed it.
+  passed it. On 2026-11-05, during the word and line selection work, one
+  `mise run test:ghostty-releasesafe` run failed it with the same message,
+  although the change touches no job or close-assessment code; it passed in
+  3 isolated ReleaseSafe reruns.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.

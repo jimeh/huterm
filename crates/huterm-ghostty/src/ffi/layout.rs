@@ -226,6 +226,72 @@ pub(crate) const STRUCTS: &[Struct] = &[
         ],
     },
     Struct {
+        name: "GhosttyTerminalSelectWordBetweenOptions",
+        size: size_of::<ffi::GhosttyTerminalSelectWordBetweenOptions>(),
+        align: align_of::<ffi::GhosttyTerminalSelectWordBetweenOptions>(),
+        fields: &[
+            (
+                "size",
+                offset_of!(ffi::GhosttyTerminalSelectWordBetweenOptions, size),
+            ),
+            (
+                "start",
+                offset_of!(ffi::GhosttyTerminalSelectWordBetweenOptions, start),
+            ),
+            (
+                "end",
+                offset_of!(ffi::GhosttyTerminalSelectWordBetweenOptions, end),
+            ),
+            (
+                "boundary_codepoints",
+                offset_of!(
+                    ffi::GhosttyTerminalSelectWordBetweenOptions,
+                    boundary_codepoints
+                ),
+            ),
+            (
+                "boundary_codepoints_len",
+                offset_of!(
+                    ffi::GhosttyTerminalSelectWordBetweenOptions,
+                    boundary_codepoints_len
+                ),
+            ),
+        ],
+    },
+    Struct {
+        name: "GhosttyTerminalSelectLineOptions",
+        size: size_of::<ffi::GhosttyTerminalSelectLineOptions>(),
+        align: align_of::<ffi::GhosttyTerminalSelectLineOptions>(),
+        fields: &[
+            (
+                "size",
+                offset_of!(ffi::GhosttyTerminalSelectLineOptions, size),
+            ),
+            (
+                "ref",
+                offset_of!(ffi::GhosttyTerminalSelectLineOptions, ref_),
+            ),
+            (
+                "whitespace",
+                offset_of!(ffi::GhosttyTerminalSelectLineOptions, whitespace),
+            ),
+            (
+                "whitespace_len",
+                offset_of!(
+                    ffi::GhosttyTerminalSelectLineOptions,
+                    whitespace_len
+                ),
+            ),
+            (
+                "semantic_prompt_boundary",
+                offset_of!(
+                    ffi::GhosttyTerminalSelectLineOptions,
+                    semantic_prompt_boundary
+                ),
+            ),
+        ],
+    },
+    Struct {
         name: "GhosttyTerminalSelectionFormatOptions",
         size: size_of::<ffi::GhosttyTerminalSelectionFormatOptions>(),
         align: align_of::<ffi::GhosttyTerminalSelectionFormatOptions>(),

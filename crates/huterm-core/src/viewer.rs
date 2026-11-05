@@ -15,10 +15,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use huterm_protocol::{
-    AttachmentId, BufferRange, CellSize, ExitStatus, GridSize, InputStamp,
-    MousePosition, RuntimeId, ScrollCommand, ScrollbackLimit, TerminalFailure,
-    TerminalId, TerminalInput, TerminalLifecycle, TerminalPresentation,
-    TerminalSnapshot, TerminalStatus, ViewerCapabilities, ViewerId,
+    AttachmentId, BufferPoint, BufferRange, CellSize, ExitStatus, GridSize,
+    InputStamp, MousePosition, RuntimeId, ScrollCommand, ScrollbackLimit,
+    SelectionUnit, TerminalFailure, TerminalId, TerminalInput,
+    TerminalLifecycle, TerminalPresentation, TerminalSnapshot, TerminalStatus,
+    ViewerCapabilities, ViewerId,
 };
 
 pub(crate) use arbitration::{Arbiter, Effects, Report};
@@ -29,7 +30,7 @@ use crate::host_effects::{
 };
 use crate::terminal::{
     BufferEdit, RefusedInput, RuntimeClient, RuntimeControl, RuntimeError,
-    RuntimeMessage, SelectionRequest, SnapshotRequest,
+    RuntimeMessage, SelectUnitsRequest, SelectionRequest, SnapshotRequest,
 };
 
 /// Live viewers one terminal admits.
@@ -898,6 +899,33 @@ impl TerminalViewer {
             reply,
         })?;
         Ok(SelectionRequest::new(receiver))
+    }
+
+    /// Requests the range a multi-click selection from `anchor` to `head`
+    /// covers in `unit`s without blocking. The runtime expands both ends
+    /// against canonical scrollback at `generation`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the viewer was revoked or the terminal stopped.
+    pub fn request_select_units(
+        &self,
+        generation: u64,
+        anchor: BufferPoint,
+        head: BufferPoint,
+        unit: SelectionUnit,
+    ) -> Result<SelectUnitsRequest, RuntimeError> {
+        self.check(true)?;
+        let (reply, receiver) = async_channel::bounded(1);
+        self.client.send_control(RuntimeControl::SelectUnits {
+            slot: Arc::clone(&self.slot),
+            generation,
+            anchor,
+            head,
+            unit,
+            reply,
+        })?;
+        Ok(SelectUnitsRequest::new(receiver))
     }
 
     /// Reads a snapshot of the shared viewport, blocking briefly.

@@ -885,3 +885,221 @@ fn osc11_presentation_change_with_retained_rows_redraws(
         assert!(view.apply_snapshot(original, cx));
     });
 }
+
+/// Two lines for multi-click tests: row 0 holds `alpha beta.gamma:delta`,
+/// and a 55-character line soft-wraps from row 1 onto row 2 at the 49
+/// columns the harness requests.
+const WORDS: &str = "alpha beta.gamma:delta\\n\
+    one two three four five six seven eight nine ten eleven\\n";
+
+/// Prints `text`, then runs the echo fixture with mouse `modes`.
+fn text_fixture(text: &str, modes: &str) -> String {
+    format!("printf '{text}'; {}", echo_fixture(0, modes))
+}
+
+/// Delivers the presses and releases of a native `count`-click at
+/// `position`, in one update so no expansion reply lands in between.
+fn multi_click(
+    view: &mut TerminalView,
+    window: &mut Window,
+    cx: &mut Context<'_, TerminalView>,
+    position: gpui::Point<Pixels>,
+    count: usize,
+    modifiers: Modifiers,
+) {
+    for click_count in 1..=count {
+        view.mouse_down(
+            &MouseDownEvent {
+                click_count,
+                modifiers,
+                ..press(position)
+            },
+            window,
+            cx,
+        );
+        view.mouse_up(
+            &MouseUpEvent {
+                click_count,
+                modifiers,
+                ..release(position)
+            },
+            window,
+            cx,
+        );
+    }
+}
+
+/// The last press of a double-click, held, then dragged to `to`.
+fn drag_words(
+    view: &mut TerminalView,
+    window: &mut Window,
+    cx: &mut Context<'_, TerminalView>,
+    from: gpui::Point<Pixels>,
+    to: gpui::Point<Pixels>,
+) {
+    multi_click(view, window, cx, from, 1, Modifiers::none());
+    view.mouse_down(
+        &MouseDownEvent {
+            click_count: 2,
+            ..press(from)
+        },
+        window,
+        cx,
+    );
+    view.mouse_move(
+        &MouseMoveEvent {
+            pressed_button: Some(MouseButton::Left),
+            ..hover(to)
+        },
+        window,
+        cx,
+    );
+    view.mouse_up(&release(to), window, cx);
+}
+
+impl ViewHarness {
+    fn wait_for_selected(&mut self, expected: &str) {
+        self.wait_for(&format!("{expected:?} to be selected"), |view, _| {
+            !view.selecting && view.selected_text.as_deref() == Some(expected)
+        });
+    }
+
+    fn clipboard(&mut self) -> Option<String> {
+        self.cx.update(|_, cx| {
+            cx.read_from_clipboard().and_then(|item| item.text())
+        })
+    }
+
+    /// Runs the view's tasks, delivering frames, until the clipboard holds
+    /// `expected`. Fails with the last clipboard text after
+    /// [`WAIT_DEADLINE`].
+    fn wait_for_clipboard(&mut self, expected: &str) {
+        let executor = self.cx.executor();
+        let foreground = self.cx.foreground_executor().clone();
+        let deadline = Instant::now() + WAIT_DEADLINE;
+        let cx = &mut self.cx;
+        foreground.block_test(async {
+            loop {
+                let text = cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    cx.read_from_clipboard().and_then(|item| item.text())
+                });
+                if text.as_deref() == Some(expected) {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {expected:?} on the clipboard; \
+                     last: {text:?}"
+                );
+                executor.timer(WAIT_POLL).await;
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn a_double_click_selects_the_word_under_the_pointer(cx: &mut TestAppContext) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let gamma = harness.cell_center(12, 0);
+    harness.update(|view, window, cx| {
+        multi_click(view, window, cx, gamma, 2, Modifiers::none());
+        assert!(
+            !view.key_context().contains("selection"),
+            "nothing is selected until the runtime answers"
+        );
+    });
+    harness.wait_for_selected("beta.gamma");
+    harness.update(|view, window, cx| {
+        assert!(view.key_context().contains("selection"));
+        view.run_command(
+            &CommandInvocation::new(ids::COPY, Vec::new()),
+            window,
+            cx,
+        )
+        .unwrap();
+    });
+    assert_eq!(harness.clipboard().as_deref(), Some("beta.gamma"));
+    // A single click afterwards clears it, as before.
+    harness.click(gamma);
+    harness.read(|view, _| assert_eq!(view.selection, None));
+}
+
+#[gpui::test]
+fn a_triple_click_selects_the_whole_soft_wrapped_line(cx: &mut TestAppContext) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let wrapped = harness.cell_center(2, 2);
+    harness.update(|view, window, cx| {
+        multi_click(view, window, cx, wrapped, 3, Modifiers::none());
+    });
+    harness.wait_for_selected(
+        "one two three four five six seven eight nine ten eleven",
+    );
+}
+
+#[gpui::test]
+fn dragging_after_a_double_click_extends_by_whole_words(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let beta = harness.cell_center(7, 0);
+    let alpha = harness.cell_center(2, 0);
+    harness.update(|view, window, cx| {
+        drag_words(view, window, cx, beta, alpha);
+    });
+    harness.wait_for_selected("alpha beta.gamma");
+    let two = harness.cell_center(5, 1);
+    harness.update(|view, window, cx| {
+        drag_words(view, window, cx, alpha, two);
+    });
+    harness.wait_for_selected("alpha beta.gamma:delta\none two");
+}
+
+#[gpui::test]
+fn a_right_click_copies_a_word_that_is_still_expanding(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let gamma = harness.cell_center(12, 0);
+    harness.update(|view, window, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("PASTED".into()));
+        view.right_click = config::RightClickAction::CopyOrPaste;
+        multi_click(view, window, cx, gamma, 2, Modifiers::none());
+        view.mouse_down(
+            &MouseDownEvent {
+                button: MouseButton::Right,
+                ..press(gamma)
+            },
+            window,
+            cx,
+        );
+        assert_eq!(
+            view.selection, None,
+            "the right-click copied, which clears the selection"
+        );
+        assert!(view.input_queue.is_empty(), "nothing was pasted");
+    });
+    harness.wait_for_clipboard("beta.gamma");
+}
+
+#[gpui::test]
+fn an_application_gets_multi_clicks_unless_shift_selects_locally(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, BUTTONS));
+    harness.wait_ready(MouseTracking::Buttons);
+    let gamma = harness.cell_center(12, 0);
+    harness.update(|view, window, cx| {
+        multi_click(view, window, cx, gamma, 2, Modifiers::none());
+        assert_eq!(view.selection, None);
+    });
+    harness.assert_received(&(click(12, 0) + &click(12, 0)));
+    harness.update(|view, window, cx| {
+        multi_click(view, window, cx, gamma, 2, Modifiers::shift());
+    });
+    harness.wait_for_selected("beta.gamma");
+}

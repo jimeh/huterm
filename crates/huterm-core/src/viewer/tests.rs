@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, GridSize, HostEffect, Modifiers,
     MouseAction, MouseButton, MouseInput, MousePosition, ScrollCommand,
-    ScrollbackLimit, TerminalCommand, TerminalFailure, TerminalId,
-    TerminalInput, TerminalLifecycle, TerminalPresentation, TerminalSnapshot,
-    ViewerCapabilities,
+    ScrollbackLimit, SelectionUnit, TerminalCommand, TerminalFailure,
+    TerminalId, TerminalInput, TerminalLifecycle, TerminalPresentation,
+    TerminalSnapshot, ViewerCapabilities,
 };
 
 use super::{HostEffectViewerOptions, TerminalViewer, ViewerOptions};
@@ -424,6 +424,28 @@ fn a_scroll_from_one_viewer_wakes_and_moves_the_other() {
         )
         .unwrap();
     assert!(selection.recv_blocking().unwrap().is_some());
+    // A double-click on the scrolled-back "row" selects that word.
+    let point = BufferPoint {
+        rows_from_live_bottom: 10,
+        column: 1,
+    };
+    let word = watcher
+        .request_select_units(
+            live.generation,
+            point,
+            point,
+            SelectionUnit::Word,
+        )
+        .unwrap()
+        .recv_blocking()
+        .unwrap();
+    assert_eq!(
+        word,
+        Some(BufferRange::ordered(
+            BufferPoint { column: 0, ..point },
+            BufferPoint { column: 2, ..point },
+        ))
+    );
     runtime.shutdown().unwrap();
 }
 
@@ -625,11 +647,19 @@ fn a_revoked_viewer_with_a_queued_snapshot_harms_no_one() {
     wait_for_text(&survivor, "READY");
     let resume = pause(&runtime);
     let queued = revoked.request_snapshot().unwrap();
+    let point = BufferPoint {
+        rows_from_live_bottom: 0,
+        column: 0,
+    };
+    let units = revoked
+        .request_select_units(0, point, point, SelectionUnit::Word)
+        .unwrap();
     runtime
         .registry()
         .revoke_where(|slot| slot.id == revoked.id());
     resume.send(()).unwrap();
     assert!(matches!(queued.recv_blocking(), Err(RuntimeError::Revoked)));
+    assert!(matches!(units.recv_blocking(), Err(RuntimeError::Revoked)));
     assert!(revoked.poll().revoked);
     // Once finalized, the revoked viewer's waiter stops instead of hanging.
     wait_until("finalized slot", || {

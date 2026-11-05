@@ -11,9 +11,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    AttachmentId, BufferRange, ExitStatus, InputStamp, MouseTracking,
-    RuntimeId, ScrollCommand, TerminalCommand, TerminalId, TerminalInput,
-    TerminalMetadata, TerminalSnapshot,
+    AttachmentId, BufferPoint, BufferRange, ExitStatus, InputStamp,
+    MouseTracking, RuntimeId, ScrollCommand, SelectionUnit, TerminalCommand,
+    TerminalId, TerminalInput, TerminalMetadata, TerminalSnapshot,
 };
 #[cfg(test)]
 use huterm_protocol::{CellSize, GridSize, TerminalPresentation};
@@ -330,6 +330,47 @@ impl SelectionRequest {
 
     #[cfg(test)]
     pub(crate) fn recv_blocking(self) -> Result<Option<String>, RuntimeError> {
+        self.receiver
+            .recv_blocking()
+            .map_err(|_| RuntimeError::Stopped)?
+    }
+}
+
+/// Pending asynchronous multi-click selection response.
+#[derive(Debug)]
+pub struct SelectUnitsRequest {
+    receiver:
+        async_channel::Receiver<Result<Option<BufferRange>, RuntimeError>>,
+}
+
+impl SelectUnitsRequest {
+    pub(crate) fn new(
+        receiver: async_channel::Receiver<
+            Result<Option<BufferRange>, RuntimeError>,
+        >,
+    ) -> Self {
+        Self { receiver }
+    }
+
+    /// Waits asynchronously for the selected range.
+    ///
+    /// A successful `None` means the terminal generation was stale, a point
+    /// fell outside the buffer, or there was nothing to select.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime stops before replying.
+    pub async fn recv(self) -> Result<Option<BufferRange>, RuntimeError> {
+        self.receiver
+            .recv()
+            .await
+            .map_err(|_| RuntimeError::Stopped)?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recv_blocking(
+        self,
+    ) -> Result<Option<BufferRange>, RuntimeError> {
         self.receiver
             .recv_blocking()
             .map_err(|_| RuntimeError::Stopped)?
@@ -712,6 +753,14 @@ pub(crate) enum RuntimeControl {
         generation: u64,
         range: BufferRange,
         reply: async_channel::Sender<Result<Option<String>, RuntimeError>>,
+    },
+    SelectUnits {
+        slot: Arc<Slot>,
+        generation: u64,
+        anchor: BufferPoint,
+        head: BufferPoint,
+        unit: SelectionUnit,
+        reply: async_channel::Sender<Result<Option<BufferRange>, RuntimeError>>,
     },
     WorkerFailed(String),
     WriterFailed(String),
@@ -1522,6 +1571,25 @@ fn run_terminal(
                             // Extraction restores every page it reads.
                             owner.compression.restored(Instant::now());
                             owner.engine.extract_text(generation, range)
+                        };
+                        let _ = reply.try_send(result);
+                    }
+                    RuntimeControl::SelectUnits {
+                        slot,
+                        generation,
+                        anchor,
+                        head,
+                        unit,
+                        reply,
+                    } => {
+                        let result = if slot.is_revoked() {
+                            Err(RuntimeError::Revoked)
+                        } else {
+                            // The scans restore every page they read.
+                            owner.compression.restored(Instant::now());
+                            owner
+                                .engine
+                                .select_units(generation, anchor, head, unit)
                         };
                         let _ = reply.try_send(result);
                     }

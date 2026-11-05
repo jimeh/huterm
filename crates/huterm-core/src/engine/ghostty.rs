@@ -17,9 +17,9 @@ use huterm_ghostty::{
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
     CommandRecord, Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding,
-    MouseTracking, Rgb, ScrollCommand, ScrollbackLimit, TerminalAppearance,
-    TerminalId, TerminalModes, TerminalPresentation, TerminalRow,
-    TerminalSnapshot, Viewport, appearance_for_background,
+    MouseTracking, Rgb, ScrollCommand, ScrollbackLimit, SelectionUnit,
+    TerminalAppearance, TerminalId, TerminalModes, TerminalPresentation,
+    TerminalRow, TerminalSnapshot, Viewport, appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
@@ -849,6 +849,117 @@ impl TerminalEngine {
         };
         let text = self.terminal.format_plain(start, end)?;
         Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
+    }
+
+    /// The range a multi-click selection from `anchor` to `head` covers,
+    /// following Ghostty's own gestures. A word selection joins the word
+    /// nearest each end in the direction of the other, and a selection that
+    /// starts on a link takes the whole link instead of the anchor's word,
+    /// so a URL never splits at its colon. A line selection joins the lines
+    /// under both ends, trimmed of surrounding whitespace; a blank line
+    /// counts as its whole row once the drag leaves it. `None` for a stale
+    /// generation, a point outside the buffer, or nothing to select, such
+    /// as a press on unwritten cells.
+    pub(super) fn select_units(
+        &self,
+        generation: u64,
+        anchor: BufferPoint,
+        head: BufferPoint,
+        unit: SelectionUnit,
+    ) -> Result<Option<BufferRange>, RuntimeError> {
+        if generation != self.generation {
+            return Ok(None);
+        }
+        let total = self.terminal.total_rows()?;
+        let last_row = total
+            .checked_sub(1)
+            .ok_or(RuntimeError::Invariant("terminal has no rows"))?;
+        let columns = self.size.columns;
+        let screen_row = |point: BufferPoint| {
+            if point.column >= columns {
+                return None;
+            }
+            last_row.checked_sub(point.rows_from_live_bottom)
+        };
+        let (Some(anchor_row), Some(head_row)) =
+            (screen_row(anchor), screen_row(head))
+        else {
+            return Ok(None);
+        };
+        let screen = |row: usize, column: u16| {
+            u32::try_from(row)
+                .map(|row| Point::screen(column, row))
+                .map_err(|_| RuntimeError::Invariant("row exceeds u32"))
+        };
+        let buffer_point = |point: Point| BufferPoint {
+            rows_from_live_bottom: last_row
+                .saturating_sub(usize::try_from(point.y).unwrap_or(usize::MAX)),
+            column: point.x,
+        };
+        let range = |ends: Option<(Point, Point)>| {
+            ends.map(|(start, end)| {
+                BufferRange::ordered(buffer_point(start), buffer_point(end))
+            })
+        };
+        let anchor_point = screen(anchor_row, anchor.column)?;
+        let head_point = screen(head_row, head.column)?;
+        let (anchor_side, head_side) = match unit {
+            SelectionUnit::Word => {
+                let link = self.link_reader().ok().and_then(|mut reader| {
+                    super::links::bounds(
+                        &mut reader,
+                        columns,
+                        anchor_row,
+                        anchor.column,
+                    )
+                });
+                let anchor_side = match link {
+                    Some(((start_row, start), (end_row, end))) => {
+                        Some(BufferRange::ordered(
+                            buffer_point(screen(start_row, start)?),
+                            buffer_point(screen(end_row, end)?),
+                        ))
+                    }
+                    None => range(
+                        self.terminal
+                            .select_word_between(anchor_point, head_point)?,
+                    ),
+                };
+                let head_side = range(
+                    self.terminal
+                        .select_word_between(head_point, anchor_point)?,
+                );
+                (anchor_side, head_side)
+            }
+            SelectionUnit::Line => {
+                let pressed = anchor == head;
+                let line = |row: usize, point: Point| {
+                    let trimmed = range(self.terminal.select_line(point)?);
+                    // Once the drag leaves the pressed cell, a blank line
+                    // still counts. Its physical row stands in for the
+                    // logical line; blank soft-wrapped lines are rare.
+                    Ok::<_, RuntimeError>(trimmed.or_else(|| {
+                        (!pressed).then(|| {
+                            let start = BufferPoint {
+                                rows_from_live_bottom: last_row - row,
+                                column: 0,
+                            };
+                            BufferRange::ordered(
+                                start,
+                                BufferPoint {
+                                    column: columns.saturating_sub(1),
+                                    ..start
+                                },
+                            )
+                        })
+                    }))
+                };
+                (line(anchor_row, anchor_point)?, line(head_row, head_point)?)
+            }
+        };
+        Ok(anchor_side
+            .zip(head_side)
+            .map(|(anchor, head)| anchor.cover(head)))
     }
 }
 
