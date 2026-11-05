@@ -851,12 +851,48 @@ impl TerminalEngine {
         Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
     }
 
+    /// Starts a trimmed line at column 0 when only blank cells precede it on
+    /// its first row, so a copied line keeps its indentation. Ghostty trims
+    /// it; other terminals keep it. Text before the line, such as the prompt
+    /// shell integration marks off from its input, still bounds it.
+    fn keep_indentation(
+        &self,
+        line: BufferRange,
+        last_row: usize,
+    ) -> BufferRange {
+        let start = line.start;
+        if start.column == 0 {
+            return line;
+        }
+        let Some(row) = last_row.checked_sub(start.rows_from_live_bottom)
+        else {
+            return line;
+        };
+        let Ok(mut reader) = self.link_reader() else {
+            return line;
+        };
+        let mut before = String::new();
+        let blank = (0..start.column).all(|column| {
+            before.clear();
+            reader.push_cell(row, column, &mut before).is_ok()
+                && before.chars().all(char::is_whitespace)
+        });
+        if blank {
+            BufferRange {
+                start: BufferPoint { column: 0, ..start },
+                ..line
+            }
+        } else {
+            line
+        }
+    }
+
     /// The range a multi-click selection from `anchor` to `head` covers,
     /// following Ghostty's own gestures. A word selection joins the word
     /// nearest each end in the direction of the other, and a selection that
     /// starts on a link takes the whole link instead of the anchor's word,
     /// so a URL never splits at its colon. A line selection joins the lines
-    /// under both ends, trimmed of surrounding whitespace; a blank line
+    /// under both ends, keeping their indentation; a blank line
     /// counts as its whole row once the drag leaves it. `None` for a stale
     /// generation, a point outside the buffer, or nothing to select, such
     /// as a press on unwritten cells.
@@ -934,7 +970,8 @@ impl TerminalEngine {
             SelectionUnit::Line => {
                 let pressed = anchor == head;
                 let line = |row: usize, point: Point| {
-                    let trimmed = range(self.terminal.select_line(point)?);
+                    let trimmed = range(self.terminal.select_line(point)?)
+                        .map(|line| self.keep_indentation(line, last_row));
                     // Once the drag leaves the pressed cell, a blank line
                     // still counts. Its physical row stands in for the
                     // logical line; blank soft-wrapped lines are rare.

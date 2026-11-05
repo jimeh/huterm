@@ -141,13 +141,13 @@ fn a_line_spans_soft_wraps_and_a_drag_takes_blank_rows_whole() {
     let engine = engine(b"  first line wraps here  \r\n\r\nlast");
     let line =
         |anchor, head| selected(&engine, anchor, head, SelectionUnit::Line);
-    let wrapped = Some("first line wraps here".to_owned());
+    let wrapped = Some("  first line wraps here".to_owned());
     assert_eq!(line(at(0, 0), at(0, 0)), wrapped);
     assert_eq!(line(at(1, 3), at(1, 3)), wrapped);
     assert_eq!(line(at(2, 5), at(2, 5)), None, "a press on a blank line");
     assert_eq!(
         line(at(0, 0), at(3, 1)).as_deref(),
-        Some("first line wraps here\n\nlast")
+        Some("  first line wraps here\n\nlast")
     );
     let generation = engine.generation();
     let blank = engine
@@ -180,5 +180,28 @@ fn a_stale_generation_or_outside_point_selects_nothing() {
             .select_units(generation, at(0, 1), at(0, 1), SelectionUnit::Word)
             .unwrap(),
         None
+    );
+}
+
+#[test]
+fn a_line_keeps_its_indentation_but_not_text_before_it() {
+    // The third row is a shell-integration prompt followed by its input.
+    let engine = engine(
+        b"    spaced in\r\n\tTabbed in\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls -la",
+    );
+    let line = |row: u16, column: u16| {
+        selected(
+            &engine,
+            at(row, column),
+            at(row, column),
+            SelectionUnit::Line,
+        )
+    };
+    assert_eq!(line(0, 9).as_deref(), Some("    spaced in"));
+    assert_eq!(line(1, 9).as_deref(), Some("        Tabbed in"));
+    assert_eq!(
+        line(2, 4).as_deref(),
+        Some("ls -la"),
+        "the prompt still bounds its input line"
     );
 }
