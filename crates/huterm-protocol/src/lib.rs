@@ -32,7 +32,8 @@ pub use pane_layout::{
     SplitChild, SplitDirection, SplitNode,
 };
 pub use viewer::{
-    InputStamp, TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
+    COMMAND_RECORD_CAPACITY, CommandRecord, CommandState, InputStamp,
+    TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
     TerminalStatus, ViewerCapabilities,
 };
 
@@ -562,6 +563,59 @@ pub enum TerminalInput {
     Mouse(MouseInput),
 }
 
+/// Whether core may inject shell integration at launch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ShellIntegrationMode {
+    /// Load integration for supported interactive shells.
+    #[default]
+    Detect,
+    /// Start the original command without injection.
+    Off,
+}
+
+/// Optional shell integration capabilities.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub enum ShellFeature {
+    /// Append Huterm's executable directory to the shell's search path.
+    Path,
+}
+
+/// A set of optional shell integration capabilities.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ShellFeatures(std::collections::BTreeSet<ShellFeature>);
+
+impl ShellFeatures {
+    /// Whether a feature is enabled.
+    #[must_use]
+    pub fn contains(&self, feature: ShellFeature) -> bool {
+        self.0.contains(&feature)
+    }
+}
+
+impl FromIterator<ShellFeature> for ShellFeatures {
+    fn from_iter<T: IntoIterator<Item = ShellFeature>>(features: T) -> Self {
+        Self(features.into_iter().collect())
+    }
+}
+
+/// Integration requested by the client for a newly started terminal.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ShellIntegration {
+    /// Launch policy.
+    pub mode: ShellIntegrationMode,
+    /// Optional capabilities.
+    pub features: ShellFeatures,
+}
+
+impl ShellIntegration {
+    /// No shell injection, used by command fixtures and explicit opt-out.
+    pub const OFF: Self = Self {
+        mode: ShellIntegrationMode::Off,
+        features: ShellFeatures(std::collections::BTreeSet::new()),
+    };
+}
+
 /// A command used to start a terminal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalCommand {
@@ -573,6 +627,8 @@ pub struct TerminalCommand {
     pub working_directory: PathBuf,
     /// Environment overrides.
     pub environment: Vec<(String, String)>,
+    /// Shell integration requested for this launch.
+    pub shell_integration: ShellIntegration,
     /// Initial character grid.
     pub grid_size: GridSize,
     /// Initial cell pixel size.
@@ -848,6 +904,8 @@ pub struct TerminalSnapshot {
     pub history_size: usize,
     /// Effective cursor color override, when terminal content defines one.
     pub cursor_color: Option<Rgb>,
+    /// Effective OSC 11 default background override, cleared by OSC 111.
+    pub default_background: Option<Rgb>,
 }
 
 impl TerminalSnapshot {
@@ -908,6 +966,7 @@ pub struct TerminalMetadata {
     directory: Option<TerminalDirectory>,
     foreground_process: Option<String>,
     foreground_title: Option<String>,
+    shell_directory: Option<TerminalDirectory>,
 }
 
 impl TerminalMetadata {
@@ -921,7 +980,18 @@ impl TerminalMetadata {
             directory,
             foreground_process,
             foreground_title: None,
+            shell_directory: None,
         }
+    }
+
+    /// Adds the root shell's last local directory report.
+    #[must_use]
+    pub fn with_shell_directory(
+        mut self,
+        directory: Option<TerminalDirectory>,
+    ) -> Self {
+        self.shell_directory = directory;
+        self
     }
 
     /// Adds the title set by the process group that holds the foreground.
@@ -949,6 +1019,14 @@ impl TerminalMetadata {
     #[must_use]
     pub fn foreground_title(&self) -> Option<&str> {
         self.foreground_title.as_deref()
+    }
+
+    /// Returns the root shell's last local OSC 7 report. Reports from other
+    /// process groups, such as a remote shell under `ssh`, never change it,
+    /// so it can stand in when [`Self::directory`] is remote.
+    #[must_use]
+    pub fn shell_directory(&self) -> Option<&TerminalDirectory> {
+        self.shell_directory.as_ref()
     }
 }
 

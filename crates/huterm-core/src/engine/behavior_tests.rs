@@ -783,3 +783,121 @@ fn malformed_utf8_directory_reports_are_nonfatal_and_ignored() {
             .any(|effect| matches!(effect, EngineEffect::Directory(_)))
     );
 }
+
+#[test]
+fn kitty_shell_cwd_preserves_literal_paths_and_host_locality() {
+    use super::{DirectoryUpdate, normalize_directory};
+    for (host, local) in [
+        ("", true),
+        ("localhost", true),
+        ("SERVER.", true),
+        ("remote", false),
+    ] {
+        let report = format!("kitty-shell-cwd://{host}/tmp/literal path#?%20");
+        let DirectoryUpdate::Set(directory) =
+            normalize_directory(&report, Some("server"))
+        else {
+            panic!("{report}");
+        };
+        assert_eq!(directory.path(), "/tmp/literal path#?%20");
+        assert_eq!(directory.is_local(), local);
+    }
+    let mut engine = engine();
+    let sequence = b"\x1b]7;kitty-shell-cwd://localhost/tmp/literal #?%20\x07";
+    for byte in sequence {
+        for effect in engine.process(&[*byte]).unwrap() {
+            if let EngineEffect::Directory(Some(directory)) = effect {
+                assert_eq!(directory.path(), "/tmp/literal #?%20");
+                assert!(directory.is_local());
+                return;
+            }
+        }
+    }
+    panic!("literal OSC 7 did not reach the metadata callback");
+}
+
+#[test]
+fn kitty_shell_cwd_rejects_controls_missing_absolute_paths_and_oversize() {
+    use super::{DirectoryUpdate, normalize_directory};
+    for report in [
+        "kitty-shell-cwd://",
+        "kitty-shell-cwd://host",
+        "kitty-shell-cwd://relative",
+        "kitty-shell-cwd://host/path\n",
+        "kitty-shell-cwd://host/path\u{7f}",
+        "kitty-shell-cwd://host/path\u{80}",
+        "kitty-shell-cwd://ho\u{9f}st/path",
+    ] {
+        assert_eq!(
+            normalize_directory(report, None),
+            DirectoryUpdate::Ignore,
+            "{report:?}"
+        );
+    }
+    assert_eq!(
+        normalize_directory(
+            &format!("kitty-shell-cwd://host/{}", "x".repeat(4096)),
+            None
+        ),
+        DirectoryUpdate::Ignore
+    );
+    let DirectoryUpdate::Set(directory) =
+        normalize_directory("file://localhost/tmp/a%20b", None)
+    else {
+        panic!("file URI changed");
+    };
+    assert_eq!(directory.path(), "/tmp/a b");
+}
+
+#[test]
+fn snapshot_publishes_osc11_default_background_and_clears_on_osc111() {
+    let mut engine = engine();
+    assert_eq!(engine.snapshot().unwrap().default_background, None);
+    engine.process(b"\x1b]11;#123456\x1b\\").unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    let override_color = Rgb {
+        red: 0x12,
+        green: 0x34,
+        blue: 0x56,
+    };
+    assert_eq!(snapshot.default_background, Some(override_color));
+    assert_eq!(
+        snapshot.rows[0].cells[0].background,
+        CellColor::Rgb(override_color)
+    );
+    engine.process(b"\x1b]111\x1b\\").unwrap();
+    let reset = engine.snapshot().unwrap();
+    assert_eq!(reset.default_background, None);
+    assert_eq!(
+        reset.rows[0].cells[0].background,
+        CellColor::DefaultBackground
+    );
+}
+
+#[test]
+fn equal_osc11_reset_restores_symbolic_default_background() {
+    let mut engine = engine();
+    engine.snapshot().unwrap();
+    // The override equals the theme background, so the resolved colors never
+    // change and only the engine's damage rebuilds the retained rows.
+    engine.process(b"\x1b]11;#445566\x1b\\").unwrap();
+    let overridden = engine.snapshot().unwrap();
+    assert_eq!(
+        overridden.default_background,
+        Some(presentation().background)
+    );
+    assert_eq!(
+        overridden.rows[0].cells[0].background,
+        CellColor::Rgb(presentation().background)
+    );
+    engine.process(b"\x1b]111\x1b\\").unwrap();
+    let reset = engine.snapshot().unwrap();
+    assert_eq!(reset.default_background, None);
+    for row in &reset.rows {
+        assert_eq!(
+            row.cells[0].background,
+            CellColor::DefaultBackground,
+            "OSC 111 must restore symbolic default backgrounds even when RGB is unchanged"
+        );
+    }
+}

@@ -159,7 +159,7 @@ jobs:
           cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun
+          install_args: bun aqua:fish-shell/fish-shell aqua:nushell/nushell http:elvish
           version: 2026.10.17
 
       - name: Install Zig
@@ -223,6 +223,8 @@ jobs:
         run: mise run check:scripts
 
       - name: Run Rust tests
+        env:
+          HUTERM_REQUIRE_SHELLS: "1"
         if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run ci:test
 

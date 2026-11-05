@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 pub const SCHEMA: &str = include_str!("../../../schemas/huterm.schema.json");
 
 const PREFIX: &str = "x-huterm-";
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "section",
     "group",
     "label",
@@ -28,6 +28,7 @@ const KEYS: [&str; 12] = [
     "advanced",
     "visible-when",
     "zero-label",
+    "inherits",
 ];
 
 /// A sidebar section, in sidebar order.
@@ -237,6 +238,10 @@ pub struct Setting {
     /// The setting shows while any of these holds, and always when there
     /// are none.
     pub visible_when: Vec<VisibleWhen>,
+    /// The setting whose value an unset one shows and uses, from
+    /// `x-huterm-inherits`, such as `window.opacity` for a Quake profile's
+    /// `opacity`.
+    pub inherits: Option<String>,
     pub deprecated: bool,
 }
 
@@ -317,6 +322,7 @@ impl SettingsModel {
             check(&profile)?;
             profile.sort_by_key(|setting| setting.order);
         }
+        check_inherits(settings.iter().chain(&profile), &settings)?;
         let mut sections: Vec<Section> = SectionId::ALL
             .into_iter()
             .map(|id| Section {
@@ -512,6 +518,7 @@ fn setting(
     if zero_label.is_some() && control != Some(Control::Slider) {
         return Err(error(path, "x-huterm-zero-label needs a slider"));
     }
+    let inherits = text("inherits")?;
     Ok(Setting {
         path: path.into(),
         section,
@@ -531,6 +538,7 @@ fn setting(
         platform,
         advanced,
         visible_when,
+        inherits,
         deprecated: field("deprecated") == Some(&Value::Bool(true)),
     })
 }
@@ -672,7 +680,7 @@ fn kind(
             .or_else(|| target.get(key))
             .and_then(Value::as_i64)
     };
-    Ok(match target.get("type").and_then(Value::as_str) {
+    Ok(match value_type(target) {
         Some("boolean") => SettingKind::Bool,
         Some("integer") => SettingKind::Integer {
             min: integer("minimum"),
@@ -695,6 +703,24 @@ fn kind(
         },
         _ => SettingKind::Compound,
     })
+}
+
+/// The schema `type` of a value: a single type, or a list of one type and
+/// `"null"`, as an optional field may declare, which reads as that type.
+fn value_type(target: &Value) -> Option<&str> {
+    match target.get("type")? {
+        Value::String(kind) => Some(kind),
+        Value::Array(kinds) => match kinds.as_slice() {
+            [Value::String(kind), Value::String(null)]
+            | [Value::String(null), Value::String(kind)]
+                if null == "null" && kind != "null" =>
+            {
+                Some(kind)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The largest value an unsigned integer `format` stores.
@@ -814,6 +840,51 @@ fn check(settings: &[Setting]) -> Result<(), ModelError> {
                 format!(
                     "x-huterm-visible-when compares {} with a value it cannot hold",
                     condition.setting
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Checks that each `x-huterm-inherits` names another setting among
+/// `targets` of the same kind, so the inherited value fits the control,
+/// and that the target inherits nothing itself. One level is all a profile
+/// key needs, and it rules out a cycle that would never resolve.
+fn check_inherits<'a>(
+    settings: impl Iterator<Item = &'a Setting>,
+    targets: &[Setting],
+) -> Result<(), ModelError> {
+    for setting in settings {
+        let Some(inherits) = &setting.inherits else {
+            continue;
+        };
+        let target = targets
+            .iter()
+            .find(|target| {
+                &target.path == inherits && target.path != setting.path
+            })
+            .ok_or_else(|| {
+                error(
+                    &setting.path,
+                    format!(
+                        "x-huterm-inherits names unknown setting {inherits}"
+                    ),
+                )
+            })?;
+        if target.kind != setting.kind {
+            return Err(error(
+                &setting.path,
+                format!(
+                    "x-huterm-inherits names {inherits}, which holds another kind of value"
+                ),
+            ));
+        }
+        if target.inherits.is_some() {
+            return Err(error(
+                &setting.path,
+                format!(
+                    "x-huterm-inherits names {inherits}, which inherits another setting"
                 ),
             ));
         }
@@ -976,7 +1047,16 @@ mod tests {
                 assert_eq!(seen, None, "{} is listed twice", setting.path);
                 let expected = match setting.path.split_once('.') {
                     // Padding draws with the terminal's appearance.
-                    Some(("window", key)) if key.starts_with("padding_") => {
+                    Some(("window", key))
+                        if key.starts_with("padding_")
+                            || matches!(
+                                key,
+                                "opacity"
+                                    | "background_opacity"
+                                    | "foreground_opacity"
+                                    | "blur"
+                            ) =>
+                    {
                         SectionId::Appearance
                     }
                     Some(("window", _)) => SectionId::Windows,
@@ -1038,6 +1118,7 @@ mod tests {
                 "Mouse",
                 "Clipboard",
                 "Bell",
+                "Shell integration",
                 "Compatibility"
             ]
         );
@@ -1065,7 +1146,18 @@ mod tests {
             .map(|setting| setting.path.as_str())
             .collect();
         paths.sort_unstable();
-        let mut fields: Vec<_> = defaults.keys().map(String::as_str).collect();
+        // The optional transparency keys write nothing while unset.
+        let optional = [
+            "background_opacity",
+            "blur",
+            "foreground_opacity",
+            "opacity",
+        ];
+        let mut fields: Vec<_> = defaults
+            .keys()
+            .map(String::as_str)
+            .chain(optional)
+            .collect();
         fields.sort_unstable();
         assert_eq!(paths, fields);
         for setting in model.profile_settings() {
@@ -1076,7 +1168,27 @@ mod tests {
                 setting.path
             );
             assert_eq!(setting.section, SectionId::Quake);
-            assert_eq!(setting.apply, Apply::LaterEvents);
+            let transparency = optional.contains(&setting.path.as_str());
+            assert_eq!(
+                setting.apply,
+                if transparency {
+                    Apply::Live
+                } else {
+                    Apply::LaterEvents
+                },
+                "{}",
+                setting.path
+            );
+            assert_eq!(
+                setting.group,
+                if transparency {
+                    "Transparency"
+                } else {
+                    "Profile"
+                },
+                "{}",
+                setting.path
+            );
         }
         let width = &model.profile_settings()[2];
         assert_eq!(width.path, "width");
@@ -1142,6 +1254,7 @@ mod tests {
             general: crate::GeneralConfig::default(),
             settings: crate::SettingsConfig::default(),
             terminal: crate::RawTerminal::default(),
+            shell_integration: crate::ShellIntegrationConfig::default(),
             font: crate::RawFont::default(),
             window: crate::WindowConfig::default(),
             tabs: crate::TabsConfig::default(),
@@ -1586,5 +1699,160 @@ mod tests {
                 Err(error(path, message)),
             );
         }
+    }
+    #[test]
+    fn transparency_rows_are_live_percent_sliders_between_theme_and_padding() {
+        let model = SettingsModel::load().unwrap();
+        for (key, label, order) in [
+            ("opacity", "Opacity", 36),
+            ("background_opacity", "Background opacity", 37),
+            ("foreground_opacity", "Text opacity", 38),
+        ] {
+            let setting = model
+                .settings()
+                .find(|setting| setting.path == format!("window.{key}"))
+                .unwrap();
+            assert_eq!(setting.label, label);
+            assert_eq!(setting.group, "Transparency");
+            assert_eq!(setting.section, SectionId::Appearance);
+            assert_eq!(setting.order, order);
+            assert_eq!(setting.control, Some(Control::Slider));
+            assert_eq!(setting.step, Some(0.05));
+            assert_eq!(setting.unit, None);
+            assert_eq!(setting.apply, Apply::Live);
+        }
+        let blur = model.setting("window.blur").unwrap();
+        assert_eq!(blur.label, "Blur");
+        assert_eq!(blur.platform, Some(Platform::Macos));
+        assert_eq!(blur.order, 39);
+        assert_eq!(blur.control, Some(Control::Slider));
+        assert_eq!(blur.step, Some(1.0));
+        assert_eq!(blur.unit.as_deref(), Some("pt"));
+        assert_eq!(blur.zero_label.as_deref(), Some("Off"));
+        assert!(matches!(
+            blur.kind,
+            SettingKind::Integer {
+                min: Some(0),
+                max: Some(64),
+                ..
+            }
+        ));
+        // Each profile key inherits its window setting, with the same
+        // control.
+        for key in [
+            "opacity",
+            "background_opacity",
+            "foreground_opacity",
+            "blur",
+        ] {
+            let profile = model
+                .profile_settings()
+                .iter()
+                .find(|setting| setting.path == key)
+                .unwrap();
+            let window = model.setting(&format!("window.{key}")).unwrap();
+            assert_eq!(profile.inherits.as_deref(), Some(window.path.as_str()));
+            assert_eq!(
+                (
+                    &profile.kind,
+                    &profile.label,
+                    profile.control,
+                    profile.step,
+                    &profile.unit,
+                    profile.platform,
+                    profile.default.as_ref()
+                ),
+                (
+                    &window.kind,
+                    &window.label,
+                    window.control,
+                    window.step,
+                    &window.unit,
+                    window.platform,
+                    None
+                ),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn inherits_names_a_setting_of_the_same_kind_and_null_types_read_as_one() {
+        let number = |extra: &Value| {
+            let mut setting = setting(&json!({
+                "type": "number", "minimum": 0, "maximum": 1
+            }));
+            for (key, value) in extra.as_object().unwrap() {
+                setting[key] = value.clone();
+            }
+            setting
+        };
+        let model = SettingsModel::from_schema(&schema(&json!({
+            "a": number(&json!({})),
+            "b": number(&json!({
+                "type": ["number", "null"],
+                "x-huterm-order": 20,
+                "x-huterm-inherits": "a"
+            })),
+        })))
+        .unwrap();
+        let inheriting = model.setting("b").unwrap();
+        assert_eq!(inheriting.inherits.as_deref(), Some("a"));
+        assert_eq!(inheriting.kind, model.setting("a").unwrap().kind);
+        for (properties, message) in [
+            (
+                json!({"b": number(&json!({"x-huterm-inherits": "missing"}))}),
+                "x-huterm-inherits names unknown setting missing",
+            ),
+            (
+                json!({"b": number(&json!({"x-huterm-inherits": "b"}))}),
+                "x-huterm-inherits names unknown setting b",
+            ),
+            (
+                json!({
+                    "a": setting(&json!({})),
+                    "b": number(&json!({
+                        "x-huterm-order": 20, "x-huterm-inherits": "a"
+                    })),
+                }),
+                "x-huterm-inherits names a, which holds another kind of value",
+            ),
+            // One level only: a chain, and so any cycle, is refused.
+            (
+                json!({
+                    "a": number(&json!({})),
+                    "c": number(&json!({
+                        "x-huterm-order": 20, "x-huterm-inherits": "a"
+                    })),
+                    "b": number(&json!({
+                        "x-huterm-order": 30, "x-huterm-inherits": "c"
+                    })),
+                }),
+                "x-huterm-inherits names c, which inherits another setting",
+            ),
+        ] {
+            assert_eq!(
+                SettingsModel::from_schema(&schema(&properties)),
+                Err(error("b", message)),
+            );
+        }
+        let cycle = SettingsModel::from_schema(&schema(&json!({
+            "a": number(&json!({"x-huterm-inherits": "b"})),
+            "b": number(&json!({
+                "x-huterm-order": 20, "x-huterm-inherits": "a"
+            })),
+        })));
+        assert!(
+            cycle.as_ref().is_err_and(|error| error
+                .to_string()
+                .contains("which inherits another setting")),
+            "{cycle:?}"
+        );
+        // Two types besides null are no single kind.
+        let mixed = SettingsModel::from_schema(&schema(&json!({
+            "a": number(&json!({"type": ["number", "string", "null"]})),
+        })))
+        .unwrap();
+        assert_eq!(mixed.setting("a").unwrap().kind, SettingKind::Compound);
     }
 }

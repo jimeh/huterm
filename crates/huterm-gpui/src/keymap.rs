@@ -832,8 +832,8 @@ fn default(key: &str, command: CommandId, description: &str) -> BindingEntry {
     default_with(key, command, &[], description)
 }
 
-/// A Settings binding that matches only while a slider, whose context sets
-/// `control = slider`, has focus.
+/// A Settings or panel binding that matches only while a slider, whose
+/// context sets `control = slider`, has focus.
 fn on_slider(key: &str, command: CommandId, description: &str) -> BindingEntry {
     BindingEntry {
         when: Some("control == slider".to_owned()),
@@ -847,8 +847,9 @@ fn on_slider(key: &str, command: CommandId, description: &str) -> BindingEntry {
 /// dialog.
 pub(crate) const DIALOG_BUTTON_CONTEXT: &str = "confirming control=button";
 
-/// A dialog binding that matches only while a dialog button, whose context
-/// is [`DIALOG_BUTTON_CONTEXT`], has focus.
+/// A dialog or panel binding that matches only while a button, whose
+/// context is [`DIALOG_BUTTON_CONTEXT`] or [`PANEL_BUTTON_CONTEXT`], has
+/// focus.
 fn on_button(key: &str, command: CommandId, description: &str) -> BindingEntry {
     BindingEntry {
         when: Some("control == button".to_owned()),
@@ -1090,6 +1091,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     }));
     entries.extend(dialog_defaults());
     entries.extend(menu_defaults());
+    entries.extend(panel_defaults(platform));
     entries.extend(notice_defaults());
     entries.extend(settings_defaults(platform));
     entries.extend(text_field_defaults(platform));
@@ -1128,6 +1130,40 @@ fn menu_defaults() -> Vec<BindingEntry> {
         default("escape", ids::MENU_CLOSE, "Close"),
         default("tab", ids::MENU_CLOSE, "Close"),
         default("shift-tab", ids::MENU_CLOSE, "Close"),
+    ]
+}
+
+/// The key context of a panel's control: the panel's own `Panel`, with
+/// `control = slider` or `control = button` on the same node, so the
+/// bindings that name a control match it alone.
+pub(crate) const PANEL_SLIDER_CONTEXT: &str = "Panel control=slider";
+pub(crate) const PANEL_BUTTON_CONTEXT: &str = "Panel control=button";
+
+/// Panel bindings, such as the Window Transparency panel's. Their commands
+/// carry the `Panel` context, so they match only while a panel has focus
+/// and reserve nothing from terminals. Page Up, Page Down, Home, End, and
+/// Reset match only on a slider, and Enter and Space only on a button. The
+/// same keys work on both platforms except Reset's modifier.
+fn panel_defaults(platform: Platform) -> Vec<BindingEntry> {
+    let reset = match platform {
+        Platform::MacOs => "cmd-backspace",
+        Platform::Linux => "ctrl-backspace",
+    };
+    vec![
+        default("escape", ids::PANEL_CLOSE, "Close"),
+        default("tab", ids::PANEL_FOCUS_NEXT, "Next Control"),
+        default("shift-tab", ids::PANEL_FOCUS_PREVIOUS, "Previous Control"),
+        default("up", ids::PANEL_INCREASE, "Increase"),
+        default("right", ids::PANEL_INCREASE, "Increase"),
+        default("down", ids::PANEL_DECREASE, "Decrease"),
+        default("left", ids::PANEL_DECREASE, "Decrease"),
+        on_slider("pageup", ids::PANEL_PAGE_UP, "Page Up"),
+        on_slider("pagedown", ids::PANEL_PAGE_DOWN, "Page Down"),
+        on_slider("home", ids::PANEL_FIRST, "Minimum"),
+        on_slider("end", ids::PANEL_LAST, "Maximum"),
+        on_slider(reset, ids::PANEL_RESET, "Reset"),
+        on_button("enter", ids::PANEL_PRESS, "Press Button"),
+        on_button("space", ids::PANEL_PRESS, "Press Button"),
     ]
 }
 

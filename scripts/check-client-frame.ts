@@ -461,6 +461,19 @@ done
 
   try {
     await state("w0.tabs=1", "w0.terminal_focused=true", "READY");
+    const originalConfig = await readFile(config, "utf8");
+    await writeFile(config, originalConfig + "\n[window]\nopacity = 0.7\nbackground_opacity = 0.6\nforeground_opacity = 0.8\n");
+    await command("invoke-reload");
+    await waitFor(async () => {
+      const text = await current();
+      const alpha = Number(field(text, "native_alpha"));
+      return Math.abs(alpha - (composited ? 0.7 : 1)) < 0.0001
+        && field(text, "background_appearance") === `Some(${composited ? "Transparent" : "Opaque"})`;
+    }, `${label} transparency native readback`);
+    await writeFile(config, originalConfig);
+    await command("invoke-reload");
+    await state("w0.native_alpha=1", `w0.background_appearance=Some(${composited ? "Transparent" : "Opaque"})`);
+
     windowId = await discoverX11Window(app, wm);
     run(["xdotool", "windowfocus", "--sync", windowId]);
     const scale = Number(field(await current(), "scale"));

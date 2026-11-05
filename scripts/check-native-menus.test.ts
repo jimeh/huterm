@@ -6,6 +6,7 @@ const markers = [
   "default-undo-shortcuts",
   "default-balance-shortcut",
   "default-edit-shortcuts",
+  "view-window-transparency",
   "startup-update-command",
   "startup-user-shortcut",
   "untouched-default-shortcut",

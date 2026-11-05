@@ -79,8 +79,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   40495981661, job 122161417130), and again on x86_64 the same day (PR
   #279, run 40576556557, job 122444431856), and 2026-10-28 on x86_64 (PR
   #311 at `465f1dbc`, run 40693317698, job 122833434701), and again
-  that day (PR #320 at `667367e6`, run 40783118712, job 123149517765).
-  Every other Linux smoke in those jobs passed, and reruns passed.
+  that day (PR #320 at `667367e6`, run 40783118712, job 123149517765),
+  and 2026-11-04 on aarch64 (PR #388 at `f52c8334`, run 41788505093, job
+  126436114743). Every other Linux smoke in those jobs passed, and reruns
+  passed.
 - **Evidence:** the smoke prints its first `RENDERER_SMOKE prepared` line
   during the first prepare, and Rust line-buffers stdout even into a pipe,
   so an empty stdout means the process hung before its first prepare. It
@@ -126,10 +128,46 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   other 23 threads were sleeping. Mesa's llvmpipe compiles shaders on the
   calling thread, so this fits a first draw still compiling at the
   deadline, not a deadlock.
+- **Fifth thread dump:** the PR #388 run matched the first and third:
+  stdout stopped after `application started`, stderr was empty, and the
+  supervisor's SIGTERM came at 15.02 seconds. At the 15.01-second `threads`
+  event the main `renderer_smoke` thread (its thread ID equal to the process
+  ID) was in state `D` in `folio_wait_bit_common` with syscall `-1`. The
+  rerun passed. This is the first occurrence on aarch64 since 2026-10-26.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
   then rerun once.
+
+## Linux input smoke tear-off cue timeout
+
+- **Label:** `Smoke Linux input` in `Rust smoke (Linux aarch64)`, at
+  `scripts/check-cross-window-input.ts`: "timed out: tear-off cue" while
+  waiting for `w0.drop=tear_off`.
+- **Occurrences:** two consecutive aarch64 runs on 2026-11-04: `main` at
+  `07678e49` (run 41795373417, job 126458105787) and PR #398 at `8799e94f`
+  (run 41884931970, job 126766733997). Linux x86_64 passed in both runs, and
+  the aarch64 job passed on `7d0abfa0` and `4ebf8dd0`.
+- **Evidence:** both last states are identical: `windows=2`, `w0.tabs=2`,
+  `w0.busy=false`, `w0.drop=none`, `w0.window_drag=false`. The tab-slot,
+  pane-edge, and Escape steps before it passed, and the whole cross-window
+  sequence took under two seconds. The step pressed on tab 1 as soon as the
+  model reported the new tab. `tabs_rects` comes from the model, and a tab's
+  press listener exists only from the frame that draws it. With titles fitted
+  to 125 points, a press at tab 1's centre on the old one-tab frame lands past
+  the only label and the add button, which starts no reorder, so no drag record
+  exists and `drop` stays `none`. `drop=none` alone would also fit a drag
+  whose locator sample came back `Blocked`, but `window_drag` reports any
+  pending reorder from its press on, and the button was still held at the
+  timeout, so `window_drag=false` means no reorder existed. This cause is
+  inferred from the state; no run captured the frame.
+- **Fix:** the smoke publishes `drawn_tab_ids`, the tabs the last frame drew,
+  and waits for them to match `tab_ids` before each tab press.
+- **Triage:** a recurrence with `drawn_tab_ids` equal to `tab_ids` rules this
+  cause out; record the last state here. A timeout at "window N active and
+  drawn" or "tear-off source ready" with stale `drawn_tab_ids` means frames
+  stopped; compare it with the Linux renderer smoke startup hang above. Remove
+  this entry after about 20 clean aarch64 runs with the fix.
 
 ## `smoke:linux-integration` held-link hover timeout
 
@@ -232,7 +270,14 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   drag work, which changes no `huterm-core` code, one local `mise run
   verify` failed `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
   ("terminal child did not report exit"); the rerun passed at a load
-  average near 22.
+  average near 22. On 2026-11-04, during the per-window transparency work
+  (#399), which changes no `huterm-core` code, two consecutive local `mise
+  run test` runs failed
+  `foreground_exit_and_unavailable_runtime_are_assessed_conservatively`
+  at a load average near 6, and a `mux::` filtered run then failed the
+  orphan test. It passed in 3 isolated reruns, the whole `huterm-core`
+  suite passed with `--test-threads=4`, and a third full workspace run
+  passed it.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.
@@ -452,7 +497,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   PR #383 (run 41731482596, job 126249669677, head `9d5e1247`), which
   bundles a terminal font and does not touch the palette or its smoke, again
   with extra tab 16 below `fixture-session` 19, active at
-  `w0.active_index=2`; the next head passed.
+  `w0.active_index=2`; the next head passed. It recurred on 2026-11-04 on
+  docs-only PR #397 (run 41792849682, job 126450000000, head `8d7b1431`),
+  again with extra tab 16 below `fixture-session` 19, active at
+  `w0.active_index=2`.
 - **Evidence:** the count includes every core workspace's tabs: two in the
   main window and one in the quake window from step 2. The failure state
   shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux

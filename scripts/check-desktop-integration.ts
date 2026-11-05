@@ -381,10 +381,13 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       starts = await startedDirectories();
       return current.tabs === "2" && starts.length === 2;
     }, "remote-directory fallback tab");
+    // The terminal's root reported the local directory first, so a new tab
+    // falls back to that shell directory rather than the remote one.
     assert(
-      starts.filter((cwd) => cwd === defaultDirectory).length === 2 &&
+      starts.filter((cwd) => cwd === defaultDirectory).length === 1 &&
+        starts.includes(inheritedDirectoryCanonical) &&
         !starts.includes("/tmp/remote-leaf"),
-      `remote directory affected spawn cwd: ${JSON.stringify(starts)}`,
+      `remote directory fallback spawn cwd: ${JSON.stringify(starts)}`,
     );
 
     // The original recorder is the only one watching the current output
@@ -423,8 +426,9 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       starts = await startedDirectories();
       return current.tabs === "2" && starts.length === 3;
     }, "inherited-directory tab");
+    // The remote fallback tab already started there, so count both starts.
     assert(
-      starts.includes(inheritedDirectoryCanonical),
+      starts.filter((cwd) => cwd === inheritedDirectoryCanonical).length === 2,
       `new tab did not inherit local cwd: ${JSON.stringify(starts)}`,
     );
     if (macos) await commandFile("native\t2\t262144\t\u0004\t\u0004");

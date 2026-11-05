@@ -520,6 +520,40 @@ command = "select_tab"
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
 
+    // Native readback and surface appearance in both reload directions, in
+    // blur mode and without blur. Blur mode keeps native alpha at 1 and
+    // fades the root element instead; Linux never blurs.
+    const transparency = (blur: number) =>
+      configDocument + `\n[window]\nopacity = 0.7\nbackground_opacity = 0.6\nforeground_opacity = 0.8\nblur = ${blur}\n`;
+    for (const blur of [20, 0]) {
+      await writeFile(config, transparency(blur));
+      await command("invoke-reload");
+      await waitFor(async () => {
+        const text = await state();
+        const alpha = Number(text.match(/w0\.native_alpha=([0-9.]+)/)?.[1]);
+        const root = Number(text.match(/w0\.root_opacity=([0-9.]+)/)?.[1]);
+        const darwin = process.platform === "darwin";
+        const blurring = darwin && blur > 0;
+        const expectedAlpha = !darwin ? 1 : blurring ? 1 : 0.7;
+        const expectedRoot = blurring ? 0.7 : 1;
+        const expectedAppearance = darwin ? "Transparent" : "Opaque";
+        // The radius the window server accepted: 20, then 0 once the window
+        // has blurred. Linux never writes one.
+        const expectedRadius = darwin ? String(blur) : "unknown";
+        return Math.abs(alpha - expectedAlpha) < 0.0001
+          && Math.abs(root - expectedRoot) < 0.0001
+          && text.includes(`w0.blur_radius=${expectedRadius} `)
+          && text.includes(`w0.background_appearance=Some(${expectedAppearance})`);
+      }, `transparency reload native alpha, root opacity, and appearance with blur ${blur}`);
+    }
+    await writeFile(config, configDocument);
+    await command("invoke-reload");
+    await state(
+      "w0.native_alpha=1",
+      "w0.root_opacity=1",
+      "w0.background_appearance=Some(Opaque)",
+    );
+
     // Production reload preserves the active legacy warning after a rejected
     // file and clears it only after a subsequent valid engine-free reload.
     await writeFile(
@@ -588,6 +622,20 @@ command = "select_tab"
     await state("w0.palette=false", "w0.terminal_focused=true");
     await typeText("e");
     await terminalBytes("e");
+
+    // The palette lists Window Transparency…, which opens the panel on its
+    // first enabled control; Escape closes it and returns focus.
+    await shortcut("palette");
+    await typeText("window transp");
+    await state("selected=window_transparency");
+    await key("enter");
+    await waitFor(async () => {
+      const text = await state("w0.palette=false");
+      const panel = text.match(/w0\.transparency_panel=(\S+)/)?.[1];
+      return panel !== undefined && panel !== "closed" && panel !== "unfocused";
+    }, "the transparency panel to open with focus");
+    await key("escape");
+    await state("w0.transparency_panel=closed", "w0.terminal_focused=true");
 
     // 2. Enter accepts the default optional quake profile; Tab exposes both.
     await shortcut("palette");

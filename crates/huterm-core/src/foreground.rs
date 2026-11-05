@@ -166,8 +166,14 @@ pub(crate) fn probe(group: Option<i32>, root: Option<u32>) -> Probe {
 /// shell's reports apply at its prompt, a running job's apply while it runs,
 /// and a remote shell's reports under `ssh` stop applying once `ssh` exits.
 /// Without a current OSC 7 report, the probed process directory applies.
+///
+/// Separately, the root shell's own last local report is kept as the shell
+/// directory, which reports from any other group never change.
 #[derive(Debug, Default)]
 pub(crate) struct Reports {
+    /// The root shell's process group: its PID, as a session leader.
+    shell: Option<i32>,
+    shell_directory: Option<TerminalDirectory>,
     foreground: Option<i32>,
     process_directory: Option<TerminalDirectory>,
     directory: Option<(Option<i32>, TerminalDirectory)>,
@@ -179,14 +185,38 @@ pub(crate) struct Reports {
 }
 
 impl Reports {
-    /// Records an OSC 7 report, or its clearing, from `foreground`.
+    /// Reports for a terminal whose root shell leads process group `shell`.
+    pub(crate) fn for_shell(shell: Option<i32>) -> Self {
+        Self {
+            shell,
+            ..Self::default()
+        }
+    }
+
+    /// Records an OSC 7 report, or its clearing, from `foreground`. A local
+    /// report or a clearing from the root shell's group also becomes the
+    /// shell directory.
     pub(crate) fn report_directory(
         &mut self,
         directory: Option<TerminalDirectory>,
         foreground: Option<i32>,
     ) {
+        if foreground.is_some() && foreground == self.shell {
+            match &directory {
+                None => self.shell_directory = None,
+                Some(local) if local.is_local() => {
+                    self.shell_directory = Some(local.clone());
+                }
+                Some(_) => {}
+            }
+        }
         self.foreground = foreground;
         self.directory = directory.map(|directory| (foreground, directory));
+    }
+
+    /// The root shell's last local directory report.
+    pub(crate) fn shell_directory(&self) -> Option<TerminalDirectory> {
+        self.shell_directory.clone()
     }
 
     /// Records an OSC 0/2 title read with `foreground` at `now`. An empty

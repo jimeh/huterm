@@ -108,9 +108,34 @@ pub(super) struct TabColors {
     /// Overlay on a control held down, three times a tab's hover.
     pub(super) control_pressed: Hsla,
     pub(super) scrollbar: ScrollbarColors,
+    /// The window is translucent, so a tint blends into the fill beneath
+    /// it: a second layer would stack under the root's opacity or a
+    /// translucent background.
+    pub(super) translucent: bool,
 }
 
 impl TabColors {
+    pub(super) fn for_floating(mut self, floating: bool) -> Self {
+        if floating {
+            self.bar.a = 1.0;
+            self.active.a = 1.0;
+            self.terminal.a = 1.0;
+        }
+        self
+    }
+
+    pub(super) fn background_opacity(mut self, alpha: f32) -> Self {
+        self.bar = self.bar.opacity(alpha);
+        self.active = self.active.opacity(alpha);
+        self.terminal = self.terminal.opacity(alpha);
+        self
+    }
+
+    pub(super) fn translucent(mut self, translucent: bool) -> Self {
+        self.translucent = translucent;
+        self
+    }
+
     pub(super) fn new(theme: &Theme) -> Self {
         let ui = theme.ui();
         let hover = ui.tab_hover_background;
@@ -137,6 +162,7 @@ impl TabColors {
             control_hover: rgba_color(control_hover),
             control_pressed: rgba_color(control_pressed),
             scrollbar: scrollbar_colors(theme),
+            translucent: false,
         }
     }
 
@@ -623,9 +649,24 @@ impl WorkspaceView {
             .pl(px(8.0))
             .pr(PANE_TITLE_PADDING_RIGHT)
             .overflow_hidden()
-            .bg(if focused { colors.active } else { colors.bar })
-            // Absolute, so it tints the background without taking a slot.
-            .children(tint.map(|tint| div().absolute().inset_0().bg(tint)))
+            .bg({
+                let background =
+                    if focused { colors.active } else { colors.bar };
+                match tint {
+                    Some(tint) if colors.translucent => gpui::Hsla {
+                        a: 1.0,
+                        ..background
+                    }
+                    .blend(tint)
+                    .opacity(background.a),
+                    _ => background,
+                }
+            })
+            // Opaque windows retain the existing overlay path.
+            .children(
+                tint.filter(|_| !colors.translucent)
+                    .map(|tint| div().absolute().inset_0().bg(tint)),
+            )
             .when(bottom, gpui::Styled::border_t_1)
             .when(!bottom, gpui::Styled::border_b_1)
             .border_color(colors.border)

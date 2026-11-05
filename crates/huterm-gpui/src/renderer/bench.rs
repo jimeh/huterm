@@ -57,7 +57,58 @@ const SCENARIOS: [&str; 7] = [
     "selection",
 ];
 
+#[derive(Clone, Copy)]
+struct PaintOptions {
+    background: f32,
+    foreground: f32,
+    appearance: gpui::WindowBackgroundAppearance,
+}
+impl PaintOptions {
+    fn from_env() -> anyhow::Result<Self> {
+        fn alpha(name: &str) -> anyhow::Result<f32> {
+            let value = std::env::var(name).unwrap_or_else(|_| "1".to_owned());
+            value
+                .parse::<f32>()
+                .ok()
+                .filter(|value| (0.0..=1.0).contains(value))
+                .with_context(|| format!("{name} must be between 0 and 1"))
+        }
+        let background = alpha("HUTERM_BENCH_BACKGROUND_OPACITY")?;
+        let foreground = alpha("HUTERM_BENCH_FOREGROUND_OPACITY")?;
+        let appearance = match std::env::var("HUTERM_BENCH_APPEARANCE")
+            .as_deref()
+        {
+            Ok("opaque") => gpui::WindowBackgroundAppearance::Opaque,
+            Ok("transparent") => gpui::WindowBackgroundAppearance::Transparent,
+            Ok("blurred") => gpui::WindowBackgroundAppearance::Blurred,
+            Err(_) => {
+                crate::transparency::resolve(
+                    crate::transparency::Values {
+                        opacity: 1.0,
+                        background,
+                        foreground,
+                        blur: 0,
+                    },
+                    crate::transparency::Support::Available,
+                    crate::keymap::Platform::current(),
+                    false,
+                )
+                .appearance
+            }
+            _ => bail!(
+                "HUTERM_BENCH_APPEARANCE must be opaque, transparent or blurred"
+            ),
+        };
+        Ok(Self {
+            background,
+            foreground,
+            appearance,
+        })
+    }
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
+    let paint_options = PaintOptions::from_env()?;
     let name = std::env::var("HUTERM_RENDERER_BENCH_SCENARIO")
         .context("set HUTERM_RENDERER_BENCH_SCENARIO")?;
     let iterations = match std::env::var("HUTERM_RENDERER_BENCH_ITERATIONS") {
@@ -94,6 +145,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
         cx.open_window(
             WindowOptions {
                 display_id,
+                window_background: paint_options.appearance,
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                     point(px(20.0), px(40.0)),
                     grid,
@@ -105,7 +157,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     crate::benchmark_display::verify(window, cx, display);
                 }
                 window.set_window_title("Huterm renderer benchmark");
-                let fixture = Fixture::new(scenario, window, cx);
+                let fixture = Fixture::new(scenario, paint_options, window, cx);
                 cx.new(|_| fixture)
             },
         )
@@ -287,6 +339,7 @@ fn snapshot(
         viewport: Viewport::default(),
         history_size,
         cursor_color: None,
+        default_background: None,
     })
 }
 
@@ -440,6 +493,7 @@ fn family() -> &'static str {
 
 struct State {
     renderer: TerminalRenderer,
+    paint_options: PaintOptions,
     scenario: Scenario,
     started: Instant,
     next_step: usize,
@@ -456,7 +510,12 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(scenario: Scenario, window: &Window, cx: &App) -> Self {
+    fn new(
+        scenario: Scenario,
+        paint_options: PaintOptions,
+        window: &Window,
+        cx: &App,
+    ) -> Self {
         let family = family();
         let metrics = GridMetrics::resolve(
             cx.text_system(),
@@ -471,9 +530,16 @@ impl Fixture {
             metrics,
         );
         renderer.set_selection(scenario.selection);
+        renderer.set_opacity(
+            paint_options.background,
+            paint_options.foreground,
+            paint_options.background < 1.0,
+            crate::transparency::Tint::default(),
+        );
         Self {
             state: Rc::new(RefCell::new(State {
                 renderer,
+                paint_options,
                 scenario,
                 started: Instant::now(),
                 next_step: 0,
@@ -520,7 +586,7 @@ impl Render for Fixture {
         let paint = Rc::clone(&self.state);
         div()
             .size_full()
-            .bg(super::rgb_color(Theme::default().background))
+            .bg(self.state.borrow().renderer.background(None))
             .child(
                 canvas(
                     move |_, window, _| {
@@ -552,7 +618,7 @@ impl Render for Fixture {
                         }
                         report_paint(&state);
                         println!(
-                            "RENDERER_BENCH scenario={} phase=window elapsed_ms={} grid={COLUMNS}x{ROWS} grid_px={}x{} viewport_px={}x{} scale={} fits={fits}",
+                            "RENDERER_BENCH scenario={} phase=window elapsed_ms={} grid={COLUMNS}x{ROWS} grid_px={}x{} viewport_px={}x{} scale={} fits={fits} background_alpha={} foreground_alpha={} appearance={:?}",
                             state.scenario.name,
                             state.started.elapsed().as_millis(),
                             f32::from(grid.width),
@@ -560,6 +626,9 @@ impl Render for Fixture {
                             f32::from(viewport.width),
                             f32::from(viewport.height),
                             window.scale_factor(),
+                            state.paint_options.background,
+                            state.paint_options.foreground,
+                            state.paint_options.appearance,
                         );
                         cx.defer(|cx| {
                             cx.spawn(async move |cx| {

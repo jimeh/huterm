@@ -169,6 +169,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `Workspace` | Always, on the window's root. |
 | `confirming` | A close confirmation, the About panel, or a Settings dialog such as Delete profile's is open. |
 | `menu` | The window menu has keyboard focus. |
+| `Panel` | A control in the Window Transparency panel has focus. |
 | `notices` | A notice has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
@@ -178,7 +179,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `Settings` | The Settings window has focus. |
 | `SettingsControl` | A Settings switch, select, segmented control, slider, modifier chip, theme card, button, or section has focus. |
 | `SettingsGroup` | A Settings section, theme card, or modifier chip has focus. It sits inside that item's `SettingsControl`, so a binding under it matches deeper and wins over a `SettingsControl` binding on the same key. |
-| `control` | `slider` while a Settings slider has focus, so `SettingsControl && control == slider` matches sliders alone. `button` while a dialog button has focus, on the same element as its `confirming`, so `confirming && control == button` matches the button and never a text field in the dialog. |
+| `control` | `slider` while a Settings or panel slider has focus, so `SettingsControl && control == slider` matches Settings sliders alone. `button` while a dialog or panel button has focus, on the same element as its `confirming` or `Panel`, so `confirming && control == button` matches the button and never a text field in the dialog. |
 
 Most contexts are bare words for the state of the view or window, such as
 `selection` and `pane_zoomed`. The `has_` prefix marks a context that says
@@ -231,8 +232,8 @@ default to the invoking window's active tab, workspace, or session.
 Focused commands run in whatever has keyboard focus: the palette, the
 Licenses view, or a text field's owner.
 The `palette_*` commands imply the `Palette` context and the `text_*`
-commands imply `TextField`, and dialog, menu, and notice commands imply
-`confirming`, `menu`, and `notices`. Settings commands imply `Settings`,
+commands imply `TextField`, and dialog, menu, panel, and notice commands
+imply `confirming`, `menu`, `Panel`, and `notices`. Settings commands imply `Settings`,
 `SettingsControl`, or `SettingsGroup`. User bindings for them need no `when`.
 A `when` adds to the implied context on the same element, so a `text_*`
 binding with `when = "Palette"` matches only in the palette and Licenses,
@@ -285,12 +286,14 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `move_pane_left` / `move_pane_right` / `move_pane_up` / `move_pane_down` | Window | Moves the focused pane past the adjacent pane on that side; does nothing at the tab's edge. |
 | `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `move_pane_to_new_tab` | Window | Optional `workspace`; defaults to the window's, where the new tab opens after the pane's tab. A tab's only pane moves its whole tab to another workspace. |
+| `move_tab_to_new_window` | Window | Optional `tab`, defaulting to the active tab. Moves it into a new regular window without restarting its terminals. Available in the palette and tab context menu, with no default binding. A window with one tab does nothing. |
 | `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`, or a name from `[panes.layouts]` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. A split tab's terminal menu lists every layout under Arrange Panes, disabling those that cannot hold its panes. |
 | `next_pane_layout` / `previous_pane_layout` | Window | Arranges the active tab's panes into the next or previous layout of the cycle, skipping a layout that does not fit the window or would change nothing. |
 | `balance_panes` | Window | Gives every split of the active tab equal sizes, keeping its shape. |
 | `undo` | Window | Undoes this window's last pane swap, move, extraction, tab drop, arrangement, or balance, putting the same panes and terminals back where they were, with the earlier divider positions. A tab the change removed comes back with its name, at its old position. Renames, reorders, and zooms made since survive. Splits, closes, resizes, and zoom are not recorded, and only the last change can be undone. Once a tab the change touched has another shape, or has moved to another session, the change is dropped and undo does nothing; if the runtime refuses an undo the window could not yet see was stale, a notice says so. With nothing to undo, or while the window is busy, the key does nothing. |
 | `redo` | Window | Reapplies the change `undo` last undid. A new layout change replaces it. |
+| `window_transparency` | Window | Opens or closes the Window Transparency panel, which overrides opacity, background and text opacity, and blur for this window alone. No default binding; the View menu and the palette list it. |
 | `toggle_fullscreen` | Window | |
 | `toggle_native_fullscreen` | Window | Enters native mode, or exits any active fullscreen mode. |
 | `toggle_non_native_fullscreen` | Window | macOS only. Enters current-Space mode, or exits any active fullscreen mode. |
@@ -324,6 +327,17 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `menu_select_left` | Window | Selects the previous button in a button row, or returns from a submenu to its row. Bound only while `menu`. |
 | `menu_confirm` | Window | Bound only while `menu`. |
 | `menu_close` | Window | Bound only while `menu`. |
+| `panel_close` | Window | Bound only while `Panel`. Closes the panel and returns focus to the terminal. |
+| `panel_focus_next` | Window | Bound only while `Panel`. |
+| `panel_focus_previous` | Window | Bound only while `Panel`. |
+| `panel_increase` | Window | Bound only while `Panel`. Steps the focused slider up; buttons ignore it. |
+| `panel_decrease` | Window | Bound only while `Panel`. Steps the focused slider down; buttons ignore it. |
+| `panel_page_up` | Window | Bound only while `Panel`. Steps the focused slider up one page, a tenth of its range. |
+| `panel_page_down` | Window | Bound only while `Panel`. Steps the focused slider down one page, a tenth of its range. |
+| `panel_first` | Window | Bound only while `Panel`. Moves the focused slider to its minimum. |
+| `panel_last` | Window | Bound only while `Panel`. Moves the focused slider to its maximum. |
+| `panel_press` | Window | Bound only while `Panel`. Presses the focused button. |
+| `panel_reset` | Window | Bound only while `Panel`. Clears the focused slider's override, so the window uses the default or its Quake profile's value again. |
 | `notice_next` | Window | Bound only while `notices`. |
 | `notice_previous` | Window | Bound only while `notices`. |
 | `notice_run_action` | Window | Bound only while `notices`. |
@@ -586,6 +600,31 @@ or clicking elsewhere closes the menu and returns focus to the terminal.
 | `menu_select_left` | `left` | `left` |
 | `menu_confirm` | `enter`, `space` | `enter`, `space` |
 | `menu_close` | `escape`, `tab`, `shift-tab` | `escape`, `tab`, `shift-tab` |
+
+### Window Transparency panel
+
+These bind only while the Window Transparency panel has focus (`Panel`).
+`window_transparency` has no default binding. Tab and Shift-Tab move
+through the enabled sliders, the Reset buttons of overridden values, Reset
+All, Edit Defaults in Settings, and Close, wrapping at the ends. Page Up,
+Page Down, Home, End, and Reset act on a focused slider (`control ==
+slider`), and Enter and Space on a focused button (`control == button`), so
+those keys stay unbound elsewhere in the panel. Escape, the command again,
+or a click outside the panel closes it and returns focus to the terminal.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `panel_close` | `escape` | `escape` |
+| `panel_focus_next` | `tab` | `tab` |
+| `panel_focus_previous` | `shift-tab` | `shift-tab` |
+| `panel_increase` | `up`, `right` | `up`, `right` |
+| `panel_decrease` | `down`, `left` | `down`, `left` |
+| `panel_page_up` | `pageup` | `pageup` |
+| `panel_page_down` | `pagedown` | `pagedown` |
+| `panel_first` | `home` | `home` |
+| `panel_last` | `end` | `end` |
+| `panel_press` | `enter`, `space` | `enter`, `space` |
+| `panel_reset` | `cmd-backspace` | `ctrl-backspace` |
 
 ### Notices
 

@@ -30,6 +30,7 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::COPY_TAB_DIRECTORY,
             ids::OPEN_TAB_DIRECTORY,
             ids::MOVE_TAB_TO_PANE,
+            ids::MOVE_TAB_TO_NEW_WINDOW,
         ],
     ),
     (
@@ -80,6 +81,7 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
         &[
             ids::NEW_WINDOW,
             ids::CLOSE_WINDOW,
+            ids::WINDOW_TRANSPARENCY,
             ids::TOGGLE_FULLSCREEN,
             ids::TOGGLE_NATIVE_FULLSCREEN,
             ids::TOGGLE_NON_NATIVE_FULLSCREEN,
@@ -158,6 +160,10 @@ pub(crate) const CONTEXTS: &[Context] = &[
         "A close confirmation or the About panel is open.",
     ),
     context("menu", "The window menu has keyboard focus."),
+    context(
+        "Panel",
+        "A control in the Window Transparency panel has focus.",
+    ),
     context("notices", "A notice has keyboard focus."),
     context("reordering", "A tab drag is in progress."),
     context("fullscreen", "The window has finished entering fullscreen."),
@@ -181,7 +187,7 @@ pub(crate) const CONTEXTS: &[Context] = &[
     ),
     context(
         "control",
-        "`slider` on a Settings slider, `button` on a dialog button.",
+        "`slider` on a Settings or panel slider, `button` on a dialog or panel button.",
     ),
 ];
 

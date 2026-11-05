@@ -1,6 +1,6 @@
 /** Run Huterm's Linux desktop interactively in a persistent Tart VM. */
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { tryLock } from "./flock";
@@ -258,6 +258,8 @@ export async function buildAndStage(root: string, stage: string): Promise<number
   }
   try {
     mkdirSync(join(stage, "target/debug"), { recursive: true });
+    mkdirSync(join(stage, "assets"), { recursive: true });
+    cpSync(join(root, "assets/shell-integration"), join(stage, "assets/shell-integration"), { recursive: true });
     for (const [from, to] of [["target/debug/huterm", "target/debug/"], ["target/terminfo", "target/"]] as const) {
       if (capture(["docker", "cp", `${container}:/workspace/${from}`, join(stage, to)], false) === undefined) {
         console.error(`could not copy ${from} out of the Linux build container`);

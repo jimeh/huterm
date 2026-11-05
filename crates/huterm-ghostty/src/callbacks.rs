@@ -33,7 +33,7 @@ use crate::ffi::{self, keys::terminal_data as data};
 use crate::native::{NativeTerminal, TerminalRef, string_bytes};
 use crate::types::{
     ClipboardContent, ClipboardLocation, ClipboardWrite, ClipboardWriteResult,
-    ColorScheme, Effect, Rgb,
+    ColorScheme, Effect, PromptKind, Rgb, SemanticPrompt, SemanticPromptKind,
 };
 
 /// Host policy invoked from inside a terminal write.
@@ -175,6 +175,42 @@ unsafe extern "C" fn pwd_changed<H: Host>(
         if let Ok(pwd) = terminal.string::<data::Pwd>() {
             state.push(Effect::PwdChanged(pwd.to_vec()));
         }
+    });
+}
+
+/// # Safety
+///
+/// C calls this with the configured userdata pointer and an event that is
+/// valid until the callback returns.
+unsafe extern "C" fn semantic_prompt<H: Host>(
+    _terminal: ffi::GhosttyTerminal,
+    userdata: *mut c_void,
+    event: *const ffi::GhosttyTerminalSemanticPrompt,
+) {
+    guard::<H, ()>(userdata, (), |state| {
+        // SAFETY: terminal.h `GhosttyTerminalSemanticPromptFn`: `event` and
+        // its strings are borrowed for the callback.
+        let Some(event) = (unsafe { event.as_ref() }) else {
+            return;
+        };
+        // The event is a sized struct; every field read here predates it.
+        if event.size < size_of::<ffi::GhosttyTerminalSemanticPrompt>() {
+            return;
+        }
+        let kind = SemanticPromptKind::from_ffi(event.kind);
+        let command = if kind == SemanticPromptKind::OutputStart {
+            // SAFETY: terminal.h `GhosttyTerminalSemanticPrompt::command`
+            // is valid during the callback; it is copied here.
+            unsafe { string_bytes(event.command) }.to_vec()
+        } else {
+            Vec::new()
+        };
+        state.push(Effect::SemanticPrompt(SemanticPrompt {
+            kind,
+            prompt: PromptKind::from_ffi(event.prompt_kind),
+            exit_code: event.has_exit_code.then_some(event.exit_code),
+            command,
+        }));
     });
 }
 
@@ -429,6 +465,9 @@ impl<H: Host> Bound<H> {
         native
             .set_callback::<option::TitleChanged>(Some(title_changed::<H>))?;
         native.set_callback::<option::PwdChanged>(Some(pwd_changed::<H>))?;
+        native.set_callback::<option::SemanticPrompt>(Some(
+            semantic_prompt::<H>,
+        ))?;
         native.set_callback::<option::Size>(Some(size::<H>))?;
         native.set_callback::<option::ColorScheme>(Some(color_scheme::<H>))?;
         native.set_callback::<option::ClipboardWrite>(Some(

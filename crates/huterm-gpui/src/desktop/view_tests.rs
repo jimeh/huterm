@@ -114,6 +114,7 @@ impl ViewHarness {
                 cell_size: CELL,
                 presentation: TerminalPresentation::default(),
                 scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+                shell_integration: huterm_protocol::ShellIntegration::OFF,
                 scrollback_compression: false,
             },
         )
@@ -131,6 +132,7 @@ impl ViewHarness {
                     &config,
                     "Huterm Test".into(),
                     GridMetrics::fixed(CELL_WIDTH, CELL_HEIGHT),
+                    crate::transparency::Effective::default(),
                     window,
                     cx,
                 )
@@ -853,5 +855,33 @@ fn font_metrics_update_pty_cell_pixels_without_changing_the_grid(
     harness.wait_for("the child's cell-size query reply", |view, _| {
         screen_text(view)
             .is_some_and(|text| text.contains("CELL:1b5b363b33333b313674"))
+    });
+}
+
+#[gpui::test]
+fn osc11_presentation_change_with_retained_rows_redraws(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, "printf READY; read line");
+    harness.wait_for("initial snapshot", |view, _| view.snapshot.is_some());
+    harness.update(|view, _, cx| {
+        let original = view.snapshot.as_ref().unwrap().clone();
+        let mut changed = (*original).clone();
+        changed.default_background = Some(huterm_protocol::Rgb {
+            red: 1,
+            green: 2,
+            blue: 3,
+        });
+        let changed = Arc::new(changed);
+        assert!(
+            original
+                .rows
+                .iter()
+                .zip(&changed.rows)
+                .all(|(a, b)| Arc::ptr_eq(a, b))
+        );
+        assert!(view.apply_snapshot(changed.clone(), cx));
+        assert!(!view.apply_snapshot(changed, cx));
+        assert!(view.apply_snapshot(original, cx));
     });
 }

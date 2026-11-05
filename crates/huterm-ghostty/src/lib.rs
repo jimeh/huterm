@@ -42,6 +42,8 @@ mod key_tests;
 mod test_alloc;
 #[cfg(test)]
 mod test_layout;
+#[cfg(test)]
+mod tracked_ref_tests;
 
 pub use callbacks::Host;
 pub use error::{Error, Result};
@@ -50,13 +52,15 @@ pub use mouse::{MouseProbe, ProbedFormat, ProbedTracking};
 pub use native::NativeBytes;
 pub use overrides::ColorOverrides;
 pub use render::{RenderCells, RenderRow, RenderState, Rows};
-pub use terminal::{GridRef, Options, RowRef, Terminal};
+pub use terminal::{GridRef, Options, RowRef, Terminal, TrackedRef};
 pub use types::{
-    COMPRESSION_SUPPORTED, Cell, CellContent, CellWidth, ClipboardContent,
-    ClipboardLocation, ClipboardWrite, ClipboardWriteResult, ColorScheme,
-    Compression, Cursor, CursorStyle, DeviceAttributes, Dirty, Effect, Fill,
-    MemoryUsage, Mode, Optimize, Palette, Point, PointSpace, RenderColors, Rgb,
-    Row, Screen, ScreenMemory, Scroll, Scrollbar, Style, StyleColor,
+    Boundaries, COMPRESSION_SUPPORTED, Cell, CellContent, CellWidth,
+    ClipboardContent, ClipboardLocation, ClipboardWrite, ClipboardWriteResult,
+    ColorScheme, Compression, Cursor, CursorStyle, DeviceAttributes, Dirty,
+    Effect, Fill, MemoryUsage, Mode, Optimize, Palette, Point, PointSpace,
+    PromptKind, RenderColors, Rgb, Row, Screen, ScreenMemory, Scroll,
+    Scrollbar, SemanticPrompt, SemanticPromptKind, Style, StyleColor,
+    WriteStop,
 };
 
 /// The optimization mode of the linked library.

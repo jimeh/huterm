@@ -52,6 +52,7 @@ fn spawn_with(
             cell_size: cell(),
             presentation: TerminalPresentation::default(),
             scrollback,
+            shell_integration: huterm_protocol::ShellIntegration::OFF,
             scrollback_compression: false,
         },
     )

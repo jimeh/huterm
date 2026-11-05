@@ -167,6 +167,8 @@ pub(super) struct Presentation {
     reporter: Option<WeakEntity<WorkspaceView>>,
     generation: Rc<Cell<u64>>,
     pub(super) native: native::Window,
+    alpha: crate::transparency::Alpha,
+    blur: crate::transparency::Blur,
     model: policy::Model,
     /// A move to another display in regular presentation.
     pin: Option<placement::Pin>,
@@ -209,11 +211,9 @@ impl Presentation {
     }
     pub(super) fn cleanup(self) {
         self.generation.set(self.generation.get() + 1);
-        if let Err(error) = self
-            .native
-            .set_fullscreen(false)
-            .and_then(|()| self.native.opacity(1.0))
-        {
+        if let Err(error) = self.native.set_fullscreen(false).and_then(|()| {
+            self.alpha.fade(1.0, |value| self.native.opacity(value))
+        }) {
             eprintln!("Quake cleanup: {error}");
         }
     }
@@ -267,6 +267,8 @@ enum NativeOp {
     Failure(anyhow::Error),
 }
 struct NativeEffect {
+    alpha: crate::transparency::Alpha,
+    blur: crate::transparency::Blur,
     native: native::Window,
     reporter: Option<WeakEntity<WorkspaceView>>,
     gate: Rc<Cell<u64>>,
@@ -286,6 +288,8 @@ impl NativeEffect {
     fn for_state(state: &Presentation, operations: Vec<NativeOp>) -> Self {
         Self {
             native: state.native.clone(),
+            alpha: state.alpha.clone(),
+            blur: state.blur.clone(),
             reporter: state.reporter.clone(),
             gate: Rc::clone(&state.generation),
             generation: state.generation.get(),
@@ -332,13 +336,19 @@ impl NativeEffect {
                 }
                 match operation {
                     NativeOp::Frame(frame) => self.native.set_frame(frame)?,
+                    // A style change or a Space move can replace the
+                    // window server's blur, so the next sync writes it.
                     NativeOp::Quake(enabled) => {
                         self.native.set_quake(enabled)?;
+                        self.blur.invalidate();
                     }
                     NativeOp::Fullscreen(enabled) => {
                         self.native.set_fullscreen(enabled)?;
+                        self.blur.invalidate();
                     }
-                    NativeOp::Opacity(value) => self.native.opacity(value)?,
+                    NativeOp::Opacity(value) => self
+                        .alpha
+                        .fade(value, |value| self.native.opacity(value))?,
                     NativeOp::Show => self.native.show()?,
                     NativeOp::Hide(target) => {
                         let was_active = self.native.active()?;
@@ -560,7 +570,7 @@ fn invoke_now(
                 }
                 let unchanged = show && native_idle && !state.regular
                     && state.stage == Stage::Idle && state.transition.visible()
-                    && state.profile == config
+                    && state.profile.same_presentation(&config)
                     && state.native.visible().map_err(|error| error.to_string())?
                     && state.native.fullscreen().map_err(|error| error.to_string())? == config.fullscreen
                     && near(state.native.frame().map_err(|error| error.to_string())?, config.geometry(&state.display));
@@ -621,11 +631,17 @@ fn place(
         .ok_or_else(|| anyhow::anyhow!("no display available"))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Quake window shares its view's native alpha and blur owners"
+)]
 pub(super) fn attach(
     name: String,
     profile: Profile,
     display: Display,
     reporter: Option<WeakEntity<WorkspaceView>>,
+    alpha: crate::transparency::Alpha,
+    blur: crate::transparency::Blur,
     window: &Window,
     cx: &mut App,
 ) -> Result<Presentation, String> {
@@ -657,6 +673,8 @@ pub(super) fn attach(
     let work =
         Work::new(&native, &platform).map_err(|error| error.to_string())?;
     Ok(Presentation {
+        alpha,
+        blur,
         name,
         reporter,
         generation: Rc::new(Cell::new(0)),
@@ -898,6 +916,8 @@ fn step_transition(
         cx.global_mut::<Desktop>()
             .windows
             .set_layout_bounds(view.window, window.window_bounds());
+        // The profile's transparency keys no longer apply.
+        view.refresh_transparency(window, cx);
         view.sync_quake_visibility(window, cx);
         return None;
     }
@@ -1102,10 +1122,12 @@ pub(super) fn close(
         #[cfg(target_os = "macos")]
         cx.foreground_executor()
             .spawn(async move {
-                if let Err(error) = state
-                    .native
-                    .set_fullscreen(false)
-                    .and_then(|()| state.native.opacity(1.0))
+                if let Err(error) =
+                    state.native.set_fullscreen(false).and_then(|()| {
+                        state
+                            .alpha
+                            .fade(1.0, |value| state.native.opacity(value))
+                    })
                 {
                     eprintln!("Quake close cleanup: {error}");
                 }

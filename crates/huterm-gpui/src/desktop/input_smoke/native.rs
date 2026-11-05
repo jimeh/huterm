@@ -99,8 +99,24 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
         return post_composition(text, true);
     }
     let fields: Vec<_> = command.split('\t').collect();
+    if fields[0] == "mouse-window" && matches!(fields.len(), 5 | 6) {
+        let number = fields[1].parse()?;
+        let mut mouse = vec!["absolute"];
+        mouse.extend_from_slice(&fields[2..]);
+        return post_mouse(&mouse, Some(number));
+    }
+    if fields[0] == "activate-window" && fields.len() == 2 {
+        return activate_window(fields[1].parse()?);
+    }
+    if fields[0] == "place-window" && fields.len() == 4 {
+        return place_window(
+            fields[1].parse()?,
+            fields[2].parse()?,
+            fields[3].parse()?,
+        );
+    }
     if fields[0] == "mouse" && matches!(fields.len(), 4 | 5) {
-        return post_mouse(&fields);
+        return post_mouse(&fields, None);
     }
     ensure!(
         fields.len() == 4 || (fields.len() == 5 && fields[4] == "repeat"),
@@ -270,7 +286,7 @@ fn position_cursor(center: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
+fn post_mouse(fields: &[&str], number: Option<isize>) -> anyhow::Result<()> {
     let kind: usize = fields[1].parse()?;
     let x: f64 = fields[2].parse()?;
     let y: f64 = fields[3].parse()?;
@@ -281,14 +297,18 @@ fn post_mouse(fields: &[&str]) -> anyhow::Result<()> {
             Class::get("NSApplication").context("NSApplication")?,
             sharedApplication
         ];
-        let window: *mut Object = msg_send![app, keyWindow];
-        ensure!(!window.is_null(), "no key window for mouse event");
+        let window: *mut Object = if let Some(number) = number {
+            msg_send![app, windowWithWindowNumber: number]
+        } else {
+            msg_send![app, keyWindow]
+        };
+        ensure!(!window.is_null(), "no window for mouse event");
         let number: isize = msg_send![window, windowNumber];
         let view: *mut Object = msg_send![window, contentView];
         let bounds: gpui::Bounds<f64> = msg_send![view, bounds];
         let event: *mut Object = msg_send![Class::get("NSEvent").context("NSEvent")?,
             mouseEventWithType: kind
-            location: gpui::point(if x < 1.0 { x * bounds.size.width } else { x }, bounds.size.height - y)
+            location: gpui::point(if fields[0] != "absolute" && x < 1.0 { x * bounds.size.width } else { x }, bounds.size.height - y)
             modifierFlags: flags timestamp: 0.0_f64 windowNumber: number
             context: std::ptr::null_mut::<Object>() eventNumber: 0_isize
             clickCount: 1_isize pressure: 1.0_f32];
@@ -503,6 +523,37 @@ pub(super) fn clipboard_file(mode: &str, file: &str) -> anyhow::Result<()> {
             }
         }
         let _: () = msg_send![pool, drain];
+    }
+    Ok(())
+}
+
+fn place_window(number: isize, x: f64, y: f64) -> anyhow::Result<()> {
+    // SAFETY: Fixture-only main-thread placement outside GPUI borrows. This
+    // changes a window frame, never the host cursor or physical HID state.
+    unsafe {
+        let app: *mut Object = msg_send![
+            Class::get("NSApplication").context("NSApplication")?,
+            sharedApplication
+        ];
+        let window: *mut Object =
+            msg_send![app, windowWithWindowNumber: number];
+        ensure!(!window.is_null(), "no window for placement");
+        let _: () = msg_send![window, setFrameTopLeftPoint: gpui::point(x, y)];
+    }
+    Ok(())
+}
+
+fn activate_window(number: isize) -> anyhow::Result<()> {
+    // SAFETY: Fixture calls on AppKit's main thread, outside GPUI borrows.
+    unsafe {
+        let app: *mut Object = msg_send![
+            Class::get("NSApplication").context("NSApplication")?,
+            sharedApplication
+        ];
+        let window: *mut Object =
+            msg_send![app, windowWithWindowNumber: number];
+        ensure!(!window.is_null(), "no window for activation");
+        let _: () = msg_send![window, makeKeyAndOrderFront: std::ptr::null_mut::<Object>()];
     }
     Ok(())
 }

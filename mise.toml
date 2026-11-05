@@ -5,6 +5,9 @@ minimum_release_age = "3d"
 [tools]
 actionlint = "1.7.12"
 bun = "1.4.4"
+"aqua:fish-shell/fish-shell" = "4.9.3"
+"aqua:nushell/nushell" = "0.116.1"
+"http:elvish" = { version = "0.21.0", url = 'https://dl.elv.sh/{{ os(macos="darwin") }}-{{ arch(x64="amd64") }}/elvish-v{{ version }}.tar.gz' }
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-auditable" = "0.7.7"
 "cargo:cargo-packager" = "0.11.8"
@@ -260,6 +263,7 @@ bench_config="$(mktemp)"
 trap 'rm -f "$bench_config"' EXIT
 # A compression pass that starts mid-run would change what is measured.
 printf '[terminal]\nscrollback_compression = false\n' > "$bench_config"
+printf '[window]\nbackground_opacity = %s\nforeground_opacity = %s\n' "${HUTERM_BENCH_BACKGROUND_OPACITY:-1}" "${HUTERM_BENCH_FOREGROUND_OPACITY:-1}" >> "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example render_workload
 workload="$(pwd)/target/release/examples/render_workload"
@@ -325,6 +329,7 @@ bench_config="$(mktemp)"
 # freed a page at a time, may never hold at once. A compression pass that
 # starts during a scroll pause would change what is measured.
 printf '[terminal]\nscrollback_rows = 20000\nscrollback_compression = false\n' > "$bench_config"
+printf '[window]\nbackground_opacity = %s\nforeground_opacity = %s\n' "${HUTERM_BENCH_BACKGROUND_OPACITY:-1}" "${HUTERM_BENCH_FOREGROUND_OPACITY:-1}" >> "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"
@@ -434,6 +439,7 @@ fi
 assert_file "$bundle/Contents/Resources/terminfo/xterm-huterm.terminfo" "Huterm terminfo source"
 assert_file "$bundle/Contents/Resources/terminfo/LICENSE-ncurses" "ncurses terminfo license"
 bun scripts/terminfo.ts check "$bundle/Contents/Resources/terminfo"
+bun scripts/shell-integration.ts assets/shell-integration "$bundle/Contents/Resources/shell-integration"
 if [ ! -x "$executable" ]; then
   echo "package verification failed: executable is missing or not executable at $executable" >&2
   exit 1

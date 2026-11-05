@@ -9,21 +9,22 @@ use std::cell::{Cell as StdCell, RefCell};
 use std::sync::Arc;
 
 use huterm_ghostty::{
-    self as ghostty, CellContent, CellWidth, ClipboardLocation, ClipboardWrite,
-    ClipboardWriteResult, ColorOverrides, ColorScheme, CursorStyle,
-    DeviceAttributes, Dirty, Fill, Host, Mode, MouseProbe, Point, ProbedFormat,
-    ProbedTracking, RenderState, Screen, Scroll, StyleColor,
+    self as ghostty, Boundaries, CellContent, CellWidth, ClipboardLocation,
+    ClipboardWrite, ClipboardWriteResult, ColorOverrides, ColorScheme,
+    CursorStyle, DeviceAttributes, Dirty, Fill, Host, Mode, MouseProbe, Point,
+    ProbedFormat, ProbedTracking, RenderState, Screen, Scroll, StyleColor,
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
-    Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding, MouseTracking,
-    Rgb, ScrollCommand, ScrollbackLimit, TerminalAppearance, TerminalId,
-    TerminalModes, TerminalPresentation, TerminalRow, TerminalSnapshot,
-    Viewport, appearance_for_background,
+    CommandRecord, Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding,
+    MouseTracking, Rgb, ScrollCommand, ScrollbackLimit, TerminalAppearance,
+    TerminalId, TerminalModes, TerminalPresentation, TerminalRow,
+    TerminalSnapshot, Viewport, appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
 use super::links::{LinkBuffer, MAX_LINK_BYTES};
+use super::records::CommandLog;
 use super::row_matcher::{RowMatcher, viewport_shift};
 use super::{DirectoryUpdate, EngineEffect, normalize_directory};
 use crate::host_effects::{
@@ -257,6 +258,7 @@ pub(super) struct TerminalEngine {
     scratch: Vec<Cell>,
     grapheme: Vec<u8>,
     effects: Vec<ghostty::Effect>,
+    commands: CommandLog,
     server_hostname: Option<String>,
     #[cfg(test)]
     stats: super::SnapshotStats,
@@ -315,6 +317,7 @@ impl TerminalEngine {
             scratch: Vec::new(),
             grapheme: Vec::new(),
             effects: Vec::new(),
+            commands: CommandLog::default(),
             server_hostname: server_hostname(),
             #[cfg(test)]
             stats: super::SnapshotStats::default(),
@@ -371,9 +374,53 @@ impl TerminalEngine {
         if self.hint.observe(bytes) {
             self.overrides_stale = true;
         }
-        self.terminal.write(bytes)?;
+        self.write_output(bytes)?;
         self.apply_pending_clear()?;
         self.drain_effects()
+    }
+
+    /// Writes PTY output, stopping after each OSC so a command marker is
+    /// handled with the cursor and screen it was parsed at. Ghostty
+    /// dispatches an OSC on the byte its `OSC_END` stop reports, BEL or the
+    /// ESC of ST. The other effects stay queued in order for
+    /// [`Self::drain_effects`].
+    fn write_output(&mut self, mut bytes: &[u8]) -> Result<(), RuntimeError> {
+        while !bytes.is_empty() {
+            let stop = self.terminal.write_until(bytes, Boundaries::OSC_END)?;
+            bytes = &bytes[stop.consumed..];
+            if stop.reached == Boundaries::NONE {
+                break;
+            }
+            let start = self.effects.len();
+            self.terminal.take_effects(&mut self.effects);
+            for effect in &self.effects[start..] {
+                if let ghostty::Effect::SemanticPrompt(event) = effect {
+                    self.commands.handle(&mut self.terminal, event)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes records whose rows left history and returns the record list
+    /// if it changed since the last call. Call it after each operation.
+    pub(super) fn command_update(&mut self) -> Option<Arc<[CommandRecord]>> {
+        self.commands.publish(&self.terminal)
+    }
+
+    /// Ends a running record whose command can no longer report.
+    pub(super) fn abandon_running_command(&mut self) {
+        self.commands.abandon_running();
+    }
+
+    #[cfg(test)]
+    pub(super) fn commands(&self) -> Arc<[CommandRecord]> {
+        self.commands.records()
+    }
+
+    #[cfg(test)]
+    pub(super) fn anchored_text(&self, sequence: u64) -> Option<String> {
+        self.commands.anchored_text(&self.terminal, sequence)
     }
 
     pub(super) fn clear_history(
@@ -525,6 +572,8 @@ impl TerminalEngine {
                         }
                     }
                 }
+                // Semantic prompts were handled at the stop that parsed
+                // them; see `write_output`.
                 _ => {}
             }
         }
@@ -652,6 +701,10 @@ impl TerminalEngine {
         self.render.clean()?;
         self.retained.clone_from(&built);
         self.retained_viewport = viewport;
+        let default_background = colors
+            .background
+            .filter(|_| self.overrides.background)
+            .map(rgb);
         self.retained_colors = Some(colors);
         Ok(TerminalSnapshot {
             terminal_id: self.id,
@@ -668,6 +721,7 @@ impl TerminalEngine {
             },
             history_size: viewport.1,
             cursor_color,
+            default_background,
         })
     }
 

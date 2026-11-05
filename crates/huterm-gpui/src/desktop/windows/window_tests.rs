@@ -42,6 +42,7 @@ fn fixture(script: &str) -> TerminalCommand {
         },
         presentation: TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     }
 }
@@ -5291,6 +5292,7 @@ fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
 
 mod buttons;
 mod chrome;
+mod cross_window;
 mod dialogs;
 mod layout_undo;
 mod menus;
@@ -5316,3 +5318,6 @@ mod settings_themes;
 mod settings_weights;
 mod synced_input;
 mod system_appearance;
+
+mod transparency;
+mod transparency_panel;

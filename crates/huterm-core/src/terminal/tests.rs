@@ -240,7 +240,7 @@ fn osc7_reports_apply_only_while_their_reporter_holds_the_foreground() {
         TerminalId::new(99),
         &command(
             &format!(
-                "set -m; printf '\\033]7;file://localhost/reported\\007READY'; read line; {}; printf DONE; read line",
+                "set -m; printf '\\033]7;file://localhost/reported\\007READY'; read line; {}; printf DONE; read line; printf '\\033]7;\\007CLEARED'; read line",
                 foreground_reporter("printf '\\033]7;file://remote.example/srv\\007'")
             ),
         ),
@@ -259,6 +259,16 @@ fn osc7_reports_apply_only_while_their_reporter_holds_the_foreground() {
     wait_for_directory(&client, &mut current, |directory| {
         directory.path() == "/srv" && !directory.is_local()
     });
+    // A remote report from another group, as under ssh, leaves the root
+    // shell's own local report as the shell directory.
+    let shell_directory = |client: &TestClient| {
+        client
+            .status()
+            .metadata
+            .shell_directory()
+            .map(|directory| directory.path().to_owned())
+    };
+    assert_eq!(shell_directory(&client).as_deref(), Some("/reported"));
     client
         .send_input(TerminalInput::Text("stop\n".into()))
         .unwrap();
@@ -270,6 +280,13 @@ fn osc7_reports_apply_only_while_their_reporter_holds_the_foreground() {
         &mut current,
         same_path(&std::env::current_dir().unwrap()),
     );
+    assert_eq!(shell_directory(&client).as_deref(), Some("/reported"));
+    // An empty report from the root shell clears it.
+    client
+        .send_input(TerminalInput::Text("clear\n".into()))
+        .unwrap();
+    wait_for_text(&client, "CLEARED");
+    assert_eq!(shell_directory(&client), None);
     runtime.shutdown().unwrap();
 }
 
@@ -1598,6 +1615,7 @@ fn command(script: &str) -> TerminalCommand {
         },
         presentation: TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     }
 }

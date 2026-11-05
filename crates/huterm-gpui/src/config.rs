@@ -94,6 +94,12 @@ weight = "regular"
 # ui_size = 13.0
 
 [window]
+# Live whole-window, default-background, and text opacity. Overall multiplies both.
+opacity = 1.0 # 0.1 through 1
+background_opacity = 1.0 # 0 through 1
+foreground_opacity = 1.0 # 0.1 through 1
+# Blur radius behind a translucent window, 0 (off) through 64; macOS only.
+blur = 0
 # Grid size for new ordinary windows, limited to the available display area.
 initial_columns = 100 # 10 through 1000
 initial_rows = 32 # 3 through 1000
@@ -214,6 +220,7 @@ pub(super) struct Config {
     pub(super) palette: huterm_config::PaletteConfig,
     pub(super) panes: huterm_config::PanesConfig,
     pub(super) terminal: TerminalConfig,
+    pub(super) shell_integration: huterm_config::ShellIntegrationConfig,
     /// The theme in use: one of `themes`, chosen by the system appearance
     /// through [`Config::follow_appearance`].
     pub(super) theme: Theme,
@@ -329,6 +336,7 @@ impl Default for Config {
             palette: huterm_config::PaletteConfig::default(),
             panes: huterm_config::PanesConfig::default(),
             terminal: TerminalConfig::default(),
+            shell_integration: huterm_config::ShellIntegrationConfig::default(),
             keybindings: Vec::new(),
             quake: crate::quake::Config {
                 profiles: BTreeMap::from([(
@@ -621,6 +629,7 @@ fn parse_consumed(
         updates: raw.updates,
         palette: raw.palette,
         panes: raw.panes,
+        shell_integration: raw.shell_integration,
         terminal: TerminalConfig {
             term: raw.terminal.term,
             close_on_exit: raw.terminal.close_on_exit,

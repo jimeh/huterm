@@ -219,6 +219,7 @@ fn install_menus(cx: &mut App) {
                 item(ids::SCROLL_PAGE_DOWN),
                 item(ids::SCROLL_TO_BOTTOM),
                 MenuItem::separator(),
+                item(ids::WINDOW_TRANSPARENCY),
                 item(ids::TOGGLE_FULLSCREEN),
             ],
         },
@@ -628,12 +629,19 @@ pub(super) struct TerminalFailure {
 
 impl TerminalView {
     #[allow(clippy::too_many_lines)]
+    /// A view over `viewer` that paints with `paint`, its window's resolved
+    /// transparency, from its first frame.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a terminal view takes its window's configuration, font, metrics, and paint state"
+    )]
     fn new(
         viewer: TerminalViewer,
         frame_clock: Rc<refresh::FrameClock>,
         config: &Config,
         terminal_font: TerminalFont,
         metrics: GridMetrics,
+        paint: crate::transparency::Effective,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Self {
@@ -741,6 +749,23 @@ impl TerminalView {
                 }
             }
         });
+        let mut renderer = TerminalRenderer::new(
+            terminal_font.clone(),
+            theme.clone(),
+            metrics,
+        );
+        if renderer.records_stats() {
+            eprintln!(
+                "huterm-render transparency background_alpha={} foreground_alpha={} appearance={:?}",
+                paint.background, paint.foreground, paint.appearance
+            );
+        }
+        renderer.set_opacity(
+            paint.background,
+            paint.foreground,
+            paint.translucent,
+            crate::transparency::Tint::default(),
+        );
         let mut view = TerminalView {
             viewer,
             pending_presentation,
@@ -780,11 +805,7 @@ impl TerminalView {
             resize_indicators: 0,
             quiet_resize: false,
             snapshot: None,
-            renderer: Rc::new(RefCell::new(TerminalRenderer::new(
-                terminal_font.clone(),
-                theme.clone(),
-                metrics,
-            ))),
+            renderer: Rc::new(RefCell::new(renderer)),
             focus,
             _focus_subscriptions: vec![
                 focus_subscription,
@@ -3461,7 +3482,10 @@ impl Render for TerminalView {
         let terminal_bounds = layout.bounds;
         let hovered_link = self.links.hover().cloned();
         let link_metrics = self.metrics;
-        let underline = color(self.theme.foreground);
+        let underline = self
+            .renderer
+            .borrow()
+            .foreground(color(self.theme.foreground));
         let paint_link = hovered_link.clone();
         let mut root = div()
             .id("terminal")
@@ -3540,7 +3564,7 @@ impl Render for TerminalView {
             .relative()
             .w_full()
             .h(self.viewport(window).height)
-            .bg(color(self.theme.background))
+            .bg(self.renderer.borrow().background(self.snapshot.as_deref()))
             .text_size(self.font_size)
             .font_family(self.terminal_font.family.clone())
             .child(
@@ -3870,6 +3894,7 @@ fn shell_command(
     metrics: GridMetrics,
     theme: &Theme,
     terminal: config::TerminalConfig,
+    shell_integration: &huterm_config::ShellIntegrationConfig,
     window: WindowConfig,
 ) -> anyhow::Result<TerminalCommand> {
     let shell =
@@ -3900,6 +3925,7 @@ fn shell_command(
         },
         presentation: terminal_presentation(theme),
         scrollback: terminal.scrollback,
+        shell_integration: shell_integration.to_protocol(),
         scrollback_compression: terminal.scrollback_compression,
     })
 }
@@ -3953,6 +3979,7 @@ fn same_presentation(
     shown.size == next.size
         && shown.cursor == next.cursor
         && shown.cursor_color == next.cursor_color
+        && shown.default_background == next.default_background
         && shown.modes == next.modes
         && shown.viewport == next.viewport
         && shown.history_size == next.history_size
@@ -4241,6 +4268,7 @@ mod tests {
             viewport: huterm_protocol::Viewport { bottom_offset: 0 },
             history_size: 0,
             cursor_color: None,
+            default_background: None,
         };
         // Presentation updates can change colors without a new generation,
         // and an unchanged generation must not hide new rows.
@@ -4279,6 +4307,7 @@ mod tests {
             viewport: huterm_protocol::Viewport { bottom_offset: 0 },
             history_size: 0,
             cursor_color: None,
+            default_background: None,
         };
         let mouse = TerminalInput::Mouse(MouseInput {
             position: MousePosition::default(),

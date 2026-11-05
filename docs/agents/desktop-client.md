@@ -91,8 +91,11 @@ spawn holds `busy` until it pushes its view, a window without an attachment,
 and teardown. A worker subscribes the viewers under one Mux lock, the
 completion waits for the projection to reach the worker's sequence, and the
 window then pushes only the tabs and panes it still shows no view of, without
-activating them unless it has no active tab. A failed install waits for a
-later batch that touches the workspace. A window that gains an attachment runs
+activating them unless it has no active tab. A failed install excludes only
+its own pane, which waits for a later batch that touches the workspace or for
+the persistent notice's "Try Again"; other panes of its tab still install, and
+reconcile withdraws the notice once no failed pane stays projected here
+without a view. A window that gains an attachment runs
 its own full reconcile, because attaching emits no hierarchy event. A view
 installed after its pane exited shows the exit from status but announces
 nothing: only the exit transition raises a notice or records an exit-close.
@@ -315,6 +318,12 @@ Quit hosts only a window with a model record, or its confirmation would land
 in Settings and Quit would do nothing. Committing Quit closes Settings.
 
 ## Rendering
+
+`TerminalView` alone fills the default background, including padding and the
+first frame before a snapshot. Keep window and renderer underlays out of the
+grid. Transparency and inactive-pane tints are paint state, never prepared-row
+or glyph-cache inputs. Compare snapshot `default_background` in presentation
+equality even when every row keeps its `Arc`; OSC 11 also colors padding.
 
 GPUI's `ShapedLine` contains a large inline decoration buffer. Retained terminal
 rendering should cache `Arc<LineLayout>` from `layout_line`, not `ShapedLine`,
@@ -543,6 +552,29 @@ Enter, and Tab bindings win.
 A repeated close shortcut while `confirming` must not confirm. Menus and
 dialogs return focus to the terminal when they close; the menu button never
 keeps it, or terminal bindings stop matching until the user clicks back in.
+
+The Window Transparency panel (`windows/transparency_panel.rs`) has its own
+modal `Popover` and guard, separate from the menus' one, mounted after the
+window-level listeners as the menu's is; `close_menu` leaves it alone. Opening
+a menu (`mount_menu`, `open_native_menu`), the palette, or a dialog
+(`sync_dialog`) closes it first, and opening it closes an open menu. Its keys
+are the `panel_*` Window-scope commands under the `Panel` context, with
+`Panel control=slider` and `Panel control=button` on its controls, so Page
+Up, Page Down, Home, End, and Reset bind on sliders alone and Enter and Space
+on buttons; `run_command` routes them to the panel before its generic menu
+dismissal. Settings' commands and contexts are not reused: `Settings` would
+bring Settings entries into the palette. It closes on Escape, the command
+again, an outside press (including one before its first frame), window
+deactivation, and a window or application close, and each close focuses the
+active terminal, which is the tab's focused pane once the pane focus was on
+has closed. `overlay_holds_focus` counts it, and a reload keeps it open: its
+rows are read at render. Each row records its content bounds through a
+`canvas` probe as it paints, and `focus_panel_control`, which every keyboard
+move and Reset's or Reset All's hand-back goes through, reveals the focused
+control's whole row from them; a row's bounds do not depend on focus, so the
+last paint's stand. The root's blur-mode opacity reaches what the root
+draws in flow, so the palette and dialogs fade with it, while the deferred
+popovers, menus, and tooltips stay solid.
 Focus a toast gives up while a dialog shows goes back to the control the
 dialog opened on (`restore_tab_focus`), since the terminal's hand-back
 misses a change made between two frames.
@@ -1016,7 +1048,11 @@ only sets the offset, so the owner redraws when it returns true.
 `focus::ring` and `ring_inset` add such a probe to the control whose ring
 they draw, and `focus::ring_bounds` reports where it last painted; a
 control that draws its focus some other way adds `focus::probe` itself, or
-Tab to it never scrolls.
+Tab to it never scrolls. `ScrollArea::scroll_to_top` puts a target's top at
+the viewport's top instead, for leading with a section. A reveal that waits
+for a frame callback judges at render whether the layout can still change,
+not in the callback: a read that finishes between the paint and the callback
+leaves the recorded bounds stale while the view already looks settled.
 
 Open a dialog in a `huterm_ui::components::dialog::Modal`, draw its `Dialog`
 or `AlertDialog` as the last child of the area it covers while it is open, and
@@ -1093,7 +1129,13 @@ the ring painted inside the pane's columns, and no dialog or menu is open. A
 row whose label sits apart from its controls, such as a user layout's name
 above its template, Rename, and Delete, draws `reveal_group` over itself with
 their handles, and the reveal shows the row with the ring. Smoke state reports
-`settings.scroll` and `settings.in_view` for it. The pane is a
+`settings.scroll` and `settings.in_view` for it. `open_at_group` names a
+group card, such as Appearance's Transparency for the terminal window
+panel's Edit Defaults in Settings; `select_section` drops the request.
+`settle_group_reveal` scrolls the card to the pane's top only from a frame
+drawn with no file read or theme scan running and once two such frames
+drew it in one place, since a new window scans its themes after its first
+frame and the gallery then grows above the card. The pane is a
 `ScrollArea::fill` under a fixed header that names the section, or "Search
 results"; the view owns its `ListScrollbar`, advances it in `animate_lists` on
 the suggestion lists' wake, and shows it when a reveal scrolls. Its viewport
@@ -1444,6 +1486,13 @@ Constraints, descriptions, and Settings metadata live on the config types:
 what no single type owns. Every schema property needs `x-huterm-label` unless
 it is a namespace object, or `SettingsModel::load` fails, and the coverage
 test in `desktop/settings.rs` fails until a new setting has a generic control,
-an override, or a file-only entry. Doc comments become schema descriptions
+an override, or a file-only entry. `x-huterm-inherits` names the setting an
+unset one shows, steps from, and describes ("Uses Appearance > Transparency
+(60%)."), as a Quake profile's `opacity` inherits `window.opacity`; the model
+refuses a reference to a missing setting or another kind. `SettingsView::value`
+and `default_value` resolve it, so a pending Reset or a pending change to the
+inherited setting shows at once, while the changed dot, Reset, and write
+conflicts still read the profile's own key, and the inherited value is never
+written. Doc comments become schema descriptions
 with their line breaks; editors render them as soft wraps, and the model joins
 each paragraph's lines.

@@ -53,6 +53,37 @@ fn subscribe_controller(
 }
 
 #[test]
+fn a_cross_session_tab_move_keeps_the_child_alive_and_output_flowing() {
+    let mut mux = Mux::default();
+    let source_session = mux.create_session(None).unwrap();
+    let source = mux.create_workspace(source_session, None).unwrap();
+    let destination_session = mux.create_session(None).unwrap();
+    let destination = mux.create_workspace(destination_session, None).unwrap();
+    let opened = mux.open_test_tab(source, &command("printf READY; read value; printf 'MOVED_%s' \"$value\"; read value")).unwrap();
+    wait_for_text(&opened.client, "READY");
+    let pane = opened.tab.first_pane().clone();
+    mux.move_tab(source, opened.tab.id, destination, None)
+        .unwrap();
+    assert_eq!(mux.tab(opened.tab.id).unwrap().first_pane(), &pane);
+    assert_eq!(mux.workspace(source).unwrap().tabs, []);
+    assert_eq!(
+        mux.workspace(destination).unwrap().tabs[0].id,
+        opened.tab.id
+    );
+    assert!(opened.client.poll().revoked);
+    let moved = TestClient::new(&mux.terminals[&pane.terminal_id]);
+    moved
+        .send_input(TerminalInput::Text("alive\n".into()))
+        .unwrap();
+    wait_for_text(&moved, "MOVED_alive");
+    assert_eq!(
+        moved.poll().status.unwrap().lifecycle,
+        TerminalLifecycle::Running
+    );
+    mux.shutdown().unwrap();
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "exercise generated names, overrides, and reset on one shared ownership tree"
@@ -534,6 +565,7 @@ pub(super) fn command(script: &str) -> TerminalCommand {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     }
 }

@@ -13,6 +13,9 @@ and on Linux x86_64 and aarch64 under X11 or XWayland. Every terminal uses
 [Ghostty](https://ghostty.org)'s `libghostty-vt` for terminal emulation and
 GPUI for rendering.
 
+Huterm automatically loads [shell integration](docs/configuration.md#shell-integration)
+for bash, zsh, fish, and nushell, with an opt-in Elvish module.
+
 ## What works today
 
 - **Terminals:** 24-bit color, runtime-owned scrollback with configurable row
@@ -49,6 +52,10 @@ GPUI for rendering.
   themes, custom themes, and automatic reload without restarting shells. A
   Settings window edits it in place, keeping comments and formatting.
 
+- **Transparency:** live window, background and text opacity, with a blur
+  radius on macOS, per Quake profile and per window from the Window
+  Transparency panel.
+
 These are not available yet:
 
 - Pane layout presets, and undoing a layout change.
@@ -57,8 +64,7 @@ These are not available yet:
 - A background server, local IPC, a command-line client, a TUI, or a browser
   client.
 - Saving and restoring sessions or terminal history across restarts.
-- Shell integration, desktop notifications, inline graphics, and window
-  transparency.
+- Shell integration, desktop notifications, and inline graphics.
 
 [Roadmap](#roadmap) summarizes the plan for these.
 
@@ -251,7 +257,7 @@ next stages are:
 
 - **Desktop expansion:** session and workspace switching, pane layout
   presets and layout undo, moving tabs between windows, shell
-  integration, window transparency, and restoring sessions and history after
+  integration, and restoring sessions and history after
   a restart.
 - **Terminal compatibility:** notifications and progress, extended underlines,
   SGR-pixel mouse reports, the remaining Kitty keyboard flags, and inline

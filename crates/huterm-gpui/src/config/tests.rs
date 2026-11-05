@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 291);
+    assert_eq!(fixtures.len(), 305);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -902,6 +902,7 @@ fn window_padding_rejects_invalid_values_and_accepts_zero() {
             macos_native_menus: true,
             size_indicator: huterm_config::SizeIndicator::Full,
             size_indicator_linger_ms: 100,
+            ..WindowConfig::default()
         }
     );
 }

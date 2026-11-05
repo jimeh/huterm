@@ -28,6 +28,7 @@ fn catalog_entries_are_unique_and_described() {
                         | "SettingsGroup"
                         | "confirming"
                         | "menu"
+                        | "Panel"
                         | "notices"
                 )
             ),

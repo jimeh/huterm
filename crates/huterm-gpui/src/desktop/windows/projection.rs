@@ -410,14 +410,15 @@ pub(super) fn holds_no_tabs(
     installs(state, workspace, session, &[], &[], false, false).is_empty()
 }
 
-/// A window's installs and replacements that have started and not
-/// finished, and those that failed. A failed one waits for a later batch
-/// that touches the window's workspace before reconcile tries it again, so
-/// a failure cannot loop.
+/// A window's tab subscriptions in flight, at most one per tab, and the
+/// panes whose installs failed. A failed pane waits for a later batch that
+/// touches the window's workspace, or an explicit retry, before reconcile
+/// tries it again, so a failure cannot loop; other panes of its tab still
+/// install.
 #[derive(Debug, Default)]
 pub(super) struct PendingInstalls {
     in_flight: Vec<TabId>,
-    failed: Vec<TabId>,
+    failed: HashSet<PaneId>,
 }
 
 impl PendingInstalls {
@@ -425,13 +426,18 @@ impl PendingInstalls {
         self.in_flight.extend_from_slice(tabs);
     }
 
-    /// Ends `tab`'s install; a `failed` one waits for the next batch that
-    /// touches the workspace.
-    pub(super) fn finish(&mut self, tab: TabId, failed: bool) {
+    /// Ends `tab`'s subscription and excludes only panes that failed in it.
+    pub(super) fn finish(&mut self, tab: TabId, failed: &[PaneId]) {
         self.in_flight.retain(|pending| *pending != tab);
-        if failed && !self.failed.contains(&tab) {
-            self.failed.push(tab);
-        }
+        self.failed.extend(failed);
+    }
+
+    pub(super) fn failed(&self, pane: PaneId) -> bool {
+        self.failed.contains(&pane)
+    }
+
+    pub(super) fn failed_panes(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.failed.iter().copied()
     }
 
     /// Allows failed installs again once a batch touched `workspace`.
@@ -443,9 +449,9 @@ impl PendingInstalls {
         }
     }
 
-    /// The tabs reconcile must not install now.
+    /// The tabs already subscribing viewers.
     fn excluded(&self) -> Vec<TabId> {
-        self.in_flight.iter().chain(&self.failed).copied().collect()
+        self.in_flight.clone()
     }
 }
 
@@ -611,15 +617,17 @@ pub(super) fn pane_removals(
 }
 
 /// Whether the projection holds a pane of `tab` that has no view in
-/// `installed`.
+/// `installed` and is eligible for an install attempt.
 pub(super) fn missing_panes(
     state: &HierarchyState,
     tab: TabId,
     installed: &[(PaneId, u64)],
+    failed: &HashSet<PaneId>,
 ) -> bool {
     state.tab(tab).is_some_and(|info| {
         info.layout.panes().iter().any(|pane| {
-            !installed.iter().any(|(installed, _)| *installed == pane.id)
+            !failed.contains(&pane.id)
+                && !installed.iter().any(|(installed, _)| *installed == pane.id)
         })
     })
 }
@@ -783,18 +791,33 @@ pub(super) fn reconcile_window(
         change.titles = true;
     }
     target.pending_installs().touched(touched, workspace);
+    start_installs(target, workspace, &current, terminating);
+    change
+}
+
+/// Starts the installs and replacements reconcile owes `target`: tabs
+/// without a view, shown tabs whose layout gained a pane, and revoked
+/// views, skipping tabs with a subscription in flight and panes whose
+/// installs failed.
+fn start_installs(
+    target: &mut impl ReconcileTarget,
+    workspace: Option<WorkspaceId>,
+    current: &[TabId],
+    terminating: bool,
+) {
     let pending = target.pending_installs().excluded();
-    let installed: Vec<TabId> =
-        target.installed().into_iter().map(|(tab, _)| tab).collect();
+    let failed = target.pending_installs().failed.clone();
     let mut install = installs(
         target.projection(),
         workspace,
         target.session(),
-        &installed,
+        current,
         &pending,
         target.busy(),
         terminating,
     );
+    install
+        .retain(|tab| missing_panes(target.projection(), *tab, &[], &failed));
     // A shown tab whose layout gained a pane installs the new pane's view.
     let held = installs(
         target.projection(),
@@ -805,12 +828,13 @@ pub(super) fn reconcile_window(
         target.busy(),
         terminating,
     );
-    install.extend(installed.iter().copied().filter(|tab| {
+    install.extend(current.iter().copied().filter(|tab| {
         held.contains(tab)
             && missing_panes(
                 target.projection(),
                 *tab,
                 &target.installed_panes(*tab),
+                &failed,
             )
     }));
     if !install.is_empty() {
@@ -831,7 +855,6 @@ pub(super) fn reconcile_window(
         target.pending_installs().begin(&replace);
         target.replace(&replace);
     }
-    change
 }
 
 /// Windows whose title consumers, open palettes and close confirmations,

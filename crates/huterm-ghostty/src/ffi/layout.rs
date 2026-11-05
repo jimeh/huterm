@@ -285,6 +285,29 @@ pub(crate) const STRUCTS: &[Struct] = &[
         ],
     },
     Struct {
+        name: "GhosttyTerminalWriteStop",
+        size: size_of::<ffi::GhosttyTerminalWriteStop>(),
+        align: align_of::<ffi::GhosttyTerminalWriteStop>(),
+        fields: &[
+            ("size", offset_of!(ffi::GhosttyTerminalWriteStop, size)),
+            (
+                "consumed",
+                offset_of!(ffi::GhosttyTerminalWriteStop, consumed),
+            ),
+            (
+                "reached",
+                offset_of!(ffi::GhosttyTerminalWriteStop, reached),
+            ),
+            ("kind", offset_of!(ffi::GhosttyTerminalWriteStop, kind)),
+            (
+                "introducer",
+                offset_of!(ffi::GhosttyTerminalWriteStop, introducer),
+            ),
+            ("end", offset_of!(ffi::GhosttyTerminalWriteStop, end)),
+            ("byte", offset_of!(ffi::GhosttyTerminalWriteStop, byte)),
+        ],
+    },
+    Struct {
         name: "GhosttyTerminalScrollbar",
         size: size_of::<ffi::GhosttyTerminalScrollbar>(),
         align: align_of::<ffi::GhosttyTerminalScrollbar>(),
@@ -432,6 +455,35 @@ pub(crate) const STRUCTS: &[Struct] = &[
             ),
             ("ctx", offset_of!(ffi::GhosttyClipboardWrite, ctx)),
             ("reply", offset_of!(ffi::GhosttyClipboardWrite, reply)),
+        ],
+    },
+    Struct {
+        name: "GhosttyTerminalSemanticPrompt",
+        size: size_of::<ffi::GhosttyTerminalSemanticPrompt>(),
+        align: align_of::<ffi::GhosttyTerminalSemanticPrompt>(),
+        fields: &[
+            ("size", offset_of!(ffi::GhosttyTerminalSemanticPrompt, size)),
+            ("kind", offset_of!(ffi::GhosttyTerminalSemanticPrompt, kind)),
+            (
+                "prompt_kind",
+                offset_of!(ffi::GhosttyTerminalSemanticPrompt, prompt_kind),
+            ),
+            (
+                "has_exit_code",
+                offset_of!(ffi::GhosttyTerminalSemanticPrompt, has_exit_code),
+            ),
+            (
+                "exit_code",
+                offset_of!(ffi::GhosttyTerminalSemanticPrompt, exit_code),
+            ),
+            (
+                "command",
+                offset_of!(ffi::GhosttyTerminalSemanticPrompt, command),
+            ),
+            (
+                "error",
+                offset_of!(ffi::GhosttyTerminalSemanticPrompt, error),
+            ),
         ],
     },
     Struct {
@@ -991,6 +1043,118 @@ pub(crate) const ENUMS: &[Enum] = &[
         ],
     },
     Enum {
+        name: "GhosttyTerminalBoundary",
+        size: size_of::<ffi::GhosttyTerminalBoundary>(),
+        align: align_of::<ffi::GhosttyTerminalBoundary>(),
+        values: &[
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_GROUND",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_GROUND as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_APC_START",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_APC_START as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_APC_END",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_APC_END as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_DCS_START",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_DCS_START as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_DCS_END",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_DCS_END as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_OSC_START",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_OSC_START as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_OSC_END",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_OSC_END as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_BOUNDARY_MAX_VALUE",
+                ffi::GHOSTTY_TERMINAL_BOUNDARY_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttyTerminalStringKind",
+        size: size_of::<ffi::GhosttyTerminalStringKind>(),
+        align: align_of::<ffi::GhosttyTerminalStringKind>(),
+        values: &[
+            (
+                "GHOSTTY_TERMINAL_STRING_KIND_APC",
+                ffi::GHOSTTY_TERMINAL_STRING_KIND_APC as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_KIND_DCS",
+                ffi::GHOSTTY_TERMINAL_STRING_KIND_DCS as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_KIND_OSC",
+                ffi::GHOSTTY_TERMINAL_STRING_KIND_OSC as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_KIND_MAX_VALUE",
+                ffi::GHOSTTY_TERMINAL_STRING_KIND_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttyTerminalStringIntroducer",
+        size: size_of::<ffi::GhosttyTerminalStringIntroducer>(),
+        align: align_of::<ffi::GhosttyTerminalStringIntroducer>(),
+        values: &[
+            (
+                "GHOSTTY_TERMINAL_STRING_INTRODUCER_ESC",
+                ffi::GHOSTTY_TERMINAL_STRING_INTRODUCER_ESC as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_INTRODUCER_C1",
+                ffi::GHOSTTY_TERMINAL_STRING_INTRODUCER_C1 as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_INTRODUCER_MAX_VALUE",
+                ffi::GHOSTTY_TERMINAL_STRING_INTRODUCER_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttyTerminalStringEnd",
+        size: size_of::<ffi::GhosttyTerminalStringEnd>(),
+        align: align_of::<ffi::GhosttyTerminalStringEnd>(),
+        values: &[
+            (
+                "GHOSTTY_TERMINAL_STRING_END_ST_ESC",
+                ffi::GHOSTTY_TERMINAL_STRING_END_ST_ESC as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_END_ST_C1",
+                ffi::GHOSTTY_TERMINAL_STRING_END_ST_C1 as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_END_CANCELLED",
+                ffi::GHOSTTY_TERMINAL_STRING_END_CANCELLED as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_END_ABORTED",
+                ffi::GHOSTTY_TERMINAL_STRING_END_ABORTED as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_END_BEL",
+                ffi::GHOSTTY_TERMINAL_STRING_END_BEL as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_STRING_END_MAX_VALUE",
+                ffi::GHOSTTY_TERMINAL_STRING_END_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
         name: "GhosttyClipboardLocation",
         size: size_of::<ffi::GhosttyClipboardLocation>(),
         align: align_of::<ffi::GhosttyClipboardLocation>(),
@@ -1045,6 +1209,64 @@ pub(crate) const ENUMS: &[Enum] = &[
             (
                 "GHOSTTY_CLIPBOARD_WRITE_RESULT_MAX_VALUE",
                 ffi::GHOSTTY_CLIPBOARD_WRITE_RESULT_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttySemanticPromptKind",
+        size: size_of::<ffi::GhosttySemanticPromptKind>(),
+        align: align_of::<ffi::GhosttySemanticPromptKind>(),
+        values: &[
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_INVALID",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_INVALID as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_PROMPT_START",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_START as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_INPUT_START",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_INPUT_START as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_COMMAND_END",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_COMMAND_END as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_MAX_VALUE",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttySemanticPromptPromptKind",
+        size: size_of::<ffi::GhosttySemanticPromptPromptKind>(),
+        align: align_of::<ffi::GhosttySemanticPromptPromptKind>(),
+        values: &[
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_PROMPT_RIGHT",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_RIGHT as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_PROMPT_CONTINUATION",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_CONTINUATION as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_PROMPT_SECONDARY",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_SECONDARY as i64,
+            ),
+            (
+                "GHOSTTY_SEMANTIC_PROMPT_PROMPT_MAX_VALUE",
+                ffi::GHOSTTY_SEMANTIC_PROMPT_PROMPT_MAX_VALUE as i64,
             ),
         ],
     },
@@ -2405,6 +2627,11 @@ pub(crate) const HANDLES: &[Sized] = &[
         align: align_of::<ffi::GhosttyTerminal>(),
     },
     Sized {
+        name: "GhosttyTrackedGridRef",
+        size: size_of::<ffi::GhosttyTrackedGridRef>(),
+        align: align_of::<ffi::GhosttyTrackedGridRef>(),
+    },
+    Sized {
         name: "GhosttyRenderState",
         size: size_of::<ffi::GhosttyRenderState>(),
         align: align_of::<ffi::GhosttyRenderState>(),
@@ -2445,6 +2672,7 @@ pub(crate) const HANDLES: &[Sized] = &[
 /// opaque structs behind handles.
 pub(crate) const UNCHECKED: &[&str] = &[
     "GhosttyTerminalImpl",
+    "GhosttyTrackedGridRefImpl",
     "GhosttyRenderStateImpl",
     "GhosttyRenderStateRowIteratorImpl",
     "GhosttyRenderStateRowCellsImpl",
@@ -2455,6 +2683,7 @@ pub(crate) const UNCHECKED: &[&str] = &[
     "GhosttyTerminalBellFn",
     "GhosttyClipboardWriteReplyFn",
     "GhosttyTerminalClipboardWriteFn",
+    "GhosttyTerminalSemanticPromptFn",
     "GhosttyTerminalColorSchemeFn",
     "GhosttyTerminalDeviceAttributesFn",
     "GhosttyTerminalSizeFn",

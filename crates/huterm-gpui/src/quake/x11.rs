@@ -21,6 +21,35 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
+/// Rechecked at open and reload; compositor tracking between loads is deferred.
+pub(crate) fn transparency_support()
+-> anyhow::Result<crate::transparency::Support> {
+    use crate::transparency::Support;
+    let (connection, screen) = x11rb::connect(None)?;
+    let selection = connection
+        .intern_atom(false, format!("_NET_WM_CM_S{screen}").as_bytes())?
+        .reply()?
+        .atom;
+    if connection.get_selection_owner(selection)?.reply()?.owner == 0 {
+        return Ok(Support::NoCompositor);
+    }
+    let argb =
+        connection.setup().roots[screen]
+            .allowed_depths
+            .iter()
+            .any(|depth| {
+                depth.depth == 32
+                    && depth.visuals.iter().any(|visual| {
+                        visual.class == xproto::VisualClass::TRUE_COLOR
+                    })
+            });
+    Ok(if argb {
+        Support::Available
+    } else {
+        Support::NoArgbVisual
+    })
+}
+
 #[derive(Clone)]
 pub(crate) struct Platform {
     connection: Rc<RustConnection>,
@@ -324,6 +353,14 @@ impl Window {
             ],
         )
     }
+    pub(crate) fn opacity_value(&self) -> anyhow::Result<f64> {
+        Ok(self
+            .platform
+            .cardinals(self.id, b"_NET_WM_WINDOW_OPACITY")?
+            .first()
+            .copied()
+            .map_or(1.0, |value| f64::from(value) / f64::from(u32::MAX)))
+    }
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -441,16 +478,25 @@ impl Window {
         reason = "clamped unit opacity is encoded as a 32-bit EWMH cardinal"
     )]
     pub fn opacity(&self, value: f64) -> anyhow::Result<()> {
-        self.platform
-            .connection
-            .change_property32(
-                PropMode::REPLACE,
-                self.id,
-                self.platform.atom(b"_NET_WM_WINDOW_OPACITY")?,
-                AtomEnum::CARDINAL,
-                &[(value.clamp(0.0, 1.0) * f64::from(u32::MAX)).round() as u32],
-            )?
-            .check()?;
+        let atom = self.platform.atom(b"_NET_WM_WINDOW_OPACITY")?;
+        if value >= 1.0 {
+            self.platform
+                .connection
+                .delete_property(self.id, atom)?
+                .check()?;
+        } else {
+            self.platform
+                .connection
+                .change_property32(
+                    PropMode::REPLACE,
+                    self.id,
+                    atom,
+                    AtomEnum::CARDINAL,
+                    &[(value.clamp(0.0, 1.0) * f64::from(u32::MAX)).round()
+                        as u32],
+                )?
+                .check()?;
+        }
         self.platform.connection.flush()?;
         Ok(())
     }

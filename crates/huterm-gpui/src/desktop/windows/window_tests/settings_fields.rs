@@ -914,3 +914,45 @@ fn page_keys_refuse_on_a_read_only_number_field(cx: &mut TestAppContext) {
     assert_eq!(field_text(&mut harness, path), "13");
     assert_eq!(file.text(), broken);
 }
+
+#[gpui::test]
+fn transparency_has_three_accessible_percent_sliders(cx: &mut TestAppContext) {
+    let file = ScratchConfig::new(
+        "transparency-sliders",
+        "[window]\nbackground_opacity = 0.6\n",
+    );
+    let mut harness = DesktopHarness::new(cx);
+    show(&mut harness, &file, SectionId::Appearance);
+    for path in [
+        "window.opacity",
+        "window.background_opacity",
+        "window.foreground_opacity",
+    ] {
+        let node = a11y_node(&mut harness, &format!("settings-slider-{path}"));
+        assert!(node["aria"].to_string().contains('%'), "{node}");
+    }
+}
+
+#[gpui::test]
+fn all_opacity_settings_explain_linux_fallback(cx: &mut TestAppContext) {
+    let harness = DesktopHarness::new(cx);
+    harness.cx.update(|cx| {
+        for support in [
+            crate::transparency::Support::NoCompositor,
+            crate::transparency::Support::NoArgbVisual,
+        ] {
+            cx.global_mut::<Desktop>().transparency_support = support;
+            for path in [
+                "window.opacity",
+                "window.background_opacity",
+                "window.foreground_opacity",
+            ] {
+                assert_eq!(
+                    settings_window::SettingsView::transparency_note(path, cx),
+                    support.note(),
+                    "{path}"
+                );
+            }
+        }
+    });
+}

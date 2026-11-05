@@ -1,3 +1,4 @@
+import { copyShellIntegration, verifyShellIntegration, SHELL_INTEGRATION_FILES } from "./shell-integration.ts";
 import { describe, expect, test } from "bun:test";
 import { constants } from "node:fs";
 import { chmod, mkdir, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -32,6 +33,22 @@ async function inspectRegularFile(file: string): Promise<{ bytes: Buffer; mode: 
 }
 
 describe("Linux package policy", () => {
+  test("copies and verifies every shell integration file including dotfiles", async () => {
+    const root = await mkdtemp(join(tmpdir(), "huterm-package-shells-"));
+    try {
+      const source = join(repoRoot, "assets/shell-integration");
+      const destination = join(root, "share/huterm/shell-integration");
+      await copyShellIntegration(source, destination);
+      await normalizeTreeMetadata(root, 1_700_000_000);
+      for (const file of SHELL_INTEGRATION_FILES) {
+        expect((await stat(join(destination, file))).mode & 0o777).toBe(0o644);
+      }
+      await writeFile(join(destination, "zsh/.zshenv"), "altered");
+      await expect(verifyShellIntegration(source, destination)).rejects.toThrow("differs");
+      await rm(join(destination, "bash/huterm.bash"));
+      await expect(verifyShellIntegration(source, destination)).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   test("normalizes payload modes and timestamps", async () => {
     const root = await mkdtemp(join(tmpdir(), "huterm-package-metadata-"));
     try {

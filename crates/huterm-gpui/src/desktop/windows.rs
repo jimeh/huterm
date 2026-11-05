@@ -182,6 +182,7 @@ mod audible_bell;
 pub(super) use audible_bell::ring as ring_audible_bell;
 mod button_layout;
 mod client_frame;
+mod cross_window;
 mod exit_closes;
 mod field_menu;
 mod input_sync;
@@ -209,8 +210,10 @@ mod tab_position;
 mod tab_strip;
 pub(super) mod tab_visibility;
 mod terminal_menu;
+mod transparency_panel;
 mod view_install;
 mod views;
+mod window_locator;
 mod window_menu;
 #[cfg(all(test, feature = "test-support"))]
 mod worker_hooks;
@@ -860,6 +863,7 @@ struct RestoreSnapshot {
 }
 
 struct Desktop {
+    pub(super) transparency_support: crate::transparency::Support,
     quake: quake_windows::Registry,
     runtime: Arc<DesktopRuntime>,
     config: Config,
@@ -907,6 +911,7 @@ struct Desktop {
     unavailable_fonts: UnavailableFonts,
     applied_terminal_family: Option<String>,
     external_drag_window: Option<gpui::WindowId>,
+    cross: cross_window::CrossWindows,
     /// The window buttons the desktop asks title rows to draw.
     button_layout: ButtonLayout,
     /// How many times the theme changed to follow the system's mode, for
@@ -1626,7 +1631,10 @@ fn install_desktop(
     let (keymap, config_report) = install_startup_keymap(cx, &loaded);
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     let updater = native_updater::Updater::initialize(loaded.config.updates);
+    let transparency_support = crate::transparency::support();
+    warn_transparency(&loaded.config, transparency_support);
     cx.set_global(Desktop {
+        transparency_support,
         quake: quake_windows::Registry::default(),
         runtime,
         config: loaded.config,
@@ -1652,6 +1660,7 @@ fn install_desktop(
         unavailable_fonts: UnavailableFonts::default(),
         applied_terminal_family: None,
         external_drag_window: None,
+        cross: cross_window::CrossWindows::default(),
         button_layout: ButtonLayout::standard(),
         appearance_follows: 0,
         system_mode: system_appearance::Mode::Light,
@@ -1668,6 +1677,7 @@ fn install_desktop(
     system_appearance::follow(cx);
     apply_typography(cx);
     start_hierarchy_drain(cx);
+    cross_window::start_smoke_publisher(cx);
     cx.on_window_closed(|cx, window| {
         let desktop = cx.global_mut::<Desktop>();
         if desktop
@@ -1677,6 +1687,7 @@ fn install_desktop(
             desktop.settings = None;
         }
         desktop.windows.remove(window);
+        desktop.cross.windows.retain(|(id, _)| *id != window);
         // A close the window took and had not started committing never
         // reached the runtime.
         if desktop.exit_closes.release(window).is_some() {
@@ -1685,6 +1696,7 @@ fn install_desktop(
         let desktop = cx.global_mut::<Desktop>();
         desktop.title_consumers.set_host(window, false);
         desktop.views.prune();
+        cross_window::closed(window, cx);
         // The closed window's titles left the model; Quit dialogs and
         // palettes elsewhere still list them until they refresh.
         mark_titles_changed(window, cx);
@@ -1908,6 +1920,10 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         // and the grids its panes request, and an input sync toggle changes
         // its tab's marks without changing a title.
         if change.changed
+            || view
+                .transfer
+                .as_ref()
+                .is_some_and(|pending| pending.installing)
             || view.tabs.iter().any(|tab| {
                 touched.contains_layout(tab.id) || touched.contains_tab(tab.id)
             })
@@ -2451,16 +2467,46 @@ fn open_window_with_profile(
         quake: profile.is_some(),
         client_decorations: false,
     };
+    let transfer_size = cx.global::<Desktop>().cross.opening;
     let bounds = Bounds::centered(
         display_id,
-        initial_window_size(&config, metrics, host, WindowFrame::default()),
+        transfer_size.unwrap_or_else(|| {
+            initial_window_size(&config, metrics, host, WindowFrame::default())
+        }),
         cx,
     );
+    let transparency_support = crate::transparency::support();
+    cx.global_mut::<Desktop>().transparency_support = transparency_support;
+    // A new window has no overrides; a Quake window starts from its
+    // profile's keys.
+    let transparency_values = profile
+        .as_ref()
+        .map_or_else(crate::transparency::Layer::default, |(_, profile, _)| {
+            crate::transparency::Layer::of_profile(profile)
+        })
+        .over(crate::transparency::Values::of(&config.window));
     let result = cx.open_window(
         WindowOptions {
+            window_background: crate::transparency::resolve(
+                transparency_values,
+                transparency_support,
+                host.platform,
+                host.platform == Platform::Linux
+                    && requested_decorations(
+                        config.tabs.position,
+                        host.platform,
+                        host.quake,
+                    ) == gpui::WindowDecorations::Client
+                    && transparency_support
+                        == crate::transparency::Support::Available,
+            )
+            .appearance,
             display_id,
-            show: profile.is_none(),
-            focus: profile.is_none(),
+            // AppKit activation maps a hidden host after installation settles.
+            // X11 activation only sends EWMH focus, so that host shows now.
+            show: profile.is_none()
+                && !(cfg!(target_os = "macos") && transfer_size.is_some()),
+            focus: profile.is_none() && transfer_size.is_none(),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_decorations: Some(requested_decorations(
                 config.tabs.position,
@@ -2523,7 +2569,10 @@ fn open_window_with_profile(
                 state,
                 button_layout,
             );
-            if scaled_metrics != metrics || frame != WindowFrame::default() {
+            if transfer_size.is_none()
+                && (scaled_metrics != metrics
+                    || frame != WindowFrame::default())
+            {
                 let requested =
                     initial_window_size(&config, scaled_metrics, host, frame);
                 let visible = window
@@ -2546,6 +2595,9 @@ fn open_window_with_profile(
             let native_radii = pane_indicators::read_native_radii(window);
             #[cfg(not(target_os = "macos"))]
             let native_radii = NativeRadii::default();
+            // `refresh_transparency` configures it once the view exists.
+            let native_alpha = crate::transparency::Alpha::default();
+            let blur = crate::transparency::Blur::default();
             let profile_requested = profile.is_some();
             let quake = profile.and_then(|(name, profile, display)| {
                 quake_windows::attach(
@@ -2553,6 +2605,8 @@ fn open_window_with_profile(
                     profile,
                     display,
                     reporter.clone(),
+                    native_alpha.clone(),
+                    blur.clone(),
                     window,
                     cx,
                 )
@@ -2587,6 +2641,12 @@ fn open_window_with_profile(
                 }
             }
             let window_id = window.window_handle().window_id();
+            if let Some(native) = window_locator::identity(window) {
+                cx.global_mut::<Desktop>()
+                    .cross
+                    .windows
+                    .insert(0, (window_id, native));
+            }
             cx.global_mut::<Desktop>().windows.open(
                 window_id,
                 quake.as_ref().map(|state| QuakeRecord {
@@ -2599,6 +2659,18 @@ fn open_window_with_profile(
                 },
             );
             let view = cx.new(|cx| WorkspaceView {
+                native_alpha,
+                transparency_support,
+                transparency_values,
+                transparency: crate::transparency::Effective::default(),
+                root_opacity: crate::transparency::RootOpacity::default(),
+                blur,
+                panel: None,
+                panel_popover: Popover::new(),
+                panel_scrollbar: crate::ui::list_scrollbar::ListScrollbar::new(
+                    gpui::ScrollHandle::new(),
+                ),
+                background_appearance: None,
                 frame_clock,
                 quake,
                 window: window_id,
@@ -2637,12 +2709,17 @@ fn open_window_with_profile(
                 drawn_dividers: RefCell::new(Vec::new()),
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
+                drawn_tear_off: RefCell::new(None),
+                drawn_tabs: RefCell::new(Vec::new()),
                 drawn_focus: RefCell::new(FocusMarks::default()),
                 #[cfg(test)]
                 drawn_title_marks: RefCell::new(None),
                 indicator_paths: RefCell::new(PathCache::default()),
                 drawn_badges: RefCell::new(Vec::new()),
                 pane_drag: None,
+                incoming: None,
+                transfer: None,
+                transfer_scroll: None,
                 reveal: Reveal::default(),
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
@@ -2695,6 +2772,7 @@ fn open_window_with_profile(
                 drawn_dialog_groups: None,
             });
             view.update(cx, |view, cx| {
+                view.refresh_transparency(window, cx);
                 view.frame_clock.observe(cx);
                 // A field's menu over Licenses reaches past its panel.
                 view.dialog.beneath(&view.popover);
@@ -2725,6 +2803,7 @@ fn open_window_with_profile(
                     if view.layout_pending {
                         view.sync_tab_layout(window, cx);
                     }
+                    view.finish_transfer_install(window, cx);
                     view.resume_close(window, cx);
                     view.refresh_palette(cx);
                     view.refresh_menu(window, cx);
@@ -2743,15 +2822,19 @@ fn open_window_with_profile(
                     view.pane_grab
                         .record(pane_grab::held_bits(window.modifiers()), now);
                     view.pane_grab.suppress(now);
+                    if window.is_window_active() {
+                        cx.global_mut::<Desktop>().cross.activated(view.window);
+                    }
                     if !window.is_window_active() {
                         view.cancel_divider_drag(cx);
                         view.cancel_reorder(window, cx);
                         view.cancel_pane_drag(window, cx);
                         view.drag_right_press = false;
-                        // An open menu closes, as AppKit menus and GTK
-                        // popovers do, and focus is on the terminal when
+                        // An open menu or panel closes, as AppKit menus and
+                        // GTK popovers do, and focus is on the terminal when
                         // the window comes back.
                         view.close_menu(MenuFocusReturn::Terminal, window, cx);
+                        view.close_panel(window, cx);
                     }
                     view.refresh_tab_visibility(window, cx);
                     // A failure latched while every window was hidden or
@@ -2882,16 +2965,22 @@ impl refresh::Animated for WorkspaceView {
         let mut next = self
             .tab_scrollbars
             .schedule(now)
+            .merge(self.panel_scrollbar.schedule(now))
             .merge(self.reveal.schedule(now))
             .merge(self.pane_bars.schedule(now))
             .merge(self.pane_grab.schedule());
         if let Some(at) = self.pointer_reveal.probe_at {
             next = next.merge(AnimationSchedule::at(at));
         }
-        if self.scroll_target.is_some()
+        if self
+            .incoming
+            .as_ref()
+            .is_some_and(|incoming| incoming.scrolls(self.tab_scroll))
+            || self.scroll_target.is_some()
             || self.reorder.as_ref().is_some_and(|drag| {
                 drag.dragging
                     && !drag.nesting
+                    && !drag.outside
                     && drag
                         .strip
                         .autoscroll(drag.pointer, Duration::from_millis(16))
@@ -2912,6 +3001,13 @@ impl refresh::Animated for WorkspaceView {
             .and_then(|drag| drag.spring.deadline())
         {
             next = next.merge(AnimationSchedule::at(deadline));
+        }
+        if let Some(at) = self
+            .incoming
+            .as_ref()
+            .and_then(|incoming| incoming.spring.deadline())
+        {
+            next = next.merge(AnimationSchedule::at(at));
         }
         if let Some(state) = &self.quake {
             next = next.merge(state.frame_schedule());
@@ -2949,7 +3045,11 @@ impl refresh::Animated for WorkspaceView {
         if self.pane_grab.tick(now) {
             cx.notify();
         }
+        if self.panel_scrollbar.advance(now) {
+            cx.notify();
+        }
         self.advance_spring(now, window, cx);
+        self.advance_incoming_spring(now, window, cx);
         self.update_pointer_probe(now, window);
     }
 }
@@ -3198,6 +3298,13 @@ impl WorkspaceView {
             self.focused_notice = None;
             self.restore_tab_focus(window, cx);
             self.reconcile_notices(window, cx);
+        }
+        if command.id == view_install::RETRY_INSTALL {
+            if !terminating(cx) {
+                self.reconcile(&Touched::everything(), false, cx);
+                cx.notify();
+            }
+            return Ok(CommandOutcome::Completed);
         }
         self.invoke_interactive(&command, window, cx)
     }
@@ -3763,6 +3870,22 @@ struct PointerReveal {
     reason = "window busy, layout, and drag states are independent"
 )]
 struct WorkspaceView {
+    native_alpha: crate::transparency::Alpha,
+    pub(super) transparency_support: crate::transparency::Support,
+    /// The defaults, the Quake profile's keys, and this window's overrides,
+    /// layered as `refresh_transparency` last read them.
+    transparency_values: crate::transparency::Values,
+    /// What `sync_frame` resolved from `transparency_values`.
+    pub(super) transparency: crate::transparency::Effective,
+    /// The root element's opacity, which follows native alpha writes.
+    root_opacity: crate::transparency::RootOpacity,
+    blur: crate::transparency::Blur,
+    /// The Window Transparency panel, with its own popover so closing a
+    /// menu leaves it open.
+    panel: Option<transparency_panel::Panel>,
+    panel_popover: Popover,
+    panel_scrollbar: crate::ui::list_scrollbar::ListScrollbar,
+    background_appearance: Option<gpui::WindowBackgroundAppearance>,
     frame_clock: Rc<refresh::FrameClock>,
     quake: Option<quake_windows::Presentation>,
     /// This window's key in the window model, which owns its attachment,
@@ -3824,6 +3947,11 @@ struct WorkspaceView {
     drawn_panes: RefCell<Option<(TabId, Vec<PaneRect>)>>,
     /// The drop target the last frame drew, for smoke state.
     drawn_drop: RefCell<Option<String>>,
+    /// The tear-off pill bounds drawn in the last frame.
+    drawn_tear_off: RefCell<Option<Bounds<Pixels>>>,
+    /// The tabs the last frame built labels for, in bar order. Their press
+    /// listeners exist only from that frame, so smokes wait for these.
+    drawn_tabs: RefCell<Vec<TabId>>,
     /// The pane titles the last frame's grab badges showed, for smoke state.
     drawn_badges: RefCell<Vec<String>>,
     /// The focus marks the last frame drew, for smoke state.
@@ -3837,6 +3965,9 @@ struct WorkspaceView {
     indicator_paths: RefCell<PathCache>,
     /// A press on a pane title bar, or the drag it became.
     pane_drag: Option<PaneDrag>,
+    incoming: Option<cross_window::Incoming>,
+    transfer: Option<cross_window::PendingTransfer>,
+    transfer_scroll: Option<Pixels>,
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     pointer_reveal: PointerReveal,
@@ -4090,6 +4221,7 @@ struct TabReorder {
     /// Pane mode: the pointer is over a pane of the active tab, deep enough
     /// past the bar that a release nests the tab instead of reordering.
     nesting: bool,
+    outside: bool,
     /// The pane zone a release in pane mode nests into; a centre offers
     /// none.
     nest: Option<DropTarget>,
@@ -4551,6 +4683,7 @@ impl WorkspaceView {
             || self.close.confirmation.is_some()
             || self.menu.is_some()
             || self.about.is_some()
+            || self.panel.is_some()
     }
 
     /// Appends a tab's view and model entry, activating a spawned tab, then
@@ -4618,7 +4751,8 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Brings this window in line with the projection for `touched`.
+    /// Brings this window in line with the projection for `touched`, and
+    /// withdraws install failure notices that no longer apply.
     fn reconcile(
         &mut self,
         touched: &Touched,
@@ -4631,6 +4765,7 @@ impl WorkspaceView {
             terminating,
         );
         if !terminating {
+            self.withdraw_install_notices(cx);
             self.note_emptied(change.emptied, touched, cx);
         }
         change
@@ -4872,6 +5007,7 @@ impl WorkspaceView {
             };
             let terminal = rect.map_or(bounds, |rect| rect.terminal);
             let id = pane.pane;
+            self.configure_pane_paint(&pane.view, id == focused, shown, cx);
             let grab = grabs.then(|| self.grab_layer(tab, pane, terminal, cx));
             elements.push(
                 div()
@@ -4923,7 +5059,8 @@ impl WorkspaceView {
                             bottom: bars.position
                                 == PaneTitleBarPosition::Bottom,
                         },
-                        colors,
+                        colors
+                            .for_floating(bars.mode == PaneTitleBarMode::Hover),
                         swatch,
                         cx,
                     )
@@ -4941,6 +5078,139 @@ impl WorkspaceView {
             ));
         }
         elements
+    }
+
+    /// The transparency keys of the Quake profile this window serves, by
+    /// its current name. A window shown as a regular one keeps them, and a
+    /// window whose profile is gone has none.
+    fn profile_transparency(&self) -> crate::transparency::Layer {
+        self.quake
+            .as_ref()
+            .and_then(|state| self.config.quake.profiles.get(&state.name))
+            .map_or_else(
+                crate::transparency::Layer::default,
+                crate::transparency::Layer::of_profile,
+            )
+    }
+
+    /// This window's own transparency overrides.
+    fn own_transparency(&self, cx: &App) -> crate::transparency::Layer {
+        self.record(cx)
+            .map_or_else(crate::transparency::Layer::default, |record| {
+                record.transparency
+            })
+    }
+
+    /// Layers the defaults, the profile, and this window's overrides again,
+    /// and applies the result. Nothing here restarts a running Quake fade:
+    /// the fade multiplies the configured factor it finds when it writes.
+    fn refresh_transparency(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.transparency_values =
+            self.own_transparency(cx)
+                .over(self.profile_transparency().over(
+                    crate::transparency::Values::of(&self.config.window),
+                ));
+        self.sync_frame(window);
+        self.sync_transparency(window, cx);
+        cx.notify();
+    }
+
+    /// Hands the resolved values to the native alpha, root opacity, and
+    /// blur owners. Render calls it on every frame; each owner writes only
+    /// what changed.
+    fn sync_transparency(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.native_alpha.set_supported(
+            self.transparency_support
+                == crate::transparency::Support::Available,
+        );
+        self.native_alpha.configure(self.transparency.native_alpha);
+        let pending =
+            self.native_alpha.sync(window, cx, |view: &mut Self, cx| {
+                if view.root_opacity.landed() {
+                    cx.notify();
+                }
+            });
+        self.root_opacity
+            .resolve(self.transparency.root_opacity, pending);
+        self.blur.set_desired(self.transparency.blur_radius);
+        self.blur.sync(window, cx);
+    }
+
+    /// Sets or clears this window's override of one value, then repaints.
+    fn set_transparency_override(
+        &mut self,
+        key: crate::transparency::Key,
+        value: Option<f64>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let mut layer = self.own_transparency(cx);
+        layer.set(key, value);
+        self.replace_transparency_overrides(layer, window, cx);
+    }
+
+    fn replace_transparency_overrides(
+        &mut self,
+        layer: crate::transparency::Layer,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if cx
+            .global_mut::<Desktop>()
+            .windows
+            .set_transparency(self.window, layer)
+        {
+            self.refresh_transparency(window, cx);
+        }
+    }
+
+    fn tab_colors(&self) -> TabColors {
+        TabColors::new(&self.config.theme)
+            .background_opacity(self.transparency.background)
+            .translucent(self.transparency.translucent)
+    }
+
+    /// Colors for drag cues that float over the bar or terminal content: the
+    /// title chip and the tear-off pill stay opaque, like the palette, at
+    /// any background opacity.
+    fn floating_colors(&self) -> TabColors {
+        TabColors::new(&self.config.theme)
+    }
+
+    fn configure_pane_paint(
+        &self,
+        view: &Entity<TerminalView>,
+        focused: bool,
+        shown: usize,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let transparency = self.transparency;
+        let tint = if transparency.translucent && !focused && shown > 1 {
+            crate::transparency::Tint {
+                dim: self.config.panes.inactive_dim,
+                darken: self.config.panes.inactive_dim_background,
+            }
+        } else {
+            crate::transparency::Tint::default()
+        };
+        view.update(cx, |view, cx| {
+            if view.renderer.borrow_mut().set_opacity(
+                transparency.background,
+                transparency.foreground,
+                transparency.translucent,
+                tint,
+            ) {
+                cx.notify();
+            }
+        });
     }
 
     /// The layers dimming `pane`'s terminal: the theme background under
@@ -4973,7 +5243,11 @@ impl WorkspaceView {
             drawn.darkened.push((pane, alpha));
             div().absolute().inset_0().bg(gpui::black().opacity(alpha))
         });
-        [dim, background].into_iter().flatten()
+        let translucent = self.transparency.translucent;
+        [dim, background]
+            .into_iter()
+            .flatten()
+            .filter(move |_| !translucent)
     }
 
     /// How many of `tab`'s panes `pane_elements` draws: each installed view
@@ -5744,7 +6018,14 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
     }
 
     fn busy(&self) -> bool {
+        // Installation reconciles membership while commands and close stay
+        // reserved through the view's own busy flag.
         self.view.busy
+            && !self
+                .view
+                .transfer
+                .as_ref()
+                .is_some_and(|pending| pending.installing)
     }
 
     fn drop_tabs(&mut self, tabs: &[TabId]) {
@@ -5969,17 +6250,20 @@ impl WorkspaceView {
         let state_changed = self.frame_state != state;
         self.frame_state = state;
         let frame = self.window_frame();
+        self.transparency = crate::transparency::resolve(
+            self.transparency_values,
+            self.transparency_support,
+            Platform::current(),
+            frame.decorated(),
+        );
+        let appearance = self.transparency.appearance;
+        if self.background_appearance != Some(appearance) {
+            window.set_background_appearance(appearance);
+            window.refresh();
+            self.background_appearance = Some(appearance);
+        }
         if self.applied_frame == Some(frame) {
             return state_changed;
-        }
-        if self.applied_frame.is_some_and(WindowFrame::decorated)
-            != frame.decorated()
-        {
-            window.set_background_appearance(if frame.decorated() {
-                gpui::WindowBackgroundAppearance::Transparent
-            } else {
-                gpui::WindowBackgroundAppearance::Opaque
-            });
         }
         // GPUI writes `_GTK_FRAME_EXTENTS` only when the inset changes,
         // so a zero inset on a server-decorated window sets no property.
@@ -6743,13 +7027,16 @@ impl WorkspaceView {
         }
         let enabled = self.presentation() == Presentation::Overlay
             && self.quake_visible()
-            && window.is_window_active()
+            && (window.is_window_active() || self.incoming.is_some())
             && self.close.confirmation.is_none();
         let gesture = self
             .active_view(cx)
             .is_some_and(|tab| tab.read(cx).owns_pointer_gesture());
         let layout = self.chrome_layout(window);
-        let pointer = window.mouse_position();
+        let pointer = self.incoming.as_ref().map_or_else(
+            || window.mouse_position(),
+            |incoming| incoming.pointer,
+        );
         let bounds = layout.terminal;
         let hovered =
             window.is_window_hovered() && !self.pointer_reveal.outside;
@@ -6763,6 +7050,7 @@ impl WorkspaceView {
             && self.native_fullscreen.as_ref().is_none_or(
                 crate::native_fullscreen::Adapter::pointer_on_display,
             );
+        let hovered = hovered || self.incoming.is_some();
         let inside = hovered && bounds.contains(&pointer);
         let edge = inside
             && match position {
@@ -6803,6 +7091,7 @@ impl WorkspaceView {
         // Another drag, or a menu or dialog over the bands, claims the
         // pointer too; a bar's own menu holds it through `holds_pane_bar`.
         let claimed = self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            || self.incoming.is_some()
             || self.divider_drag.is_some()
             || self.reorder.is_some()
             || self.resizing_sidebar
@@ -7078,7 +7367,17 @@ impl WorkspaceView {
         source.window == window.window_handle().window_id()
             && Some(source.workspace) == self.workspace_id(cx)
             && self.tabs.iter().any(|tab| tab.id == source.tab)
+            && cx
+                .global::<Desktop>()
+                .hierarchy
+                .state()
+                .tab_workspace(source.tab)
+                == Some(source.workspace)
             && !self.busy
+            && self.arrangements == 0
+            && !self.overlay_holds_focus()
+            && self.close.current.is_none()
+            && self.record(cx).is_some_and(|record| !record.closing)
             && self.close.confirmation.is_none()
             && !cx.global::<Desktop>().quitting
             && !cx.global::<Desktop>().quit_pending
@@ -7102,6 +7401,7 @@ impl WorkspaceView {
         if !self.can_reorder(source, window, cx) {
             return;
         }
+        self.end_cross_drag(true, cx);
         self.scroll_target = None;
         self.reorder = Some(TabReorder {
             source,
@@ -7111,6 +7411,7 @@ impl WorkspaceView {
             original_scroll: self.tab_scroll,
             strip: self.tab_strip(window),
             nesting: false,
+            outside: false,
             nest: None,
         });
         cx.notify();
@@ -7148,6 +7449,18 @@ impl WorkspaceView {
                 self.last_scroll = Instant::now();
             }
         }
+        if self.route_cross_drag(pointer, window, cx) {
+            if let Some(drag) = &mut self.reorder {
+                drag.outside = true;
+                drag.nesting = false;
+                drag.nest = None;
+            }
+            cx.notify();
+            return;
+        }
+        if let Some(drag) = &mut self.reorder {
+            drag.outside = false;
+        }
         let mode = self.reorder_pane_mode(window, cx);
         if let Some(drag) = &mut self.reorder {
             drag.nesting = mode.is_some();
@@ -7163,10 +7476,15 @@ impl WorkspaceView {
         let elapsed = now.saturating_duration_since(self.last_scroll);
         self.last_scroll = now;
         let strip = self.tab_strip(window);
-        let next = if let Some(drag) = &mut self.reorder {
+        let next = if let Some(incoming) = &mut self.incoming {
+            match incoming.autoscroll(strip, elapsed) {
+                Some(next) => next,
+                None => return false,
+            }
+        } else if let Some(drag) = &mut self.reorder {
             drag.strip = strip;
             // A tab held over a pane to nest it leaves the bar where it is.
-            if !drag.dragging || drag.nesting {
+            if !drag.dragging || drag.nesting || drag.outside {
                 return false;
             }
             drag.strip.autoscroll(drag.pointer, elapsed)
@@ -7204,12 +7522,24 @@ impl WorkspaceView {
         }
     }
 
+    fn take_reorder(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<TabReorder> {
+        self.end_cross_drag(true, cx);
+        let drag = self.reorder.take();
+        if drag.is_some() {
+            cx.notify();
+        }
+        drag
+    }
+
     fn cancel_reorder(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(drag) = self.reorder.take() {
+        if let Some(drag) = self.take_reorder(cx) {
             self.tab_scroll = drag.original_scroll;
             self.restore_tab_focus(window, cx);
             cx.notify();
@@ -7223,7 +7553,16 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.update_reorder(pointer, window, cx);
-        let Some(drag) = self.reorder.take() else {
+        if self.finish_cross_drag(window, cx) {
+            if let Some(drag) = self.take_reorder(cx)
+                && !self.busy
+            {
+                self.tab_scroll = drag.original_scroll;
+            }
+            cx.notify();
+            return;
+        }
+        let Some(drag) = self.take_reorder(cx) else {
             return;
         };
         cx.notify();
@@ -7394,24 +7733,29 @@ impl WorkspaceView {
     ) -> Result<CommandOutcome, CommandError> {
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
+        self.clear_incoming(true, window, cx);
         self.resizing_sidebar = false;
         self.check_new_tab_available(cx)?;
         let mut command = shell_command(
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
             self.config.terminal,
+            &self.config.shell_integration,
             self.config.window,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
         if let Some(view) = self.active_view(cx) {
             command.grid_size = view.read(cx).requested_grid;
         }
-        let inherited_directory = self.active_view(cx).and_then(|view| {
-            inherited_directory(
-                self.config.terminal.new_tab_directory,
-                &view.read(cx).metadata,
-            )
-        });
+        let inherited_directories = self
+            .active_view(cx)
+            .map(|view| {
+                inherited_directories(
+                    self.config.terminal.new_tab_directory,
+                    &view.read(cx).metadata,
+                )
+            })
+            .unwrap_or_default();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace_id(cx);
         let attachment = self.attachment_id(cx);
@@ -7420,9 +7764,7 @@ impl WorkspaceView {
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
-            if let Some(directory) = inherited_directory
-                && usable_launch_directory(&directory)
-            {
+            if let Some(directory) = launch_directory(inherited_directories) {
                 command.working_directory = directory;
             }
             let spawned = runtime.open_tab(
@@ -7712,25 +8054,27 @@ impl WorkspaceView {
             self.metrics.at_scale(window.scale_factor()),
             &self.config.theme,
             self.config.terminal,
+            &self.config.shell_integration,
             self.config.window,
         )
         .map_err(|error| CommandError::Runtime(error.to_string()))?;
         command.grid_size = grid;
-        let inherited_directory = self.active_view(cx).and_then(|view| {
-            inherited_directory(
-                self.config.terminal.new_tab_directory,
-                &view.read(cx).metadata,
-            )
-        });
+        let inherited_directories = self
+            .active_view(cx)
+            .map(|view| {
+                inherited_directories(
+                    self.config.terminal.new_tab_directory,
+                    &view.read(cx).metadata,
+                )
+            })
+            .unwrap_or_default();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let clipboard_allowed =
             self.config.terminal.clipboard_write.is_allowed();
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
-            if let Some(directory) = inherited_directory
-                && usable_launch_directory(&directory)
-            {
+            if let Some(directory) = launch_directory(inherited_directories) {
                 command.working_directory = directory;
             }
             runtime.split_pane(
@@ -7922,12 +8266,15 @@ impl WorkspaceView {
         let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
         let geometry = self.terminal_geometry(window);
         let terminal = cx.new(|cx| {
+            // The destination's paint state as it stands now, so a pane
+            // a transfer installs late honors a newer override.
             let mut terminal = TerminalView::new(
                 viewer,
                 Rc::clone(&self.frame_clock),
                 &self.config,
                 self.family.clone(),
                 self.metrics.at_scale(window.scale_factor()),
+                self.transparency,
                 window,
                 cx,
             );
@@ -8151,6 +8498,7 @@ impl WorkspaceView {
             ));
         }
         self.cancel_pane_drag(window, cx);
+        self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
 
         let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
@@ -8502,6 +8850,10 @@ impl WorkspaceView {
         match spec.scope {
             CommandScope::Application => app_command_availability(cx, command),
             CommandScope::Window => match command {
+                ids::MOVE_TAB_TO_NEW_WINDOW => {
+                    self.check_tab_tear_off_available(cx)?;
+                    self.active_tab_id(cx).map(|_| ())
+                }
                 ids::NEW_TAB => self.check_new_tab_available(cx),
                 ids::CLOSE_TAB
                 | ids::CLOSE_OTHER_TABS
@@ -8535,6 +8887,16 @@ impl WorkspaceView {
                 | ids::NOTICE_RUN_ACTION
                 | ids::NOTICE_DISMISS => self.notice_availability(command),
                 ids::OPEN_MENU => self.check_available(false),
+                ids::WINDOW_TRANSPARENCY => {
+                    if self.panel.is_some() {
+                        Ok(())
+                    } else {
+                        self.check_available(true)
+                    }
+                }
+                other if transparency_panel::is_panel_command(other) => {
+                    self.panel_availability()
+                }
                 ids::MENU_SELECT_NEXT
                 | ids::MENU_SELECT_PREVIOUS
                 | ids::MENU_SELECT_FIRST
@@ -9183,6 +9545,10 @@ impl WorkspaceView {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one catalog match routes window commands"
+    )]
     fn run_command(
         &mut self,
         invocation: &CommandInvocation,
@@ -9207,14 +9573,28 @@ impl WorkspaceView {
         if let Some(tab) = self.active_view(cx) {
             tab.update(cx, |tab, _| tab.clear_option_composition());
         }
+        // The open panel's own keys, before any other overlay's.
+        if transparency_panel::is_panel_command(invocation.id) {
+            return self.run_panel_command(invocation.id, window, cx);
+        }
         // A shortcut pressed while the menu is open runs its command in
         // place of the menu.
         if !is_menu_command(invocation.id) {
             self.close_menu(MenuFocusReturn::Terminal, window, cx);
         }
+        // So does one pressed while the panel is open, except the command
+        // that toggles it. Focus returns to the terminal first, so a command
+        // that moves it, such as Next Tab or a split, still decides where.
+        if invocation.id != ids::WINDOW_TRANSPARENCY {
+            self.close_panel(window, cx);
+        }
         match invocation.id {
+            ids::MOVE_TAB_TO_NEW_WINDOW => {
+                self.move_tab_to_new_window(invocation, window, cx)
+            }
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
+            ids::WINDOW_TRANSPARENCY => self.toggle_panel(window, cx),
             ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
             | ids::MENU_SELECT_FIRST
@@ -9526,6 +9906,7 @@ impl WorkspaceView {
         self.check_available(false)?;
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
+        self.clear_incoming(true, window, cx);
         self.resizing_sidebar = false;
         if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
@@ -9562,6 +9943,12 @@ impl WorkspaceView {
         }
         self.dialog_shown = top;
         if top.is_some() {
+            // A dialog takes focus from the panel, which closes.
+            self.dismiss_panel(
+                transparency_panel::PanelFocus::Keep,
+                window,
+                cx,
+            );
             self.dialog.open(&self.focus);
             return;
         }
@@ -9738,17 +10125,36 @@ fn usable_launch_directory(directory: &Path) -> bool {
             .is_ok()
 }
 
-fn inherited_directory(
+/// Directories a new tab or split may inherit, best first: the effective
+/// local directory, then the root shell's last local report, which stands
+/// in while `ssh` or another job reports a remote one.
+fn inherited_directories(
     policy: huterm_config::NewTabDirectory,
     metadata: &huterm_protocol::TerminalMetadata,
-) -> Option<PathBuf> {
+) -> Vec<PathBuf> {
     if policy != huterm_config::NewTabDirectory::Inherit {
-        return None;
+        return Vec::new();
     }
-    metadata
-        .directory()
+    let mut candidates = Vec::with_capacity(2);
+    for directory in [metadata.directory(), metadata.shell_directory()]
+        .into_iter()
+        .flatten()
         .filter(|directory| directory.is_local())
-        .map(|directory| PathBuf::from(directory.path()))
+    {
+        let path = PathBuf::from(directory.path());
+        if !candidates.contains(&path) {
+            candidates.push(path);
+        }
+    }
+    candidates
+}
+
+/// The first inherited directory that can start a process, off the UI
+/// thread because it touches the file system.
+fn launch_directory(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .find(|directory| usable_launch_directory(directory))
 }
 
 /// An expiring notice for a terminal failure, keyed by its tab and naming
@@ -9972,6 +10378,8 @@ impl WorkspaceView {
                 self.notch_shelves,
             )
         {
+            // A native Space move can drop the window server's blur.
+            self.blur.invalidate();
             // Leaving fullscreen can restore a Linux client frame. Apply it
             // before the terminals resize, so no PTY is sized for the
             // windowed chrome inside the fullscreen frame.
@@ -10064,8 +10472,12 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
         quit_after: bool,
     ) {
+        self.end_cross_drag(true, cx);
+        self.clear_incoming(true, window, cx);
         quake_windows::close(self, cx);
         cx.global_mut::<Desktop>().windows.begin_close(self.window);
+        self.blur.close();
+        self.close_panel(window, cx);
         self.fullscreen_work.wake.stop();
         self.fullscreen.close();
         #[cfg(target_os = "macos")]
@@ -10121,7 +10533,7 @@ impl WorkspaceView {
             return;
         }
         // Only a pane drag's own spring load switches tabs under it.
-        self.interrupt_pane_drag(id);
+        self.interrupt_pane_drag(id, cx);
         if self
             .divider_drag
             .as_ref()
@@ -10292,9 +10704,10 @@ impl WorkspaceView {
     ) {
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
+        self.clear_incoming(true, window, cx);
         self.cancel_divider_drag(cx);
         self.resizing_sidebar = false;
-        let Some(target) = self.current_close_target(target) else {
+        let Some(target) = self.current_close_target(target, cx) else {
             self.release_exit_close_if_idle(cx);
             return;
         };
@@ -10416,17 +10829,17 @@ impl WorkspaceView {
             (CloseTarget::Emptied, MuxError::ViewNotEmpty(_)) => {
                 self.emptied_close_refused(window, cx);
             }
-            // The pane moved to another tab this window shows between the
+            // The pane moved to another tab of this window between the
             // close's request and its assessment; assess it there.
             (
                 CloseTarget::Pane { tab, pane },
                 MuxError::UnknownPane(_) | MuxError::UnknownTab(_),
             ) if self
-                .tab_showing(*pane)
+                .pane_close_tab(*pane, cx)
                 .is_some_and(|current| current != *tab) =>
             {
                 let target = CloseTarget::Pane {
-                    tab: self.tab_showing(*pane).unwrap_or(*tab),
+                    tab: self.pane_close_tab(*pane, cx).unwrap_or(*tab),
                     pane: *pane,
                 };
                 self.request_close(target, window, cx);
@@ -10437,7 +10850,7 @@ impl WorkspaceView {
             (
                 CloseTarget::Pane { pane, .. },
                 MuxError::UnknownPane(_) | MuxError::UnknownTab(_),
-            ) if self.tab_showing(*pane).is_none() => {
+            ) if self.pane_close_tab(*pane, cx).is_none() => {
                 self.close.current = None;
                 self.release_exit_close_if_idle(cx);
                 self.restore_tab_focus(window, cx);
@@ -10538,7 +10951,7 @@ impl WorkspaceView {
             },
             CloseTarget::Pane { tab, pane } => CloseRequest::Pane {
                 workspace: self.workspace_id(cx)?,
-                tab: self.tab_showing(*pane).unwrap_or(*tab),
+                tab: self.pane_close_tab(*pane, cx).unwrap_or(*tab),
                 pane: *pane,
             },
             CloseTarget::Tabs(tabs) => CloseRequest::Tabs {
@@ -10574,10 +10987,24 @@ impl WorkspaceView {
             .map(|view| view.id)
     }
 
+    /// The tab a pane close targets: the tab whose view in this window
+    /// shows `pane`, which a busy transfer source keeps after the projection
+    /// moved the pane away, or else the tab the projection places it in
+    /// within this workspace, which covers a pane whose view failed to
+    /// install.
+    fn pane_close_tab(&self, pane: PaneId, cx: &App) -> Option<TabId> {
+        self.tab_showing(pane)
+            .or_else(|| self.projected_pane_tab(pane, cx))
+    }
+
     /// Restricts tab targets to current tabs, in window order, and points a
-    /// pane target at the tab now showing its pane; `None` when nothing
-    /// remains to close.
-    fn current_close_target(&self, target: CloseTarget) -> Option<CloseTarget> {
+    /// pane target at its retained view's tab or its projected tab in this
+    /// workspace; `None` when nothing remains.
+    fn current_close_target(
+        &self,
+        target: CloseTarget,
+        cx: &App,
+    ) -> Option<CloseTarget> {
         match target {
             CloseTarget::Tab(id) => self
                 .tabs
@@ -10585,7 +11012,7 @@ impl WorkspaceView {
                 .any(|tab| tab.id == id)
                 .then_some(CloseTarget::Tab(id)),
             CloseTarget::Pane { pane, .. } => self
-                .tab_showing(pane)
+                .pane_close_tab(pane, cx)
                 .map(|tab| CloseTarget::Pane { tab, pane }),
             CloseTarget::Tabs(ids) => tabs_target(
                 self.tabs
@@ -10656,9 +11083,11 @@ impl WorkspaceView {
 
     /// Whether the window no longer shows any tab or pane `target` names;
     /// window-wide targets always apply.
-    fn shows_none_of(&self, target: &CloseTarget) -> bool {
+    fn shows_none_of(&self, target: &CloseTarget, cx: &App) -> bool {
         match target {
-            CloseTarget::Pane { pane, .. } => self.tab_showing(*pane).is_none(),
+            CloseTarget::Pane { pane, .. } => {
+                self.pane_close_tab(*pane, cx).is_none()
+            }
             target => target.tabs().is_some_and(|tabs| {
                 !tabs
                     .iter()
@@ -10676,7 +11105,7 @@ impl WorkspaceView {
             .close
             .confirmation
             .as_ref()
-            .is_some_and(|target| self.shows_none_of(target))
+            .is_some_and(|target| self.shows_none_of(target, cx))
         {
             // Every tab or pane it asks about left the window, so its commit
             // could only go stale. Queued closes stay queued and run below.
@@ -11100,6 +11529,8 @@ fn finish_reload(
             apply_update_config(cx, &config);
             let desktop = cx.global_mut::<Desktop>();
             desktop.system_mode = system_appearance::Mode::of(dark);
+            desktop.transparency_support = crate::transparency::support();
+            warn_transparency(&config, desktop.transparency_support);
             desktop.config = config.clone();
             desktop.config_report = ConfigReport::reloaded(
                 &config,
@@ -11228,6 +11659,11 @@ impl WorkspaceView {
                 window.request_decorations(requested);
             }
             self.config = config.clone();
+            self.transparency_support =
+                cx.global::<Desktop>().transparency_support;
+            // A reload lets a failed blur write try once more.
+            self.blur.retry();
+            self.refresh_transparency(window, cx);
             self.pane_bars
                 .set_timing(PaneBarTiming::from_config(&config.panes));
             // A change of bar mode reveals or hides the hover bars.
@@ -11241,6 +11677,7 @@ impl WorkspaceView {
             self.family.clone_from(family);
             self.metrics = *metrics;
             // `layout_pending` resizes the views at the next sync.
+            let transparency = self.transparency;
             for (view, geometry) in self.pane_views_with_geometry(window, cx) {
                 view.update(cx, |view, cx| {
                     let metrics = metrics.at_scale(view.metrics.scale_factor);
@@ -11248,6 +11685,12 @@ impl WorkspaceView {
                         family.clone(),
                         config.theme.clone(),
                         metrics,
+                    );
+                    view.renderer.borrow_mut().set_opacity(
+                        transparency.background,
+                        transparency.foreground,
+                        transparency.translucent,
+                        crate::transparency::Tint::default(),
                     );
                     view.terminal_font.clone_from(family);
                     view.font_size = metrics.font_size;
@@ -11265,6 +11708,75 @@ impl WorkspaceView {
         }
         self.replace_diagnostics(diagnostics, window, cx);
         self.reload_palette(cx);
+    }
+}
+
+fn chrome_background(
+    area: Bounds<Pixels>,
+    hole: Option<Bounds<Pixels>>,
+    color: gpui::Hsla,
+    corners: gpui::Corners<Pixels>,
+) -> impl IntoElement {
+    let local = Bounds::new(point(px(0.0), px(0.0)), area.size);
+    let hole =
+        hole.map(|hole| Bounds::new(hole.origin - area.origin, hole.size));
+    canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _| {
+            for region in crate::transparency::background_regions(local, hole) {
+                let radii = gpui::Corners {
+                    top_left: if region.top() == local.top()
+                        && region.left() == local.left()
+                    {
+                        corners.top_left
+                    } else {
+                        px(0.0)
+                    },
+                    top_right: if region.top() == local.top()
+                        && region.right() == local.right()
+                    {
+                        corners.top_right
+                    } else {
+                        px(0.0)
+                    },
+                    bottom_left: px(0.0),
+                    bottom_right: px(0.0),
+                };
+                window.paint_quad(
+                    gpui::fill(
+                        Bounds::new(bounds.origin + region.origin, region.size),
+                        color,
+                    )
+                    .corner_radii(radii),
+                );
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// Warns about the transparency the configuration asks for that the
+/// platform cannot show: the defaults and every Quake profile's values
+/// layered over them.
+fn warn_transparency(config: &Config, support: crate::transparency::Support) {
+    let defaults = crate::transparency::Values::of(&config.window);
+    let resolved: Vec<_> = std::iter::once(defaults)
+        .chain(config.quake.profiles.values().map(|profile| {
+            crate::transparency::Layer::of_profile(profile).over(defaults)
+        }))
+        .collect();
+    if resolved.iter().any(|values| {
+        values.opacity < 1.0
+            || values.background < 1.0
+            || values.foreground < 1.0
+    }) && let Some(note) = support.note()
+    {
+        eprintln!("Window transparency: {note}");
+    }
+    #[cfg(target_os = "linux")]
+    if resolved.iter().any(|values| values.blur > 0) {
+        eprintln!("Window blur is unsupported on Linux (macOS only)");
     }
 }
 
@@ -11806,6 +12318,74 @@ fn pane_area_top_border(
                 })))
 }
 
+/// The window's root, which fills an opaque undecorated window. A
+/// translucent one leaves its panes and chrome the only background
+/// painters, so no fill stacks under theirs.
+fn workspace_root(
+    decorated: bool,
+    background: gpui::Hsla,
+    translucent: bool,
+) -> gpui::Div {
+    div().when(!decorated && !translucent, |root| root.bg(background))
+}
+
+fn client_frame_panel(
+    content: Bounds<Pixels>,
+    background: gpui::Hsla,
+    translucent: bool,
+    swatch: Swatch,
+) -> gpui::Div {
+    let panel = div()
+        .absolute()
+        .left(content.origin.x)
+        .top(content.origin.y)
+        .w(content.size.width)
+        .h(content.size.height)
+        .rounded_tl(FRAME_RADIUS)
+        .rounded_tr(FRAME_RADIUS);
+    if !translucent {
+        return panel.bg(background).shadow(swatch.frame_shadow());
+    }
+    // GPUI fills a drop shadow's whole blurred rectangle, interior included,
+    // so without the panel's fill over it the shadow would darken the
+    // translucent content. Paint it only in the ring around the panel.
+    panel.child(
+        canvas(
+            |_, _, _| (),
+            move |bounds, (), window, _| {
+                let corners = gpui::Corners {
+                    top_left: FRAME_RADIUS,
+                    top_right: FRAME_RADIUS,
+                    ..Default::default()
+                };
+                for mask in frame_shadow_masks(bounds) {
+                    window.with_content_mask(
+                        Some(gpui::ContentMask { bounds: mask }),
+                        |window| {
+                            window.paint_drop_shadows(
+                                bounds,
+                                corners,
+                                &swatch.frame_shadow(),
+                            );
+                        },
+                    );
+                }
+            },
+        )
+        .absolute()
+        .inset_0(),
+    )
+}
+
+/// The inset ring around a client frame panel at `content`, where a
+/// translucent panel's drop shadow may paint.
+fn frame_shadow_masks(content: Bounds<Pixels>) -> Vec<Bounds<Pixels>> {
+    crate::transparency::background_regions(
+        content.dilate(client_frame::CLIENT_INSET),
+        Some(content),
+    )
+}
+
 impl Render for WorkspaceView {
     #[expect(
         clippy::too_many_lines,
@@ -11831,6 +12411,7 @@ impl Render for WorkspaceView {
         }
         self.measure_tab_widths(window, cx);
         self.sync_frame(window);
+        self.sync_transparency(window, cx);
         self.frame_appearance.sync(
             theme_is_dark(&self.config.theme),
             window,
@@ -11845,12 +12426,16 @@ impl Render for WorkspaceView {
         let layout = self.chrome_layout(window);
         let frame = layout.frame;
         let content = layout.content;
-        // Inside a drawn border the window is transparent around a rounded,
-        // shadowed panel; otherwise the root fills the window.
+        // Opaque windows retain their root/frame underlay. A translucent
+        // one, including blur mode's faded root over an opaque background,
+        // leaves panes and in-flow chrome disjoint background fills.
         let decorated = frame.decorated();
         let foreground = color(self.config.theme.foreground);
-        let background = color(self.config.theme.background);
-        let colors = TabColors::new(&self.config.theme);
+        let translucent = self.transparency.translucent;
+        let background = color(self.config.theme.background)
+            .opacity(self.transparency.background);
+        let root_opacity = self.root_opacity.painted();
+        let colors = self.tab_colors();
         let swatch = tokens(&self.config.theme);
         let menu_placement = self.menu_button_placement();
         if menu_placement == MenuButtonPlacement::Hidden {
@@ -11865,10 +12450,13 @@ impl Render for WorkspaceView {
         // A dialog change that skipped `sync_dialog` still opens or closes
         // the slot before its guard reads it.
         self.sync_dialog(window, cx);
-        let mut root = div()
+        let mut root = workspace_root(decorated, background, translucent)
+            // Blur mode fades the window's contents here, since the window
+            // server's blur fades with native alpha. Popovers, menus, and
+            // tooltips draw outside the root and stay solid.
+            .when(root_opacity < 1.0, |root| root.opacity(root_opacity))
             .size_full()
             .relative()
-            .when(!decorated, |root| root.bg(background))
             .text_color(foreground)
             .font_family(typography.family)
             .text_size(tab_bar::TAB_TEXT_SIZE)
@@ -11942,18 +12530,12 @@ impl Render for WorkspaceView {
             ))
             .child(huterm_ui::focus::tracker());
         if decorated {
-            root = root.child(
-                div()
-                    .absolute()
-                    .left(content.origin.x)
-                    .top(content.origin.y)
-                    .w(content.size.width)
-                    .h(content.size.height)
-                    .bg(background)
-                    .rounded_tl(FRAME_RADIUS)
-                    .rounded_tr(FRAME_RADIUS)
-                    .shadow(swatch.frame_shadow()),
-            );
+            root = root.child(client_frame_panel(
+                content,
+                background,
+                translucent,
+                swatch,
+            ));
         }
         let move_view = cx.entity().downgrade();
         let release_view = move_view.clone();
@@ -12169,6 +12751,14 @@ impl Render for WorkspaceView {
                 view.close_menu(MenuFocusReturn::Terminal, window, cx);
             });
         }));
+        // The panel's own guard: a press outside it, or before its first
+        // frame, closes it and stops there, as for a menu.
+        let panel_view = cx.entity().downgrade();
+        root = root.child(self.panel_popover.guard(move |_, window, cx| {
+            let _ = panel_view.update(cx, |view, cx| {
+                view.close_panel(window, cx);
+            });
+        }));
         // A dialog's guard stops every press and wheel event on its scrim
         // outside its panel, and anywhere before its first frame. None of
         // the window's dialogs closes on an outside press, so the reason it
@@ -12180,6 +12770,7 @@ impl Render for WorkspaceView {
         let title_row = self.title_row_layout(&layout);
         let top_chrome = title_row.bounds.size.height;
         let bar_drawn = self.bar_drawn();
+        self.drawn_tabs.borrow_mut().clear();
         // The tab bar and the title strip are one row: the tabs cover the
         // strip, whose trailing space keeps the title bar's gestures.
         let merged_row = position == TabPosition::Titlebar && bar_drawn;
@@ -12230,21 +12821,65 @@ impl Render for WorkspaceView {
                     .when(decorated, |bar| {
                         bar.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS)
                     })
-                    .bg(
-                        // A shelf bar fills the whole safe-area strip, so
-                        // the bar reads as one band across the notch.
-                        if shelf_bar
-                            || top_chrome_uses_bar(
-                                position,
-                                self.presentation(),
-                                self.reveal.progress,
-                            )
-                        {
-                            colors.bar
-                        } else {
-                            background
-                        },
-                    )
+                    .when(!translucent, |bar| {
+                        bar.bg(
+                            if shelf_bar
+                                || top_chrome_uses_bar(
+                                    position,
+                                    self.presentation(),
+                                    self.reveal.progress,
+                                )
+                            {
+                                colors.bar
+                            } else {
+                                background
+                            },
+                        )
+                    })
+                    .when(translucent, |bar| {
+                        bar.child(chrome_background(
+                            title_row.bounds,
+                            bar_drawn.then(|| {
+                                Bounds::new(
+                                    point(
+                                        layout.tabs.origin.x
+                                            + frame.buttons.leading.width(),
+                                        layout.tabs.origin.y,
+                                    ),
+                                    size(
+                                        layout.tabs.size.width
+                                            - frame.buttons.leading.width()
+                                            - layout.strip_trailing,
+                                        layout.tabs.size.height,
+                                    ),
+                                )
+                            }),
+                            if shelf_bar
+                                || top_chrome_uses_bar(
+                                    position,
+                                    self.presentation(),
+                                    self.reveal.progress,
+                                )
+                            {
+                                colors.bar
+                            } else {
+                                background
+                            },
+                            gpui::Corners {
+                                top_left: if decorated {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                top_right: if decorated {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                ..Default::default()
+                            },
+                        ))
+                    })
                     .when(titlebar > px(0.0), |bar| {
                         // The strip stays draggable and keeps the menu
                         // button at its right end.
@@ -12336,9 +12971,19 @@ impl Render for WorkspaceView {
         // A drag resolves against the drawn panes, which this frame may have
         // just replaced, as after a spring load; a resting pointer must not
         // keep the target it found before.
-        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging) {
+        if self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
+            || self.incoming.is_some()
+        {
             cx.defer_in(window, |view, window, cx| {
                 view.retarget_after_frame(window, cx);
+                let before =
+                    view.incoming.as_ref().and_then(|incoming| incoming.target);
+                view.retarget_incoming(Instant::now(), false, window, cx);
+                if view.incoming.as_ref().and_then(|incoming| incoming.target)
+                    != before
+                {
+                    cx.notify();
+                }
             });
         }
         self.sync_tab_scrollbars();
@@ -12392,6 +13037,10 @@ impl Render for WorkspaceView {
             root = root.children(std::mem::take(&mut marks));
         }
         if bar_drawn {
+            // Only the fullscreen reveal floats over the terminal; pinned
+            // pane title bars keep the configured background alpha.
+            let colors = colors
+                .for_floating(self.presentation() == Presentation::Overlay);
             let clip = if self.presentation() == Presentation::Overlay {
                 layout.terminal
             } else {
@@ -12417,7 +13066,76 @@ impl Render for WorkspaceView {
                         - bar_lead
                         - layout.strip_trailing)
                     .h(layout.tabs.size.height)
-                    .bg(colors.bar)
+                    .when(!translucent, |bar| bar.bg(colors.bar))
+                    .when(translucent, |bar| {
+                        bar.child(chrome_background(
+                            Bounds::new(
+                                point(
+                                    layout.tabs.origin.x + bar_lead,
+                                    layout.tabs.origin.y,
+                                ),
+                                size(
+                                    layout.tabs.size.width
+                                        - bar_lead
+                                        - layout.strip_trailing,
+                                    layout.tabs.size.height,
+                                ),
+                            ),
+                            (tabs.style == TabStyle::Strip)
+                                .then(|| {
+                                    self.tabs.iter().position(|tab| {
+                                        Some(tab.id) == active_tab
+                                    })
+                                })
+                                .flatten()
+                                .map(|index| {
+                                    let offset =
+                                        strip.start(index) - strip.offset;
+                                    let tab = if vertical {
+                                        Bounds::new(
+                                            strip.bounds.origin
+                                                + point(px(0.0), offset),
+                                            size(
+                                                strip.bounds.size.width,
+                                                TAB_HEIGHT,
+                                            ),
+                                        )
+                                    } else {
+                                        Bounds::new(
+                                            strip.bounds.origin
+                                                + point(offset, px(0.0)),
+                                            size(
+                                                strip.tab_extent(index),
+                                                layout.tabs.size.height,
+                                            ),
+                                        )
+                                    };
+                                    // `tab-strip` clips the tab, so the bar
+                                    // still fills the part scrolled beyond it.
+                                    tab.intersect(&strip.bounds)
+                                }),
+                            colors.bar,
+                            gpui::Corners {
+                                top_left: if merged_row
+                                    && decorated
+                                    && bar_lead == px(0.0)
+                                {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                top_right: if merged_row
+                                    && decorated
+                                    && layout.strip_trailing == px(0.0)
+                                {
+                                    FRAME_RADIUS
+                                } else {
+                                    px(0.0)
+                                },
+                                ..Default::default()
+                            },
+                        ))
+                    })
                     .occlude()
                     .when(merged_row && decorated, |row| {
                         // Where the bar reaches a top corner of the frame,
@@ -12553,14 +13271,23 @@ impl Render for WorkspaceView {
                     flush_start: index == 0
                         && strip.offset == px(0.0)
                         && (!vertical || column_flush),
-                    targeted: self.menu_targets_tab(tab.id)
+                    targeted: self.incoming.as_ref().is_some_and(|incoming| {
+                        incoming.spring.tab() == Some(tab.id)
+                    }) || self.menu_targets_tab(tab.id)
                         || self.pane_drag.as_ref().is_some_and(|drag| {
                             drag.spring.tab() == Some(tab.id)
                         }),
                 };
-                bar = bar.child(Self::tab_element(
-                    &item, bounds, tabs, colors, swatch, cx,
-                ));
+                self.drawn_tabs.borrow_mut().push(tab.id);
+                bar = bar.child(
+                    Self::tab_element(&item, bounds, tabs, colors, swatch, cx)
+                        .when(
+                            self.reorder.as_ref().is_some_and(|drag| {
+                                drag.outside && drag.source.tab == tab.id
+                            }),
+                            |tab| tab.opacity(0.45),
+                        ),
+                );
             }
             for forward in [false, true] {
                 if !vertical
@@ -12648,6 +13375,7 @@ impl Render for WorkspaceView {
             );
             chrome = chrome.child(bar).child(
                 Button::new("new-tab", "New Tab", swatch)
+                    .debug_selector(|| "new-tab".to_owned())
                     .colors(colors.control())
                     .icon(
                         icon_element(Icon::Plus, colors.inactive)
@@ -12906,7 +13634,7 @@ impl Render for WorkspaceView {
                 .position(|tab| tab.id == drag.source.tab)
                 .unwrap_or_default();
             // In pane mode the preview returns to the tab's slot, dimmed.
-            let preview = if drag.nesting {
+            let preview = if drag.nesting || drag.outside {
                 strip.label(source)
             } else {
                 strip.preview(drag.pointer, source)
@@ -12932,11 +13660,28 @@ impl Render for WorkspaceView {
                     .bg(colors.active)
                     .border_1()
                     .border_color(colors.border)
+                    .when(drag.outside, |preview| {
+                        preview
+                            .border_2()
+                            .border_dashed()
+                            .border_color(swatch.state_line())
+                            .bg(colors.active.opacity(0.45))
+                    })
                     .text_color(colors.foreground)
-                    .opacity(if drag.nesting { 0.45 } else { 0.9 })
-                    .child(title),
+                    .opacity(if drag.outside {
+                        1.0
+                    } else if drag.nesting {
+                        0.45
+                    } else {
+                        0.9
+                    })
+                    .child(
+                        div()
+                            .when(drag.outside, |title| title.opacity(0.45))
+                            .child(title),
+                    ),
             );
-            if !drag.nesting {
+            if !drag.nesting && !drag.outside {
                 root = root.child(
                     div()
                         .absolute()
@@ -12948,9 +13693,41 @@ impl Render for WorkspaceView {
                 );
             }
         }
-        root = root.children(self.drag_overlay(colors, window, cx));
+        *self.drawn_tear_off.borrow_mut() = None;
+        if self.tear_off_cue(cx) {
+            let bounds = self.tear_off_pill_bounds(&strip, &layout);
+            let floating = self.floating_colors();
+            *self.drawn_tear_off.borrow_mut() = Some(bounds);
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(bounds.left())
+                    .top(bounds.top())
+                    .w(bounds.size.width)
+                    .h(bounds.size.height)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .bg(floating.active)
+                    .border_1()
+                    .border_color(floating.accent)
+                    .text_color(floating.foreground)
+                    .child(cross_window::tear_off_label(bounds)),
+            );
+        }
+        root = root.children(self.drag_overlay(
+            self.floating_colors(),
+            window,
+            cx,
+        ));
         if let Some(notices) = self.render_notices(layout.terminal, cx) {
             root = root.child(notices);
+        }
+        if let Some(panel) = self.render_panel(&layout, window, cx) {
+            root = root.child(panel);
         }
         if let Some(menu) = self.render_menu(&layout, window, cx) {
             root = root.child(menu);
@@ -13080,7 +13857,10 @@ impl WorkspaceView {
             })
         } else if self.resizing_sidebar {
             Some(gpui::CursorStyle::ResizeLeftRight)
-        } else if self.pane_drag.is_some() || self.reorder.is_some() {
+        } else if self.pane_drag.is_some()
+            || self.reorder.is_some()
+            || self.incoming.is_some()
+        {
             Some(gpui::CursorStyle::ClosedHand)
         } else {
             None
@@ -13671,9 +14451,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        // An opening menu ends a tab or pane drag; the menu then takes focus.
+        // An opening menu closes the panel and ends a tab or pane drag; the
+        // menu then takes focus.
+        self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
+        self.clear_incoming(true, window, cx);
         let swatch = tokens(&self.config.theme);
         let clock = Rc::clone(&self.frame_clock);
         let label = match kind {
@@ -14387,6 +15170,34 @@ impl WorkspaceView {
         )
     }
 
+    /// Smoke output for transparency: native alpha and the surface, the
+    /// root opacity the window paints, the blur radius last written, and
+    /// the panel's state.
+    fn transparency_smoke_state(
+        &self,
+        prefix: &str,
+        alpha: &str,
+        window: &Window,
+        cx: &App,
+    ) -> String {
+        let panel = match self.panel_focus(window, cx) {
+            _ if self.panel.is_none() => "closed".to_owned(),
+            None => "unfocused".to_owned(),
+            Some(control) => format!("{control:?}"),
+        };
+        format!(
+            "{prefix}native_alpha={alpha} {prefix}background_appearance={:?} {prefix}root_opacity={} {prefix}blur_radius={} {prefix}transparency_overrides={} {prefix}transparency_panel={panel}",
+            self.background_appearance,
+            self.root_opacity.painted(),
+            match self.blur.applied() {
+                _ if self.blur.unsupported() => "unsupported".to_owned(),
+                Some(radius) => radius.to_string(),
+                None => "unknown".to_owned(),
+            },
+            !self.own_transparency(cx).is_empty(),
+        )
+    }
+
     /// How many platform window moves the title row has started, for smokes.
     pub(super) fn title_row_move_count(&self) -> u32 {
         self.title_row_moves.get()
@@ -14533,9 +15344,8 @@ impl WorkspaceView {
         let marks =
             joined(&|rect, _| self.drawn_focus.borrow().describe(rect.pane));
         let drop = self
-            .drawn_drop
-            .borrow()
-            .clone()
+            .cross_drop_label(cx)
+            .or_else(|| self.drawn_drop.borrow().clone())
             .unwrap_or_else(|| "none".to_owned());
         let spring = self
             .pane_drag
@@ -14630,6 +15440,12 @@ impl WorkspaceView {
             .about_buttons
             .focused(window)
             .map_or("none", AboutButton::name);
+        let alpha = crate::transparency::native_alpha(window, cx).map_or_else(
+            |_| "unavailable".to_owned(),
+            |value| value.to_string(),
+        );
+        let transparency =
+            self.transparency_smoke_state(prefix, &alpha, window, cx);
         let licenses = self.licenses_smoke_state(prefix, window, cx);
         let menu = self.menu_smoke_state(prefix, window, cx);
         let dialog_focus = self.close_buttons.focused(window);
@@ -14685,7 +15501,7 @@ impl WorkspaceView {
         #[cfg(not(target_os = "macos"))]
         let traffic_lights = "none";
         format!(
-            "{menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}window_radii={},{} {prefix}radius_source={} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
+            "{transparency} {menu} {prefix}menu_target={target} {prefix}about={about} {prefix}about_focus={about_focus} {licenses} {prefix}confirming={} {prefix}dialog_focus={dialog_focus} {prefix}dialog_title={dialog_title} {prefix}dialog_groups={dialog_groups:?} {prefix}dialog_drawn_groups={:?} {prefix}notice_focus={} {prefix}window_title={:?} {prefix}menu_button={button} {prefix}window_buttons={controls} {prefix}traffic_lights={traffic_lights} {prefix}window_radii={},{} {prefix}radius_source={} {prefix}title_row_moves={} {prefix}scale={} {prefix}client_decorations={} {prefix}frame_inset={} {prefix}maximized={} {prefix}fullscreen={:?} {prefix}content={},{},{},{}",
             self.close.confirmation.is_some(),
             self.drawn_dialog_groups.as_deref().unwrap_or("none"),
             self.notice_focus.is_focused(window),
@@ -14706,8 +15522,9 @@ impl WorkspaceView {
         )
     }
 
-    /// Smoke output for tab geometry: each tab's painted bounds in logical
-    /// points as `x,y,w,h`, joined by `;`, from the strip's current layout.
+    /// Smoke output for tab geometry: each tab's bounds in logical points
+    /// as `x,y,w,h`, joined by `;`, from the strip's current layout. It can
+    /// run ahead of the drawn frame; `drawn_tabs` records what was drawn.
     pub(super) fn tab_smoke_rects(&self, window: &Window) -> String {
         let strip = self.tab_strip(window);
         let vertical = self.layout_tabs().position.vertical();

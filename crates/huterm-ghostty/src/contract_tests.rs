@@ -4,10 +4,11 @@
 use crate::native::{self, ProbeEvent};
 use crate::test_alloc;
 use crate::{
-    CellContent, CellWidth, ClipboardLocation, ClipboardWrite,
+    Boundaries, CellContent, CellWidth, ClipboardLocation, ClipboardWrite,
     ClipboardWriteResult, ColorScheme, DeviceAttributes, Dirty, Effect, Error,
     Fill, Host, Mode, MouseProbe, Options, Point, ProbedFormat, ProbedTracking,
-    RenderState, Rgb, Screen, Scroll, Terminal,
+    PromptKind, RenderState, Rgb, Screen, Scroll, SemanticPrompt,
+    SemanticPromptKind, Terminal,
 };
 
 /// A recorded clipboard write: location, (MIME, data) pairs, and name.
@@ -1410,4 +1411,115 @@ fn kitty_encoder_flags_short_buffer_retry_and_event_reuse() {
     }
     assert_eq!(counts.live(), 0);
     assert_eq!(counts.live_bytes(), 0);
+}
+
+fn semantic_prompts<H>(terminal: &mut Terminal<H>) -> Vec<SemanticPrompt> {
+    effects(terminal)
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::SemanticPrompt(event) => Some(event),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn semantic_prompts_report_kinds_exit_codes_and_decoded_command_lines() {
+    use PromptKind::{Continuation, Primary, Right, Secondary};
+    use SemanticPromptKind::{
+        CommandEnd, InputStart, OutputStart, PromptStart,
+    };
+    let event = |kind, prompt, exit_code, command: &[u8]| SemanticPrompt {
+        kind,
+        prompt,
+        exit_code,
+        command: command.to_vec(),
+    };
+    let mut terminal = terminal();
+    for (input, expected) in [
+        ("133;A", Some(event(PromptStart, Primary, None, b""))),
+        ("133;A;k=r", Some(event(PromptStart, Right, None, b""))),
+        (
+            "133;P;k=c",
+            Some(event(PromptStart, Continuation, None, b"")),
+        ),
+        ("133;A;k=s", Some(event(PromptStart, Secondary, None, b""))),
+        ("133;N;k=i", Some(event(PromptStart, Primary, None, b""))),
+        // A malformed option is ignored, not rejected.
+        ("133;A;k=zz", Some(event(PromptStart, Primary, None, b""))),
+        ("133;B", Some(event(InputStart, Primary, None, b""))),
+        ("133;C", Some(event(OutputStart, Primary, None, b""))),
+        (
+            "133;C;cmdline_url=echo%20h%C3%AF",
+            Some(event(OutputStart, Primary, None, "echo hï".as_bytes())),
+        ),
+        (
+            "133;C;cmdline='ls -l'",
+            Some(event(OutputStart, Primary, None, b"ls -l")),
+        ),
+        // An undecodable command line still reports the step.
+        (
+            "133;C;cmdline_url=%zz",
+            Some(event(OutputStart, Primary, None, b"")),
+        ),
+        ("133;D;0", Some(event(CommandEnd, Primary, Some(0), b""))),
+        (
+            "133;D;130",
+            Some(event(CommandEnd, Primary, Some(130), b"")),
+        ),
+        ("133;D;-1", Some(event(CommandEnd, Primary, Some(-1), b""))),
+        ("133;D;oops", Some(event(CommandEnd, Primary, None, b""))),
+        ("133;D", Some(event(CommandEnd, Primary, None, b""))),
+        // `L` is a fresh line only, and an unknown action is rejected.
+        ("133;L", None),
+        ("133;Z", None),
+    ] {
+        terminal
+            .write(format!("\x1b]{input}\x07").as_bytes())
+            .unwrap();
+        assert_eq!(
+            semantic_prompts(&mut terminal),
+            Vec::from_iter(expected),
+            "{input}"
+        );
+    }
+    // CAN cancels the OSC before it dispatches.
+    terminal.write(b"\x1b]133;A\x18").unwrap();
+    assert_eq!(semantic_prompts(&mut terminal), []);
+}
+
+#[test]
+fn osc_end_stops_follow_semantic_prompt_dispatch_for_bel_and_st() {
+    for (marker, consumed) in [
+        (&b"\x1b]133;C\x07"[..], 8),
+        // The stop lands on the ESC that begins ST, before the backslash.
+        (b"\x1b]133;C\x1b\\", 8),
+    ] {
+        let mut terminal = terminal();
+        let mut input = b"ab".to_vec();
+        input.extend_from_slice(marker);
+        input.extend_from_slice(b"cd");
+        let stop = terminal.write_until(&input, Boundaries::OSC_END).unwrap();
+        assert_eq!(stop.reached, Boundaries::OSC_END, "{marker:?}");
+        assert_eq!(stop.consumed, 2 + consumed, "{marker:?}");
+        assert_eq!(
+            semantic_prompts(&mut terminal).len(),
+            1,
+            "the event is queued by the stop: {marker:?}"
+        );
+        // Only the bytes before the stop were written.
+        assert_eq!(terminal.cursor_position().unwrap(), (2, 0));
+        let rest = &input[stop.consumed..];
+        let stop = terminal.write_until(rest, Boundaries::OSC_END).unwrap();
+        assert_eq!(stop.reached, Boundaries::NONE);
+        assert_eq!(stop.consumed, rest.len());
+        assert_eq!(terminal.cursor_position().unwrap(), (4, 0));
+        assert!(terminal.is_ground().unwrap());
+        assert_eq!(semantic_prompts(&mut terminal), []);
+    }
+    let mut terminal = terminal();
+    assert!(matches!(
+        terminal.write_until(b"x", Boundaries::NONE),
+        Err(Error::InvalidValue)
+    ));
 }

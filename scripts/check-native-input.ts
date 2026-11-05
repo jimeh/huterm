@@ -1,4 +1,5 @@
 /** Post AppKit events into the production desktop and compare raw PTY bytes. */
+import { checkCrossWindowInput } from "./check-cross-window-input";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -568,5 +569,6 @@ if (import.meta.main) {
     const executable = resolve(Bun.argv[2] ?? "target/debug/examples/native_input_smoke");
     await checkInput(executable);
     await checkLegacyEngine(executable);
+    await checkCrossWindowInput(executable);
   }
 }

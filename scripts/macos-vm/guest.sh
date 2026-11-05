@@ -19,6 +19,7 @@ case "${1:-}" in
       --exclude='/target/**' \
       --include=/.native/ --include=/.native/sparkle/ --include=/.native/sparkle/distribution/ \
       --include='/.native/sparkle/distribution/**' --exclude='/.native/**' \
+      --include=/assets/ --include=/assets/shell-integration/ --include='/assets/shell-integration/**' \
       --exclude=/.git --exclude=/node_modules --exclude=/dist --exclude=/.codegraph \
       "$share/" "$workspace/"
     ;;

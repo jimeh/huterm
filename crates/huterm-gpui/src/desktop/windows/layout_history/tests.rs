@@ -19,6 +19,7 @@ fn idle() -> TerminalCommand {
         },
         presentation: huterm_protocol::TerminalPresentation::default(),
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
+        shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     }
 }
