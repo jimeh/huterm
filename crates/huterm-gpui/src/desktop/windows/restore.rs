@@ -277,8 +277,11 @@ fn set_aside(
 /// Where a restored window reopens, in this runtime's scope.
 #[derive(Clone, Debug)]
 pub(super) struct Placement {
-    /// The saved restorable bounds, clamped onto a current display at open.
+    /// The saved restorable bounds, relative to `display`, clamped onto a
+    /// current display at open.
     pub(super) bounds: Option<Bounds<Pixels>>,
+    /// The UUID of the display the window was on.
+    pub(super) display: Option<String>,
     pub(super) mode: WindowMode,
     pub(super) sidebar_width: Pixels,
     pub(super) appearance: crate::transparency::Layer,
@@ -353,8 +356,8 @@ struct Restored {
     runtime: huterm_protocol::RuntimeId,
     /// One attachment per restored session that kept a tab, in order.
     attachments: Vec<(SessionId, AttachmentId)>,
-    /// Terminals whose saved directories were all unusable.
-    fallbacks: HashSet<TerminalId>,
+    /// Terminals that did not start in their first saved directory.
+    fallbacks: HashMap<TerminalId, Fallback>,
     /// Restored terminals and the fresh tabs that replaced emptied
     /// sessions' ones; their first viewer reports an early exit.
     fresh: HashSet<TerminalId>,
@@ -411,23 +414,36 @@ pub(super) fn start_with(cx: &mut App, saved: Saved, base: TerminalCommand) {
     .detach();
 }
 
+/// Where a restored terminal started instead of its first saved directory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Fallback {
+    /// An earlier saved folder: a later candidate, such as its shell's
+    /// launch directory.
+    Earlier,
+    /// The default launch directory.
+    Default,
+}
+
 /// The command a restored terminal starts with: `base` in the first saved
-/// directory that can start a process, else `base`'s own.
+/// directory that can start a process, else `base`'s own, and the fallback
+/// taken when that is not the first candidate.
 fn restored_command(
     base: &TerminalCommand,
     record: &TerminalCapture,
-) -> (TerminalCommand, bool) {
+) -> (TerminalCommand, Option<Fallback>) {
     let mut command = base.clone();
     match record
         .directories
         .iter()
-        .find(|directory| usable_launch_directory(directory))
+        .position(|directory| usable_launch_directory(directory))
     {
-        Some(directory) => {
-            command.working_directory.clone_from(directory);
-            (command, false)
+        Some(index) => {
+            command
+                .working_directory
+                .clone_from(&record.directories[index]);
+            (command, (index > 0).then_some(Fallback::Earlier))
         }
-        None => (command, true),
+        None => (command, Some(Fallback::Default)),
     }
 }
 
@@ -471,14 +487,14 @@ fn restore_blocking(
 ) -> Outcome {
     let runtime_id = runtime.lock().runtime_id();
     runtime.persistence.mark_restore_attempt();
-    let mut fallbacks = HashSet::new();
+    let mut fallbacks = HashMap::new();
     let spawned = SpawnedTerminals::spawn(
         runtime_id,
         capture,
         |record| {
             let (command, fallback) = restored_command(base, record);
-            if fallback {
-                fallbacks.insert(record.id);
+            if let Some(fallback) = fallback {
+                fallbacks.insert(record.id, fallback);
             }
             command
         },
@@ -689,7 +705,7 @@ fn plan(
     saved: &Saved,
     report: &RestoreReport,
     attachments: &[(SessionId, AttachmentId)],
-    fallbacks: &HashSet<TerminalId>,
+    fallbacks: &HashMap<TerminalId, Fallback>,
     runtime: huterm_protocol::RuntimeId,
     cx: &App,
 ) -> Vec<(Option<String>, Reopen)> {
@@ -769,6 +785,7 @@ fn plan(
                 origin: point(px(window.bounds.x), px(window.bounds.y)),
                 size: size(px(window.bounds.width), px(window.bounds.height)),
             }),
+            display: window.display.clone(),
             mode: if window.quake_profile.is_some() {
                 WindowMode::Windowed
             } else {
@@ -842,12 +859,12 @@ fn appearance(
     }
 }
 
-/// The notices for one restored session's window: panes that started in
-/// the default directory, and panes or tabs that failed to start.
+/// The notices for one restored session's window: panes that did not
+/// start in their last directory, and panes or tabs that failed to start.
 fn window_notices(
     capture: &RuntimeCapture,
     report: &RestoreReport,
-    fallbacks: &HashSet<TerminalId>,
+    fallbacks: &HashMap<TerminalId, Fallback>,
     session: SessionId,
 ) -> Vec<NoticeContent> {
     let Some(saved) = capture
@@ -869,16 +886,23 @@ fn window_notices(
         .iter()
         .filter(|failed| terminals.contains(&failed.terminal))
         .collect();
-    let elsewhere = terminals
+    let elsewhere: Vec<Fallback> = terminals
         .iter()
         .filter(|terminal| {
-            fallbacks.contains(*terminal)
-                && !failed.iter().any(|failed| failed.terminal == **terminal)
+            !failed.iter().any(|failed| failed.terminal == **terminal)
         })
-        .count();
+        .filter_map(|terminal| fallbacks.get(terminal).copied())
+        .collect();
     let mut notices = Vec::new();
-    if elsewhere > 0 {
-        notices.push(info(fallback_message(elsewhere), Lifetime::Expiring));
+    if !elsewhere.is_empty() {
+        let earlier = elsewhere
+            .iter()
+            .filter(|fallback| **fallback == Fallback::Earlier)
+            .count();
+        notices.push(info(
+            fallback_message(earlier, elsewhere.len() - earlier),
+            Lifetime::Expiring,
+        ));
     }
     if let Some(first) = failed.first() {
         notices.push(warning(format!(
@@ -899,24 +923,26 @@ fn panes(count: usize) -> String {
     }
 }
 
-fn fallback_message(count: usize) -> String {
-    let folder = if cfg!(target_os = "macos") {
-        "your home folder".to_owned()
-    } else {
-        std::env::current_dir().map_or_else(
+/// The notice for `earlier` panes that started in an earlier saved folder
+/// and `default` panes that started in the default directory.
+fn fallback_message(earlier: usize, default: usize) -> String {
+    let folder = match (earlier, default) {
+        (0, _) if cfg!(target_os = "macos") => "your home folder".to_owned(),
+        (0, _) => std::env::current_dir().map_or_else(
             |_| "another folder".to_owned(),
             |directory| directory.display().to_string(),
-        )
+        ),
+        (_, 0) => "an earlier folder".to_owned(),
+        _ => "a different folder".to_owned(),
     };
-    let (verb, possessive, exist) = if count == 1 {
-        ("started", "its folder", "no longer exists")
+    let last = if earlier == 0 { "" } else { "last " };
+    let count = earlier + default;
+    let reason = if count == 1 {
+        format!("its {last}folder no longer exists")
     } else {
-        ("started", "their folders", "no longer exist")
+        format!("their {last}folders no longer exist")
     };
-    format!(
-        "{} {verb} in {folder} because {possessive} {exist}.",
-        panes(count)
-    )
+    format!("{} started in {folder} because {reason}.", panes(count))
 }
 
 /// Records that `window` finished opening its restored views, or went
@@ -1013,6 +1039,87 @@ fn raise(cx: &mut App, content: NoticeContent) {
     }
 }
 
+/// The UUID that names `display` in a saved layout, in hyphenated form.
+/// X11 reports the nil UUID for every screen, which names none.
+pub(super) fn display_uuid(
+    display: &dyn gpui::PlatformDisplay,
+) -> Option<String> {
+    display
+        .uuid()
+        .ok()
+        .filter(|uuid| !uuid.is_nil())
+        .map(|uuid| uuid.to_string())
+}
+
+/// A current display, as restored placement sees it.
+#[derive(Clone, Debug)]
+pub(super) struct Screen {
+    pub(super) id: gpui::DisplayId,
+    /// See [`display_uuid`].
+    pub(super) uuid: Option<String>,
+    /// The visible area, in the coordinates window bounds on this display
+    /// use.
+    pub(super) visible: Bounds<Pixels>,
+    pub(super) primary: bool,
+}
+
+/// Where a restored window with `saved` bounds on the display named
+/// `display` opens: on that display when one of `screens` has its UUID, at
+/// the same position within it, moved onto its visible area; otherwise on
+/// the primary display through [`place_on_displays`]. `global` says the
+/// platform reports every display in one coordinate space, so saved bounds
+/// may land on any of them; macOS reports each display from its own origin.
+pub(super) fn place_restored(
+    saved: Bounds<Pixels>,
+    display: Option<&str>,
+    screens: &[Screen],
+    global: bool,
+) -> (Option<gpui::DisplayId>, Bounds<Pixels>) {
+    let named = display.and_then(|uuid| {
+        screens.iter().find(|screen| {
+            screen
+                .uuid
+                .as_deref()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(uuid))
+        })
+    });
+    if let Some(screen) = named {
+        return (Some(screen.id), clamp_onto(saved, screen.visible));
+    }
+    let primary = screens
+        .iter()
+        .find(|screen| screen.primary)
+        .map(|screen| screen.visible);
+    let displays: Vec<_> = if global {
+        screens.iter().map(|screen| screen.visible).collect()
+    } else {
+        primary.into_iter().collect()
+    };
+    (None, place_on_displays(saved, &displays, primary))
+}
+
+/// `saved` shrunk to fit `display` and moved fully inside it.
+fn clamp_onto(
+    saved: Bounds<Pixels>,
+    display: Bounds<Pixels>,
+) -> Bounds<Pixels> {
+    let width = saved.size.width.min(display.size.width);
+    let height = saved.size.height.min(display.size.height);
+    Bounds {
+        origin: point(
+            saved.origin.x.clamp(
+                display.origin.x,
+                display.origin.x + display.size.width - width,
+            ),
+            saved.origin.y.clamp(
+                display.origin.y,
+                display.origin.y + display.size.height - height,
+            ),
+        ),
+        size: size(width, height),
+    }
+}
+
 /// Places saved `bounds` on a current display: kept where it meets one,
 /// shrunk to fit and moved fully inside the display it overlaps most, and
 /// centred on `primary` when it meets none.
@@ -1030,30 +1137,19 @@ pub(super) fn place_on_displays(
         .iter()
         .filter(|display| overlap(display) > 0.0)
         .max_by(|a, b| overlap(a).total_cmp(&overlap(b)));
-    let Some(display) = best.or(primary.as_ref()).copied() else {
+    if let Some(display) = best {
+        return clamp_onto(saved, *display);
+    }
+    let Some(display) = primary else {
         return saved;
     };
     let width = saved.size.width.min(display.size.width);
     let height = saved.size.height.min(display.size.height);
-    let origin = if best.is_some() {
-        point(
-            saved.origin.x.clamp(
-                display.origin.x,
-                display.origin.x + display.size.width - width,
-            ),
-            saved.origin.y.clamp(
-                display.origin.y,
-                display.origin.y + display.size.height - height,
-            ),
-        )
-    } else {
-        point(
+    Bounds {
+        origin: point(
             display.origin.x + (display.size.width - width) / 2.0,
             display.origin.y + (display.size.height - height) / 2.0,
-        )
-    };
-    Bounds {
-        origin,
+        ),
         size: size(width, height),
     }
 }

@@ -11,6 +11,7 @@ fn layout(x: f32) -> WindowLayout {
             origin: point(px(x), px(10.0)),
             size: size(px(800.0), px(600.0)),
         }),
+        display: None,
         sidebar_width: px(180.0),
         fullscreen: false,
     }
@@ -428,6 +429,8 @@ fn palette_tab_order_lists_recent_tabs_first_and_the_active_tab_last() {
 fn the_saved_layout_takes_open_attached_windows_in_opening_order() {
     let mut model = attached(2);
     model.set_layout_bounds(window(1), layout(40.0).bounds);
+    let display = "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b";
+    model.set_layout_display(window(1), Some(display.into()));
     model.set_sidebar_width(window(1), px(220.0));
     model.set_focused_pane(window(1), TabId::new(2), PaneId::new(20));
     // Activated tab 1 last, then a tab the window no longer shows.
@@ -486,6 +489,7 @@ fn the_saved_layout_takes_open_attached_windows_in_opening_order() {
             },
             mode: huterm_state::WindowMode::Fullscreen,
             sidebar_width: 220.0,
+            display: Some(display.into()),
             quake_profile: None,
             appearance: Some(huterm_state::WindowAppearance {
                 opacity: Some(0.8),

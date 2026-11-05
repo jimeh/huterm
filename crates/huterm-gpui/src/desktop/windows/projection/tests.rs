@@ -264,6 +264,7 @@ fn layout() -> WindowLayout {
             origin: point(px(0.0), px(0.0)),
             size: size(px(800.0), px(600.0)),
         }),
+        display: None,
         sidebar_width: px(180.0),
         fullscreen: false,
     }

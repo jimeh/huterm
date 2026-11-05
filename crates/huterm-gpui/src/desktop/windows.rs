@@ -2532,26 +2532,36 @@ fn open_window_with_profile(
     };
     let transfer_size = cx.global::<Desktop>().cross.opening;
     let placement = reopen.as_ref().and_then(|reopen| reopen.placement.clone());
-    // A restored window keeps its saved bounds, moved onto a current
-    // display. GPUI places windows relative to their display, and macOS
-    // reports every display at the origin, so only the primary display
-    // takes them there.
-    let restored_bounds = placement
-        .as_ref()
-        .and_then(|placement| placement.bounds)
-        .map(|saved| {
-            let primary =
-                cx.primary_display().map(|display| display.visible_bounds());
-            let displays: Vec<_> = if cfg!(target_os = "macos") {
-                primary.into_iter().collect()
-            } else {
-                cx.displays()
-                    .iter()
-                    .map(|display| display.visible_bounds())
-                    .collect()
-            };
-            restore::place_on_displays(saved, &displays, primary)
-        });
+    // A restored window keeps its saved bounds on the display it was on,
+    // when that display is connected, else on the primary one. GPUI places
+    // windows relative to their display, and macOS reports every display
+    // from its own origin. A benchmark's display selection wins.
+    let restored = placement.as_ref().and_then(|placement| {
+        let saved = placement.bounds?;
+        let primary = cx.primary_display().map(|display| display.id());
+        let screens: Vec<_> = cx
+            .displays()
+            .iter()
+            .map(|display| restore::Screen {
+                id: display.id(),
+                uuid: restore::display_uuid(display.as_ref()),
+                visible: display.visible_bounds(),
+                primary: Some(display.id()) == primary,
+            })
+            .collect();
+        Some(restore::place_restored(
+            saved,
+            placement
+                .display
+                .as_deref()
+                .filter(|_| display_id.is_none()),
+            &screens,
+            cfg!(not(target_os = "macos")),
+        ))
+    });
+    let restored_bounds = restored.map(|(_, bounds)| bounds);
+    let open_display =
+        display_id.or_else(|| restored.and_then(|(display, _)| display));
     let bounds = restored_bounds.unwrap_or_else(|| {
         Bounds::centered(
             display_id,
@@ -2614,7 +2624,7 @@ fn open_window_with_profile(
                         == crate::transparency::Support::Available,
             )
             .appearance,
-            display_id,
+            display_id: open_display,
             // AppKit activation maps a hidden host after installation settles.
             // X11 activation only sends EWMH focus, so that host shows now.
             show: profile.is_none()
@@ -2763,6 +2773,9 @@ fn open_window_with_profile(
                     .windows
                     .insert(0, (window_id, native));
             }
+            let display = window
+                .display(cx)
+                .and_then(|display| restore::display_uuid(&*display));
             cx.global_mut::<Desktop>().windows.open(
                 window_id,
                 quake.as_ref().map(|state| QuakeRecord {
@@ -2771,10 +2784,23 @@ fn open_window_with_profile(
                 }),
                 WindowLayout {
                     bounds: window.window_bounds(),
+                    display,
                     sidebar_width,
                     fullscreen: false,
                 },
             );
+            // Saved bounds are relative to the window's display, so the
+            // layout follows it to another one.
+            window
+                .observe_window_display(move |window, cx| {
+                    let display = window
+                        .display(cx)
+                        .and_then(|display| restore::display_uuid(&*display));
+                    cx.global_mut::<Desktop>()
+                        .windows
+                        .set_layout_display(window_id, display);
+                })
+                .detach();
             cx.global_mut::<Desktop>()
                 .windows
                 .set_transparency(window_id, own_transparency);

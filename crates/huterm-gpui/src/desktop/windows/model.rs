@@ -57,11 +57,14 @@ pub(super) struct QuakeRecord {
 }
 
 /// The geometry a restored window reopens with.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct WindowLayout {
-    /// The restorable bounds, which stay windowed or maximized while the
-    /// window is fullscreen.
+    /// The restorable bounds relative to `display`, which stay windowed or
+    /// maximized while the window is fullscreen.
     pub(super) bounds: WindowBounds,
+    /// The UUID of the display the window is on, if the platform names one
+    /// (`restore::display_uuid`).
+    pub(super) display: Option<String>,
     pub(super) sidebar_width: Pixels,
     /// Whether the window is in, or entering, fullscreen.
     pub(super) fullscreen: bool,
@@ -507,6 +510,20 @@ impl WindowModel {
         }
     }
 
+    /// Records the display a window is on.
+    pub(super) fn set_layout_display(
+        &mut self,
+        id: WindowId,
+        display: Option<String>,
+    ) {
+        if let Some(record) = self.record_mut(id)
+            && record.layout.display != display
+        {
+            record.layout.display = display;
+            self.revision += 1;
+        }
+    }
+
     /// Records whether a window is in, or entering, fullscreen.
     pub(super) fn set_fullscreen(&mut self, id: WindowId, fullscreen: bool) {
         if let Some(record) = self.record_mut(id)
@@ -775,6 +792,7 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
             width: f32::from(bounds.size.width),
             height: f32::from(bounds.size.height),
         },
+        display: record.layout.display.clone(),
         mode,
         sidebar_width: f32::from(record.layout.sidebar_width),
         quake_profile: record.quake.as_ref().map(|quake| quake.profile.clone()),

@@ -349,9 +349,18 @@ settles. The worker spawns with `SpawnedTerminals::spawn` outside the lock,
 checks the termination gate between spawns and again under the lock, runs
 `Mux::restore`, attaches each session, and subscribes the projection, which
 the UI installs through `install_hierarchy`. Each restored window opens
-attached to its session (`open_window_with_profile`'s `Reopen`), clamped onto
-a display, and applies its saved focus once its installs are idle
-(`apply_reopen`); the bootstrap settles when every window did or went away.
+attached to its session (`open_window_with_profile`'s `Reopen`) and applies
+its saved focus once its installs are idle (`apply_reopen`); the bootstrap
+settles when every window did or went away. GPUI reports window bounds
+relative to the window's display, and macOS reports each display from its
+own origin, so the layout saves bounds with the display's UUID
+(`restore::display_uuid`, kept current by `observe_window_display`).
+`restore::place_restored` reopens a window on the display with that UUID,
+clamped onto its visible area, else on the primary display. X11 reports the
+nil UUID for every screen, so Linux X11 saves none and keeps placing saved
+bounds across every display in its one coordinate space. Any pane that did
+not start in its first directory candidate counts toward its window's
+fallback notice.
 A restored terminal's first viewer subscribes with `spawned: true`
 (`Desktop::fresh_terminals`), so a shell that exited before its view still
 honours `close_on_exit`. A Quake profile's session waits in `quake_stash` for

@@ -250,10 +250,10 @@ fn read_state(cx: &mut App) -> String {
                 view.tabs.len(), view.close.confirmation.is_some()).unwrap();
             // The window model's restorable layout beside the controller's
             // own, so the harness can prove each publication.
-            let layout = cx.global::<Desktop>().windows.record(view.window).map(|record| record.layout);
+            let layout = cx.global::<Desktop>().windows.record(view.window).map(|record| record.layout.clone());
             writeln!(output, "w{index}.model_restore={}\nw{index}.model_sidebar={}\nw{index}.sidebar_width={}",
-                layout.map_or_else(|| "none".to_owned(), |layout| bounds(layout.bounds)),
-                layout.map_or(-1.0, |layout| f32::from(layout.sidebar_width)),
+                layout.as_ref().map_or_else(|| "none".to_owned(), |layout| bounds(layout.bounds)),
+                layout.as_ref().map_or(-1.0, |layout| f32::from(layout.sidebar_width)),
                 f32::from(view.sidebar_width)).unwrap();
             // Window notices, newest first: `w<i>.notices=<n>` then
             // `w<i>.notice<j>=<severity>|<source>|<message>`.

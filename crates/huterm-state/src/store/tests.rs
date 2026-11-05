@@ -243,6 +243,7 @@ pub(crate) fn layout_for(capture: &RuntimeCapture) -> DesktopLayout {
                     },
                     mode: WindowMode::Maximized,
                     sidebar_width: 220.0,
+                    display: None,
                     quake_profile: None,
                     appearance: Some(crate::WindowAppearance {
                         opacity: Some(0.9),

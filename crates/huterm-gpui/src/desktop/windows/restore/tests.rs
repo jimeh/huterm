@@ -108,6 +108,7 @@ fn layout(capture: &RuntimeCapture) -> DesktopLayout {
             },
             mode: WindowMode::Windowed,
             sidebar_width: 180.0,
+            display: None,
             quake_profile: None,
             appearance: None,
         }],
@@ -330,27 +331,49 @@ fn a_restored_terminal_starts_in_its_first_usable_directory() {
         launch: TerminalLaunch::DefaultShell,
     };
     let (command, fallback) =
+        restored_command(&base, &record(vec![root.0.clone(), gone.clone()]));
+    assert_eq!(command.working_directory, root.0);
+    assert_eq!(fallback, None);
+    let (command, fallback) =
         restored_command(&base, &record(vec![gone.clone(), root.0.clone()]));
     assert_eq!(command.working_directory, root.0);
-    assert!(!fallback);
+    assert_eq!(fallback, Some(Fallback::Earlier));
     let (command, fallback) = restored_command(&base, &record(vec![gone]));
     assert_eq!(command.working_directory, PathBuf::from("/"));
-    assert!(fallback);
+    assert_eq!(fallback, Some(Fallback::Default));
     let (_, fallback) = restored_command(&base, &record(Vec::new()));
-    assert!(fallback);
+    assert_eq!(fallback, Some(Fallback::Default));
 }
 
 #[test]
-fn fallback_notices_count_panes() {
-    let one = fallback_message(1);
+fn fallback_notices_count_panes_and_name_where_they_started() {
+    let one = fallback_message(0, 1);
     assert!(one.starts_with("1 pane started in "), "{one}");
     assert!(
         one.ends_with(" because its folder no longer exists."),
         "{one}"
     );
-    let three = fallback_message(3);
+    let three = fallback_message(0, 3);
     assert!(three.starts_with("3 panes started in "), "{three}");
     assert!(three.ends_with(" because their folders no longer exist."));
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            three,
+            "3 panes started in your home folder because their folders no longer exist."
+        );
+    }
+    assert_eq!(
+        fallback_message(1, 0),
+        "1 pane started in an earlier folder because its last folder no longer exists."
+    );
+    assert_eq!(
+        fallback_message(2, 0),
+        "2 panes started in an earlier folder because their last folders no longer exist."
+    );
+    assert_eq!(
+        fallback_message(2, 1),
+        "3 panes started in a different folder because their last folders no longer exist."
+    );
 }
 
 fn rect(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
@@ -394,5 +417,83 @@ fn saved_bounds_move_onto_a_current_display() {
             Some(primary)
         ),
         rect(320.0, 162.5, 800.0, 600.0)
+    );
+}
+
+const BUILT_IN: &str = "0a1b2c3d-4e5f-4061-8273-94a5b6c7d8e9";
+const SIDE: &str = "f9e8d7c6-b5a4-4321-9fed-cba987654321";
+
+/// A built-in primary display under a menu bar, and a larger one beside
+/// it, each from its own origin as macOS reports them.
+fn screens() -> [Screen; 2] {
+    [
+        Screen {
+            id: gpui::DisplayId::new(1),
+            uuid: Some(BUILT_IN.into()),
+            visible: rect(0.0, 25.0, 1440.0, 875.0),
+            primary: true,
+        },
+        Screen {
+            id: gpui::DisplayId::new(2),
+            uuid: Some(SIDE.into()),
+            visible: rect(0.0, 0.0, 1920.0, 1080.0),
+            primary: false,
+        },
+    ]
+}
+
+#[test]
+fn a_window_returns_to_its_saved_display_at_the_same_position() {
+    let screens = screens();
+    let side = Some(gpui::DisplayId::new(2));
+    let saved = rect(1000.0, 400.0, 800.0, 600.0);
+    assert_eq!(
+        place_restored(saved, Some(SIDE), &screens, false),
+        (side, saved)
+    );
+    assert_eq!(
+        place_restored(saved, Some(&SIDE.to_uppercase()), &screens, false),
+        (side, saved)
+    );
+    // Over that display's edge: moved onto its visible area.
+    assert_eq!(
+        place_restored(
+            rect(1500.0, 700.0, 800.0, 600.0),
+            Some(SIDE),
+            &screens,
+            false
+        ),
+        (side, rect(1120.0, 480.0, 800.0, 600.0))
+    );
+}
+
+#[test]
+fn a_window_whose_saved_display_is_missing_opens_on_the_primary_display() {
+    let screens = screens();
+    let gone = "11111111-2222-4333-8444-555555555555";
+    // Within the primary display's reach: clamped onto it.
+    let saved = rect(1000.0, 400.0, 800.0, 600.0);
+    let on_primary = (None, rect(640.0, 300.0, 800.0, 600.0));
+    assert_eq!(
+        place_restored(saved, Some(gone), &screens, false),
+        on_primary
+    );
+    assert_eq!(place_restored(saved, None, &screens, false), on_primary);
+    // Beyond it: centred on it.
+    assert_eq!(
+        place_restored(
+            rect(5000.0, 0.0, 800.0, 600.0),
+            Some(gone),
+            &screens,
+            false
+        ),
+        (None, rect(320.0, 162.5, 800.0, 600.0))
+    );
+    // Where every display shares one space, any display it meets keeps it.
+    let mut global = screens;
+    global[1].visible = rect(1440.0, 0.0, 1920.0, 1080.0);
+    assert_eq!(
+        place_restored(rect(2000.0, 100.0, 800.0, 600.0), None, &global, true),
+        (None, rect(2000.0, 100.0, 800.0, 600.0))
     );
 }

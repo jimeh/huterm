@@ -170,6 +170,7 @@ fn layout() -> huterm_state::DesktopLayout {
             },
             mode: huterm_state::WindowMode::Windowed,
             sidebar_width: 210.0,
+            display: None,
             quake_profile: None,
             appearance: None,
         }],
@@ -330,6 +331,69 @@ fn a_restore_reopens_saved_windows_with_fresh_shells_and_saved_focus(
     for (pid, _) in scratch.reports() {
         assert!(gone(pid), "shell {pid} outlived Quit");
     }
+}
+
+/// The session restore notices `window` shows.
+fn restore_notices(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> Vec<String> {
+    harness.update_view(window, |view, _, _| {
+        view.notices
+            .contents()
+            .filter(|content| content.source == NoticeSource::Sessions)
+            .map(|content| content.message.clone())
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn panes_that_start_in_an_earlier_saved_folder_are_reported(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let project = scratch.0.join("project");
+    let gone_folder = scratch.0.join("gone");
+    // Panes 5 and 15 lost their last folder but kept an earlier one; pane
+    // 7 lost its only folder.
+    let mut saved = capture(&scratch);
+    for terminal in &mut saved.terminals {
+        if matches!(terminal.id.get(), 6 | 16) {
+            terminal.directories = vec![gone_folder.clone(), project.clone()];
+        }
+    }
+    let mut harness = DesktopHarness::restoring(
+        cx,
+        |_| {},
+        saved,
+        Some(layout()),
+        &scratch.reporting(),
+    );
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let work = harness.window_of(SessionId::in_runtime(runtime, 1));
+    let other = harness.window_of(SessionId::in_runtime(runtime, 12));
+    harness.wait_for("every shell to report", |_| scratch.reports().len() == 4);
+    let project = project.canonicalize().unwrap();
+    let started_in_project = scratch
+        .reports()
+        .iter()
+        .filter(|(_, directory)| *directory == project)
+        .count();
+    assert_eq!(started_in_project, 3);
+    assert_eq!(
+        restore_notices(&mut harness, work),
+        [
+            "2 panes started in a different folder because their last folders no longer exist."
+        ]
+    );
+    assert_eq!(
+        restore_notices(&mut harness, other),
+        [
+            "1 pane started in an earlier folder because its last folder no longer exists."
+        ]
+    );
+    harness.runtime.terminate().unwrap();
 }
 
 #[gpui::test]
