@@ -10,18 +10,21 @@
 //! projection on `Desktop`, and reconcile republishes titles and tab order
 //! into the model when the runtime changes them, such as after a rename.
 //!
-//! Each tab entry lists its panes' terminals and titles. The pane layout is
-//! runtime state on the projection, and the window's pane focus lives in its
-//! view until durable layout records (#42) need it.
+//! Each tab entry lists its panes' terminals and titles, and the pane the
+//! window focuses in it, which its view publishes. The pane layout is
+//! runtime state on the projection. [`WindowModel::desktop_layout`] turns the
+//! records into the saved layout that session restore reopens.
 //!
-//! Not yet covered, for later extension: panel placement (#27) and durable
-//! layout records (#42).
+//! Every change to a saved fact moves [`WindowModel::revision`], which
+//! schedules a checkpoint.
+//!
+//! Not yet covered, for later extension: panel placement (#27).
 
 use super::layout_history::LayoutHistory;
-use crate::config::TabPosition;
 use gpui::{Pixels, WindowBounds, WindowId};
 use huterm_protocol::{
-    AttachmentId, HierarchyState, SessionId, TabId, TerminalId, WorkspaceId,
+    AttachmentId, HierarchyState, PaneId, SessionId, TabId, TerminalId,
+    WorkspaceId,
 };
 
 /// One pane of a tab as its window shows it.
@@ -40,6 +43,8 @@ pub(super) struct TabEntry {
     pub(super) panes: Vec<PaneTitle>,
     /// The display title the tab bar shows, including the exited suffix.
     pub(super) title: String,
+    /// The pane the window focuses in this tab, once its view has one.
+    pub(super) focused: Option<PaneId>,
 }
 
 /// The quake profile a window serves.
@@ -52,10 +57,17 @@ pub(super) struct QuakeRecord {
 }
 
 /// The geometry a restored window reopens with.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct WindowLayout {
+    /// The restorable bounds relative to `display`, which stay windowed or
+    /// maximized while the window is fullscreen.
     pub(super) bounds: WindowBounds,
+    /// The UUID of the display the window is on, if the platform names one
+    /// (`restore::display_uuid`).
+    pub(super) display: Option<String>,
     pub(super) sidebar_width: Pixels,
+    /// Whether the window is in, or entering, fullscreen.
+    pub(super) fullscreen: bool,
 }
 
 /// Everything the client knows about one window.
@@ -97,27 +109,6 @@ pub(super) enum TitleScope {
     Open,
 }
 
-// In-memory input for a future restore writer. No serialization/version contract.
-#[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "retained restore aggregate awaits the persistence stage"
-    )
-)]
-pub(super) struct WindowRestore {
-    pub(super) attachment: AttachmentId,
-    pub(super) workspace: Option<WorkspaceId>,
-    pub(super) active: Option<TabId>,
-    pub(super) bounds: WindowBounds,
-    pub(super) tab_position: TabPosition,
-    pub(super) sidebar_width: Pixels,
-    pub(super) quake_profile: Option<String>,
-    pub(super) transparency: crate::transparency::Layer,
-}
-
 /// A quake profile rename Settings is writing or wrote, until the reloads
 /// that read the file after it apply it.
 #[derive(Debug)]
@@ -150,11 +141,26 @@ pub(super) struct WindowModel {
     renames: Vec<QuakeRename>,
     renames_noted: u64,
     renames_started: u64,
+    /// Moves with every change to a fact the saved layout records.
+    revision: u64,
 }
 
 impl WindowModel {
     fn record_mut(&mut self, id: WindowId) -> Option<&mut WindowRecord> {
         self.records.iter_mut().find(|record| record.id == id)
+    }
+
+    /// A window's record, noting that a saved fact may change.
+    fn saved_mut(&mut self, id: WindowId) -> Option<&mut WindowRecord> {
+        let record = self.records.iter_mut().find(|record| record.id == id)?;
+        self.revision += 1;
+        Some(record)
+    }
+
+    /// Moves with every change to a fact the saved layout records, so a
+    /// checkpoint follows it.
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
     }
 
     fn open_records(&self) -> impl Iterator<Item = &WindowRecord> {
@@ -168,6 +174,7 @@ impl WindowModel {
         quake: Option<QuakeRecord>,
         layout: WindowLayout,
     ) {
+        self.revision += 1;
         self.records.retain(|record| record.id != id);
         self.records.push(WindowRecord {
             id,
@@ -194,7 +201,7 @@ impl WindowModel {
         session: SessionId,
         workspace: WorkspaceId,
     ) {
-        let Some(record) = self.record_mut(id) else {
+        let Some(record) = self.saved_mut(id) else {
             return;
         };
         if attachment.is_some() {
@@ -207,7 +214,7 @@ impl WindowModel {
     /// Clears the attachment and session after the runtime detached the
     /// attachment or deleted its session.
     pub(super) fn detach_attachment(&mut self, id: WindowId) {
-        if let Some(record) = self.record_mut(id) {
+        if let Some(record) = self.saved_mut(id) {
             record.attachment = None;
             record.session = None;
         }
@@ -215,7 +222,7 @@ impl WindowModel {
 
     /// Appends a spawned tab and activates it.
     pub(super) fn open_tab(&mut self, id: WindowId, entry: TabEntry) {
-        let Some(record) = self.record_mut(id) else {
+        let Some(record) = self.saved_mut(id) else {
             return;
         };
         let tab = entry.id;
@@ -228,7 +235,7 @@ impl WindowModel {
     /// Appends a tab the window installed without spawning it; the active
     /// tab stays as it was.
     pub(super) fn add_tab(&mut self, id: WindowId, entry: TabEntry) {
-        let Some(record) = self.record_mut(id) else {
+        let Some(record) = self.saved_mut(id) else {
             return;
         };
         record.tabs.retain(|existing| existing.id != entry.id);
@@ -243,9 +250,34 @@ impl WindowModel {
         if !record.contains(tab) {
             return false;
         }
+        let changed =
+            record.active != Some(tab) || record.history.first() != Some(&tab);
         record.active = Some(tab);
         record_tab_activation(&mut record.history, tab);
+        if changed {
+            self.revision += 1;
+        }
         true
+    }
+
+    /// Replaces a restored window's activation history with `history`,
+    /// most recent first, keeping only tabs it shows; tabs it activated
+    /// since follow.
+    pub(super) fn restore_history(&mut self, id: WindowId, history: &[TabId]) {
+        let Some(record) = self.saved_mut(id) else {
+            return;
+        };
+        let mut restored: Vec<TabId> = history
+            .iter()
+            .copied()
+            .filter(|tab| record.contains(*tab))
+            .collect();
+        for tab in &record.history {
+            if !restored.contains(tab) {
+                restored.push(*tab);
+            }
+        }
+        record.history = restored;
     }
 
     /// Applies canonical tab order; returns false and changes nothing when
@@ -255,9 +287,17 @@ impl WindowModel {
         id: WindowId,
         order: &[TabId],
     ) -> bool {
-        self.record_mut(id).is_some_and(|record| {
-            apply_tab_order(&mut record.tabs, order, |entry| entry.id)
-        })
+        let Some(record) = self.record_mut(id) else {
+            return false;
+        };
+        let before: Vec<TabId> =
+            record.tabs.iter().map(|entry| entry.id).collect();
+        let applied =
+            apply_tab_order(&mut record.tabs, order, |entry| entry.id);
+        if applied && before != order {
+            self.revision += 1;
+        }
+        applied
     }
 
     /// Removes closed tabs in order, moving the active tab as the tab bar
@@ -267,7 +307,7 @@ impl WindowModel {
         id: WindowId,
         tabs: &[TabId],
     ) -> Option<TabId> {
-        let record = self.record_mut(id)?;
+        let record = self.saved_mut(id)?;
         for &tab in tabs {
             remove_tab(&mut record.tabs, &mut record.active, tab, |entry| {
                 entry.id
@@ -312,6 +352,27 @@ impl WindowModel {
             return false;
         }
         entry.panes = panes;
+        true
+    }
+
+    /// Publishes the pane a window focuses in `tab`; returns whether it
+    /// changed.
+    pub(super) fn set_focused_pane(
+        &mut self,
+        id: WindowId,
+        tab: TabId,
+        pane: PaneId,
+    ) -> bool {
+        let Some(entry) = self.record_mut(id).and_then(|record| {
+            record.tabs.iter_mut().find(|entry| entry.id == tab)
+        }) else {
+            return false;
+        };
+        if entry.focused == Some(pane) {
+            return false;
+        }
+        entry.focused = Some(pane);
+        self.revision += 1;
         true
     }
 
@@ -383,6 +444,22 @@ impl WindowModel {
                 .any(|rename| rename.noted.is_some() && rename.from == name)
     }
 
+    /// The first name `has` accepts that profile `name` reaches through the
+    /// renames noted or running, starting with `name` itself; `None` when
+    /// the renames end at a name `has` rejects.
+    pub(super) fn quake_rename_target(
+        &self,
+        name: &str,
+        has: impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        let mut name = name;
+        let mut renames = self.renames.iter();
+        while !has(name) {
+            name = renames.find(|rename| rename.from == name)?.to.as_str();
+        }
+        Some(name.to_owned())
+    }
+
     /// Brings the quake associations up to a reload whose file has the
     /// profiles `has` names and was read once `read` renames were noted. A
     /// window whose profile the file lacks follows the renames noted or
@@ -398,13 +475,8 @@ impl WindowModel {
         let moves: Vec<(WindowId, String)> = self
             .quake_windows()
             .filter_map(|(profile, id)| {
-                let mut name = profile;
-                let mut renames = self.renames.iter();
-                while !has(name) {
-                    name =
-                        renames.find(|rename| rename.from == name)?.to.as_str();
-                }
-                (name != profile).then(|| (id, name.to_owned()))
+                let name = self.quake_rename_target(profile, &has)?;
+                (name != profile).then_some((id, name))
             })
             .collect();
         let mut renamed = Vec::new();
@@ -413,7 +485,7 @@ impl WindowModel {
                 continue;
             }
             if let Some(quake) =
-                self.record_mut(id).and_then(|record| record.quake.as_mut())
+                self.saved_mut(id).and_then(|record| record.quake.as_mut())
             {
                 name.clone_into(&mut quake.profile);
                 renamed.push((id, name));
@@ -431,7 +503,7 @@ impl WindowModel {
 
     /// Ends a window's profile association; the window stays open.
     pub(super) fn detach_quake(&mut self, id: WindowId) {
-        if let Some(record) = self.record_mut(id) {
+        if let Some(record) = self.saved_mut(id) {
             record.quake = None;
         }
     }
@@ -441,8 +513,35 @@ impl WindowModel {
         id: WindowId,
         bounds: WindowBounds,
     ) {
-        if let Some(record) = self.record_mut(id) {
+        if let Some(record) = self.record_mut(id)
+            && record.layout.bounds != bounds
+        {
             record.layout.bounds = bounds;
+            self.revision += 1;
+        }
+    }
+
+    /// Records the display a window is on.
+    pub(super) fn set_layout_display(
+        &mut self,
+        id: WindowId,
+        display: Option<String>,
+    ) {
+        if let Some(record) = self.record_mut(id)
+            && record.layout.display != display
+        {
+            record.layout.display = display;
+            self.revision += 1;
+        }
+    }
+
+    /// Records whether a window is in, or entering, fullscreen.
+    pub(super) fn set_fullscreen(&mut self, id: WindowId, fullscreen: bool) {
+        if let Some(record) = self.record_mut(id)
+            && record.layout.fullscreen != fullscreen
+        {
+            record.layout.fullscreen = fullscreen;
+            self.revision += 1;
         }
     }
 
@@ -453,20 +552,27 @@ impl WindowModel {
         id: WindowId,
         layer: crate::transparency::Layer,
     ) -> bool {
-        self.record_mut(id).is_some_and(|record| {
+        let changed = self.record_mut(id).is_some_and(|record| {
             std::mem::replace(&mut record.transparency, layer) != layer
-        })
+        });
+        if changed {
+            self.revision += 1;
+        }
+        changed
     }
 
     pub(super) fn set_sidebar_width(&mut self, id: WindowId, width: Pixels) {
-        if let Some(record) = self.record_mut(id) {
+        if let Some(record) = self.record_mut(id)
+            && record.layout.sidebar_width != width
+        {
             record.layout.sidebar_width = width;
+            self.revision += 1;
         }
     }
 
     /// Marks a window as being removed and ends its profile association.
     pub(super) fn begin_close(&mut self, id: WindowId) {
-        if let Some(record) = self.record_mut(id) {
+        if let Some(record) = self.saved_mut(id) {
             record.closing = true;
             record.quake = None;
         }
@@ -474,7 +580,11 @@ impl WindowModel {
 
     /// Forgets a window GPUI has removed.
     pub(super) fn remove(&mut self, id: WindowId) {
+        let before = self.records.len();
         self.records.retain(|record| record.id != id);
+        if self.records.len() != before {
+            self.revision += 1;
+        }
     }
 
     /// A window's layout history.
@@ -612,29 +722,100 @@ impl WindowModel {
         }
     }
 
-    /// The Quit capture: every open, attached window in opening order.
-    pub(super) fn restore_windows(
+    /// The saved layout: every open, attached window in opening order,
+    /// with identities unscoped as the runtime capture writes them, and
+    /// `active` as the window activated last when it is an open regular
+    /// window. Quake windows keep their profile and are not activated.
+    pub(super) fn desktop_layout(
         &self,
-        tab_position: TabPosition,
-    ) -> Vec<WindowRestore> {
-        self.open_records()
+        active: Option<WindowId>,
+    ) -> huterm_state::DesktopLayout {
+        let mut active_window = None;
+        let windows = self
+            .open_records()
             .filter_map(|record| {
-                Some(WindowRestore {
-                    attachment: record.attachment?,
-                    workspace: record.workspace,
-                    active: record.active,
-                    bounds: record.layout.bounds,
-                    tab_position,
-                    sidebar_width: record.layout.sidebar_width,
-                    quake_profile: record
-                        .quake
-                        .as_ref()
-                        .map(|quake| quake.profile.clone()),
-                    transparency: record.transparency,
+                let layout = saved_window(record)?;
+                if active == Some(record.id) && record.quake.is_none() {
+                    active_window = Some(record.id);
+                }
+                Some((record.id, layout))
+            })
+            .collect::<Vec<_>>();
+        huterm_state::DesktopLayout {
+            active_window: active_window.and_then(|id| {
+                windows.iter().position(|(window, _)| *window == id)
+            }),
+            windows: windows.into_iter().map(|(_, layout)| layout).collect(),
+        }
+    }
+}
+
+/// One attached window's saved layout.
+fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
+    record.attachment?;
+    let (session, workspace) = (record.session?, record.workspace?);
+    let shown = |tab: &TabId| record.contains(*tab);
+    let mut history: Vec<TabId> =
+        record.history.iter().copied().filter(shown).collect();
+    // Saved most recent last.
+    history.reverse();
+    let (mode, bounds) = match record.layout.bounds {
+        WindowBounds::Windowed(bounds) => {
+            (huterm_state::WindowMode::Windowed, bounds)
+        }
+        WindowBounds::Maximized(bounds) => {
+            (huterm_state::WindowMode::Maximized, bounds)
+        }
+        WindowBounds::Fullscreen(bounds) => {
+            (huterm_state::WindowMode::Fullscreen, bounds)
+        }
+    };
+    let mode = if record.layout.fullscreen {
+        huterm_state::WindowMode::Fullscreen
+    } else {
+        mode
+    };
+    let transparency = record.transparency;
+    Some(huterm_state::WindowLayout {
+        session: SessionId::new(session.get()),
+        workspace: WorkspaceId::new(workspace.get()),
+        active_tab: record
+            .active
+            .filter(shown)
+            .map(|tab| TabId::new(tab.get())),
+        tab_history: history
+            .into_iter()
+            .map(|tab| TabId::new(tab.get()))
+            .collect(),
+        focused_panes: record
+            .tabs
+            .iter()
+            .filter_map(|entry| {
+                Some(huterm_state::FocusedPane {
+                    tab: TabId::new(entry.id.get()),
+                    pane: PaneId::new(entry.focused?.get()),
                 })
             })
-            .collect()
-    }
+            .collect(),
+        bounds: huterm_state::WindowBounds {
+            x: f32::from(bounds.origin.x),
+            y: f32::from(bounds.origin.y),
+            width: f32::from(bounds.size.width),
+            height: f32::from(bounds.size.height),
+        },
+        display: record.layout.display.clone(),
+        mode,
+        sidebar_width: f32::from(record.layout.sidebar_width),
+        quake_profile: record.quake.as_ref().map(|quake| quake.profile.clone()),
+        appearance: (!transparency.is_empty()).then(|| {
+            huterm_state::WindowAppearance {
+                opacity: transparency.opacity,
+                background_opacity: transparency.background,
+                foreground_opacity: transparency.foreground,
+                blur: transparency.blur.map(u32::from),
+            }
+        }),
+    })
 }
 
 /// Sorts `tabs` into canonical `order`; returns false and leaves `tabs`

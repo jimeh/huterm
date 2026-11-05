@@ -96,7 +96,11 @@ are not part of them yet.
 
 **Restoration**:
 Recreating saved workspace structure and client layout after a restart, with
-fresh terminal processes when the previous runtime is no longer alive.
+fresh terminal processes when the previous runtime is no longer alive. The
+saved state is a socket scope's runtime file (sessions, workspaces, tabs, pane
+layouts, names, and each terminal's directories) and the desktop's layout file
+(windows and their focus and geometry), written at Quit and in crash
+checkpoints. Nothing saved is executed.
 
 **Reconnection**:
 Attaching to a surviving runtime and its existing terminal processes.

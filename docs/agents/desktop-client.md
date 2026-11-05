@@ -213,7 +213,8 @@ cleanup: set the shared termination gate before locking Mux, reject queued spawn
 after they acquire that lock, and drain existing runtimes before returning.
 
 Quit captures every session plus window navigation and geometry before cleanup;
-retain the first capture through repeated shutdown. The native AppKit bridge
+only the first capture writes, through repeated shutdown (see
+[Session restore](#session-restore)). The native AppKit bridge
 adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
 until assessment, consent, and cleanup finish. Keep unsafe Objective-C calls in
 native_quit.rs and native_updater.rs; run mise run smoke:macos-quit on macOS for
@@ -310,6 +311,93 @@ the jobs end. Cancel and Escape check `can_cancel_confirmation`, and the
 keyboard confirm reads the current confirmation. A tier 2 test produces the
 stale click by cancelling and calling `Window::dispatch_event` in one update,
 before the end-of-update draw drops the dialog.
+
+### Session restore
+
+`windows/persistence.rs` owns every write of the scope's saved state. It
+lives on `DesktopRuntime`, because the Quit write runs inside
+`commit_close_with`'s callback on a worker, and has one state: `Off`,
+`Bootstrapping`, `Running`, or `Final`. Checkpoints, removals, and marker
+clears go to one writer thread in the order they were queued; each write
+takes the slot lock and checks the state under it, so a queued checkpoint
+that loses to Final or Off writes nothing. Each checkpoint carries the
+sequence `begin_capture` handed out when its capture started, and the
+writer drops one older than the last it wrote: the layout comes from the
+UI thread and the runtime from a worker, so two captures can finish out of
+order. `finish` (through `DesktopRuntime::capture`) moves to `Final` first,
+waits until the writer handled every job queued before it, so a removal or
+the marker clear `settle` queued lands first, and writes on the caller's
+thread; from `Bootstrapping` it removes only the `restore-attempt` marker.
+Every exit path reaches it: the Quit dialog's commit, `on_app_quit`, the
+post-loop `terminate()`, and `maybe_exit` after the last window closed,
+which writes the empty set itself before `approved_quit`, since no
+checkpoint may be due. An unchanged capture is not written again. Setting
+`restore_sessions` off queues a removal; on starts `Running` and captures
+at once. During a restore the setting is only recorded, and `settle`
+applies it: off settles into `Off` and removes the files, on into
+`Running`; only settling leaves `Bootstrapping`. A failed restore calls
+`suspend`, which blocks saving for the run like an unusable store, so a
+reload cannot turn it back on and the files and marker survive for the
+next launch to set aside. Tests use `persistence::Recorder`,
+`Persistence::pause`, and `Checkpoints::delay`; the harness defaults to an
+hour, so only the path under test writes.
+
+`windows/checkpoints.rs` debounces captures: a committed hierarchy batch,
+a window-model revision (`WindowModel::revision`, moved only by saved
+facts, watched through `observe_global::<Desktop>`), and a terminal
+directory change restart one timer on the executor clock. Nothing is armed
+while nothing changed. A capture due while `cross.reserved` holds a window
+waits until the transfer settles. The layout comes from the window model on
+the UI thread and the runtime capture from a worker's Mux lock. A
+reservation moves `DesktopRuntime::transfers`, and a capture that sees it
+moved after its runtime read may hold a transfer half done: it is dropped
+and taken again, after that transfer settles if it is still reserved. Views
+publish each tab's focused pane into `TabEntry::focused` from their
+self-observer, writing only what changed.
+
+`windows/restore.rs` reads saved state before `application.run`
+(`prepare`) and, with something to restore, the launch callback starts the
+bootstrap instead of opening a fresh window. `Desktop::restoring` gates
+reopen, Quake summons (deferred, then replayed), and `maybe_exit` until it
+settles. The worker runs on its own `huterm-restore` thread, spawns with
+`SpawnedTerminals::spawn` outside the lock, checks the termination gate
+between spawns and again under the lock, runs `Mux::restore`, attaches each
+session, and subscribes the projection, which the UI installs through
+`install_hierarchy`. Until `Mux::restore` takes them, the worker alone owns
+the children it spawned, so it registers with `restore::Worker`; every
+termination path sets the gate, then waits there without the Mux lock until
+the worker stopped and joined them or handed them over:
+`terminate_with_windows` (for `on_app_quit` and the post-loop
+`terminate()`) before it locks, and a committed Quit after its commit
+released the lock. Otherwise AppKit can exit while the worker still holds
+live shells. Each restored window opens attached to its session
+(`open_window_with_profile`'s `Reopen`) and applies its saved focus once
+its installs are idle (`apply_reopen`); the bootstrap settles when every
+window did or went away. GPUI reports window bounds
+relative to the window's display, and macOS reports each display from its
+own origin, so the layout saves bounds with the display's UUID
+(`restore::display_uuid`, kept current by `observe_window_display`).
+`restore::place_restored` reopens a window on the display with that UUID,
+clamped onto its visible area, else on the primary display. X11 reports the
+nil UUID for every screen, so Linux X11 saves none and keeps placing saved
+bounds across every display in its one coordinate space. Any pane that did
+not start in its first directory candidate counts toward its window's
+fallback notice.
+A restored terminal's first viewer subscribes with `spawned: true`
+(`Desktop::fresh_terminals`), so a shell that exited before its view still
+honours `close_on_exit`. A Quake profile's session waits in `quake_stash` for
+the first summon when a registered shortcut summons the profile. Its
+`Reopen::stashed` keeps the saved window layout, which `capture_windows`
+appends, so a Quit or crash before that summon stashes it again at the next
+launch. A reload (`quake_windows::reconcile`, through
+`restore::reconcile_stash`, before the windows drop the renames it read)
+moves a stash to its profile's recorded new name and opens one whose
+profile is gone, no longer summoned, or already served in a regular
+window, as launch does for a missing profile. GPUI tests cannot register
+global shortcuts; `quake_windows::Registry::summoned` stands in for them.
+`smoke:macos-restore` and `smoke:linux-restore` quit and relaunch on one
+`HUTERM_STATE_DIR`; `HUTERM_STATE_TIMING` prints the final write's
+duration.
 
 The Settings window (`windows/settings_window.rs`) has no session and no
 `WindowModel` record; `Desktop::settings` holds its handle. Code that walks

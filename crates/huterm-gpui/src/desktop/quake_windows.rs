@@ -17,6 +17,10 @@ pub(super) struct Registry {
     return_focus: Option<native::Focus>,
     pub(super) failed_spawn: Option<(String, String)>,
     smoke_journal: Option<SmokeJournal>,
+    /// Profiles tests treat as summoned by a registered shortcut, since
+    /// GPUI tests cannot register global shortcuts.
+    #[cfg(test)]
+    pub(super) summoned: std::collections::HashSet<String>,
 }
 
 impl Default for Registry {
@@ -28,6 +32,8 @@ impl Default for Registry {
             failed_spawn: None,
             smoke_journal: std::env::var_os("HUTERM_QUAKE_SMOKE")
                 .map(|_| SmokeJournal::new()),
+            #[cfg(test)]
+            summoned: std::collections::HashSet::new(),
         }
     }
 }
@@ -463,6 +469,18 @@ pub(super) fn keep_alive(cx: &App) -> bool {
         .as_ref()
         .is_some_and(hotkeys::Registrations::has_bindings)
 }
+/// Whether a registered global shortcut summons profile `name`.
+pub(super) fn summons(cx: &App, name: &str) -> bool {
+    let quake = &cx.global::<Desktop>().quake;
+    #[cfg(test)]
+    if quake.summoned.contains(name) {
+        return true;
+    }
+    quake
+        .registrations
+        .as_ref()
+        .is_some_and(|registrations| registrations.summons(name))
+}
 pub(super) fn shutdown(cx: &mut App) {
     cx.global_mut::<Desktop>().quake.registrations.take();
 }
@@ -509,12 +527,28 @@ pub(super) fn invoke(
         ));
     }
     let command = invocation.id;
+    // A summon during a restore waits for it to settle, so it finds a
+    // stashed session instead of spawning.
+    if let Some(bootstrap) = cx.global_mut::<Desktop>().restoring.as_mut() {
+        bootstrap.summons.push((name, command, reporter));
+        return Ok(CommandOutcome::Accepted);
+    }
+    summon_later(cx, name, command, reporter);
+    Ok(CommandOutcome::Accepted)
+}
+
+/// Runs a summon once the current window update returns.
+pub(super) fn summon_later(
+    cx: &mut App,
+    name: String,
+    command: huterm_protocol::CommandId,
+    reporter: Option<WeakEntity<WorkspaceView>>,
+) {
     cx.defer(move |cx| {
         if let Err(error) = invoke_now(cx, &name, command, reporter.clone()) {
             report(cx, &error, reporter);
         }
     });
-    Ok(CommandOutcome::Accepted)
 }
 fn invoke_now(
     cx: &mut App,
@@ -606,11 +640,14 @@ fn invoke_now(
     }
     let display = place(&native, &config.display, &mut None)
         .map_err(|error| error.to_string())?;
+    // The first summon after a restore shows the profile's saved session.
+    let reopen = cx.global_mut::<Desktop>().quake_stash.remove(name);
     open_window_with_profile(
         cx,
-        true,
+        reopen.is_none(),
         Some((name.to_owned(), config, display)),
         reporter,
+        reopen,
     );
     if cx.global::<Desktop>().windows.quake_window(name).is_none() {
         return Err(format!("could not create quake profile {name:?}"));
@@ -1141,6 +1178,8 @@ pub(super) fn close(
 /// profile's window takes its new name once the file read has it, and the
 /// windows of profiles the file no longer has become ordinary windows.
 pub(super) fn reconcile(cx: &mut App, read: u64) {
+    // Before the windows, which drop the renames this reload read.
+    restore::reconcile_stash(cx);
     let desktop = cx.global_mut::<Desktop>();
     let profiles = &desktop.config.quake.profiles;
     let reconciled = desktop

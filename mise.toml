@@ -69,7 +69,9 @@ fi
 [tasks.dev]
 description = "Run the native Huterm app"
 depends = ["ghostty:prepare", "terminfo:prepare"]
-run = "bash scripts/build-exec.sh cargo run --locked -p huterm"
+# A worktree-local state directory, so a dev build neither restores nor
+# overwrites the installed app's sessions.
+run = 'HUTERM_STATE_DIR="$PWD/target/dev-state" bash scripts/build-exec.sh cargo run --locked -p huterm'
 
 [tasks.build]
 description = "Build the workspace"
@@ -244,10 +246,11 @@ if [ "$(uname -s)" != Linux ]; then
 fi
 bash scripts/build-exec.sh cargo build --workspace --locked
 smoke_config=$(mktemp)
-trap 'rm -f "$smoke_config"' EXIT
+smoke_state=$(mktemp -d)
+trap 'rm -rf "$smoke_config" "$smoke_state"' EXIT
 printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
 set +e
-HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
+HUTERM_CONFIG_FILE="$smoke_config" HUTERM_STATE_DIR="$smoke_state" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
   -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
 status=$?
 set -e
@@ -271,7 +274,9 @@ if ! command -v twm >/dev/null 2>&1; then
 fi
 bash scripts/build-exec.sh cargo build --release --locked -p huterm
 bench_config="$(mktemp)"
-trap 'rm -f "$bench_config"' EXIT
+bench_state="$(mktemp -d)"
+trap 'rm -rf "$bench_config" "$bench_state"' EXIT
+export HUTERM_STATE_DIR="$bench_state"
 # A compression pass that starts mid-run would change what is measured.
 printf '[terminal]\nscrollback_compression = false\n' > "$bench_config"
 printf '[window]\nbackground_opacity = %s\nforeground_opacity = %s\n' "${HUTERM_BENCH_BACKGROUND_OPACITY:-1}" "${HUTERM_BENCH_FOREGROUND_OPACITY:-1}" >> "$bench_config"
@@ -342,6 +347,8 @@ bench_config="$(mktemp)"
 printf '[terminal]\nscrollback_rows = 20000\nscrollback_compression = false\n' > "$bench_config"
 printf '[window]\nbackground_opacity = %s\nforeground_opacity = %s\n' "${HUTERM_BENCH_BACKGROUND_OPACITY:-1}" "${HUTERM_BENCH_FOREGROUND_OPACITY:-1}" >> "$bench_config"
 export HUTERM_CONFIG_FILE="$bench_config"
+bench_state="$(mktemp -d)"
+export HUTERM_STATE_DIR="$bench_state"
 bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example scroll_workload
 workload="$(pwd)/target/release/examples/scroll_workload"
 report="$(mktemp)"
@@ -353,6 +360,7 @@ else
 fi
 cleanup() {
   rm -f "$report" "$bench_config"
+  rm -rf "$bench_state"
 }
 trap cleanup EXIT
 if [ "$platform" = Linux ]; then
@@ -530,6 +538,30 @@ run = "mise run verify:platform:parallel"
 description = "Run the broad CI-equivalent validation"
 depends = ["verify:toolchain"]
 run = "mise run verify:parallel"
+
+[tasks."smoke:macos-restore"]
+depends = ["ghostty:prepare"]
+description = "Verify session restore across Quit and relaunch with real PTYs"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Native restore smoke skipped: AppKit requires macOS"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example restore_smoke
+bun scripts/host-smoke-lock.ts bun scripts/check-restore.ts target/debug/examples/restore_smoke
+'''
+
+[tasks."smoke:linux-restore"]
+depends = ["ghostty:prepare"]
+description = "Verify session restore across Quit and relaunch under Xvfb"
+run = '''
+if [ "$(uname -s)" != Linux ]; then
+  echo "Linux restore smoke skipped: X11 requires Linux"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example restore_smoke
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-restore.ts target/debug/examples/restore_smoke
+'''
 
 [tasks."smoke:macos-quit"]
 depends = ["ghostty:prepare"]
@@ -996,7 +1028,8 @@ case "$(uname -s)" in
       --example presentation_query_smoke \
       --example fullscreen_smoke \
       --example palette_smoke \
-      --example quake_smoke
+      --example quake_smoke \
+      --example restore_smoke
     mise run build:swift
     ;;
   Linux)
@@ -1011,7 +1044,8 @@ case "$(uname -s)" in
       --example fullscreen_smoke \
       --example palette_smoke \
       --example quake_smoke \
-      --example quake_monitor
+      --example quake_monitor \
+      --example restore_smoke
     ;;
   *) echo "Desktop smokes require Linux or macOS" >&2; exit 1 ;;
 esac
@@ -1038,7 +1072,7 @@ case "$(uname -s)" in
       exec bun scripts/host-smoke-lock.ts mise run ci:smoke:run
     fi
     case "$smoke_step" in
-      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-viewers|macos-settings|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake) ;;
+      all|renderer|presentation-queries|macos-menus|macos-updater|macos-input|macos-refresh|macos-clipboard|macos-palette|macos-overlays|macos-viewers|macos-settings|macos-titlebar|macos-integration|macos-quit|macos-fullscreen|macos-quake|macos-restore) ;;
       *) echo "Unknown macOS smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -1093,10 +1127,13 @@ case "$(uname -s)" in
     if run_smoke_step macos-quake; then
       bun scripts/check-quake.ts target/debug/examples/quake_smoke target/debug/quake-witness
     fi
+    if run_smoke_step macos-restore; then
+      bun scripts/check-restore.ts target/debug/examples/restore_smoke
+    fi
     ;;
   Linux)
     case "$smoke_step" in
-      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-overlays|linux-viewers|linux-settings|linux-client-frame|linux-integration|linux-fullscreen|linux-quake) ;;
+      all|renderer|presentation-queries|linux-desktop|linux-input|linux-clipboard|linux-palette|linux-overlays|linux-viewers|linux-settings|linux-client-frame|linux-integration|linux-fullscreen|linux-quake|linux-restore) ;;
       *) echo "Unknown Linux smoke step: $smoke_step" >&2; exit 1 ;;
     esac
 
@@ -1128,13 +1165,15 @@ case "$(uname -s)" in
 
     if run_smoke_step linux-desktop; then
       smoke_config=$(mktemp)
+      smoke_state=$(mktemp -d)
       printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
       set +e
-      HUTERM_CONFIG_FILE="$smoke_config" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
+      HUTERM_CONFIG_FILE="$smoke_config" HUTERM_STATE_DIR="$smoke_state" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
         -e "$evidence_dir/linux-desktop-xvfb.log" -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
       status=$?
       set -e
       rm -f "$smoke_config"
+      rm -rf "$smoke_state"
       if [ "$status" -ne 124 ]; then
         echo "Huterm exited before the 8-second smoke window (status $status)" >&2
         exit 1
@@ -1181,6 +1220,10 @@ case "$(uname -s)" in
     if run_smoke_step linux-quake; then
       xvfb-run -a -e "$evidence_dir/quake-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
         bun scripts/check-quake.ts target/debug/examples/quake_smoke
+    fi
+    if run_smoke_step linux-restore; then
+      xvfb-run -a -e "$evidence_dir/restore-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
+        bun scripts/check-restore.ts target/debug/examples/restore_smoke
     fi
     ;;
   *) echo "Desktop smokes require Linux or macOS" >&2; exit 1 ;;

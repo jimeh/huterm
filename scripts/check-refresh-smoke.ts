@@ -31,7 +31,7 @@ done
   await chmod(shell, 0o700);
   const outcome = await runSmokeProcess([resolve(executable)], {
     timeoutMs: 60_000,
-    env: { ...process.env, SHELL: shell, HUTERM_CONFIG_FILE: config },
+    env: { ...process.env, SHELL: shell, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state") },
   });
   const markers = [
     "frame_stop_resume",

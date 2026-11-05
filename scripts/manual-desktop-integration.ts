@@ -52,7 +52,7 @@ const app = Bun.spawn(
     env: {
       ...process.env,
       SHELL: shell,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       HUTERM_INTEGRATION_SMOKE: directory,
     },
     stdout: "inherit",

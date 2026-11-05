@@ -62,11 +62,25 @@ pub struct GeneralConfig {
         "x-huterm-apply" = "live",
     )))]
     pub watch_config: bool,
+    /// Reopen the windows, tabs, and split panes that were open at Quit,
+    /// each pane with a fresh shell in its last folder, and save them while
+    /// Huterm runs. Turning this off deletes the saved windows.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "general",
+        "x-huterm-group" = "Sessions",
+        "x-huterm-label" = "Restore windows and sessions at launch",
+        "x-huterm-order" = 15,
+        "x-huterm-apply" = "live",
+    )))]
+    pub restore_sessions: bool,
 }
 
 impl Default for GeneralConfig {
     fn default() -> Self {
-        Self { watch_config: true }
+        Self {
+            watch_config: true,
+            restore_sessions: true,
+        }
     }
 }
 

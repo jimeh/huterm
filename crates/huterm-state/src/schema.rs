@@ -253,6 +253,8 @@ struct WindowRecord {
     #[serde(default)]
     focused_panes: Bounded<FocusRecord, MAX_TABS>,
     bounds: BoundsRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display: Option<String>,
     mode: ModeRecord,
     sidebar_width: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -747,6 +749,7 @@ fn window_record(window: &WindowLayout) -> WindowRecord {
             width: window.bounds.width,
             height: window.bounds.height,
         },
+        display: window.display.clone(),
         mode: match window.mode {
             WindowMode::Windowed => ModeRecord::Windowed,
             WindowMode::Maximized => ModeRecord::Maximized,
@@ -784,6 +787,7 @@ fn window_layout(window: WindowRecord) -> WindowLayout {
             width: window.bounds.width,
             height: window.bounds.height,
         },
+        display: window.display,
         mode: match window.mode {
             ModeRecord::Windowed => WindowMode::Windowed,
             ModeRecord::Maximized => WindowMode::Maximized,

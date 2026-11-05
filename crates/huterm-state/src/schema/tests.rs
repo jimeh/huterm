@@ -88,6 +88,24 @@ fn a_capture_round_trips_through_its_file() {
     assert_eq!(SCOPE.to_string(), "07".repeat(16));
 }
 
+const DISPLAY: &str = "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b";
+
+#[test]
+fn a_window_display_round_trips_and_is_left_out_when_unknown() {
+    let mut layout = layout_for(&rich_capture());
+    assert_eq!(layout.windows.len(), 2);
+    layout.windows[0].display = Some(DISPLAY.into());
+    let bytes = encode_desktop(&layout, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_desktop(&bytes) else {
+        panic!("the layout did not decode");
+    };
+    assert_eq!(file.content, layout);
+    // The second window names no display, so it writes no field, as a file
+    // from before the field has none.
+    let text = String::from_utf8(bytes).unwrap();
+    assert_eq!(text.matches("\"display\"").count(), 1, "{text}");
+}
+
 #[test]
 fn the_writer_drops_directories_a_restore_cannot_use() {
     use std::ffi::OsStr;
@@ -257,6 +275,9 @@ fn a_desktop_layout_breaking_its_rules_is_refused_by_writer_and_reader() {
     let mut blank = valid.clone();
     blank.windows[0].quake_profile = Some(" ".into());
     breaks.push((blank, "blank"));
+    let mut display = valid.clone();
+    display.windows[0].display = Some(format!("{DISPLAY}0"));
+    breaks.push((display, "display is not a UUID"));
     let mut many = valid.clone();
     many.windows = vec![valid.windows[0].clone(); MAX_WINDOWS + 1];
     breaks.push((many, "more than 256 windows"));
@@ -277,4 +298,18 @@ fn a_desktop_layout_breaking_its_rules_is_refused_by_writer_and_reader() {
         decode_desktop(broken.as_bytes()),
         Decoded::Corrupt(reason) if reason.contains("active window")
     ));
+    let mut named = valid.clone();
+    named.windows[0].display = Some(DISPLAY.into());
+    let text =
+        String::from_utf8(encode_desktop(&named, SCOPE, 1).unwrap()).unwrap();
+    for invalid in ["display-1", "1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b", ""] {
+        let broken = text.replace(DISPLAY, invalid);
+        assert!(
+            matches!(
+                decode_desktop(broken.as_bytes()),
+                Decoded::Corrupt(ref reason) if reason.contains("display is not a UUID")
+            ),
+            "{invalid:?}"
+        );
+    }
 }

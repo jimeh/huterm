@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 305);
+    assert_eq!(fixtures.len(), 307);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -1055,6 +1055,31 @@ fn watch_config_defaults_on_parses_and_is_read_leniently_on_a_nonfatal_error() {
         let loaded = load_path(path.clone());
         assert!(!loaded.fatal && loaded.error.is_some(), "{general}");
         assert_eq!(loaded.config.general.watch_config, expected, "{general}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn restore_sessions_defaults_on_and_a_broken_file_never_turns_it_on() {
+    assert!(Config::default().general.restore_sessions);
+    assert!(parse(DEFAULT_CONFIG).unwrap().general.restore_sessions);
+    assert!(DEFAULT_CONFIG.contains("\nrestore_sessions = true\n"));
+    assert!(parse("[general]\nrestore_sessions = 'no'").is_err());
+    let directory = test_directory();
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("config.toml");
+    for (general, expected) in [
+        ("[general]\nrestore_sessions = false\n", false),
+        ("", true),
+        ("[general]\nrestore_sessions = 'no'\n", true),
+    ] {
+        fs::write(&path, format!("{general}[font]\nsize = 1000.0\n")).unwrap();
+        let loaded = load_path(path.clone());
+        assert!(!loaded.fatal && loaded.error.is_some(), "{general}");
+        assert_eq!(
+            loaded.config.general.restore_sessions, expected,
+            "{general}"
+        );
     }
     fs::remove_dir_all(directory).unwrap();
 }

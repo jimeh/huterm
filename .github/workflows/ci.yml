@@ -519,6 +519,16 @@ jobs:
         timeout-minutes: 6
         run: HUTERM_CI_SMOKE_STEP=macos-quake mise run ci:smoke:step
 
+      - name: Smoke Linux session restore
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'Linux' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=linux-restore mise run ci:smoke:step
+
+      - name: Smoke macOS session restore
+        if: ${{ !cancelled() && steps.smoke-build.outcome == 'success' && runner.os == 'macOS' }}
+        timeout-minutes: 6
+        run: HUTERM_CI_SMOKE_STEP=macos-restore mise run ci:smoke:step
+
       - name: Upload smoke evidence
         if: ${{ !cancelled() && (steps.smoke-build.outcome == 'success' || failure()) }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

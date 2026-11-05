@@ -76,7 +76,7 @@ printf FINISHED > ${quote(join(directory, "finished"))}
     const config = join(directory, "config.toml");
     // Ctrl+Shift+A is normally Select All on Linux; this fixture measures PTY input.
     await writeFile(config, '[terminal]\nclose_on_exit = false\n[[keybinding]]\nkey = "ctrl-shift-a"\ncommand = "unbind"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n');
-    app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_PALETTE_SMOKE: directory, HUTERM_CONFIG_FILE: config, SHELL: shell }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_PALETTE_SMOKE: directory, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     diagnostics = Promise.all([new Response(app.stdout).text(), new Response(app.stderr).text()]);
     const stateFile = join(directory, "state");
     const state = async (flags: number) => waitFor(async () => (await readFile(stateFile, "utf8").catch(() => "")).includes(`w0.kitty=${flags}`), `displayed flags ${flags}`);

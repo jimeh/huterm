@@ -76,6 +76,9 @@ pub(super) struct PaneTarget {
     pub(super) terminal: TerminalId,
     pub(super) start: ViewerStart,
     replace: bool,
+    /// A restored terminal no view has seen yet: its viewer reports an exit
+    /// that happened before it as the exit transition.
+    pub(super) spawned: bool,
 }
 
 impl WorkspaceView {
@@ -108,7 +111,8 @@ impl WorkspaceView {
     pub(super) fn pane_targets(&self, tab: TabId, cx: &App) -> Vec<PaneTarget> {
         let fresh =
             ViewerStart::fresh(terminal_presentation(&self.config.theme));
-        let state = cx.global::<Desktop>().hierarchy.state();
+        let desktop = cx.global::<Desktop>();
+        let state = desktop.hierarchy.state();
         let Some(info) = state.tab(tab) else {
             return Vec::new();
         };
@@ -123,6 +127,8 @@ impl WorkspaceView {
                     terminal: pane.terminal_id,
                     start,
                     replace,
+                    spawned: !replace
+                        && desktop.fresh_terminals.contains(&pane.terminal_id),
                 };
                 match view.and_then(|view| view.pane(pane.id)) {
                     None => Some(target(fresh.clone(), false)),
@@ -261,6 +267,7 @@ impl WorkspaceView {
         if current {
             self.reconcile_own(window, cx);
         }
+        self.apply_reopen(window, cx);
     }
 
     /// Selects a tab for a window that had none once views arrived, or
@@ -320,6 +327,9 @@ impl WorkspaceView {
                     );
                 }
                 Ok(viewer) if applies => {
+                    cx.global_mut::<Desktop>()
+                        .fresh_terminals
+                        .remove(&target.terminal);
                     let key = PaneKey {
                         tab,
                         pane: target.pane,

@@ -243,6 +243,7 @@ pub(crate) fn layout_for(capture: &RuntimeCapture) -> DesktopLayout {
                     },
                     mode: WindowMode::Maximized,
                     sidebar_width: 220.0,
+                    display: None,
                     quake_profile: None,
                     appearance: Some(crate::WindowAppearance {
                         opacity: Some(0.9),
@@ -576,6 +577,52 @@ fn the_restore_attempt_marker_is_created_detected_and_removed() {
     store.clear_restore_attempt().unwrap();
     assert!(!store.restore_attempt_pending().unwrap());
     store.clear_restore_attempt().unwrap();
+}
+
+#[test]
+fn removing_saved_state_keeps_newer_files_and_set_aside_copies() {
+    let root = TempDir::new();
+    let capture = rich_capture();
+    let layout = layout_for(&capture);
+    let mut store = Store::open(root.path(), "default").unwrap();
+    store.load();
+    store.save(&capture, &layout).unwrap();
+    store.save(&capture, &layout).unwrap();
+    let directory = store.directory().to_owned();
+    fs::write(directory.join("runtime.json.corrupt"), b"kept").unwrap();
+    store.mark_restore_attempt().unwrap();
+    store.remove_saved().unwrap();
+    assert!(!directory.join("runtime.json").exists());
+    assert!(!directory.join("desktop.json").exists());
+    assert!(!store.restore_attempt_pending().unwrap());
+    assert_eq!(
+        fs::read(directory.join("runtime.json.corrupt")).unwrap(),
+        b"kept"
+    );
+    // The next save starts over with a new scope identity.
+    assert_eq!(store.save(&capture, &layout).unwrap(), 1);
+    let RuntimeLoad::Loaded(saved) = store.load().runtime else {
+        panic!("the save after removal loads");
+    };
+    assert_eq!(saved.generation, 1);
+
+    // Newer files stay where they are.
+    let runtime = directory.join("runtime.json");
+    let desktop = directory.join("desktop.json");
+    let newer_runtime = fs::read_to_string(&runtime)
+        .unwrap()
+        .replace("\"version\":1", "\"version\":2");
+    let newer_desktop = fs::read_to_string(&desktop)
+        .unwrap()
+        .replace("\"version\":1", "\"version\":2");
+    fs::write(&runtime, &newer_runtime).unwrap();
+    fs::write(&desktop, &newer_desktop).unwrap();
+    drop(store);
+    let mut store = Store::open(root.path(), "default").unwrap();
+    store.load();
+    store.remove_saved().unwrap();
+    assert_eq!(fs::read_to_string(&runtime).unwrap(), newer_runtime);
+    assert_eq!(fs::read_to_string(&desktop).unwrap(), newer_desktop);
 }
 
 /// Set in the child process that holds the lock.

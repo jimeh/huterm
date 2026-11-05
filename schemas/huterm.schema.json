@@ -250,6 +250,16 @@
       "additionalProperties": false,
       "description": "Application-wide behavior.",
       "properties": {
+        "restore_sessions": {
+          "default": true,
+          "description": "Reopen the windows, tabs, and split panes that were open at Quit,\neach pane with a fresh shell in its last folder, and save them while\nHuterm runs. Turning this off deletes the saved windows.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sessions",
+          "x-huterm-label": "Restore windows and sessions at launch",
+          "x-huterm-order": 15,
+          "x-huterm-section": "general"
+        },
         "watch_config": {
           "default": true,
           "description": "Reload config.toml when it, or a theme file it uses, changes on disk.",

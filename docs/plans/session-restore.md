@@ -1,7 +1,8 @@
 # Session restore (#42)
 
-Status: in progress: pull request 1 (core and persistence) implemented;
-desktop restore pending. Jim accepted every recommendation on 2026-11-04.
+Status: implemented. Pull request #404 delivered core and persistence; the
+desktop pull request delivered restore. Jim accepted every recommendation on
+2026-11-04.
 
 Delivers [#42](https://github.com/jimeh/huterm/issues/42) under the
 [#17](https://github.com/jimeh/huterm/issues/17) epic. Styled history is
@@ -162,8 +163,9 @@ Windows in opening order, each with:
 
 - session and workspace IDs, active tab, tab activation history, and the
   focused pane of each tab (moved from the view into `WindowRecord`);
-- restorable bounds in global coordinates, and the current mode: windowed,
-  maximized, or fullscreen (new capture data);
+- restorable bounds relative to the window's display, that display's UUID
+  (`display`, optional, added without a version bump), and the current
+  mode: windowed, maximized, or fullscreen (new capture data);
 - sidebar width; tab position is global config and not saved;
 - Quake profile name, if any;
 - `appearance`: optional, for #399's per-window transparency overrides. If
@@ -247,8 +249,9 @@ writer thread and has one state:
    terminal with `TerminalRuntime::spawn_in` outside the Mux lock. GPUI
    supplies each command: current shell settings, the configured initial
    grid and resolved cell size, and the first directory candidate that
-   `usable_launch_directory` accepts, else the default directory with a
-   recorded fallback. The task checks the terminating flag between spawns.
+   `usable_launch_directory` accepts, else the default directory. A start
+   outside the first candidate records a fallback. The task checks the
+   terminating flag between spawns.
 4. Under one short lock, `Mux::restore(capture, spawned)` checks that the Mux
    is still fresh (empty, with no identity or ordinal allocated) and has the
    capture's socket name, sets the allocator to the watermark, restores the
@@ -257,11 +260,12 @@ writer thread and has one state:
    and a tab with no pane left is removed. It returns a report.
 5. The UI thread installs the populated hierarchy snapshot and subscription
    through `install_hierarchy`, then opens the restored windows, each
-   attached to its session, with bounds clamped onto a current display and
-   recentred on the primary display when the saved area meets none. Each
-   window subscribes its restored terminals with `spawned: true`, so a shell
-   that exited before its view existed still reports exit and honours
-   `close_on_exit`.
+   attached to its session, on its saved display when a display with that
+   UUID is connected, at the same position clamped onto its visible area;
+   otherwise on the primary display, clamped onto it and recentred when the
+   saved area meets none. Each window subscribes its restored terminals
+   with `spawned: true`, so a shell that exited before its view existed
+   still reports exit and honours `close_on_exit`.
 6. A session with no tabs left gets one fresh tab. A session with no saved
    window, including an unviewed one, opens in a new regular window, because
    no switcher exists to reach it.
@@ -313,7 +317,7 @@ window, through the existing notice stack:
 
 | Case | Severity | Copy (draft) |
 | --- | --- | --- |
-| Some panes started elsewhere | Info, transient | "3 panes started in your home folder because their folders no longer exist." |
+| Some panes started elsewhere | Info, transient | All in the default directory: "3 panes started in your home folder because their folders no longer exist." All in an earlier saved folder: "2 panes started in an earlier folder because their last folders no longer exist." A mix: "3 panes started in a different folder because their last folders no longer exist." |
 | Some panes or windows failed | Warning, persistent | "2 panes couldn't start and were left out: `<first error>`." |
 | Saved state unreadable or a restore crashed | Warning, persistent | "Couldn't restore your previous windows: `<reason>`. The saved state was kept as runtime.json.corrupt." |
 | Newer version | Warning, persistent | "Saved windows came from a newer Huterm and weren't restored. This window's sessions won't be saved." |
@@ -357,8 +361,11 @@ Directory fill-in for server spawns stays with #45.
 ## Constraints
 
 - `huterm-protocol` stays dependency-free; serialization stays out of it.
-- Core alone owns PTYs and runtime state. Restore spawns on a worker, never
-  the UI thread, and holds the Mux lock only to insert.
+- Core alone owns PTYs and runtime state. Restore spawns the saved
+  terminals on a worker, never the UI thread, and holds the Mux lock only
+  to insert them; a replacement tab for an emptied session uses the
+  ordinary new-tab path, which spawns under the Mux lock like every new
+  tab.
 - Restore never executes saved text.
 - Shutdown changes must still prove that live children and workers
   terminate, including children spawned by a cancelled restore.

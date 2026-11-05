@@ -265,7 +265,7 @@ done
       WAYLAND_DISPLAY: process.platform === "linux" ? undefined : process.env.WAYLAND_DISPLAY,
       TMUX: undefined,
       TMUX_PANE: undefined,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       HUTERM_CLIPBOARD_SMOKE: macos ? directory : undefined,
       SHELL: shell,
     },

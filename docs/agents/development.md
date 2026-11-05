@@ -390,6 +390,8 @@ showed came up short on macOS CI.
 | macOS fullscreen | `mise run smoke:macos-fullscreen` | AppKit modes, style/focus restoration, retained tabs, presentation leases, and PTY input/resize | CI or implementer |
 | Linux quake | `mise run smoke:linux-quake` | Native XTest shortcuts, external focus, composited fade pixels, animations, OS grab rollback, and PTY lifecycle | CI or implementer |
 | macOS quake | `mise run smoke:macos-quake` | Native session shortcuts, external AppKit focus, alpha/geometry, Space exit, and PTY lifecycle; requires event-posting permission | CI or implementer |
+| Linux restore | `mise run smoke:linux-restore` | Quit with two windows, a split, names, and a `cd`, then relaunch on the same `HUTERM_STATE_DIR`: structure, weights, focus, directories, fresh PIDs, and window sizes | CI or implementer |
+| macOS restore | `mise run smoke:macos-restore` | The Linux restore checks plus window position, and the final write's duration | CI or implementer |
 | macOS menus | `mise run smoke:macos-menus` | Real AppKit shortcut values at startup and reload | CI or implementer |
 | macOS keyboard | `mise run smoke:macos-input` | Native input and composition through Ghostty, automatic reload with `watch_config` on and off, plus one legacy-config launch | CI or implementer |
 | macOS refresh | `mise run smoke:macos-refresh` | Native frame stop/resume, one pending callback across tab replacement, and idle activity-task cancellation; requires an unlocked GUI session | Implementer |

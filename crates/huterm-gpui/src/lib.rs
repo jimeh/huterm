@@ -132,6 +132,13 @@ pub fn run_fullscreen_smoke() -> anyhow::Result<()> {
     desktop::fullscreen_smoke::run()
 }
 
+/// Runs the production desktop with the session restore command probe.
+#[doc(hidden)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn run_restore_smoke() -> anyhow::Result<()> {
+    desktop::restore_smoke::run()
+}
+
 /// Runs the production desktop with terminal presentation query observations.
 #[doc(hidden)]
 #[cfg(any(target_os = "macos", target_os = "linux"))]

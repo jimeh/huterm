@@ -1400,6 +1400,18 @@
     "theme": false
   },
   {
+    "name": "general restore_sessions off",
+    "toml": "[general]\nrestore_sessions = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "general restore_sessions text",
+    "toml": "[general]\nrestore_sessions = \"no\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "general unknown field",
     "toml": "[general]\nwatch = true",
     "valid": false,

@@ -31,6 +31,9 @@ pub(super) const DEFAULT_CONFIG: &str = r##"#:schema https://github.com/jimeh/hu
 [general]
 # Reload this file automatically when it changes on disk.
 watch_config = true
+# Reopen the windows, tabs, and panes open at Quit, each pane with a fresh
+# shell in its last folder. Turning this off deletes the saved windows.
+restore_sessions = true
 
 [terminal]
 # Terminal identity for new shells: "xterm-256color", "auto", or
@@ -507,15 +510,25 @@ pub(super) fn reload(path: &Path) -> Reloaded {
     }
 }
 
-/// Reads `[general] watch_config` from a file that failed to load but is
-/// valid TOML, so a fix saved in an editor still loads on its own. Anything
+/// Reads `[general] watch_config` and `restore_sessions` from a file that
+/// failed to load but is valid TOML, so a fix saved in an editor still loads
+/// on its own and a broken file never turns saving back on. Anything
 /// unreadable keeps the default.
 fn fallback_general(source: &str) -> GeneralConfig {
-    let watch_config = toml::from_str::<toml::Value>(source)
+    let general = toml::from_str::<toml::Value>(source)
         .ok()
-        .and_then(|value| value.get("general")?.get("watch_config")?.as_bool())
-        .unwrap_or(GeneralConfig::default().watch_config);
-    GeneralConfig { watch_config }
+        .and_then(|value| value.get("general").cloned());
+    let flag = |name: &str, default: bool| {
+        general
+            .as_ref()
+            .and_then(|general| general.get(name)?.as_bool())
+            .unwrap_or(default)
+    };
+    let defaults = GeneralConfig::default();
+    GeneralConfig {
+        watch_config: flag("watch_config", defaults.watch_config),
+        restore_sessions: flag("restore_sessions", defaults.restore_sessions),
+    }
 }
 
 /// Checks a candidate file the way a reload does, without registering

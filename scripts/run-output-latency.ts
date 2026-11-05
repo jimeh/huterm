@@ -188,7 +188,7 @@ if (import.meta.main) {
   // continuous drawing would otherwise hold the main thread in present.
   // Always set the workload so an inherited value cannot change the mode.
   // Only keys mode types into the window; an inherited driver must not add keys to other modes.
-  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_CONFIG_FILE: config, HUTERM_RENDER_STATS: "events", HUTERM_RENDER_WORKLOAD: mode, HUTERM_KEY_BENCH: mode === "keys" ? "1" : mode === "compression" ? "compression" : "0", HUTERM_RENDER_HISTORY: history };
+  const environment: NodeJS.ProcessEnv = { ...process.env, SHELL: resolve(workload), HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(configDirectory, "saved-state"), HUTERM_RENDER_STATS: "events", HUTERM_RENDER_WORKLOAD: mode, HUTERM_KEY_BENCH: mode === "keys" ? "1" : mode === "compression" ? "compression" : "0", HUTERM_RENDER_HISTORY: history };
   delete environment.HUTERM_KEY_BENCH_DELAY_MS;
   if (mode === "compression" && !compressed) environment.HUTERM_KEY_BENCH_DELAY_MS = keyDelay;
   try {

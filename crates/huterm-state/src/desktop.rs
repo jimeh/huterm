@@ -29,9 +29,12 @@ pub struct WindowLayout {
     pub tab_history: Vec<TabId>,
     /// The focused pane of each tab that has one.
     pub focused_panes: Vec<FocusedPane>,
-    /// The restorable bounds in global coordinates, which stay windowed
+    /// The restorable bounds relative to `display`, which stay windowed
     /// while the window is maximized or fullscreen.
     pub bounds: WindowBounds,
+    /// The UUID of the display the window was on, in hyphenated form, if
+    /// the platform names one.
+    pub display: Option<String>,
     /// How the window was presented.
     pub mode: WindowMode,
     /// The tab sidebar's width.
@@ -51,7 +54,8 @@ pub struct FocusedPane {
     pub pane: PaneId,
 }
 
-/// A window's restorable frame in global coordinates.
+/// A window's restorable frame, in the coordinates the platform reports
+/// for its display.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowBounds {
     /// Left edge.
@@ -92,7 +96,8 @@ impl DesktopLayout {
     /// Checks the bounds and rules a saved layout meets: at most
     /// [`MAX_WINDOWS`] windows and [`MAX_TABS`] history and focus entries
     /// per window, nonzero identities, an active window that exists,
-    /// finite geometry with a positive size, and non-blank profile names.
+    /// finite geometry with a positive size, display UUIDs in hyphenated
+    /// form, and non-blank profile names.
     ///
     /// # Errors
     /// Returns the first rule the layout breaks.
@@ -148,6 +153,9 @@ impl WindowLayout {
         {
             return Err(InvalidState::new("a window's geometry is invalid"));
         }
+        if self.display.as_deref().is_some_and(|uuid| !is_uuid(uuid)) {
+            return Err(InvalidState::new("a window's display is not a UUID"));
+        }
         if self
             .quake_profile
             .as_deref()
@@ -167,4 +175,17 @@ impl WindowLayout {
         }
         Ok(())
     }
+}
+
+/// Whether `value` is a UUID in hyphenated form: 32 hexadecimal digits in
+/// groups of 8, 4, 4, 4, and 12.
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.char_indices().all(|(index, character)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                character == '-'
+            } else {
+                character.is_ascii_hexdigit()
+            }
+        })
 }

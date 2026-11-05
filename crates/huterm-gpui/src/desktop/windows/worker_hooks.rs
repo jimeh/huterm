@@ -26,10 +26,20 @@ pub(super) enum Stage {
     LayoutCommitted,
     /// Cross-window transfer before acquiring the Mux lock.
     Transfer,
+    /// A restore's worker, before it spawns any terminal.
+    Restore,
+    /// A restore's worker after its first terminal started, before it
+    /// checks for termination and spawns the next.
+    RestoreSpawned,
+    /// A restore's worker after it inserted the structure, before the
+    /// windows open.
+    Restored,
+    /// A checkpoint's runtime capture, before it takes the Mux lock.
+    Checkpoint,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 8]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 12]>);
 
 #[derive(Default)]
 struct StageHooks {
@@ -80,17 +90,30 @@ impl WorkerHooks {
     /// Runs at the start of a worker of `stage`: counts it, waits while the
     /// stage is held, and returns whether the worker must fail.
     pub(super) async fn enter(&self, stage: Stage) -> bool {
-        let gate = self.with(stage, |hooks| {
-            hooks.entered += 1;
-            let gate = hooks.gate.as_ref().map(|(_, gate)| gate.clone());
-            hooks.held += usize::from(gate.is_some());
-            gate
-        });
-        if let Some(gate) = gate {
+        if let Some(gate) = self.arrive(stage) {
             // Resolves with an error once `release` drops the sender.
             let _ = gate.recv().await;
             self.with(stage, |hooks| hooks.held -= 1);
         }
         self.with(stage, |hooks| std::mem::take(&mut hooks.fail))
+    }
+
+    /// [`Self::enter`] for a worker on its own thread, which blocks it.
+    pub(super) fn enter_blocking(&self, stage: Stage) -> bool {
+        if let Some(gate) = self.arrive(stage) {
+            let _ = gate.recv_blocking();
+            self.with(stage, |hooks| hooks.held -= 1);
+        }
+        self.with(stage, |hooks| std::mem::take(&mut hooks.fail))
+    }
+
+    /// Counts a worker entering `stage`; returns the gate it must wait on.
+    fn arrive(&self, stage: Stage) -> Option<async_channel::Receiver<()>> {
+        self.with(stage, |hooks| {
+            hooks.entered += 1;
+            let gate = hooks.gate.as_ref().map(|(_, gate)| gate.clone());
+            hooks.held += usize::from(gate.is_some());
+            gate
+        })
     }
 }

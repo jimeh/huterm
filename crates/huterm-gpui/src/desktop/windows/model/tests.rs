@@ -11,7 +11,9 @@ fn layout(x: f32) -> WindowLayout {
             origin: point(px(x), px(10.0)),
             size: size(px(800.0), px(600.0)),
         }),
+        display: None,
         sidebar_width: px(180.0),
+        fullscreen: false,
     }
 }
 
@@ -23,6 +25,7 @@ fn entry(tab: u64) -> TabEntry {
             title: format!("tab {tab}"),
         }],
         title: format!("tab {tab}"),
+        focused: None,
     }
 }
 
@@ -423,10 +426,27 @@ fn palette_tab_order_lists_recent_tabs_first_and_the_active_tab_last() {
 }
 
 #[test]
-fn restore_capture_takes_open_attached_windows_in_opening_order() {
+fn the_saved_layout_takes_open_attached_windows_in_opening_order() {
     let mut model = attached(2);
     model.set_layout_bounds(window(1), layout(40.0).bounds);
+    let display = "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b";
+    model.set_layout_display(window(1), Some(display.into()));
     model.set_sidebar_width(window(1), px(220.0));
+    model.set_focused_pane(window(1), TabId::new(2), PaneId::new(20));
+    // Activated tab 1 last, then a tab the window no longer shows.
+    model.select(window(1), TabId::new(1));
+    model
+        .record_mut(window(1))
+        .unwrap()
+        .history
+        .insert(1, TabId::new(9));
+    model.set_fullscreen(window(1), true);
+    let layer = crate::transparency::Layer {
+        opacity: Some(0.8),
+        blur: Some(12),
+        ..crate::transparency::Layer::default()
+    };
+    model.set_transparency(window(1), layer);
     // Not attached yet: nothing to restore.
     model.open(window(2), None, layout(5.0));
     model.open(window(3), Some(quake("logs", false)), layout(70.0));
@@ -445,31 +465,75 @@ fn restore_capture_takes_open_attached_windows_in_opening_order() {
     );
     model.begin_close(window(4));
 
+    let saved = model.desktop_layout(Some(window(1)));
+    assert_eq!(saved.active_window, Some(0));
+    let [first, quake] = saved.windows.as_slice() else {
+        panic!("two windows: {saved:?}");
+    };
     assert_eq!(
-        model.restore_windows(TabPosition::Left),
-        [
-            WindowRestore {
-                attachment: AttachmentId::new(1),
-                workspace: Some(WorkspaceId::new(1)),
-                active: Some(TabId::new(2)),
-                bounds: layout(40.0).bounds,
-                tab_position: TabPosition::Left,
-                sidebar_width: px(220.0),
-                quake_profile: None,
-                transparency: crate::transparency::Layer::default(),
+        *first,
+        huterm_state::WindowLayout {
+            session: SessionId::new(1),
+            workspace: WorkspaceId::new(1),
+            active_tab: Some(TabId::new(1)),
+            tab_history: vec![TabId::new(2), TabId::new(1)],
+            focused_panes: vec![huterm_state::FocusedPane {
+                tab: TabId::new(2),
+                pane: PaneId::new(20),
+            }],
+            bounds: huterm_state::WindowBounds {
+                x: 40.0,
+                y: 10.0,
+                width: 800.0,
+                height: 600.0,
             },
-            WindowRestore {
-                attachment: AttachmentId::new(3),
-                workspace: Some(WorkspaceId::new(3)),
-                active: None,
-                bounds: layout(70.0).bounds,
-                tab_position: TabPosition::Left,
-                sidebar_width: px(180.0),
-                quake_profile: Some("logs".to_owned()),
-                transparency: crate::transparency::Layer::default(),
-            },
-        ]
+            mode: huterm_state::WindowMode::Fullscreen,
+            sidebar_width: 220.0,
+            display: Some(display.into()),
+            quake_profile: None,
+            appearance: Some(huterm_state::WindowAppearance {
+                opacity: Some(0.8),
+                blur: Some(12),
+                ..huterm_state::WindowAppearance::default()
+            }),
+        }
     );
+    assert_eq!(quake.quake_profile.as_deref(), Some("logs"));
+    assert_eq!(quake.mode, huterm_state::WindowMode::Windowed);
+    assert_eq!(quake.appearance, None);
+    // A Quake window is never the window activated last.
+    assert_eq!(model.desktop_layout(Some(window(3))).active_window, None);
+}
+
+#[test]
+fn saved_facts_move_the_revision_and_others_do_not() {
+    let mut model = attached(2);
+    let mut last = model.revision();
+    let mut moved = |model: &WindowModel| {
+        let moved = model.revision() != last;
+        last = model.revision();
+        moved
+    };
+    model.select(window(1), TabId::new(1));
+    assert!(moved(&model));
+    model.select(window(1), TabId::new(1));
+    assert!(!moved(&model));
+    model.set_tab_title(window(1), TabId::new(1), "renamed");
+    model.set_quake_visible(window(1), true);
+    model.set_layout_bounds(window(1), layout(5.0).bounds);
+    assert!(!moved(&model), "titles, visibility, and same bounds");
+    model.set_layout_bounds(window(1), layout(11.0).bounds);
+    assert!(moved(&model));
+    model.set_focused_pane(window(1), TabId::new(1), PaneId::new(5));
+    assert!(moved(&model));
+    model.set_focused_pane(window(1), TabId::new(1), PaneId::new(5));
+    assert!(!moved(&model));
+    assert!(model.apply_order(window(1), &[TabId::new(1), TabId::new(2)]));
+    assert!(!moved(&model));
+    assert!(model.apply_order(window(1), &[TabId::new(2), TabId::new(1)]));
+    assert!(moved(&model));
+    model.close_tabs(window(1), &[TabId::new(2)]);
+    assert!(moved(&model));
 }
 
 #[test]
@@ -492,7 +556,7 @@ fn every_reader_answers_from_the_model_alone() {
     );
     assert_eq!(model.recent_tab(window(1)), Some(TabId::new(1)));
     assert_eq!(model.tab_titles(TitleScope::Open).len(), 3);
-    assert_eq!(model.restore_windows(TabPosition::Top).len(), 1);
+    assert_eq!(model.desktop_layout(None).windows.len(), 1);
 }
 
 #[test]

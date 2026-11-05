@@ -116,7 +116,7 @@ mod settings;
 mod size_indicator;
 pub(crate) use windows::{
     fullscreen_smoke, integration_smoke, palette_smoke,
-    presentation_query_smoke, quake_smoke, refresh_smoke,
+    presentation_query_smoke, quake_smoke, refresh_smoke, restore_smoke,
 };
 #[cfg(target_os = "macos")]
 pub(crate) mod menus_smoke;
@@ -1113,6 +1113,9 @@ impl TerminalView {
                 changed = true;
             }
             if status.metadata_revision > self.metadata_revision {
+                if directories_moved(&self.metadata, &status.metadata) {
+                    windows::directory_changed(cx);
+                }
                 self.metadata_revision = status.metadata_revision;
                 self.metadata = status.metadata.clone();
                 changed = true;
@@ -3888,6 +3891,16 @@ fn terminal_top(chrome_hidden: bool) -> Pixels {
 
 fn initial_grid(window: WindowConfig) -> GridSize {
     GridSize::clamped(window.initial_columns, window.initial_rows)
+}
+
+/// Whether a terminal's reported directories changed, which its saved
+/// directories follow.
+fn directories_moved(
+    old: &huterm_protocol::TerminalMetadata,
+    new: &huterm_protocol::TerminalMetadata,
+) -> bool {
+    old.directory() != new.directory()
+        || old.shell_directory() != new.shell_directory()
 }
 
 fn shell_command(
