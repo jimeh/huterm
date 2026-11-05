@@ -444,8 +444,10 @@ impl Persistence {
             }
             State::Running if !enabled => {
                 *state = State::Off;
-                drop(state);
+                // Queued before the state lock drops, so a Quit that sees
+                // Off also finds the removal when it drains the queue.
                 self.send(Job::Remove);
+                drop(state);
                 false
             }
             State::Off | State::Running | State::Final => false,

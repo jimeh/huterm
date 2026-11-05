@@ -1012,6 +1012,7 @@ pub(super) fn reconcile_stash(cx: &mut App) {
     stash.sort_by(|(a, _), (b, _)| a.cmp(b));
     let mut kept = HashMap::new();
     let mut orphans = Vec::new();
+    let mut renamed = false;
     for (name, mut reopen) in stash {
         let desktop = cx.global::<Desktop>();
         let profiles = &desktop.config.quake.profiles;
@@ -1028,12 +1029,18 @@ pub(super) fn reconcile_stash(cx: &mut App) {
                 if let Some(layout) = &mut reopen.stashed {
                     layout.quake_profile = Some(target.clone());
                 }
+                renamed |= target != name;
                 kept.insert(target, reopen);
             }
             None => orphans.push(reopen),
         }
     }
     cx.global_mut::<Desktop>().quake_stash = kept;
+    // A renamed stash changes no window record, so nothing else schedules
+    // the checkpoint that keeps the new name through a crash.
+    if renamed {
+        checkpoints::changed(cx);
+    }
     for mut reopen in orphans {
         reopen.placement = reopen.stashed.take().as_ref().map(placement);
         let (session, attachment) = (reopen.session, reopen.attachment);

@@ -987,6 +987,8 @@ fn a_renamed_quake_profile_keeps_its_stashed_session(cx: &mut TestAppContext) {
         DesktopHarness::restoring_quake(cx, capture(&scratch), quake_layout());
     harness.cx.update(|cx| {
         let desktop = cx.global_mut::<Desktop>();
+        // Each change restarts the timer with the current delay.
+        desktop.checkpoints.delay = Duration::from_millis(200);
         let rename = desktop.windows.quake_rename_started(DROP, "dropdown");
         desktop.windows.quake_rename_settled(rename, true);
         desktop.quake.summoned.insert("dropdown".into());
@@ -999,6 +1001,16 @@ fn a_renamed_quake_profile_keeps_its_stashed_session(cx: &mut TestAppContext) {
     assert!(!harness.showing(SessionId::in_runtime(harness.runtime_id(), 1)));
     let saved = harness.saved_work_window().expect("the stash is saved");
     assert_eq!(saved.quake_profile.as_deref(), Some("dropdown"));
+    // A checkpoint carries the rename, so a crash keeps it.
+    let recorder = harness.recorder.clone();
+    harness.wait_for("a checkpoint with the renamed profile", |_| {
+        recorder.saved().last().is_some_and(|(_, layout)| {
+            layout.windows.iter().any(|window| {
+                window.session == SessionId::new(1)
+                    && window.quake_profile.as_deref() == Some("dropdown")
+            })
+        })
+    });
     harness.runtime.terminate().unwrap();
 }
 
