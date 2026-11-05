@@ -1103,3 +1103,54 @@ fn an_application_gets_multi_clicks_unless_shift_selects_locally(
     });
     harness.wait_for_selected("beta.gamma");
 }
+
+#[gpui::test]
+fn a_word_drag_held_above_the_top_edge_keeps_scrolling_and_growing(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &echo_fixture(60, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let word = harness.cell_center(1, 2);
+    let above = gpui::point(word.x, px(-8.0));
+    let anchor = harness.update(|view, window, cx| {
+        multi_click(view, window, cx, word, 1, Modifiers::none());
+        view.mouse_down(
+            &MouseDownEvent {
+                click_count: 2,
+                ..press(word)
+            },
+            window,
+            cx,
+        );
+        // One move past the edge, then the pointer stays there.
+        view.mouse_move(
+            &MouseMoveEvent {
+                pressed_button: Some(MouseButton::Left),
+                ..hover(above)
+            },
+            window,
+            cx,
+        );
+        view.selection.unwrap().anchor
+    });
+    harness.wait_for("the held drag to scroll back five rows", |view, _| {
+        view.selection
+            .and_then(Selection::range)
+            .is_some_and(|range| {
+                range.start.rows_from_live_bottom
+                    >= anchor.rows_from_live_bottom + 5
+                    && range.start.column == 0
+            })
+    });
+    harness.update(|view, window, cx| {
+        view.mouse_up(&release(above), window, cx);
+    });
+    harness.wait_for("the grown selection's text", |view, _| {
+        !view.selecting
+            && view.selected_text.as_deref().is_some_and(|text| {
+                text.starts_with("line ")
+                    && text.ends_with("line")
+                    && text.lines().count() >= 6
+            })
+    });
+}
