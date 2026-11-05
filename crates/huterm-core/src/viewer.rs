@@ -211,6 +211,8 @@ pub(crate) struct Registry {
     runtime: RuntimeId,
     owner: Arc<crate::wake::Wake>,
     changed: AtomicBool,
+    /// Set by a client's close request before the runtime stops.
+    close_requested: AtomicBool,
     generation: AtomicU64,
     state: Mutex<RegistryState>,
     /// Idle compression totals the runtime publishes for benchmarks.
@@ -235,6 +237,7 @@ impl Registry {
             runtime,
             owner,
             changed: AtomicBool::new(false),
+            close_requested: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             state: Mutex::new(RegistryState {
                 closed: false,
@@ -422,6 +425,22 @@ impl Registry {
         self.state().closed
     }
 
+    /// Records a client's close request. The close signal follows it, so
+    /// any viewer that sees the runtime stop also sees the request. A
+    /// runtime that already stopped on its own keeps that stop: its viewers
+    /// still report it, which Mux relies on when it drops the join error.
+    pub(crate) fn request_close(&self) {
+        // `close` sets `closed` under the same lock.
+        let state = self.state();
+        if !state.closed {
+            self.close_requested.store(true, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn close_requested(&self) -> bool {
+        self.close_requested.load(Ordering::Acquire)
+    }
+
     pub(crate) fn terminal_id(&self) -> TerminalId {
         self.terminal_id
     }
@@ -589,6 +608,14 @@ impl TerminalViewer {
     #[must_use]
     pub fn terminal_id(&self) -> TerminalId {
         self.registry.terminal_id()
+    }
+
+    /// Whether a client asked this terminal to close, as an explicit close
+    /// or teardown does. [`RuntimeError::Stopped`] after a close request is
+    /// that close; a runtime that stops on its own leaves this false.
+    #[must_use]
+    pub fn close_requested(&self) -> bool {
+        self.registry.close_requested()
     }
 
     /// The requests this viewer may make.

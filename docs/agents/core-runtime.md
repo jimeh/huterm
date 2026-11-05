@@ -416,7 +416,11 @@ signal any runtime and then drop that runtime's join error, which its viewers
 already saw as `Stopped`; `ShutdownTimedOut` still reports, because a child may
 be alive, and a runtime that panics during the close still reports
 `ThreadPanic`. Mux keeps the tab and emits nothing when a runtime stops: only
-an explicit close removes it.
+an explicit close removes it. `RuntimeClient::close` marks the registry
+before it signals the runtime, so `TerminalViewer::close_requested` tells a
+viewer that a `Stopped` it sees came from a requested close or teardown, not
+from a runtime that stopped on its own. A close after such a stop leaves the
+mark unset, so its viewers still report the stop Mux's close drops.
 Run process-table scans off both Mux and terminal-parser threads; carry fresh
 assessed background process groups into teardown. Match a terminal's processes
 by TTY device number. On macOS, take TTY membership from the kernel's TTY
