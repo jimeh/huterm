@@ -291,7 +291,7 @@ spawning would need a pending-terminal state in core and is a non-goal.
 | `runtime.json` unreadable (I/O error) | Untouched | Off | Fresh window; persistent notice |
 | `desktop.json` corrupt, newer, unreadable, or mismatched | Corrupt one renamed; a newer or unreadable one is left untouched and never overwritten or set aside, while runtime saves continue | Running | Default windows per session; info notice |
 | Rename aside fails | Untouched | Off | Persistent notice |
-| Leftover `restore-attempt` | Both renamed `.corrupt` | Running, fresh state | Fresh window; persistent notice |
+| Leftover `restore-attempt` | Both renamed `.corrupt`, except a newer or unreadable file, which stays in place | Running, fresh state | Fresh window; persistent notice |
 | A pane fails to spawn | Next checkpoint drops it | Running | Persistent warning in its window |
 | Every pane of a session fails | Session keeps one fresh tab | Running | Warning in its window |
 | Fresh tab for an emptied session fails | Session closed | Running | Warning in the next window |

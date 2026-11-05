@@ -448,8 +448,8 @@ fn unreadable_content_is_classified_and_newer_files_are_never_overwritten() {
     assert_eq!(loaded.desktop, DesktopLoad::Newer("version 7".into()));
     store.save(&capture, &layout).unwrap();
     assert_eq!(fs::read_to_string(&desktop).unwrap(), newer);
-    // A newer file is never set aside either.
-    assert!(store.set_aside(StateFile::Desktop).is_err());
+    // Setting a newer file aside leaves it in place.
+    store.set_aside(StateFile::Desktop).unwrap();
     assert_eq!(fs::read_to_string(&desktop).unwrap(), newer);
 
     // A layout that cannot be read is left in place as well.
@@ -459,6 +459,7 @@ fn unreadable_content_is_classified_and_newer_files_are_never_overwritten() {
     let mut store = Store::open(root.path(), "default").unwrap();
     assert!(matches!(store.load().desktop, DesktopLoad::Unreadable(_)));
     store.save(&capture, &layout).unwrap();
+    store.set_aside(StateFile::Desktop).unwrap();
     assert!(desktop.is_dir());
 }
 
@@ -495,9 +496,14 @@ fn saves_wait_until_the_runtime_file_is_known_safe_to_replace() {
         Err(SaveError::NewerVersion)
     ));
     assert_eq!(fs::read_to_string(&runtime).unwrap(), valid);
-    // A store that found the runtime file newer never sets it aside.
-    assert!(store.set_aside(StateFile::Runtime).is_err());
+    // A store that found the runtime file newer leaves it in place when
+    // asked to set it aside, and still refuses to save over it.
+    store.set_aside(StateFile::Runtime).unwrap();
     assert_eq!(fs::read_to_string(&runtime).unwrap(), valid);
+    assert!(matches!(
+        store.save(&capture, &layout),
+        Err(SaveError::NewerVersion)
+    ));
     drop(store);
 
     // A file that exists but cannot be read is never replaced.

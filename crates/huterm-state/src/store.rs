@@ -179,8 +179,9 @@ impl Store {
     /// is renamed or deleted.
     ///
     /// Saves wait for a load that finds `runtime.json` missing or valid. A
-    /// newer runtime or desktop file stays protected from saves for the
-    /// rest of the store's life, whatever later loads find.
+    /// newer runtime file, and a newer or unreadable desktop file, stay
+    /// protected from saves and [`Self::set_aside`] for the rest of the
+    /// store's life, whatever later loads find.
     pub fn load(&mut self) -> Loaded {
         let runtime = match self.read(StateFile::Runtime) {
             FileRead::Missing => RuntimeLoad::Missing,
@@ -312,23 +313,20 @@ impl Store {
     }
 
     /// Renames `file` to its `.corrupt` name, replacing an older copy. A
-    /// missing file is left alone. Once a runtime file is set aside, the
-    /// next save may write one, with a new scope identity.
+    /// missing file is left alone, and so is a file this store protects:
+    /// a newer runtime file, or a newer or unreadable desktop file. Once a
+    /// runtime file is set aside, the next save may write one, with a new
+    /// scope identity.
     ///
     /// # Errors
-    /// Refuses a file a load found newer (or, for the layout, unreadable),
-    /// which stays where it is, and
-    /// reports a failed rename or directory sync.
+    /// Reports a failed rename or directory sync.
     pub fn set_aside(&mut self, file: StateFile) -> io::Result<()> {
-        let newer = match file {
+        let protected = match file {
             StateFile::Runtime => self.runtime_guard == RuntimeGuard::Newer,
             StateFile::Desktop => self.keep_desktop,
         };
-        if newer {
-            return Err(io::Error::other(format!(
-                "{} came from a newer Huterm and stays in place",
-                file.name()
-            )));
+        if protected {
+            return Ok(());
         }
         match atomic::rename(&self.directory, file.name(), file.corrupt_name())
         {
