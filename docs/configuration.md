@@ -137,10 +137,11 @@ Quitting Huterm and starting it again reopens every session that was open,
 with its windows, tabs, split panes and their sizes, custom names, focused
 panes, window positions, and per-window transparency. Each pane starts a
 fresh shell in the folder it last reported; nothing that ran before is
-started again. A pane whose folder no longer exists starts in your home
-folder on macOS, or Huterm's working directory on Linux, and its window says
-so. Closing the last window is not a Quit: it ends that session, so the next
-launch opens one fresh window.
+started again. A pane whose last folder no longer exists starts in an
+earlier folder it used, or failing that in your home folder on macOS or
+Huterm's working directory on Linux, and its window says so. Closing the
+last window is not a Quit: it ends that session, so the next launch opens
+one fresh window.
 
 While Huterm runs it also saves a checkpoint one second after windows,
 tabs, panes, or a shell's folder change, so a crash or a killed process
