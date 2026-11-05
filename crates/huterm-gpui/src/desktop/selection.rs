@@ -169,6 +169,12 @@ impl UnitGesture {
         self.released = true;
     }
 
+    /// The request in flight, for tests that answer it themselves.
+    #[cfg(test)]
+    pub(super) const fn in_flight(&self) -> Option<Ticket> {
+        self.in_flight
+    }
+
     /// Whether a request is in flight or wanted.
     pub(super) const fn busy(&self) -> bool {
         self.wanted || self.in_flight.is_some()

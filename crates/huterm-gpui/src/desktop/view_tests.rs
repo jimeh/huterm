@@ -1154,3 +1154,31 @@ fn a_word_drag_held_above_the_top_edge_keeps_scrolling_and_growing(
             })
     });
 }
+
+#[gpui::test]
+fn a_word_expanding_when_its_viewer_is_revoked_completes_through_the_replacement(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let gamma = harness.cell_center(12, 0);
+    let replacement = harness
+        .runtime
+        .subscribe(ViewerOptions::new(ViewerCapabilities::ALL))
+        .unwrap();
+    harness.update(|view, window, cx| {
+        multi_click(view, window, cx, gamma, 2, Modifiers::none());
+        // The runtime answers the request as revoked before the window has
+        // installed the replacement viewer.
+        let ticket = view
+            .unit_gesture
+            .and_then(|gesture| gesture.in_flight())
+            .unwrap();
+        view.complete_expansion(ticket, Err(RuntimeError::Revoked), cx);
+        assert!(view.selection.is_some(), "the selection waits");
+        assert!(view.expanding());
+        let start = view.viewer_start();
+        view.replace_viewer(replacement, &start, true, cx);
+    });
+    harness.wait_for_selected("beta.gamma");
+}

@@ -851,19 +851,18 @@ impl TerminalEngine {
         Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
     }
 
-    /// Starts a trimmed line at column 0 when only blank cells precede it on
-    /// its first row, so a copied line keeps its indentation. Ghostty trims
-    /// it; other terminals keep it. Text before the line, such as the prompt
-    /// shell integration marks off from its input, still bounds it.
+    /// Starts a trimmed line at its logical start when only blank cells
+    /// precede its text, so a copied line keeps its indentation, even
+    /// indentation that fills whole soft-wrapped rows. Ghostty trims it;
+    /// other terminals keep it. Text before the line, such as the prompt
+    /// shell integration marks off from its input, still bounds it. The walk
+    /// back over blank wrapped rows stops after [`INDENT_ROWS`] rows.
     fn keep_indentation(
         &self,
         line: BufferRange,
         last_row: usize,
     ) -> BufferRange {
         let start = line.start;
-        if start.column == 0 {
-            return line;
-        }
         let Some(row) = last_row.checked_sub(start.rows_from_live_bottom)
         else {
             return line;
@@ -871,19 +870,36 @@ impl TerminalEngine {
         let Ok(mut reader) = self.link_reader() else {
             return line;
         };
-        let mut before = String::new();
-        let blank = (0..start.column).all(|column| {
-            before.clear();
-            reader.push_cell(row, column, &mut before).is_ok()
-                && before.chars().all(char::is_whitespace)
-        });
-        if blank {
-            BufferRange {
-                start: BufferPoint { column: 0, ..start },
-                ..line
+        let mut cell = String::new();
+        let mut blank = |reader: &mut GhosttyLinks<'_>, row, columns| {
+            (0..columns).all(|column| {
+                cell.clear();
+                reader.push_cell(row, column, &mut cell).is_ok()
+                    && cell.chars().all(char::is_whitespace)
+            })
+        };
+        if !blank(&mut reader, row, start.column) {
+            return line;
+        }
+        let mut first = row;
+        for _ in 0..INDENT_ROWS {
+            let Some(previous) = first.checked_sub(1) else {
+                break;
+            };
+            if !reader.wrapped(previous).unwrap_or(false) {
+                break;
             }
-        } else {
-            line
+            if !blank(&mut reader, previous, self.size.columns) {
+                return line;
+            }
+            first = previous;
+        }
+        BufferRange {
+            start: BufferPoint {
+                rows_from_live_bottom: last_row - first,
+                column: 0,
+            },
+            ..line
         }
     }
 
@@ -999,6 +1015,10 @@ impl TerminalEngine {
             .map(|(anchor, head)| anchor.cover(head)))
     }
 }
+
+/// The most blank soft-wrapped rows a line selection walks back over to
+/// keep its indentation.
+const INDENT_ROWS: usize = 64;
 
 /// The row and byte limits the engine applies. A validated
 /// [`ScrollbackLimit`] supplies them, except in benchmarks, which measure

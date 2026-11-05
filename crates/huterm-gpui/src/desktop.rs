@@ -1237,6 +1237,7 @@ impl TerminalView {
         self.scroll.restart();
         self.scroll.invalidate();
         self.start_snapshot_if_needed(cx);
+        self.request_expansion(cx);
         cx.notify();
     }
 
@@ -2575,8 +2576,12 @@ impl TerminalView {
 
     /// Sends the word or line selection's latest head to the runtime for
     /// expansion, unless a request is already in flight; its completion
-    /// sends whatever the gesture wants by then.
+    /// sends whatever the gesture wants by then. A revoked viewer sends
+    /// nothing, and its replacement sends what the gesture still wants.
     fn request_expansion(&mut self, cx: &mut Context<'_, Self>) {
+        if self.revoked {
+            return;
+        }
         let (Some(gesture), Some(selection)) =
             (&mut self.unit_gesture, self.selection)
         else {
@@ -2593,6 +2598,11 @@ impl TerminalView {
             unit,
         ) {
             Ok(request) => request,
+            // The selection waits for the viewer's replacement.
+            Err(RuntimeError::Revoked) => {
+                self.revoked = true;
+                return;
+            }
             Err(error) => {
                 self.report_viewer_failure(&error);
                 self.clear_selection();
@@ -2631,6 +2641,12 @@ impl TerminalView {
                         self.update_renderer_selection();
                         cx.notify();
                     }
+                }
+                // Revoked before the view has its replacement viewer: the
+                // replacement asks again.
+                Err(RuntimeError::Revoked) => {
+                    self.revoked = true;
+                    gesture.moved();
                 }
                 Err(error) => {
                     self.report_viewer_failure(&error);

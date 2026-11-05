@@ -1091,8 +1091,6 @@ fn emit_sized(out: &mut String, doc: &str, constant: &str, names: &[String]) {
     out.push_str("];\n");
 }
 
-/// Emits size, alignment, field offsets, enum values, alias sizes, and
-/// handle sizes for every item in the bindings.
 /// The header's name for a struct field. Bindgen appends `_` to a field
 /// named after a Rust keyword, such as `ref`, and the library's ABI manifest
 /// keeps the C name.
@@ -1103,6 +1101,8 @@ fn c_field_name(field: &str) -> &str {
         .unwrap_or(field)
 }
 
+/// Emits size, alignment, field offsets, enum values, alias sizes, and
+/// handle sizes for every item in the bindings.
 fn generate_layout(file: &syn::File) -> Result<String, Error> {
     let items = collect_items(file)?;
     let mut out = String::from(

@@ -257,19 +257,21 @@ exec ${quote(process.execPath)} ${quote(recorder)}
     await send("mouse\t2\t200\t80");
     await state("selection=false");
     // AppKit's click counts select by word and by line: double- and
-    // triple-clicks on the fixture's "selection" select without a drag, and
-    // a plain click elsewhere clears them.
+    // triple-clicks on the fixture's "selection" select its word and its
+    // line without a drag, and a plain click elsewhere clears them.
     const fixture = await currentState();
     const [fixtureX, fixtureY] = field(fixture, "grid_origin").split(",").map(Number);
     const [fixtureWidth, fixtureHeight] = field(fixture, "cell").split(",").map(Number);
     const wordX = fixtureX! + fixtureWidth! * 9.5;
     const wordY = fixtureY! + fixtureHeight! * 0.5;
-    for (const count of [2, 3]) {
+    // "selection" spans columns 6 to 14 of "READY selection fixture", and
+    // the line columns 0 to 22.
+    for (const [count, columns] of [[2, "6..14"], [3, "0..22"]] as const) {
       for (let clicks = 1; clicks <= count; clicks++) {
         await send(`mouse\t1\t${wordX}\t${wordY}\t0\t${clicks}`);
         await send(`mouse\t2\t${wordX}\t${wordY}\t0\t${clicks}`);
       }
-      await state("selection=true");
+      await state("selection=true", `selection_columns=${columns} `);
       await send("mouse\t1\t200\t80");
       await send("mouse\t2\t200\t80");
       await state("selection=false");
