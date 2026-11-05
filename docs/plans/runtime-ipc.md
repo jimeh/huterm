@@ -1,6 +1,6 @@
 # Local runtime IPC
 
-Status: proposed for [issue #44][issue-44].
+Status: approved for [issue #44][issue-44].
 
 Named server mode moves the runtime out of the desktop process. This plan
 defines the contract that carries runtime requests, results, the hierarchy
