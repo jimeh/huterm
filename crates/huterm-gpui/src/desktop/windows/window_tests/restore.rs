@@ -908,10 +908,11 @@ impl DesktopHarness {
             persistence::State::Bootstrapping,
         );
         harness.cx.update(|cx| {
-            cx.global_mut::<Desktop>()
-                .quake
-                .summoned
-                .insert(DROP.into());
+            let desktop = cx.global_mut::<Desktop>();
+            desktop.quake.summoned.insert(DROP.into());
+            // Before the restore settles, so no timer waits on the
+            // harness's hour-long delay.
+            desktop.checkpoints.delay = Duration::from_millis(200);
             let saved = startup::Saved::new(capture, Some(layout));
             startup::start_with(cx, saved, fixture(ECHO));
         });
@@ -987,8 +988,6 @@ fn a_renamed_quake_profile_keeps_its_stashed_session(cx: &mut TestAppContext) {
         DesktopHarness::restoring_quake(cx, capture(&scratch), quake_layout());
     harness.cx.update(|cx| {
         let desktop = cx.global_mut::<Desktop>();
-        // Each change restarts the timer with the current delay.
-        desktop.checkpoints.delay = Duration::from_millis(200);
         let rename = desktop.windows.quake_rename_started(DROP, "dropdown");
         desktop.windows.quake_rename_settled(rename, true);
         desktop.quake.summoned.insert("dropdown".into());
