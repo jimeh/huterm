@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 mod arrange;
+mod capture;
 mod hierarchy;
 mod lifecycle;
 mod moves;
 mod restore;
+pub use capture::{FailedPane, RestoreReport, SpawnFailure, SpawnedTerminals};
 pub use hierarchy::{HierarchyRecvError, HierarchySubscription};
-pub use lifecycle::{
-    CloseAssessment, CloseEffect, CloseRequest, CloseTicket, HierarchySnapshot,
-};
+pub use lifecycle::{CloseAssessment, CloseEffect, CloseRequest, CloseTicket};
 pub use moves::{Beside, MoveDestination, PaneRef};
 pub use restore::RestoreDirection;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,8 +16,8 @@ use crate::terminal::RuntimeClient;
 use crate::{RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions};
 use hierarchy::HierarchyPublisher;
 use huterm_protocol::{
-    AttachmentId, HierarchyEvent, LayoutError, NodeId, PaneId, PaneInfo,
-    PaneLayout, RuntimeId, SessionId, SplitDirection, SplitId, TabId,
+    AttachmentId, CaptureError, HierarchyEvent, LayoutError, NodeId, PaneId,
+    PaneInfo, PaneLayout, RuntimeId, SessionId, SplitDirection, SplitId, TabId,
     TerminalCommand, TerminalId, WorkspaceId,
 };
 use thiserror::Error;
@@ -580,12 +580,7 @@ impl Mux {
         Ok(PaneInfo {
             id: PaneId::in_runtime(self.runtime_id, self.allocate()?),
             terminal_id: TerminalId::new(self.allocate()?),
-            fallback_name: command
-                .program
-                .file_name()
-                .unwrap_or(command.program.as_os_str())
-                .to_string_lossy()
-                .into_owned(),
+            fallback_name: fallback_name(command),
             custom_name: None,
         })
     }
@@ -1164,6 +1159,16 @@ fn shut_down(
         result => result,
     }
 }
+/// The whole structure, attachments included, which tests compare to show
+/// that a refused operation changed nothing.
+#[cfg(test)]
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct Structure {
+    pub(crate) sessions: Vec<Session>,
+    pub(crate) workspaces: Vec<Workspace>,
+    pub(crate) attachments: Vec<(AttachmentId, SessionId)>,
+}
+
 /// A tab opened by a test with a full-capability viewer subscribed at
 /// spawn, so tests can read the terminal after it closes.
 #[cfg(test)]
@@ -1174,6 +1179,18 @@ pub(crate) struct TestTab {
 
 #[cfg(test)]
 impl Mux {
+    pub(crate) fn structure(&self) -> Structure {
+        Structure {
+            sessions: self.sessions.clone(),
+            workspaces: self.workspaces.values().cloned().collect(),
+            attachments: self
+                .attachments
+                .iter()
+                .map(|(attachment, session)| (*attachment, *session))
+                .collect(),
+        }
+    }
+
     pub(crate) fn open_test_tab(
         &mut self,
         workspace: WorkspaceId,
@@ -1219,6 +1236,15 @@ pub(crate) struct TestPane {
     pub(crate) client: crate::test_support::TestClient,
 }
 
+/// A pane's label without a title: the launched program's file name.
+fn fallback_name(command: &TerminalCommand) -> String {
+    command
+        .program
+        .file_name()
+        .unwrap_or(command.program.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
 /// Maps a rejected layout transform on `pane` to a Mux error.
 fn layout_error(error: LayoutError, pane: PaneId) -> MuxError {
     match error {
@@ -1308,6 +1334,24 @@ pub enum MuxError {
     /// have recorded.
     #[error("the recorded layout change is invalid")]
     InvalidRestore,
+    /// A runtime restore found the runtime holding structure or
+    /// terminals, or having allocated an identity or creation ordinal, so
+    /// restored identities could repeat ones it already handed out.
+    #[error("a restore needs a fresh runtime")]
+    RestoreNotFresh,
+    /// A runtime capture names a different logical socket than the
+    /// restoring runtime's.
+    #[error("the saved structure belongs to another socket")]
+    RestoreForeignSocket,
+    /// A runtime capture breaks a rule restore relies on.
+    #[error("the saved structure is invalid: {0}")]
+    InvalidCapture(CaptureError),
+    /// The spawned terminals are not exactly the ones the capture shows.
+    #[error("the spawned terminals do not match the saved structure")]
+    RestoreMismatch,
+    /// A restore's spawns were cancelled.
+    #[error("the restore was cancelled")]
+    RestoreCancelled,
     /// Terminal startup or shutdown failed.
     #[error(transparent)]
     Runtime(#[from] RuntimeError),

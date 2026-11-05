@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::panic::{self, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{
     self, Receiver, Sender, SyncSender, TryRecvError, TrySendError,
@@ -354,6 +355,8 @@ impl Drop for CloseOnExit {
 pub struct TerminalRuntime {
     client: RuntimeClient,
     join: Option<JoinHandle<Result<(), RuntimeError>>>,
+    /// The working directory the terminal launched in.
+    launch_directory: PathBuf,
 }
 
 impl TerminalRuntime {
@@ -376,6 +379,7 @@ impl TerminalRuntime {
         command: &TerminalCommand,
     ) -> Result<Self, RuntimeError> {
         let command = command.clone();
+        let launch_directory = command.working_directory.clone();
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (message_sender, message_receiver) =
             mpsc::sync_channel(MESSAGE_CAPACITY);
@@ -473,6 +477,7 @@ impl TerminalRuntime {
         Ok(Self {
             client,
             join: Some(join),
+            launch_directory,
         })
     }
 
@@ -507,6 +512,11 @@ impl TerminalRuntime {
 
     pub(crate) fn host_effect_sink(&self) -> HostEffectSink {
         self.client.host_effect_sink()
+    }
+
+    /// The working directory the terminal launched in.
+    pub(crate) fn launch_directory(&self) -> &Path {
+        &self.launch_directory
     }
 
     /// Stops the child and joins the runtime owner.

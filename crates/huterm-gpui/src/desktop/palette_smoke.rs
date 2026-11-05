@@ -782,9 +782,9 @@ fn core_state(
     workspace: Option<WorkspaceId>,
     tab: Option<TabId>,
 ) -> anyhow::Result<String> {
-    let hierarchy = runtime.lock().capture_hierarchy();
+    let mux = runtime.lock();
     let mut output = format!("workspace={workspace:?} tab={tab:?}");
-    for session in &hierarchy.sessions {
+    for session in mux.sessions() {
         write!(
             output,
             " session.{}.name={:?}",
@@ -792,20 +792,26 @@ fn core_state(
             session.custom_name()
         )?;
     }
-    for workspace in hierarchy.workspaces {
-        write!(
-            output,
-            " workspace.{}.name={:?}",
-            workspace.id.get(),
-            workspace.custom_name()
-        )?;
-        for tab in workspace.tabs {
+    for session in mux.sessions() {
+        for workspace in session
+            .workspaces
+            .iter()
+            .filter_map(|id| mux.workspace(*id))
+        {
             write!(
                 output,
-                " tab.{}.name={:?}",
-                tab.id.get(),
-                tab.custom_name()
+                " workspace.{}.name={:?}",
+                workspace.id.get(),
+                workspace.custom_name()
             )?;
+            for tab in &workspace.tabs {
+                write!(
+                    output,
+                    " tab.{}.name={:?}",
+                    tab.id.get(),
+                    tab.custom_name()
+                )?;
+            }
         }
     }
     Ok(output)

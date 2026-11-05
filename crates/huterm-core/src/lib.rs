@@ -31,10 +31,10 @@ mod wake;
 
 pub use mux::{
     Beside, CloseAssessment, CloseEffect, CloseRequest, CloseTicket,
-    DEFAULT_SOCKET_NAME, HierarchyRecvError, HierarchySnapshot,
-    HierarchySubscription, MoveDestination, Mux, MuxError, OpenedPane,
-    OpenedTab, PaneRef, RestoreDirection, SelectionTarget, Session, Tab,
-    Workspace,
+    DEFAULT_SOCKET_NAME, FailedPane, HierarchyRecvError, HierarchySubscription,
+    MoveDestination, Mux, MuxError, OpenedPane, OpenedTab, PaneRef,
+    RestoreDirection, RestoreReport, SelectionTarget, Session, SpawnFailure,
+    SpawnedTerminals, Tab, Workspace,
 };
 pub use terminal::{
     RefusedInput, RuntimeError, SelectionRequest, SnapshotReply,

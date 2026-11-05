@@ -2588,6 +2588,16 @@ name = "huterm-protocol"
 version = "0.27.0"
 
 [[package]]
+name = "huterm-state"
+version = "0.27.0"
+dependencies = [
+ "huterm-protocol",
+ "nix 0.29.0",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "huterm-ui"
 version = "0.27.0"
 dependencies = [

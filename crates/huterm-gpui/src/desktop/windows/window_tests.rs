@@ -2106,10 +2106,15 @@ impl DesktopHarness {
         });
     }
 
-    /// Creates a session no window shows, which keeps the application
-    /// running once its windows are gone, and returns it.
+    /// Creates a session no window shows, with one tab so that a capture
+    /// keeps it, which keeps the application running once its windows are
+    /// gone, and returns it.
     fn unviewed_session(&self) -> SessionId {
-        self.runtime.lock().create_session(None).unwrap()
+        let mut mux = self.runtime.lock();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        mux.open_tab(workspace, &fixture(ECHO)).unwrap();
+        session
     }
 
     /// Waits until Quit captured the restore set and began teardown, and
@@ -2123,10 +2128,10 @@ impl DesktopHarness {
         let captured = restore.as_ref().expect("Quit captured nothing");
         assert!(
             captured
-                .hierarchy
+                .runtime
                 .sessions
                 .iter()
-                .any(|kept| kept.id == session),
+                .any(|kept| kept.info.id.get() == session.get()),
             "the capture lacks the unviewed session"
         );
     }
@@ -2385,7 +2390,7 @@ fn moving_the_last_tab_to_a_sibling_workspace_detaches_the_window(
     {
         let mux = harness.runtime.lock();
         assert!(mux.session(harness.session).is_some());
-        assert_eq!(mux.capture_hierarchy().attachments, []);
+        assert!(!mux.session_attached(harness.session));
     }
     let _client = harness.send_line(tab, "moved");
     harness.wait_canonical(tab, "the moved child to answer", |snapshot| {

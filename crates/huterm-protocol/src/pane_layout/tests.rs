@@ -1266,3 +1266,29 @@ fn arranging_refuses_to_add_drop_or_repeat_a_pane() {
         Err(LayoutError::InvalidWeights)
     );
 }
+
+#[test]
+fn moving_a_layout_into_a_runtime_rescopes_identities_and_keeps_its_shape() {
+    let original = left_and_stack();
+    let other = RuntimeId::new(9);
+    let moved = original.in_runtime(other);
+    assert_eq!(shape(&moved), shape(&original));
+    assert!(moved.panes().iter().all(|pane| pane.id.runtime() == other));
+    assert!(
+        moved
+            .split_ids()
+            .iter()
+            .all(|split| split.runtime() == other)
+    );
+    assert_eq!(
+        moved.panes().iter().map(|p| p.id.get()).collect::<Vec<_>>(),
+        order(&original)
+    );
+    assert_eq!(moved.in_runtime(RUNTIME), original);
+}
+
+#[test]
+fn depth_counts_the_nodes_on_the_longest_root_to_pane_path() {
+    assert_eq!(layout(leaf(1)).depth(), 1);
+    assert_eq!(left_and_stack().depth(), 3);
+}

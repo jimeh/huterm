@@ -64,17 +64,17 @@ use huterm_config::{
     PaneTitleBarMode, PaneTitleBarPosition, TabStyle, TabWidth, TabsConfig,
 };
 use huterm_core::{
-    CloseAssessment, CloseRequest, DesktopHostEffectClient, HierarchySnapshot,
+    CloseAssessment, CloseRequest, DesktopHostEffectClient,
     HierarchySubscription, HostEffectRecipientOptions, HostEffectViewerOptions,
     MuxError, OpenedPane, OpenedTab, RestoreDirection, TerminalViewer,
     ViewerOptions, ViewerWake,
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
-    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis,
-    SplitDirection, SplitId, SplitNode, TerminalId, Touched,
-    ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
-    validate_supplied,
+    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeCapture, RuntimeId,
+    SessionId, SplitAxis, SplitDirection, SplitId, SplitNode, TerminalId,
+    Touched, ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name,
+    validate, validate_supplied,
 };
 use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::components::dialog::Modal;
@@ -671,36 +671,29 @@ impl DesktopRuntime {
         // or a pane another client moved in.
         if let Some(attachment) = attachment {
             let _ = mux.detach_session(attachment);
-            if mux.session(original_session).is_some() {
-                let session = original_session;
-                let snapshot = mux.capture_hierarchy();
-                if !snapshot.attachments.iter().any(|(_, id)| *id == session) {
-                    if holds_other_panes(&mux, session, pane) {
-                        close_spawned_pane(&mut mux, session, pane);
-                    } else {
-                        let _ = mux.close_session(session);
-                    }
+            let session = original_session;
+            if mux.session(session).is_some() && !mux.session_attached(session)
+            {
+                if holds_other_panes(&mux, session, pane) {
+                    close_spawned_pane(&mut mux, session, pane);
+                } else {
+                    let _ = mux.close_session(session);
                 }
             }
-        } else if let Ok(target) = mux.select_tab(tab) {
-            let snapshot = mux.capture_hierarchy();
-            if target.workspace == Some(workspace)
-                && !snapshot
-                    .attachments
-                    .iter()
-                    .any(|(_, id)| *id == target.session)
-            {
-                // A spawned pane that moved elsewhere stays; panes moved
-                // into its tab survive the cleanup.
-                let layout = mux.tab(tab).map(|tab| tab.layout().clone());
-                match layout {
-                    Some(layout) if layout.pane(pane).is_none() => {}
-                    Some(layout) if layout.pane_count() > 1 => {
-                        let _ = mux.close_pane(workspace, tab, pane);
-                    }
-                    _ => {
-                        let _ = mux.close_tab(workspace, tab);
-                    }
+        } else if let Ok(target) = mux.select_tab(tab)
+            && target.workspace == Some(workspace)
+            && !mux.session_attached(target.session)
+        {
+            // A spawned pane that moved elsewhere stays; panes moved into
+            // its tab survive the cleanup.
+            let layout = mux.tab(tab).map(|tab| tab.layout().clone());
+            match layout {
+                Some(layout) if layout.pane(pane).is_none() => {}
+                Some(layout) if layout.pane_count() > 1 => {
+                    let _ = mux.close_pane(workspace, tab, pane);
+                }
+                _ => {
+                    let _ = mux.close_tab(workspace, tab);
                 }
             }
         }
@@ -748,7 +741,7 @@ impl DesktopRuntime {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_or_insert_with(|| RestoreSnapshot {
-                hierarchy: mux.capture_hierarchy(),
+                runtime: mux.capture_runtime(),
                 windows,
             });
     }
@@ -858,7 +851,7 @@ impl DesktopRuntime {
     )
 )]
 struct RestoreSnapshot {
-    hierarchy: HierarchySnapshot,
+    runtime: RuntimeCapture,
     windows: Vec<WindowRestore>,
 }
 
