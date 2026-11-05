@@ -1374,6 +1374,33 @@ fn a_runtime_panic_closes_every_wake() {
 }
 
 #[test]
+fn only_a_close_request_marks_a_stop_as_requested() {
+    let panicked = spawn(248, "printf READY; read l");
+    let crashed = viewer(&panicked);
+    wait_for_text(&crashed, "READY");
+    panicked
+        .client()
+        .send_control(RuntimeControl::Panic)
+        .unwrap();
+    wait_until("closed wake", || {
+        while crashed.wake_pending() {}
+        crashed.wake.is_closed()
+    });
+    assert!(!crashed.close_requested());
+    let _ = panicked.shutdown();
+
+    let runtime = spawn(249, "read l");
+    let closed = viewer(&runtime);
+    assert!(!closed.close_requested());
+    runtime.shutdown().unwrap();
+    assert!(closed.close_requested());
+    assert!(matches!(
+        closed.send_input(TerminalInput::Text("late".into())),
+        Err(RuntimeError::Stopped)
+    ));
+}
+
+#[test]
 fn polls_report_new_bells_and_failures_once_without_replay() {
     let runtime = spawn(235, "read l");
     let early = viewer(&runtime);

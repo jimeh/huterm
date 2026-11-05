@@ -2336,6 +2336,38 @@ fn a_tab_opened_during_an_emptied_close_assessment_keeps_the_window(
     });
 }
 
+#[gpui::test]
+fn input_racing_a_tab_close_to_the_window_raises_no_notice(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let closed = harness.open_tab(ECHO);
+    let kept = harness.open_tab(ECHO);
+    // The window shows its first tab.
+    let window = harness.attach_showing(&[closed, kept]);
+    harness.wait_text(window, closed, "READY");
+    let pane = harness.first_pane(closed);
+    // Mux stops the runtime before the window drains the close, so the
+    // window still shows the pane when typing meets the stopped runtime
+    // and the pane's activity drain reports it.
+    harness.close_tab(closed);
+    harness.update_view(window, |view, window, cx| {
+        let tab = view.tabs.iter().find(|tab| tab.id == closed).unwrap();
+        let terminal = tab.pane(pane).unwrap().view.clone();
+        terminal.update(cx, |terminal, _| {
+            terminal.enqueue_input(TerminalInput::Text("late".into()));
+        });
+        view.refresh_pane(closed, pane, window, cx);
+    });
+    harness.wait_for("the window to drop the closed tab", |cx| {
+        terminal(cx, window, closed).is_none()
+    });
+    harness.cx.update(|cx| {
+        assert!(cx.windows().contains(&window));
+        assert_eq!(notices(cx, window), Vec::<String>::new());
+    });
+}
+
 /// Holds viewer subscriptions, opens a tab that `window` starts
 /// installing, then closes `closed`, the window's only view, from the
 /// window. Waits until the emptied close that follows was refused, and

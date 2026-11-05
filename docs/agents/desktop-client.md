@@ -736,7 +736,10 @@ reload, and both the persistent notices and the Settings notice derive from
 it, so a window opened later reports what startup found. Command and terminal
 failures expire on the window's single earliest-deadline timer; persistent
 notices schedule nothing. Terminal failures reach the window through the tab's
-activity drain, including hidden tabs. Root-shell exit is not a failure: only a
+activity drain, including hidden tabs. Mux stops a closed tab's runtimes
+before the window drains the close, so a pane may meet `Stopped` while the
+window still shows it; `TerminalView` raises no notice for `Stopped` after an
+observed exit or a requested close. Root-shell exit is not a failure: only a
 tab kept by `close_on_exit = false` announces it. Smoke state serializes the
 stack as `w0.notices=<n>` and newest-first `w0.notice<i>=<severity>|<source>|<message>`.
 

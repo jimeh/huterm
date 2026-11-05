@@ -2803,7 +2803,12 @@ impl TerminalView {
             self.revoked = true;
             return false;
         }
-        if self.exited && matches!(error, RuntimeError::Stopped) {
+        // A stop after the exit, or after a close request, is that exit or
+        // close: the window may not have dropped the pane yet. A runtime
+        // that stops on its own is still a failure.
+        if matches!(error, RuntimeError::Stopped)
+            && (self.exited || self.viewer.close_requested())
+        {
             return false;
         }
         self.report_failure(

@@ -195,6 +195,7 @@ impl RuntimeClient {
 
     /// Requests orderly terminal shutdown.
     pub(crate) fn close(&self) -> Result<(), RuntimeError> {
+        self.registry.request_close();
         self.host_effect_sink.close();
         self.closing.store(true, Ordering::Release);
         self.controls
