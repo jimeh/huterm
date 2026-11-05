@@ -2573,6 +2573,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "huterm-ipc-sim"
+version = "0.27.0"
+
+[[package]]
 name = "huterm-procinfo"
 version = "0.27.0"
 dependencies = [
