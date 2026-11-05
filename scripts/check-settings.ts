@@ -404,7 +404,7 @@ args = { layout = "smoke" }
     await saved((text) => text.includes('family = "Huterm Smoke Mono"'), "font family kept in config.toml");
 
     // Search leads to the Quake windows section, where Up steps the default
-    // profile's height slider by 5% and a global shortcut records one
+    // profile's height slider by 1% and a global shortcut records one
     // stroke.
     await key("search");
     await state("settings.focus=search");
@@ -431,7 +431,7 @@ args = { layout = "smoke" }
     await state("settings.menu=false", "settings.focus=action:qprof");
     await tabTo("quake.profiles.default.height");
     await key("up");
-    await saved((text) => text.includes("[quake.profiles.default]\nheight = 0.55\n"), "default profile height in config.toml");
+    await saved((text) => text.includes("[quake.profiles.default]\nheight = 0.51\n"), "default profile height in config.toml");
     // Add global shortcut sits below the fold; Tab scrolled the pane to
     // show it whole, ring included.
     await tabTo("action:gadd");
