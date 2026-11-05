@@ -140,9 +140,9 @@ fn panel_keys_step_reset_and_move_through_its_controls(
         harness.overrides(window).opacity
     };
     for (keys, expected) in [
-        ("up", 0.65),
-        ("right", 0.7),
-        ("down", 0.65),
+        ("up", 0.61),
+        ("right", 0.62),
+        ("down", 0.61),
         ("left", 0.6),
         ("pageup", 0.7),
         ("pagedown", 0.6),
@@ -200,7 +200,7 @@ fn a_user_binding_reaches_the_panel(cx: &mut TestAppContext) {
     harness.open_panel(window);
     harness.press(window, "ctrl-u");
     let value = harness.overrides(window).opacity.unwrap();
-    assert!((value - 0.65).abs() < 1e-6, "{value}");
+    assert!((value - 0.61).abs() < 1e-6, "{value}");
 }
 
 #[gpui::test]

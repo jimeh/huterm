@@ -1399,7 +1399,7 @@ fn an_unset_profile_transparency_row_shows_and_steps_from_appearance(
     });
     drop(release);
     saved(&mut harness, &file, |text| {
-        text.contains("[quake.profiles.default]\nbackground_opacity = 0.45")
+        text.contains("[quake.profiles.default]\nbackground_opacity = 0.41")
     });
     // The inherited value is never written on its own.
     assert_eq!(file.text().matches("0.4\n").count(), 1, "{}", file.text());

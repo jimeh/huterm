@@ -65,7 +65,7 @@ fn field_text(harness: &mut DesktopHarness, path: &str) -> String {
 }
 
 #[gpui::test]
-fn a_slider_steps_by_five_percent_and_stops_at_its_ends(
+fn a_slider_steps_by_one_percent_and_stops_at_its_ends(
     cx: &mut TestAppContext,
 ) {
     // D7: stepping a Quake width or height added 1 and wrote values out of
@@ -74,7 +74,7 @@ fn a_slider_steps_by_five_percent_and_stops_at_its_ends(
     let height = "quake.profiles.logs.height";
     let file = ScratchConfig::new(
         "fields-slider-ends",
-        "[quake.profiles.logs]\nwidth = 0.95\nheight = 0.1\n",
+        "[quake.profiles.logs]\nwidth = 0.99\nheight = 0.02\n",
     );
     let mut harness = DesktopHarness::new(cx);
     show_logs(&mut harness, &file);
@@ -95,17 +95,17 @@ fn a_slider_steps_by_five_percent_and_stops_at_its_ends(
     });
     keys(&harness, "down");
     harness.wait_for("the step down", |cx| {
-        settled(cx) && file.text().contains("height = 0.05")
+        settled(cx) && file.text().contains("height = 0.01")
     });
     keys(&harness, "down");
-    assert!(harness.cx.update(settled), "a step below 5% queued a write");
+    assert!(harness.cx.update(settled), "a step below 1% queued a write");
     // Nor did it step out of range into an error, as stepping by 1 did.
     for path in [width, height] {
         assert_eq!(with_view(&mut harness, |view, _| view.error(path)), None);
     }
     assert_eq!(
         file.text(),
-        "[quake.profiles.logs]\nwidth = 1.0\nheight = 0.05\n"
+        "[quake.profiles.logs]\nwidth = 1.0\nheight = 0.01\n"
     );
     assert_eq!(focus(&mut harness), height);
 }
@@ -117,31 +117,31 @@ fn a_slider_shows_an_off_grid_value_as_is_and_steps_to_the_grid(
     let width = "quake.profiles.logs.width";
     let file = ScratchConfig::new(
         "fields-slider-grid",
-        "[quake.profiles.logs]\nwidth = 0.33\n",
+        "[quake.profiles.logs]\nwidth = 0.335\n",
     );
     let mut harness = DesktopHarness::new(cx);
     show_logs(&mut harness, &file);
     let id = format!("settings-slider-{width}");
     let aria = a11y_node(&mut harness, &id)["aria"].clone();
     assert_eq!(aria["role"], "Slider", "{aria}");
-    assert_eq!(aria["value"], "33%", "{aria}");
-    assert_eq!(aria["numeric_value"], 0.33, "{aria}");
-    assert_eq!(aria["min_numeric_value"], 0.05, "{aria}");
+    assert_eq!(aria["value"], "33.5%", "{aria}");
+    assert_eq!(aria["numeric_value"], 0.335, "{aria}");
+    assert_eq!(aria["min_numeric_value"], 0.01, "{aria}");
     with_window(&mut harness, |view, window, cx| {
         view.focus_stop(width, window, cx);
     });
-    // The first step lands on the next grid value, not 0.33 + 0.05.
+    // The first step lands on the next grid value, not 0.335 + 0.01.
     keys(&harness, "up");
     harness.wait_for("the step up", |cx| {
-        settled(cx) && file.text().contains("0.35")
+        settled(cx) && file.text().contains("0.34")
     });
     keys(&harness, "down down");
     harness.wait_for("the steps down", |cx| {
-        settled(cx) && file.text().contains("0.25")
+        settled(cx) && file.text().contains("0.32")
     });
-    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.25\n");
+    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.32\n");
     let aria = a11y_node(&mut harness, &id)["aria"].clone();
-    assert_eq!(aria["value"], "25%", "{aria}");
+    assert_eq!(aria["value"], "32%", "{aria}");
 }
 
 #[gpui::test]
@@ -245,12 +245,12 @@ fn a_slider_drag_past_its_start_writes_its_floor(cx: &mut TestAppContext) {
     harness.wait_for("the drag to save", settled);
     // Never 0, which the schema's exclusive minimum refuses.
     assert_eq!(with_view(&mut harness, |view, _| view.error(width)), None);
-    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.05\n");
+    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.01\n");
     assert_eq!(focus(&mut harness), width);
 }
 
 #[gpui::test]
-fn an_accessibility_increment_steps_a_slider_by_five_percent(
+fn an_accessibility_increment_steps_a_slider_by_one_percent(
     cx: &mut TestAppContext,
 ) {
     let width = "quake.profiles.logs.width";
@@ -263,7 +263,7 @@ fn an_accessibility_increment_steps_a_slider_by_five_percent(
     let node = a11y_node(&mut harness, &format!("settings-slider-{width}"));
     a11y_act(&mut harness, &node, AccessibleAction::Increment);
     harness.wait_for("the step to save", settled);
-    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.55\n");
+    assert_eq!(file.text(), "[quake.profiles.logs]\nwidth = 0.51\n");
 }
 
 /// The update interval is macOS's alone; `values` tests the step itself
@@ -785,11 +785,11 @@ fn page_keys_page_a_slider_and_home_and_end_reach_its_ends(
     with_window(&mut harness, |view, window, cx| {
         view.focus_stop(width, window, cx);
     });
-    // A page is a tenth of the range, two 5% steps, clamped at 100%.
+    // A page is ten 1% steps, clamped at 100%.
     key_writes(&mut harness, &file, "pageup", &wrote("1.0"));
     key_writes(&mut harness, &file, "pagedown", &wrote("0.9"));
-    key_writes(&mut harness, &file, "home", &wrote("0.05"));
-    key_writes(&mut harness, &file, "pageup", &wrote("0.15"));
+    key_writes(&mut harness, &file, "home", &wrote("0.01"));
+    key_writes(&mut harness, &file, "pageup", &wrote("0.11"));
     key_writes(&mut harness, &file, "end", &wrote("1.0"));
     assert_eq!(focus(&mut harness), width);
 }

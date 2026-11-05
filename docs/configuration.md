@@ -56,10 +56,12 @@ move a tenth of the range (ten steps when either end is open), and a typed
 number outside it saves as the nearest end. The first step from a value off
 the step grid snaps it onto the grid, so 13.5 steps up to 14, and the first
 step from an empty field goes to the setting's minimum.
-A Quake profile's width and height are sliders from 5% to 100% in 5% steps:
-the arrow keys step them, Page Up and Page Down move 10%, and Home and End
-go to 5% and 100%. A value the file sets off that grid shows as it is, and
-the first step moves it onto the grid.
+Sliders that read as a percent, such as the opacities and a Quake profile's
+width and height, move in 1% steps: the arrow keys step them by 1%, Page Up
+and Page Down move 10%, and Home and End go to the ends of the range, 1% and
+100% for a Quake width or height. A value the file sets off that grid shows
+as it is, and the first step moves it onto the grid. Sliders with a unit,
+such as blur, page by a tenth of their range.
 
 ## Schema
 

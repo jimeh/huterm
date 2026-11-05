@@ -295,7 +295,7 @@ impl Fields {
             let mut field = NumberField::new(
                 SharedString::from(format!("number-{index}")),
                 "Quake width",
-                Steps::new(0.05, 1.0, 0.05),
+                Steps::new(0.01, 1.0, 0.01).page(10),
                 Format {
                     scale: 100.0,
                     decimals: 0,
@@ -1400,7 +1400,7 @@ impl Gallery {
         let gallery = cx.entity().downgrade();
         let column = &self.columns[index];
         let swatch = column.tokens;
-        let steps = Steps::new(0.05, 1.0, 0.05);
+        let steps = Steps::new(0.01, 1.0, 0.01).page(10);
         let [focus, disabled] = &column.controls.sliders;
         let percent = |value: f64| format!("{:.0}%", value * 100.0);
         entry(
