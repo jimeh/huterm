@@ -539,6 +539,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   which changes window chrome and not the palette, with the same state. It
   recurred on aarch64 on 2026-11-03 in the same PR #383 run as the extra
   tab above (job 126249669688), with the same state; the next head passed.
+  It recurred on x86_64 on 2026-11-05 (PR #412 at `179f5e2b`, run
+  42097959036, job 127493242342), which changes terminal selection and not
+  the palette or its smoke, with the same state and the same last bytes.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused
