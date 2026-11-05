@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.28.0](https://github.com/jimeh/huterm/compare/v0.27.0...v0.28.0) (2026-11-05)
+
+
+### Features
+
+* add window opacity, background and text opacity, and background blur on macOS ([#392](https://github.com/jimeh/huterm/issues/392)) ([31af160](https://github.com/jimeh/huterm/commit/31af160dd0a476f472157343b5f86ccb3fccfc72))
+* blur with any window transparency, adjustable blur strength, and per-window transparency overrides ([#403](https://github.com/jimeh/huterm/issues/403)) ([ac31386](https://github.com/jimeh/huterm/commit/ac31386f7232b60595c82e8e44ac23c9fadd7501))
+* bundle DejaVu Sans Mono as Linux's default terminal font ([#383](https://github.com/jimeh/huterm/issues/383)) ([886d90f](https://github.com/jimeh/huterm/commit/886d90fad01150ada5144b17e5b0a8ac11d4d6be))
+* drag tabs and panes between windows, and drag a tab out to open it in a new window ([#388](https://github.com/jimeh/huterm/issues/388)) ([7d0abfa](https://github.com/jimeh/huterm/commit/7d0abfa0c7b5d274eeebf485be370daa9d5b2b52))
+* load shell integration automatically in bash, zsh, fish, and nushell ([#385](https://github.com/jimeh/huterm/issues/385)) ([fda1efd](https://github.com/jimeh/huterm/commit/fda1efd9f0adcc74d0283bfeff33bf4df663f816))
+* record shell commands and their exit status, and keep new tabs in the local shell's directory while ssh runs ([#398](https://github.com/jimeh/huterm/issues/398)) ([eb2c806](https://github.com/jimeh/huterm/commit/eb2c8067a279adc719703393cfe63dc77a8d9bed))
+* restore windows, tabs, split panes, and their folders after Quit or a crash ([#405](https://github.com/jimeh/huterm/issues/405)) ([c509c37](https://github.com/jimeh/huterm/commit/c509c375f6a1e584e489a6d970bcc39500348884))
+* send unambiguous keys to applications that enable the Kitty keyboard protocol, and support F1-F12 and Insert ([#384](https://github.com/jimeh/huterm/issues/384)) ([1584670](https://github.com/jimeh/huterm/commit/15846708d6752ad590be236e31dec9a7d07317f2))
+* step percentage sliders by 1% instead of 5% ([#411](https://github.com/jimeh/huterm/issues/411)) ([15c91a9](https://github.com/jimeh/huterm/commit/15c91a920e8b31371a2bf7b171084c92e8097ccd))
+
+
+### Bug Fixes
+
+* stop showing "terminal runtime has stopped" when closing a tab ([#410](https://github.com/jimeh/huterm/issues/410)) ([4088d8c](https://github.com/jimeh/huterm/commit/4088d8ce1703f4007d27d97e1bd07b9293d9be3d))
+
 ## [0.27.0](https://github.com/jimeh/huterm/compare/v0.26.0...v0.27.0) (2026-11-01)
 
 
