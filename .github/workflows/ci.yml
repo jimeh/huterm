@@ -32,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -153,7 +153,7 @@ jobs:
           echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           # Rustup state must remain complete when Mise's install state is restored.
           cache: ${{ runner.os != 'macOS' }}
@@ -301,7 +301,7 @@ jobs:
           echo "CARGO_HOME=$HOME/.local/share/mise/cargo" >> "$GITHUB_ENV"
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           # Rustup state must remain complete when Mise's install state is restored.
           cache: ${{ runner.os != 'macOS' }}
@@ -561,7 +561,7 @@ jobs:
             mesa-vulkan-drivers twm xvfb xdotool x11-xkb-utils
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -626,7 +626,7 @@ jobs:
           persist-credentials: false
 
       - name: Install job tools with Mise
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -729,7 +729,7 @@ jobs:
 
       - name: Install macOS package tools with Mise
         if: runner.os == 'macOS'
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           cache: false
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
@@ -739,7 +739,7 @@ jobs:
 
       - name: Install Linux package tools with Mise
         if: runner.os == 'Linux'
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
         with:
           cache: true
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
