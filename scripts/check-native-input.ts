@@ -103,7 +103,7 @@ exec ${quote(process.execPath)} ${quote(recorder)}
   }
   preserveClipboard("clipboard-save");
   const app = Bun.spawn([executable], {
-    env: { ...process.env, HUTERM_INPUT_SMOKE: directory, HUTERM_CONFIG_FILE: config, SHELL: shell },
+    env: { ...process.env, HUTERM_INPUT_SMOKE: directory, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell },
     stdout: "pipe", stderr: "pipe",
   });
   const diagnostics = Promise.all([new Response(app.stdout).text(), new Response(app.stderr).text()]);
@@ -533,7 +533,7 @@ async function checkLegacyEngine(executable: string): Promise<void> {
   const app = Bun.spawn([executable], {
     env: {
       ...process.env,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       HUTERM_ENGINE_DIAGNOSTIC: "1",
       HUTERM_INPUT_SMOKE: directory,
       SHELL: shell,

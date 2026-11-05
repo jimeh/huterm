@@ -213,7 +213,8 @@ cleanup: set the shared termination gate before locking Mux, reject queued spawn
 after they acquire that lock, and drain existing runtimes before returning.
 
 Quit captures every session plus window navigation and geometry before cleanup;
-retain the first capture through repeated shutdown. The native AppKit bridge
+only the first capture writes, through repeated shutdown (see
+[Session restore](#session-restore)). The native AppKit bridge
 adds only applicationShouldTerminate: to GPUI's existing delegate and vetoes
 until assessment, consent, and cleanup finish. Keep unsafe Objective-C calls in
 native_quit.rs and native_updater.rs; run mise run smoke:macos-quit on macOS for
@@ -310,6 +311,54 @@ the jobs end. Cancel and Escape check `can_cancel_confirmation`, and the
 keyboard confirm reads the current confirmation. A tier 2 test produces the
 stale click by cancelling and calling `Window::dispatch_event` in one update,
 before the end-of-update draw drops the dialog.
+
+### Session restore
+
+`windows/persistence.rs` owns every write of the scope's saved state. It
+lives on `DesktopRuntime`, because the Quit write runs inside
+`commit_close_with`'s callback on a worker, and has one state: `Off`,
+`Bootstrapping`, `Running`, or `Final`. Checkpoints go to one writer thread;
+each write takes the slot lock and checks the state under it, so a queued
+checkpoint that loses to Final or Off writes nothing. `finish` (through
+`DesktopRuntime::capture`) moves to `Final` first, waits for a write in
+flight, and writes on the caller's thread; from `Bootstrapping` it removes
+only the `restore-attempt` marker. Every exit path reaches it: the Quit
+dialog's commit, `on_app_quit`, the post-loop `terminate()`, and
+`maybe_exit` after the last window closed, which writes the empty set
+itself before `approved_quit`, since no checkpoint may be due. An unchanged
+capture is not written again. Setting `restore_sessions` off queues a
+removal behind any write in flight; on starts `Running` and captures at
+once. Tests use `persistence::Recorder` and `Checkpoints::delay`; the
+harness defaults to an hour, so only the path under test writes.
+
+`windows/checkpoints.rs` debounces captures: a committed hierarchy batch,
+a window-model revision (`WindowModel::revision`, moved only by saved
+facts, watched through `observe_global::<Desktop>`), and a terminal
+directory change restart one timer on the executor clock. Nothing is armed
+while nothing changed. A capture due while `cross.reserved` holds a window
+waits until the transfer settles. The layout comes from the window model on
+the UI thread and the runtime capture from a worker's Mux lock. Views
+publish each tab's focused pane into `TabEntry::focused` from their
+self-observer, writing only what changed.
+
+`windows/restore.rs` reads saved state before `application.run`
+(`prepare`) and, with something to restore, the launch callback starts the
+bootstrap instead of opening a fresh window. `Desktop::restoring` gates
+reopen, Quake summons (deferred, then replayed), and `maybe_exit` until it
+settles. The worker spawns with `SpawnedTerminals::spawn` outside the lock,
+checks the termination gate between spawns and again under the lock, runs
+`Mux::restore`, attaches each session, and subscribes the projection, which
+the UI installs through `install_hierarchy`. Each restored window opens
+attached to its session (`open_window_with_profile`'s `Reopen`), clamped onto
+a display, and applies its saved focus once its installs are idle
+(`apply_reopen`); the bootstrap settles when every window did or went away.
+A restored terminal's first viewer subscribes with `spawned: true`
+(`Desktop::fresh_terminals`), so a shell that exited before its view still
+honours `close_on_exit`. A Quake profile's session waits in `quake_stash` for
+the first summon when a registered shortcut summons the profile.
+`smoke:macos-restore` and `smoke:linux-restore` quit and relaunch on one
+`HUTERM_STATE_DIR`; `HUTERM_STATE_TIMING` prints the final write's
+duration.
 
 The Settings window (`windows/settings_window.rs`) has no session and no
 `WindowModel` record; `Desktop::settings` holds its handle. Code that walks

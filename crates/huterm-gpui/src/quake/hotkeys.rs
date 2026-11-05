@@ -389,6 +389,15 @@ impl Registrations {
     pub fn has_bindings(&self) -> bool {
         self.owned.has_bindings(&self.bindings)
     }
+    /// Whether a registered shortcut shows or toggles `profile`.
+    pub fn summons(&self, profile: &str) -> bool {
+        self.bindings.iter().any(|binding| {
+            matches!(binding.invocation.id, ids::SHOW_QUAKE | ids::TOGGLE_QUAKE)
+                && binding.invocation.text("profile").unwrap_or("default")
+                    == profile
+                && self.owned.0.contains_key(&binding.key.id())
+        })
+    }
     pub fn drain(&self) -> Vec<CommandInvocation> {
         self.events
             .try_iter()

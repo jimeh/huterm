@@ -71,7 +71,12 @@ pub(crate) enum NoticeSource {
     Config,
     Keymap,
     Command,
-    Terminal { tab: TabId, title: String },
+    /// Session restore and saving.
+    Sessions,
+    Terminal {
+        tab: TabId,
+        title: String,
+    },
 }
 
 impl NoticeSource {
@@ -81,7 +86,8 @@ impl NoticeSource {
         match (self, other) {
             (Self::Config, Self::Config)
             | (Self::Keymap, Self::Keymap)
-            | (Self::Command, Self::Command) => true,
+            | (Self::Command, Self::Command)
+            | (Self::Sessions, Self::Sessions) => true,
             (Self::Terminal { tab, .. }, Self::Terminal { tab: other, .. }) => {
                 tab == other
             }
@@ -179,6 +185,7 @@ impl NoticeContent {
             NoticeSource::Config => "config".to_owned(),
             NoticeSource::Keymap => "keymap".to_owned(),
             NoticeSource::Command => "command".to_owned(),
+            NoticeSource::Sessions => "sessions".to_owned(),
             NoticeSource::Terminal { title, .. } => {
                 format!("terminal:{}", title.replace(['|', '\n'], " "))
             }

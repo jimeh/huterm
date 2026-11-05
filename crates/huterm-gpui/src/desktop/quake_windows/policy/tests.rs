@@ -348,6 +348,7 @@ fn published(policy: &Model) -> crate::desktop::windows::model::WindowModel {
         WindowLayout {
             bounds: gpui::WindowBounds::Windowed(gpui::Bounds::default()),
             sidebar_width: gpui::px(180.0),
+            fullscreen: false,
         },
     );
     super::super::publish_visibility(&mut windows, window, policy);

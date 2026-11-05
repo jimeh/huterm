@@ -79,7 +79,7 @@ async function main(executableArgument: string): Promise<void> {
   const app = Bun.spawn([executable], {
     env: {
       ...process.env,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       HUTERM_PRESENTATION_QUERY_SMOKE: directory,
       SHELL: shell,
       WAYLAND_DISPLAY: undefined,

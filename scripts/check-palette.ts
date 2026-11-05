@@ -115,7 +115,7 @@ command = "select_tab"
       ...process.env,
       WAYLAND_DISPLAY: process.platform === "linux" ? undefined : process.env.WAYLAND_DISPLAY,
       HUTERM_PALETTE_SMOKE: directory,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       SHELL: shell,
     },
     stdout: "pipe",

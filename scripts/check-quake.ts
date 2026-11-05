@@ -96,7 +96,7 @@ async function finishFixture(directory: string, kind: string, passed: boolean, d
 
 async function checkHidden(executable: string): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-hidden-"));
-  const app = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_QUAKE_HIDDEN_PROBE: "1"}, stdout: "pipe", stderr: "pipe"});
+  const app = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_STATE_DIR: join(directory, "saved-state"), HUTERM_QUAKE_HIDDEN_PROBE: "1"}, stdout: "pipe", stderr: "pipe"});
   let diagnostics = "";
   let passed = false;
   const errors = (async () => { for await (const chunk of app.stderr) diagnostics += Buffer.from(chunk).toString(); })();
@@ -138,7 +138,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   await writeFile(shell, `#!/bin/sh\nset -m\nsleep 600 &\njob=$!\ntrap 'kill "$job" 2>/dev/null; wait "$job" 2>/dev/null' 0\ntrap 'exit 0' HUP TERM\nprintf 'READY:%s JOB:%s\\n' "$$" "$job"\nwhile IFS= read -r line; do\ncase "$line" in\nexit) exit 0;;\n*) printf 'ACK:%s:%s:' "$line" "$$"; stty size; printf '%s:%s\\n' "$$" "$line" >> ${quote(join(directory, "acks"))};;\nesac\ndone\n`, { mode: 0o700 });
   const configText = (settings = "animation_ms = 150", extra = "") => `[terminal]\n[tabs]\nalways_show = true\nauto_hide_in_fullscreen = true\nnotch = "off"\n[quake.profiles.default]\n${settings}\n${extra}\n[[global_keybinding]]\nkey = "ctrl-alt-t"\ncommand = "toggle_quake"\n[[keybinding]]\nkey = "ctrl-shift-q"\ncommand = "quit"\n`;
   await writeFile(config, configText());
-  const app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_QUAKE_SMOKE: directory, SHELL: shell }, stdout: "pipe", stderr: "pipe" });
+  const app = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), HUTERM_QUAKE_SMOKE: directory, SHELL: shell }, stdout: "pipe", stderr: "pipe" });
   let diagnostics = "";
   let passed = false;
   const errors = (async () => { for await (const chunk of app.stderr) diagnostics += Buffer.from(chunk).toString(); })();
@@ -735,7 +735,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         await command("app show_quake");await settled(true);
         const grabDirectory = join(directory,"external-grab");
         await import("node:fs/promises").then(fs => fs.mkdir(grabDirectory));
-        const grab = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: grabDirectory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"},stdout:"ignore",stderr:"pipe"});
+        const grab = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: grabDirectory, HUTERM_STATE_DIR: join(grabDirectory, "saved-state"), HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"},stdout:"ignore",stderr:"pipe"});
         let grabDiagnostics = "";
         const grabErrors = (async () => { for await (const chunk of grab.stderr) grabDiagnostics += Buffer.from(chunk).toString(); })();
         let grabCleanupError: unknown;
@@ -1027,7 +1027,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
 /// then release it. `checkOrdinaryExit` needs one for its unregister case.
 export async function probeFreeChord(executable: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "huterm-quake-free-chord-"));
-  const probe = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"}, stdout: "ignore", stderr: "pipe"});
+  const probe = Bun.spawn([executable], {env: {...process.env, WAYLAND_DISPLAY: undefined, HUTERM_QUAKE_SMOKE: directory, HUTERM_STATE_DIR: join(directory, "saved-state"), HUTERM_QUAKE_HIDDEN_PROBE: "1", HUTERM_QUAKE_GRAB_PROBE: "1"}, stdout: "ignore", stderr: "pipe"});
   let diagnostics = "";
   const errors = (async () => { for await (const chunk of probe.stderr) diagnostics += Buffer.from(chunk).toString(); })();
   try {
@@ -1061,7 +1061,7 @@ export async function checkOrdinaryExit(executable: string, conflictChord?: stri
   const ordinaryConfig = "[terminal]\n";
   await writeFile(config, ordinaryConfig + (chord ? `[[global_keybinding]]\nkey = '${chord}'\ncommand = 'toggle_quake'\n` : ""));
   await writeFile(shell, "#!/bin/sh\nprintf 'ORDINARY_READY\\n'\nwhile IFS= read -r line; do :; done\n", {mode:0o700});
-  const app = Bun.spawn([executable], {env:{...process.env,WAYLAND_DISPLAY:undefined,HUTERM_CONFIG_FILE:config,HUTERM_QUAKE_SMOKE:directory,SHELL:shell},stdout:"ignore",stderr:"pipe"});
+  const app = Bun.spawn([executable], {env:{...process.env,WAYLAND_DISPLAY:undefined,HUTERM_CONFIG_FILE:config, HUTERM_STATE_DIR: join(directory, "saved-state"),HUTERM_QUAKE_SMOKE:directory,SHELL:shell},stdout:"ignore",stderr:"pipe"});
   let diagnostics = "";
   const errors = (async () => {for await (const chunk of app.stderr) diagnostics += Buffer.from(chunk).toString();})();
   let passed = false;

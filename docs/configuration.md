@@ -129,7 +129,43 @@ file shows an error. To return to the defaults, empty the file.
 
 At startup, a file that is not valid TOML stops Huterm. A valid file with a
 bad setting starts with the defaults, shows the error, and still honors its
-`watch_config`, so saving the fix applies it.
+`watch_config` and `restore_sessions`, so saving the fix applies it.
+
+## Restoring sessions
+
+Quitting Huterm and starting it again reopens every session that was open,
+with its windows, tabs, split panes and their sizes, custom names, focused
+panes, window positions, and per-window transparency. Each pane starts a
+fresh shell in the folder it last reported; nothing that ran before is
+started again. A pane whose folder no longer exists starts in your home
+folder on macOS, or Huterm's working directory on Linux, and its window says
+so. Closing the last window is not a Quit: it ends that session, so the next
+launch opens one fresh window.
+
+While Huterm runs it also saves a checkpoint one second after windows,
+tabs, panes, or a shell's folder change, so a crash or a killed process
+restores the last checkpoint.
+
+```toml
+[general]
+# Reopen the windows, tabs, and panes open at Quit, each pane with a fresh
+# shell in its last folder. Turning this off deletes the saved windows.
+restore_sessions = true
+```
+
+Set `restore_sessions = false` to start fresh every time. Turning it off,
+in the file or in Settings > General, deletes the saved windows at once;
+turning it on saves the current windows right away. Both apply without a
+restart.
+
+Saved state lives in `$XDG_STATE_HOME/huterm/` (default
+`~/.local/state/huterm/`) on both platforms, or in `$HUTERM_STATE_DIR` when
+it is set to an absolute path. Only one Huterm process saves sessions: a
+second one started while the first runs neither restores nor saves its
+windows, and says so. When the saved state cannot be read, or a restore did
+not finish, Huterm opens a fresh window, keeps the bad file as
+`runtime.json.corrupt`, and shows why. State saved by a newer Huterm is left
+alone and not restored.
 
 ## Shells
 

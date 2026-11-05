@@ -17,6 +17,9 @@ pub(super) struct CrossWindows {
     previews: HashMap<gpui::WindowId, (u64, u64, String)>,
     pub(super) opening: Option<gpui::Size<Pixels>>,
     pub(super) drag: Option<Drag>,
+    /// Windows that reserved a cross-window transfer still in flight; a
+    /// checkpoint waits until none is left.
+    pub(super) reserved: HashSet<gpui::WindowId>,
     #[cfg(test)]
     pub(super) fail_window: bool,
 }
@@ -29,6 +32,7 @@ impl Default for CrossWindows {
             previews: HashMap::new(),
             opening: None,
             drag: None,
+            reserved: HashSet::new(),
             #[cfg(test)]
             fail_window: false,
         }
@@ -611,6 +615,10 @@ impl WorkspaceView {
 
     /// The caller has already re-sampled the locator at release. A true
     /// result consumes an outside-source release, including a cancellation.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one release resolves, reserves, and dispatches a transfer"
+    )]
     pub(super) fn finish_cross_drag(
         &mut self,
         window: &mut Window,
@@ -664,6 +672,11 @@ impl WorkspaceView {
                                     .map(Incoming::restore);
                                 view.clear_incoming(false, target_window, cx);
                                 view.busy = true;
+                                checkpoints::set_transfer_reserved(
+                                    cx,
+                                    view.window,
+                                    true,
+                                );
                                 view.transfer = Some(PendingTransfer {
                                     panes: payload.panes.clone(),
                                     focus: payload.focus,
@@ -842,6 +855,11 @@ impl WorkspaceView {
                                     view.finish_transfer_install(window, cx);
                                 } else {
                                     let pending = view.transfer.take();
+                                    checkpoints::set_transfer_reserved(
+                                        cx,
+                                        view.window,
+                                        false,
+                                    );
                                     let created = pending
                                         .as_ref()
                                         .is_some_and(|pending| pending.created);
@@ -939,6 +957,7 @@ impl WorkspaceView {
         let focus = pending.focus;
         let closes = pending.closes.clone();
         self.transfer = None;
+        checkpoints::set_transfer_reserved(cx, self.window, false);
         self.busy = false;
         if let Some(tab) = self.tab_showing(focus) {
             self.select(tab, window, cx);
@@ -1111,6 +1130,11 @@ impl WorkspaceView {
                             cx,
                             |view, cx| {
                                 view.busy = true;
+                                checkpoints::set_transfer_reserved(
+                                    cx,
+                                    view.window,
+                                    true,
+                                );
                                 view.transfer = Some(PendingTransfer {
                                     panes: payload.panes.clone(),
                                     focus: payload.focus,
@@ -1174,6 +1198,11 @@ impl WorkspaceView {
                     if let Ok(view) = root.downcast::<WorkspaceView>() {
                         view.update(cx, |view, cx| {
                             view.transfer = None;
+                            checkpoints::set_transfer_reserved(
+                                cx,
+                                view.window,
+                                false,
+                            );
                             view.busy = false;
                             view.remove_window(window, cx, false);
                         });

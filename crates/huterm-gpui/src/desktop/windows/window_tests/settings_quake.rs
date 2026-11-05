@@ -1017,6 +1017,7 @@ fn serving(harness: &mut DesktopHarness, profile: &str) -> gpui::WindowId {
             WindowLayout {
                 bounds: gpui::WindowBounds::Windowed(gpui::Bounds::default()),
                 sidebar_width: gpui::px(180.0),
+                fullscreen: false,
             },
         );
     });

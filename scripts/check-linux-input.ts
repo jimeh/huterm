@@ -140,7 +140,7 @@ command = "quit"
   }
   await configure();
   const app = Bun.spawn([executable], {
-    env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, SHELL: shell },
+    env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell },
     stdout: "pipe", stderr: "pipe",
   });
   const diagnostics = Promise.all([new Response(app.stdout).text(), new Response(app.stderr).text()]);

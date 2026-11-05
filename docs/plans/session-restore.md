@@ -1,7 +1,8 @@
 # Session restore (#42)
 
-Status: in progress: pull request 1 (core and persistence) implemented;
-desktop restore pending. Jim accepted every recommendation on 2026-11-04.
+Status: implemented. Pull request #404 delivered core and persistence; the
+desktop pull request delivered restore. Jim accepted every recommendation on
+2026-11-04.
 
 Delivers [#42](https://github.com/jimeh/huterm/issues/42) under the
 [#17](https://github.com/jimeh/huterm/issues/17) epic. Styled history is

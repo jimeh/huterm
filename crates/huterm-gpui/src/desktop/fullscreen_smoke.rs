@@ -19,19 +19,20 @@ pub(crate) fn run() -> anyhow::Result<()> {
             super::input_smoke::post_event("cursor-restore")
                 .expect("restore smoke cursor");
             publish(&quit_directory, "quit-state", &read_state(cx));
-            let runtime = &cx.global::<Desktop>().runtime;
-            if let Some(snapshot) = runtime.restore.lock().unwrap().as_ref() {
-                let mut output = String::new();
-                for (index, window) in snapshot.windows.iter().enumerate() {
-                    writeln!(
-                        output,
-                        "restore{index}={}",
-                        bounds(window.bounds)
-                    )
-                    .unwrap();
-                }
-                std::fs::write(quit_directory.join("restore"), output).unwrap();
+            // The bounds the Quit write saves for each window.
+            let mut output = String::new();
+            for (index, window) in
+                super::capture_windows(cx).windows.iter().enumerate()
+            {
+                let saved = window.bounds;
+                writeln!(
+                    output,
+                    "restore{index}={},{},{},{}",
+                    saved.x, saved.y, saved.width, saved.height
+                )
+                .unwrap();
             }
+            std::fs::write(quit_directory.join("restore"), output).unwrap();
             async {}
         })
         .detach();

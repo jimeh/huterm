@@ -169,7 +169,7 @@ done
   const initialConfig = macos ? configText("native").replace('macos_fullscreen_mode = "native"\n', "") : configText("native");
   await writeFile(config, initialConfig);
   const app = Bun.spawn([executable], {
-    env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_FULLSCREEN_SMOKE: directory, HUTERM_FULLSCREEN_NO_ADAPTER: fallback ? "1" : undefined, SHELL: shell },
+    env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), HUTERM_FULLSCREEN_SMOKE: directory, HUTERM_FULLSCREEN_NO_ADAPTER: fallback ? "1" : undefined, SHELL: shell },
     stdout: "pipe", stderr: "pipe",
   });
   let stderr = "";

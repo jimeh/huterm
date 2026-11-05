@@ -265,6 +265,7 @@ fn layout() -> WindowLayout {
             size: size(px(800.0), px(600.0)),
         }),
         sidebar_width: px(180.0),
+        fullscreen: false,
     }
 }
 
@@ -328,6 +329,7 @@ fn push(
                 title: format!("title {value}"),
             }],
             title: format!("title {value}"),
+            focused: None,
         },
     );
     let current: Vec<TabId> = fake.views.iter().map(|view| view.tab).collect();
@@ -876,6 +878,7 @@ fn a_resync_snapshot_older_than_an_installed_view_drains_before_reconciling() {
                 title: "sh".into(),
             }],
             title: "sh".into(),
+            focused: None,
         },
     );
     assert!(snapshot.tab(opened.tab.id).is_none());
@@ -1044,6 +1047,7 @@ fn a_reset_drained_before_the_teardown_flag_is_seen_freezes_the_projection() {
                 title: "custom".into(),
             }],
             title: "custom".into(),
+            focused: None,
         },
     );
     let change = reconcile(&mut fake, &mut model, projection.state(), &touched);

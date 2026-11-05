@@ -436,6 +436,11 @@ impl PendingInstalls {
         self.failed.contains(&pane)
     }
 
+    /// Whether no subscription is in flight.
+    pub(super) fn idle(&self) -> bool {
+        self.in_flight.is_empty()
+    }
+
     pub(super) fn failed_panes(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.failed.iter().copied()
     }

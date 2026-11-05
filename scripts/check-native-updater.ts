@@ -97,13 +97,13 @@ async function main(): Promise<void> {
     const { bundleExecutable, framework } = await assembleBundle(executable, directory);
     await run(bundleExecutable, {
       CFFIXED_USER_HOME: directory,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       HUTERM_UPDATER_SMOKE_FRAMEWORK: framework,
       SHELL: "/bin/sh",
     }, false);
     await run(executable, {
       CFFIXED_USER_HOME: directory,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       HUTERM_UPDATER_SMOKE_UNPACKAGED: "1",
       SHELL: "/bin/sh",
     }, true);

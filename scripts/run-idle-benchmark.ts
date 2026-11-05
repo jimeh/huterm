@@ -148,7 +148,7 @@ async function main(): Promise<void> {
         await writeFile(config, fixtureConfig(presentation, windowCount));
         const child = Bun.spawn([arm.executable], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("HUTERM_"))), ...arm.env,
           ...(arm.force_fallback ? { HUTERM_FULLSCREEN_SMOKE: directory, HUTERM_FULLSCREEN_NO_ADAPTER: "1" } : {}),
-          SHELL: shell, HUTERM_CONFIG_FILE: config, HUTERM_IDLE_TABS: String(tabCount), HUTERM_IDLE_WINDOWS: String(windowCount),
+          SHELL: shell, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), HUTERM_IDLE_TABS: String(tabCount), HUTERM_IDLE_WINDOWS: String(windowCount),
           HUTERM_IDLE_PRESENTATION: presentation, HUTERM_IDLE_VISIBILITY: visibility,
           XDG_STATE_HOME: join(directory, "state"),
         }, stdout: "pipe", stderr: Bun.file(join(directory, "stderr.log")) });

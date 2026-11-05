@@ -340,6 +340,43 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes the saved files a later save may replace, with any
+    /// `restore-attempt` marker, for when saving turns off. A runtime file a
+    /// load found newer, unreadable, or corrupt and not yet set aside stays,
+    /// as does a layout a load found newer or unreadable. Copies set aside
+    /// as `.corrupt` stay too. The next save starts a new scope identity.
+    ///
+    /// # Errors
+    /// Reports a failed removal or directory sync; files not yet removed
+    /// stay.
+    pub fn remove_saved(&mut self) -> io::Result<()> {
+        let mut files = Vec::new();
+        if self.runtime_guard == RuntimeGuard::Replaceable {
+            files.push(StateFile::Runtime.name());
+        }
+        if !self.keep_desktop {
+            files.push(StateFile::Desktop.name());
+        }
+        files.push(RESTORE_ATTEMPT_FILE);
+        let mut removed = false;
+        for name in files {
+            match fs::remove_file(self.directory.join(name)) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                result => {
+                    result?;
+                    removed = true;
+                }
+            }
+        }
+        if self.runtime_guard == RuntimeGuard::Replaceable {
+            self.identity = None;
+        }
+        if removed {
+            atomic::sync_directory(&self.directory)?;
+        }
+        Ok(())
+    }
+
     /// Creates the `restore-attempt` marker and syncs it, so a crash during
     /// a restore leaves it behind.
     ///

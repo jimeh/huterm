@@ -99,6 +99,9 @@ struct DesktopHarness {
     /// The attachment [`Self::canonical`] observes through, made on first
     /// use.
     observer: Option<AttachmentId>,
+    /// Receives every save; checkpoints run but wait an hour unless a test
+    /// shortens the delay.
+    recorder: persistence::Recorder,
 }
 
 impl DesktopHarness {
@@ -110,9 +113,33 @@ impl DesktopHarness {
         cx: &mut TestAppContext,
         configure: impl FnOnce(&mut Config),
     ) -> Self {
+        let mut harness =
+            Self::installed(cx, configure, persistence::State::Running);
+        let (session, workspace) = {
+            let mut mux = harness.runtime.lock();
+            let session = mux.create_session(None).unwrap();
+            (session, mux.create_workspace(session, None).unwrap())
+        };
+        harness.session = session;
+        harness.workspace = workspace;
+        harness
+    }
+
+    /// The production desktop over a fresh runtime that holds nothing yet,
+    /// with persistence in `state`. `session` and `workspace` name nothing
+    /// until a test sets them.
+    fn installed(
+        cx: &mut TestAppContext,
+        configure: impl FnOnce(&mut Config),
+        state: persistence::State,
+    ) -> Self {
         // Terminal runtimes wake views from their own threads.
         cx.executor().allow_parking();
-        let runtime = Arc::new(DesktopRuntime::default());
+        let recorder = persistence::Recorder::default();
+        let runtime = Arc::new(DesktopRuntime {
+            persistence: recorder.owner(state),
+            ..DesktopRuntime::default()
+        });
         let (state, subscription) = runtime.subscribe_hierarchy();
         let mut config = Config::default();
         // A test window has no native title bar to merge tabs into.
@@ -137,18 +164,16 @@ impl DesktopHarness {
             // Test windows have no AppKit view: menus draw in Huterm's own
             // style unless a test installs a presenter.
             cx.global_mut::<Desktop>().menu_presenter = None;
+            cx.global_mut::<Desktop>().checkpoints.delay =
+                Duration::from_secs(3600);
         });
-        let (session, workspace) = {
-            let mut mux = runtime.lock();
-            let session = mux.create_session(None).unwrap();
-            (session, mux.create_workspace(session, None).unwrap())
-        };
         Self {
             cx: cx.clone(),
             runtime,
-            session,
-            workspace,
+            session: SessionId::new(0),
+            workspace: WorkspaceId::new(0),
             observer: None,
+            recorder,
         }
     }
 
@@ -2124,11 +2149,10 @@ impl DesktopHarness {
         self.wait_for("the application to quit", |_| {
             runtime.terminating.load(Ordering::Acquire)
         });
-        let restore = runtime.restore.lock().unwrap();
-        let captured = restore.as_ref().expect("Quit captured nothing");
+        let saved = self.recorder.saved();
+        let (captured, _) = saved.first().expect("Quit captured nothing");
         assert!(
             captured
-                .runtime
                 .sessions
                 .iter()
                 .any(|kept| kept.info.id.get() == session.get()),
@@ -2481,7 +2505,7 @@ fn a_confirmed_quit_committing_when_its_windows_session_closes_still_quits(
     // The stale commit was assessed again before it committed.
     assert_eq!(hooks.entered(Stage::Assess), 2);
     assert_eq!(hooks.entered(Stage::Commit), 2);
-    assert!(runtime.restore.lock().unwrap().is_some());
+    assert_eq!(harness.recorder.saved().len(), 1);
 }
 
 /// The report of a configuration change that differs from the last load.
@@ -5309,6 +5333,7 @@ mod pane_indicators;
 mod pane_layouts;
 mod pane_moves;
 mod pane_names;
+mod restore;
 mod settings;
 mod settings_controls;
 mod settings_dialog;

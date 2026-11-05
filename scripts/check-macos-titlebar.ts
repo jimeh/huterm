@@ -117,7 +117,7 @@ always_show = true
 label = "title"
 `);
   const app = Bun.spawn([executable], {
-    env: { ...process.env, HUTERM_PALETTE_SMOKE: directory, HUTERM_CONFIG_FILE: config, SHELL: shell },
+    env: { ...process.env, HUTERM_PALETTE_SMOKE: directory, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell },
     stdout: "pipe", stderr: "pipe",
   });
   const diagnostics = Promise.all([new Response(app.stdout).text(), new Response(app.stderr).text()]);

@@ -21,6 +21,8 @@ pub(crate) mod quake_smoke;
 mod quake_windows;
 #[path = "refresh_smoke.rs"]
 pub(crate) mod refresh_smoke;
+#[path = "restore_smoke.rs"]
+pub(crate) mod restore_smoke;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 #[path = "updater_smoke.rs"]
 pub(crate) mod updater_smoke;
@@ -37,7 +39,7 @@ use super::licenses::{
     Done as LicensesDone, LicensesFocus, LicensesState, LicensesView,
 };
 use super::notices::{
-    Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack,
+    Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack, Severity,
     ToastHandlers, render_notice_stack,
 };
 use super::overlay::{
@@ -71,10 +73,10 @@ use huterm_core::{
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
-    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeCapture, RuntimeId,
-    SessionId, SplitAxis, SplitDirection, SplitId, SplitNode, TerminalId,
-    Touched, ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name,
-    validate, validate_supplied,
+    PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis,
+    SplitDirection, SplitId, SplitNode, TerminalId, Touched,
+    ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
+    validate_supplied,
 };
 use huterm_ui::components::button::{Button, Colors as ButtonColors};
 use huterm_ui::components::dialog::Modal;
@@ -180,7 +182,9 @@ pub(super) use appkit_menu::{
 };
 mod audible_bell;
 pub(super) use audible_bell::ring as ring_audible_bell;
+pub(super) use checkpoints::directory_changed;
 mod button_layout;
+mod checkpoints;
 mod client_frame;
 mod cross_window;
 mod exit_closes;
@@ -201,7 +205,9 @@ mod pane_indicators;
 mod pane_layouts;
 mod pane_menu;
 mod pane_moves;
+mod persistence;
 mod projection;
+mod restore;
 mod settings_window;
 mod system_appearance;
 mod tab_bar;
@@ -226,6 +232,7 @@ use button_layout::{
     ButtonGroup, ButtonLayout, WINDOW_CONTROL_GAP, WINDOW_CONTROL_SIZE,
     WINDOW_CONTROLS_PADDING_INNER, WINDOW_CONTROLS_PADDING_OUTER, WindowButton,
 };
+use checkpoints::{Checkpoints, take_checkpoint};
 use client_frame::{
     ClientFrame, FRAME_RADIUS, FrameState, requested_decorations, resize_cursor,
 };
@@ -233,7 +240,7 @@ use exit_closes::{CommitOutcome, ExitCloses};
 use menu_spec::MenuSpec;
 use model::{
     PaneTitle, QuakeRecord, TabEntry, TitleScope, WindowLayout, WindowModel,
-    WindowRecord, WindowRestore, apply_tab_order,
+    WindowRecord, apply_tab_order,
 };
 use native_menus::{MenuAnchor, MenuPresenter, NativeMenuSession};
 use pane_bars::{BarInput, PaneBarReveals, PaneBarTiming};
@@ -360,7 +367,9 @@ struct DesktopRuntime {
     mux: Mutex<Mux>,
     host_effects: DesktopHostEffectClient,
     terminating: AtomicBool,
-    restore: Mutex<Option<RestoreSnapshot>>,
+    /// Orders every write of the scope's saved state; the Quit write runs
+    /// inside the commit callback on a worker.
+    persistence: persistence::Persistence,
     #[cfg(all(test, feature = "test-support"))]
     worker_hooks: worker_hooks::WorkerHooks,
 }
@@ -640,6 +649,7 @@ impl DesktopRuntime {
                         target.terminal,
                         ViewerOptions {
                             geometry: target.start.geometry,
+                            spawned: target.spawned,
                             ..self.viewer_options(
                                 clipboard_allowed,
                                 target.start.presentation.clone(),
@@ -719,7 +729,7 @@ impl DesktopRuntime {
         &self,
         assessment: &CloseAssessment,
         confirmed: bool,
-        windows: Option<Vec<WindowRestore>>,
+        windows: Option<huterm_state::DesktopLayout>,
     ) -> Committed<Result<(), MuxError>> {
         let current = assessment.recheck();
         let mut mux = self.lock();
@@ -736,14 +746,20 @@ impl DesktopRuntime {
         }
     }
 
-    fn capture(&self, mux: &Mux, windows: Vec<WindowRestore>) {
-        self.restore
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_or_insert_with(|| RestoreSnapshot {
-                runtime: mux.capture_runtime(),
-                windows,
-            });
+    /// Takes the Quit write once, whichever exit path gets here first:
+    /// later captures, such as the empty hierarchy `shutdown` leaves, are
+    /// rejected.
+    fn capture(&self, mux: &Mux, windows: huterm_state::DesktopLayout) {
+        let finished =
+            self.persistence.finish(|| (mux.capture_runtime(), windows));
+        if let Some((written, elapsed)) = finished
+            && std::env::var_os("HUTERM_STATE_TIMING").is_some()
+        {
+            eprintln!(
+                "huterm-state final-write={written:?} micros={}",
+                elapsed.as_micros()
+            );
+        }
     }
 
     /// Runs a runtime-scope command on the structural worker.
@@ -821,12 +837,12 @@ impl DesktopRuntime {
     }
 
     fn terminate(&self) -> Result<(), MuxError> {
-        self.terminate_with_windows(Vec::new())
+        self.terminate_with_windows(huterm_state::DesktopLayout::default())
     }
 
     fn terminate_with_windows(
         &self,
-        windows: Vec<WindowRestore>,
+        windows: huterm_state::DesktopLayout,
     ) -> Result<(), MuxError> {
         // A queued spawn must observe termination after it acquires the same
         // mutex, even when it had not started when the native quit hook ran.
@@ -840,19 +856,6 @@ impl DesktopRuntime {
         self.capture(&mux, windows);
         mux.shutdown()
     }
-}
-
-#[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "retained restore aggregate awaits the persistence stage"
-    )
-)]
-struct RestoreSnapshot {
-    runtime: RuntimeCapture,
-    windows: Vec<WindowRestore>,
 }
 
 struct Desktop {
@@ -905,6 +908,16 @@ struct Desktop {
     applied_terminal_family: Option<String>,
     external_drag_window: Option<gpui::WindowId>,
     cross: cross_window::CrossWindows,
+    /// The restore in progress at launch, until it settles.
+    restoring: Option<restore::Bootstrap>,
+    /// Restored terminals no view has subscribed to yet. Their first viewer
+    /// starts as the spawning client's, so an exit before it reports the
+    /// exit transition and honours `close_on_exit`.
+    fresh_terminals: HashSet<TerminalId>,
+    /// Restored sessions waiting for their Quake profile's first summon.
+    quake_stash: HashMap<String, restore::Reopen>,
+    /// The checkpoint debounce.
+    checkpoints: Checkpoints,
     /// The window buttons the desktop asks title rows to draw.
     button_layout: ButtonLayout,
     /// How many times the theme changed to follow the system's mode, for
@@ -1123,7 +1136,7 @@ fn run_app_command(
     app_command_availability(cx, invocation.id)?;
     match invocation.id {
         ids::NEW_WINDOW => {
-            open_window_with_profile(cx, true, None, reporter);
+            open_window_with_profile(cx, true, None, reporter, None);
             Ok(CommandOutcome::Accepted)
         }
         ids::SHOW_QUAKE | ids::HIDE_QUAKE | ids::TOGGLE_QUAKE => {
@@ -1551,7 +1564,22 @@ pub(super) fn run_with_startup(
         eprintln!("Huterm configuration warning: {warning}");
     }
     let inputs = loaded.inputs.clone();
-    let runtime = Arc::new(DesktopRuntime::default());
+    // Saved state is read and locked before the event loop, the one time
+    // the UI thread does file I/O for it outside the Quit write.
+    let restore::Prepared {
+        persistence,
+        saved,
+        notices,
+        failures,
+    } = restore::prepare(
+        huterm_state::state_root(|name| std::env::var_os(name)),
+        huterm_core::DEFAULT_SOCKET_NAME,
+        loaded.config.general.restore_sessions,
+    );
+    let runtime = Arc::new(DesktopRuntime {
+        persistence,
+        ..DesktopRuntime::default()
+    });
     // Subscribe before any window or worker exists, so this is the only
     // time the UI thread takes the Mux lock for structure.
     let (hierarchy, subscription) = runtime.subscribe_hierarchy();
@@ -1559,7 +1587,9 @@ pub(super) fn run_with_startup(
     let app_runtime = Arc::clone(&runtime);
     let application = crate::assets::application();
     application.on_reopen(|cx| {
-        if cx.windows().is_empty() {
+        // A restore opens its own windows; an empty desktop gets one when
+        // it settles.
+        if !restore::defer_reopen(cx) && cx.windows().is_empty() {
             open_window(cx);
         }
         cx.activate(true);
@@ -1603,7 +1633,12 @@ pub(super) fn run_with_startup(
                 });
             }
         });
-        open_window(cx);
+        cx.global_mut::<Desktop>().latched.extend(notices);
+        restore::report_write_failures(cx, failures);
+        match saved {
+            Some(saved) => restore::start(cx, saved),
+            None => open_window(cx),
+        }
         cx.activate(true);
         startup(cx);
     });
@@ -1654,6 +1689,10 @@ fn install_desktop(
         applied_terminal_family: None,
         external_drag_window: None,
         cross: cross_window::CrossWindows::default(),
+        restoring: None,
+        fresh_terminals: HashSet::new(),
+        quake_stash: HashMap::new(),
+        checkpoints: Checkpoints::default(),
         button_layout: ButtonLayout::standard(),
         appearance_follows: 0,
         system_mode: system_appearance::Mode::Light,
@@ -1670,6 +1709,7 @@ fn install_desktop(
     system_appearance::follow(cx);
     apply_typography(cx);
     start_hierarchy_drain(cx);
+    checkpoints::observe(cx);
     cross_window::start_smoke_publisher(cx);
     cx.on_window_closed(|cx, window| {
         let desktop = cx.global_mut::<Desktop>();
@@ -1681,6 +1721,9 @@ fn install_desktop(
         }
         desktop.windows.remove(window);
         desktop.cross.windows.retain(|(id, _)| *id != window);
+        checkpoints::set_transfer_reserved(cx, window, false);
+        restore::window_settled(cx, window);
+        let desktop = cx.global_mut::<Desktop>();
         // A close the window took and had not started committing never
         // reached the runtime.
         if desktop.exit_closes.release(window).is_some() {
@@ -1796,6 +1839,9 @@ fn sync_hierarchy(cx: &mut App) {
     }
     match projection.sync(terminating) {
         Drained::Current(touched) => {
+            if !touched.is_empty() {
+                checkpoints::changed(cx);
+            }
             reconcile(cx, &touched);
             settle_waiters(cx);
         }
@@ -2220,15 +2266,32 @@ fn request_quit(cx: &mut App) {
     }
 }
 
-fn capture_windows(cx: &App) -> Vec<WindowRestore> {
+/// The saved layout of every open window, with the regular window used
+/// most recently as the one to activate last.
+fn capture_windows(cx: &App) -> huterm_state::DesktopLayout {
     let desktop = cx.global::<Desktop>();
-    desktop
+    let regular = |id: gpui::WindowId| {
+        desktop
+            .windows
+            .record(id)
+            .is_some_and(|record| record.quake.is_none() && !record.closing)
+    };
+    let active = desktop
+        .cross
         .windows
-        .restore_windows(desktop.config.tabs.position)
+        .iter()
+        .map(|(id, _)| *id)
+        .find(|id| regular(*id))
+        .or_else(|| {
+            cx.active_window()
+                .map(|handle| handle.window_id())
+                .filter(|id| regular(*id))
+        });
+    desktop.windows.desktop_layout(active)
 }
 
 fn maybe_exit(cx: &mut App) {
-    if quake_windows::keep_alive(cx) {
+    if quake_windows::keep_alive(cx) || restore::bootstrapping(cx) {
         return;
     }
     if !cx.windows().is_empty() || cx.global::<Desktop>().pending_spawns != 0 {
@@ -2248,8 +2311,14 @@ fn maybe_exit(cx: &mut App) {
             cx.update(|cx| {
                 if cx.windows().is_empty()
                     && !quake_windows::keep_alive(cx)
+                    && !restore::bootstrapping(cx)
                     && cx.global::<Desktop>().pending_spawns == 0
                 {
+                    // The last window's close ended its session. The files
+                    // record the empty set now, without waiting for a
+                    // checkpoint, so the next launch starts fresh.
+                    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+                    runtime.capture(&runtime.lock(), capture_windows(cx));
                     approved_quit(cx);
                 }
             });
@@ -2404,7 +2473,7 @@ fn open_window(cx: &mut App) {
 }
 
 fn open_window_inner(cx: &mut App, launch_shell: bool) {
-    open_window_with_profile(cx, launch_shell, None, None);
+    open_window_with_profile(cx, launch_shell, None, None, None);
 }
 
 #[expect(
@@ -2416,6 +2485,7 @@ fn open_window_with_profile(
     launch_shell: bool,
     profile: Option<(String, crate::quake::Profile, crate::quake::Display)>,
     reporter: Option<WeakEntity<WorkspaceView>>,
+    reopen: Option<restore::Reopen>,
 ) {
     if !can_open_window(
         launch_shell,
@@ -2461,23 +2531,73 @@ fn open_window_with_profile(
         client_decorations: false,
     };
     let transfer_size = cx.global::<Desktop>().cross.opening;
-    let bounds = Bounds::centered(
-        display_id,
-        transfer_size.unwrap_or_else(|| {
-            initial_window_size(&config, metrics, host, WindowFrame::default())
-        }),
-        cx,
-    );
+    let placement = reopen.as_ref().and_then(|reopen| reopen.placement.clone());
+    // A restored window keeps its saved bounds, moved onto a current
+    // display. GPUI places windows relative to their display, and macOS
+    // reports every display at the origin, so only the primary display
+    // takes them there.
+    let restored_bounds = placement
+        .as_ref()
+        .and_then(|placement| placement.bounds)
+        .map(|saved| {
+            let primary =
+                cx.primary_display().map(|display| display.visible_bounds());
+            let displays: Vec<_> = if cfg!(target_os = "macos") {
+                primary.into_iter().collect()
+            } else {
+                cx.displays()
+                    .iter()
+                    .map(|display| display.visible_bounds())
+                    .collect()
+            };
+            restore::place_on_displays(saved, &displays, primary)
+        });
+    let bounds = restored_bounds.unwrap_or_else(|| {
+        Bounds::centered(
+            display_id,
+            transfer_size.unwrap_or_else(|| {
+                initial_window_size(
+                    &config,
+                    metrics,
+                    host,
+                    WindowFrame::default(),
+                )
+            }),
+            cx,
+        )
+    });
+    let window_bounds = match placement.as_ref().map(|placement| placement.mode)
+    {
+        Some(huterm_state::WindowMode::Maximized) => {
+            WindowBounds::Maximized(bounds)
+        }
+        _ => WindowBounds::Windowed(bounds),
+    };
+    let restored_fullscreen = placement.as_ref().is_some_and(|placement| {
+        placement.mode == huterm_state::WindowMode::Fullscreen
+    });
     let transparency_support = crate::transparency::support();
     cx.global_mut::<Desktop>().transparency_support = transparency_support;
-    // A new window has no overrides; a Quake window starts from its
-    // profile's keys.
-    let transparency_values = profile
+    // A new window has no overrides, a restored one its saved ones; a
+    // Quake window starts from its profile's keys.
+    let own_transparency = placement
         .as_ref()
-        .map_or_else(crate::transparency::Layer::default, |(_, profile, _)| {
-            crate::transparency::Layer::of_profile(profile)
-        })
-        .over(crate::transparency::Values::of(&config.window));
+        .map(|placement| placement.appearance)
+        .unwrap_or_default();
+    let transparency_values = own_transparency.over(
+        profile
+            .as_ref()
+            .map_or_else(
+                crate::transparency::Layer::default,
+                |(_, profile, _)| {
+                    crate::transparency::Layer::of_profile(profile)
+                },
+            )
+            .over(crate::transparency::Values::of(&config.window)),
+    );
+    let sidebar_width = placement
+        .as_ref()
+        .map_or(SIDEBAR_WIDTH, |placement| placement.sidebar_width);
     let result = cx.open_window(
         WindowOptions {
             window_background: crate::transparency::resolve(
@@ -2500,7 +2620,7 @@ fn open_window_with_profile(
             show: profile.is_none()
                 && !(cfg!(target_os = "macos") && transfer_size.is_some()),
             focus: profile.is_none() && transfer_size.is_none(),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_bounds: Some(window_bounds),
             window_decorations: Some(requested_decorations(
                 config.tabs.position,
                 host.platform,
@@ -2563,6 +2683,7 @@ fn open_window_with_profile(
                 button_layout,
             );
             if transfer_size.is_none()
+                && restored_bounds.is_none()
                 && (scaled_metrics != metrics
                     || frame != WindowFrame::default())
             {
@@ -2592,6 +2713,8 @@ fn open_window_with_profile(
             let native_alpha = crate::transparency::Alpha::default();
             let blur = crate::transparency::Blur::default();
             let profile_requested = profile.is_some();
+            let profile_name =
+                profile.as_ref().map(|(name, _, _)| name.clone());
             let quake = profile.and_then(|(name, profile, display)| {
                 quake_windows::attach(
                     name,
@@ -2648,9 +2771,13 @@ fn open_window_with_profile(
                 }),
                 WindowLayout {
                     bounds: window.window_bounds(),
-                    sidebar_width: SIDEBAR_WIDTH,
+                    sidebar_width,
+                    fullscreen: false,
                 },
             );
+            cx.global_mut::<Desktop>()
+                .windows
+                .set_transparency(window_id, own_transparency);
             let view = cx.new(|cx| WorkspaceView {
                 native_alpha,
                 transparency_support,
@@ -2690,7 +2817,7 @@ fn open_window_with_profile(
                 scroll_target: None,
                 last_scroll: Instant::now(),
                 tab_scrollbars: Scrollbars::default(),
-                sidebar_width: SIDEBAR_WIDTH,
+                sidebar_width,
                 resizing_sidebar: false,
                 live_resize: LiveResize::default(),
                 frame_appearance: FrameAppearance::default(),
@@ -2732,6 +2859,7 @@ fn open_window_with_profile(
                 busy: false,
                 installs: PendingInstalls::default(),
                 restore_focus: None,
+                reopen: None,
                 close: CloseState::default(),
                 notices: NoticeStack::default(),
                 notice_focus: cx.focus_handle(),
@@ -2801,6 +2929,7 @@ fn open_window_with_profile(
                     view.refresh_palette(cx);
                     view.refresh_menu(window, cx);
                     view.sync_title_consumer(cx);
+                    view.publish_pane_focus(cx);
                 })
                 .detach();
                 cx.observe_window_activation(window, |view, window, cx| {
@@ -2866,6 +2995,7 @@ fn open_window_with_profile(
             cx.global_mut::<Desktop>()
                 .views
                 .push(window_id, view.downgrade());
+            let mut reopen = reopen;
             view.update(cx, |view, cx| {
                 view.focus.focus(window, cx);
                 if launch_shell
@@ -2878,7 +3008,37 @@ fn open_window_with_profile(
                         cx,
                     );
                 }
+                if (!profile_requested || view.quake.is_some())
+                    && let Some(reopen) = reopen.take()
+                {
+                    view.reopen(reopen, window, cx);
+                }
             });
+            if let Some(reopen) = reopen
+                && let Some(name) = &profile_name
+            {
+                // The Quake window failed before it could show its saved
+                // session, which waits for the next summon.
+                cx.global_mut::<Desktop>()
+                    .quake_stash
+                    .insert(name.clone(), reopen);
+            }
+            if restored_fullscreen {
+                let handle = window.window_handle();
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |root, window, cx| {
+                        if let Ok(view) = root.downcast::<WorkspaceView>() {
+                            view.update(cx, |view, cx| {
+                                let _ = view.run_command(
+                                    &bare(ids::TOGGLE_FULLSCREEN),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    });
+                });
+            }
             if profile_requested && view.read(cx).quake.is_none() {
                 let handle = window.window_handle();
                 cx.defer(move |cx| {
@@ -3994,6 +4154,9 @@ struct WorkspaceView {
     /// The pane an undo or redo focuses once its view installs, when the
     /// restore brought it back into this window without one.
     restore_focus: Option<PaneId>,
+    /// The tab, history, and pane focus a restored window applies once its
+    /// views have installed.
+    reopen: Option<restore::Focus>,
     close: CloseState,
     notices: NoticeStack,
     /// Focus for the toast column; `notices` bindings match while it holds
@@ -4687,6 +4850,7 @@ impl WorkspaceView {
             id: tab.id,
             panes: tab.pane_titles(self.config.tabs, cx),
             title: tab.title(self.config.tabs, cx),
+            focused: Some(tab.focused().pane),
         };
         self.tabs.push(tab);
         self.close.emptied = EmptiedClose::None;
@@ -4851,6 +5015,95 @@ impl WorkspaceView {
     /// Shows the session of `attachment`, which this window did not
     /// create, in `workspace`. Attaching emits no hierarchy event, so the
     /// window runs its own full reconcile, which installs the views.
+    /// Attaches this window to a restored session, raises the session's
+    /// restore notices, and keeps the saved focus until its views install.
+    fn reopen(
+        &mut self,
+        reopen: restore::Reopen,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let restore::Reopen {
+            attachment,
+            session,
+            workspace,
+            focus,
+            notices,
+            ..
+        } = reopen;
+        let now = Instant::now();
+        for notice in notices {
+            self.notices.push(notice, now);
+        }
+        self.reopen = Some(focus);
+        self.adopt_attachment(attachment, session, workspace, cx);
+        self.apply_reopen(window, cx);
+    }
+
+    /// Applies a restored window's saved focus once no install is in
+    /// flight: each tab's focused pane, the activation history, and the
+    /// active tab, then reports the window settled to the bootstrap.
+    pub(super) fn apply_reopen(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.reopen.is_none() || !self.installs.idle() {
+            return;
+        }
+        let Some(focus) = self.reopen.take() else {
+            return;
+        };
+        for (tab, pane) in focus.panes {
+            if let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab)
+            {
+                view.focus_pane(pane);
+            }
+        }
+        cx.global_mut::<Desktop>()
+            .windows
+            .restore_history(self.window, &focus.history);
+        let active = focus
+            .active
+            .filter(|tab| self.tabs.iter().any(|view| view.id == *tab))
+            .or_else(|| self.active_tab(cx));
+        if let Some(tab) = active {
+            let focused = !self.overlay_holds_focus();
+            self.measure_tab_widths(window, cx);
+            self.select_tab(tab, focused, window, cx);
+        }
+        self.publish_pane_focus(cx);
+        let id = self.window;
+        cx.defer(move |cx| restore::window_settled(cx, id));
+        cx.notify();
+    }
+
+    /// Publishes each tab's focused pane into the window model, which the
+    /// saved layout reads. Writes only what changed.
+    fn publish_pane_focus(&self, cx: &mut App) {
+        let changed: Vec<(TabId, PaneId)> = {
+            let record = cx.global::<Desktop>().windows.record(self.window);
+            self.tabs
+                .iter()
+                .map(|tab| (tab.id, tab.focused().pane))
+                .filter(|(tab, pane)| {
+                    record.is_some_and(|record| {
+                        record.tabs.iter().any(|entry| {
+                            entry.id == *tab && entry.focused != Some(*pane)
+                        })
+                    })
+                })
+                .collect()
+        };
+        if changed.is_empty() {
+            return;
+        }
+        let windows = &mut cx.global_mut::<Desktop>().windows;
+        for (tab, pane) in changed {
+            windows.set_focused_pane(self.window, tab, pane);
+        }
+    }
+
     fn adopt_attachment(
         &mut self,
         attachment: AttachmentId,
@@ -5935,9 +6188,14 @@ impl WorkspaceView {
     /// geometry.
     fn publish_restorable_bounds(&self, cx: &mut App) {
         if self.quake.is_none() {
-            cx.global_mut::<Desktop>().windows.set_layout_bounds(
+            let windows = &mut cx.global_mut::<Desktop>().windows;
+            windows.set_layout_bounds(
                 self.window,
                 self.fullscreen.restorable_bounds(),
+            );
+            windows.set_fullscreen(
+                self.window,
+                self.fullscreen.fullscreen_context(),
             );
         }
     }
@@ -11525,6 +11783,8 @@ fn finish_reload(
             desktop.transparency_support = crate::transparency::support();
             warn_transparency(&config, desktop.transparency_support);
             desktop.config = config.clone();
+            restore::apply_setting(cx, config.general.restore_sessions);
+            let desktop = cx.global_mut::<Desktop>();
             desktop.config_report = ConfigReport::reloaded(
                 &config,
                 &compiled,

@@ -26,10 +26,15 @@ pub(super) enum Stage {
     LayoutCommitted,
     /// Cross-window transfer before acquiring the Mux lock.
     Transfer,
+    /// A restore's worker, before it spawns any terminal.
+    Restore,
+    /// A restore's worker after it inserted the structure, before the
+    /// windows open.
+    Restored,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 8]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 10]>);
 
 #[derive(Default)]
 struct StageHooks {

@@ -2558,6 +2558,7 @@ dependencies = [
  "huterm-config",
  "huterm-core",
  "huterm-protocol",
+ "huterm-state",
  "huterm-ui",
  "nix 0.29.0",
  "notify",

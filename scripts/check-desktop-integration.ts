@@ -117,7 +117,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       ...process.env,
       WAYLAND_DISPLAY: undefined,
       HUTERM_INTEGRATION_SMOKE: directory,
-      HUTERM_CONFIG_FILE: config,
+      HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"),
       SHELL: shell,
     },
     stdout: "pipe",

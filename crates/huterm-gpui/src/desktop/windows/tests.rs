@@ -1143,61 +1143,78 @@ fn orphaned_publication_spares_a_pane_moved_into_its_tab() {
     runtime.terminate().unwrap();
 }
 
+/// A runtime whose saves land in memory, with checkpoints running.
+fn recording_runtime() -> (DesktopRuntime, persistence::Recorder) {
+    let recorder = persistence::Recorder::default();
+    let runtime = DesktopRuntime {
+        persistence: recorder.owner(persistence::State::Running),
+        ..DesktopRuntime::default()
+    };
+    (runtime, recorder)
+}
+
 #[test]
 fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
-    let runtime = DesktopRuntime::default();
+    let (runtime, recorder) = recording_runtime();
     let mut mux = runtime.mux.lock().unwrap();
     let visible = mux.create_session(Some("visible")).unwrap();
     let workspace = mux.create_workspace(visible, None).unwrap();
     mux.open_tab(workspace, &lifecycle_command()).unwrap();
-    let attachment = mux.attach_session(visible).unwrap();
     let unviewed = mux.create_session(Some("unviewed")).unwrap();
     let retained = mux.create_workspace(unviewed, Some("retained")).unwrap();
     mux.open_tab(retained, &lifecycle_command()).unwrap();
     // A tabless session, as a tear-off leaves in flight, is not captured.
     mux.create_session(Some("tabless")).unwrap();
     drop(mux);
-    let bounds = WindowBounds::Windowed(Bounds {
-        origin: point(px(5.0), px(10.0)),
-        size: size(px(800.0), px(600.0)),
-    });
-    let windows = vec![WindowRestore {
-        attachment,
-        workspace: Some(workspace),
-        active: None,
-        bounds,
-        tab_position: TabPosition::Left,
-        sidebar_width: px(220.0),
-        quake_profile: None,
-        transparency: crate::transparency::Layer::default(),
-    }];
+    let windows = huterm_state::DesktopLayout {
+        windows: vec![huterm_state::WindowLayout {
+            session: SessionId::new(visible.get()),
+            workspace: WorkspaceId::new(workspace.get()),
+            active_tab: None,
+            tab_history: Vec::new(),
+            focused_panes: Vec::new(),
+            bounds: huterm_state::WindowBounds {
+                x: 5.0,
+                y: 10.0,
+                width: 800.0,
+                height: 600.0,
+            },
+            mode: huterm_state::WindowMode::Windowed,
+            sidebar_width: 220.0,
+            quake_profile: None,
+            appearance: None,
+        }],
+        active_window: Some(0),
+    };
     let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
-        .commit(&assessment, false, Some(windows))
+        .commit(&assessment, false, Some(windows.clone()))
         .result
         .unwrap();
+    // Repeated termination, with the empty hierarchy shutdown left, writes
+    // nothing more.
     runtime.terminate().unwrap();
-    let restore = runtime.restore.lock().unwrap();
-    let restore = restore.as_ref().unwrap();
+    let saved = recorder.saved();
+    let [(capture, layout)] = saved.as_slice() else {
+        panic!("one write: {saved:?}");
+    };
     assert_eq!(
-        restore
-            .runtime
+        capture
             .sessions
             .iter()
             .map(|s| s.info.id.get())
             .collect::<Vec<_>>(),
         vec![visible.get(), unviewed.get()]
     );
-    assert_eq!(restore.runtime.tabs().count(), 2);
-    assert_eq!(restore.windows.len(), 1);
-    assert_eq!(restore.windows[0].workspace, Some(workspace));
-    assert_eq!(restore.windows[0].sidebar_width, px(220.0));
+    assert_eq!(capture.tabs().count(), 2);
+    assert_eq!(*layout, windows);
+    assert_eq!(runtime.persistence.state(), persistence::State::Final);
     assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
 }
 
 #[test]
 fn a_session_its_last_window_closed_is_absent_from_a_later_quit_capture() {
-    let runtime = DesktopRuntime::default();
+    let (runtime, recorder) = recording_runtime();
     let (closed, unviewed, attachment) = {
         let mut mux = runtime.mux.lock().unwrap();
         let closed = mux.create_session(Some("closed")).unwrap();
@@ -1214,16 +1231,15 @@ fn a_session_its_last_window_closed_is_absent_from_a_later_quit_capture() {
         .result
         .unwrap();
     runtime.commit(&window, false, None).result.unwrap();
+    assert!(recorder.saved().is_empty(), "a window close is not a Quit");
     let quit = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
-        .commit(&quit, false, Some(Vec::new()))
+        .commit(&quit, false, Some(huterm_state::DesktopLayout::default()))
         .result
         .unwrap();
-    let restore = runtime.restore.lock().unwrap();
-    let sessions: Vec<u64> = restore
-        .as_ref()
-        .unwrap()
-        .runtime
+    let saved = recorder.saved();
+    let sessions: Vec<u64> = saved[0]
+        .0
         .sessions
         .iter()
         .map(|session| session.info.id.get())
@@ -1234,7 +1250,7 @@ fn a_session_its_last_window_closed_is_absent_from_a_later_quit_capture() {
 
 #[test]
 fn rejected_quit_never_sets_termination_gate_or_capture() {
-    let runtime = DesktopRuntime::default();
+    let (runtime, recorder) = recording_runtime();
     let open_session = |name: Option<&str>| {
         let mut mux = runtime.mux.lock().unwrap();
         let session = mux.create_session(name).unwrap();
@@ -1244,31 +1260,22 @@ fn rejected_quit_never_sets_termination_gate_or_capture() {
     open_session(None);
     let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
     open_session(Some("new survivor"));
+    let empty = huterm_state::DesktopLayout::default;
     assert!(matches!(
-        runtime.commit(&assessment, false, Some(Vec::new())).result,
+        runtime.commit(&assessment, false, Some(empty())).result,
         Err(MuxError::StaleClose)
     ));
     assert!(!runtime.terminating.load(Ordering::Acquire));
-    assert!(runtime.restore.lock().unwrap().is_none());
+    assert_eq!(recorder.saved(), []);
+    assert_eq!(runtime.persistence.state(), persistence::State::Running);
     assert_eq!(runtime.mux.lock().unwrap().sessions().len(), 2);
     let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
     runtime
-        .commit(&assessment, false, Some(Vec::new()))
+        .commit(&assessment, false, Some(empty()))
         .result
         .unwrap();
     assert!(runtime.terminating.load(Ordering::Acquire));
-    assert_eq!(
-        runtime
-            .restore
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .runtime
-            .sessions
-            .len(),
-        2
-    );
+    assert_eq!(recorder.saved()[0].0.sessions.len(), 2);
     assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
 }
 

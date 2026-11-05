@@ -98,7 +98,7 @@ clearInterval(stop); clearTimeout(timer);
     await writeFile(shell, `#!/bin/sh\nstty -echo\nexec ${quote(process.execPath)} ${quote(recorder)}\n`, { mode: 0o700 });
     const config = join(directory, "config.toml");
     await writeFile(config, `[window]\ninitial_columns=36\ninitial_rows=12\n[tabs]\nposition="top"\nalways_show=true\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`);
-    const launched = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_INPUT_STATE: directory, HUTERM_INPUT_SMOKE: directory, HUTERM_CONFIG_FILE: config, SHELL: shell }, stdout: "pipe", stderr: "pipe" });
+    const launched = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_INPUT_STATE: directory, HUTERM_INPUT_SMOKE: directory, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell }, stdout: "pipe", stderr: "pipe" });
     app = launched;
     diagnostic = Promise.all([new Response(launched.stdout).text(), new Response(launched.stderr).text()]);
     await until("first window", state => smokeField(state, "windows") === "1" && smokeField(state, "w0.tabs") === "1");

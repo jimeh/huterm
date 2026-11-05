@@ -144,6 +144,12 @@ short callback-delay burst immediately after the release build.
 
 ## Harness processes
 
+Every harness that launches the app sets `HUTERM_STATE_DIR` beside its
+`HUTERM_CONFIG_FILE`, usually `join(directory, "saved-state")` in its
+scratch directory, so no smoke restores or overwrites the user's sessions; a
+new harness must do the same. Not `state`: fixtures publish a file by that
+name there. `mise run dev` uses `target/dev-state`.
+
 Run Xvfb with `-noreset` in desktop harnesses. A last-client disconnect otherwise
 resets the server and sends another SIGUSR1 to xvfb-run, which can interrupt its
 cleanup wait and return exit 5 despite successful file removal. Keep application
