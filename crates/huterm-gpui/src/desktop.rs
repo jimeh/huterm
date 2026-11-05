@@ -1748,9 +1748,19 @@ impl TerminalView {
                 } else {
                     self.viewer.reset()
                 };
-                edited.map_err(|error| {
-                    CommandError::Runtime(error.to_string())
-                })?;
+                match edited {
+                    Ok(()) => {}
+                    // The tab is closing, and its pane leaves with the
+                    // window's next hierarchy drain.
+                    Err(RuntimeError::Stopped)
+                        if self.viewer.close_requested() =>
+                    {
+                        return Ok(CommandOutcome::Completed);
+                    }
+                    Err(error) => {
+                        return Err(CommandError::Runtime(error.to_string()));
+                    }
+                }
                 // Both move history, so the selection's cells are gone. The
                 // runtime invalidates the view once it applies the edit; a
                 // snapshot requested now could run first and spend the
@@ -2795,9 +2805,10 @@ impl TerminalView {
     }
 
     /// Reports a failed runtime request. A revoked viewer is expected: its
-    /// window replaces or removes the view. So is a stopped runtime behind
-    /// an exited tab, which stops when the tab closes; a focus change or
-    /// retry on the way out is not a failure. Neither raises a notice.
+    /// window replaces or removes the view. So is a runtime stopped behind
+    /// an exited tab or by a close request, which the window may not have
+    /// applied yet; a focus change or retry on the way out is not a
+    /// failure. None of these raises a notice.
     fn report_viewer_failure(&mut self, error: &RuntimeError) -> bool {
         if matches!(error, RuntimeError::Revoked) {
             self.revoked = true;

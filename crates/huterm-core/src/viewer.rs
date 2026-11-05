@@ -426,9 +426,15 @@ impl Registry {
     }
 
     /// Records a client's close request. The close signal follows it, so
-    /// any viewer that sees the runtime stop also sees the request.
+    /// any viewer that sees the runtime stop also sees the request. A
+    /// runtime that already stopped on its own keeps that stop: its viewers
+    /// still report it, which Mux relies on when it drops the join error.
     pub(crate) fn request_close(&self) {
-        self.close_requested.store(true, Ordering::Release);
+        // `close` sets `closed` under the same lock.
+        let state = self.state();
+        if !state.closed {
+            self.close_requested.store(true, Ordering::Release);
+        }
     }
 
     pub(crate) fn close_requested(&self) -> bool {

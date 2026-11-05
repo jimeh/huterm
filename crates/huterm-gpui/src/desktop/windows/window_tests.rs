@@ -2348,13 +2348,18 @@ fn input_racing_a_tab_close_to_the_window_raises_no_notice(
     harness.wait_text(window, closed, "READY");
     let pane = harness.first_pane(closed);
     // Mux stops the runtime before the window drains the close, so the
-    // window still shows the pane when typing meets the stopped runtime
-    // and the pane's activity drain reports it.
+    // window still shows the pane when a command or typing meets the
+    // stopped runtime and the pane's activity drain reports it.
     harness.close_tab(closed);
     harness.update_view(window, |view, window, cx| {
         let tab = view.tabs.iter().find(|tab| tab.id == closed).unwrap();
         let terminal = tab.pane(pane).unwrap().view.clone();
-        terminal.update(cx, |terminal, _| {
+        terminal.update(cx, |terminal, cx| {
+            let clear = CommandInvocation::new(ids::CLEAR_SCROLLBACK, vec![]);
+            assert_eq!(
+                terminal.run_command(&clear, window, cx),
+                Ok(CommandOutcome::Completed)
+            );
             terminal.enqueue_input(TerminalInput::Text("late".into()));
         });
         view.refresh_pane(closed, pane, window, cx);

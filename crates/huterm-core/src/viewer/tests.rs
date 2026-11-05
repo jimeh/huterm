@@ -1387,7 +1387,13 @@ fn only_a_close_request_marks_a_stop_as_requested() {
         crashed.wake.is_closed()
     });
     assert!(!crashed.close_requested());
-    let _ = panicked.shutdown();
+    // A close after the runtime stopped on its own leaves that stop a
+    // failure.
+    assert!(matches!(
+        panicked.shutdown(),
+        Err(RuntimeError::ThreadPanic)
+    ));
+    assert!(!crashed.close_requested());
 
     let runtime = spawn(249, "read l");
     let closed = viewer(&runtime);
