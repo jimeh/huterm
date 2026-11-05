@@ -251,12 +251,12 @@ fn emptied_window_closes_stop_no_terminal_and_never_need_consent() {
     let held = mux.open_test_tab(workspace, &command(steps)).unwrap();
     ready(&held.client, "READY");
     let attachment = mux.attach_session(session).unwrap();
-    let before = mux.capture_hierarchy();
+    let before = mux.structure();
     assert!(matches!(
         emptied(&mux, attachment, workspace),
         Err(MuxError::ViewNotEmpty(refused)) if refused == workspace
     ));
-    assert_eq!(mux.capture_hierarchy(), before);
+    assert_eq!(mux.structure(), before);
 
     // The tab moves to a sibling workspace: the sole attachment detaches
     // and the moved child keeps running in the unviewed session.
@@ -344,8 +344,8 @@ fn detach_keeps_real_child_alive_and_last_window_close_reaps_it() {
         .send_input(TerminalInput::Text("continue\n".into()))
         .unwrap();
     ready(&opened.client, "ALIVE");
-    assert_eq!(mux.capture_hierarchy().sessions.len(), 1);
-    assert_eq!(mux.capture_hierarchy().attachments, []);
+    assert_eq!(mux.sessions().len(), 1);
+    assert!(!mux.session_attached(session));
     let attachment = mux.attach_session(session).unwrap();
     let assessment = mux
         .prepare_close(CloseRequest::Window(attachment))
@@ -804,7 +804,7 @@ fn accepted_capture_precedes_teardown_without_a_second_freshness_check() {
         &assessment,
         &assessment,
         false,
-        |mux| captured = Some(mux.capture_hierarchy()),
+        |mux| captured = Some(mux.sessions().to_vec()),
         || {
             let read = clock_reads.get();
             clock_reads.set(read + 1);
@@ -818,7 +818,7 @@ fn accepted_capture_precedes_teardown_without_a_second_freshness_check() {
     )
     .unwrap();
     assert_eq!(clock_reads.get(), 1, "teardown rechecked freshness");
-    assert_eq!(captured.unwrap().sessions[0].id, session);
+    assert_eq!(captured.unwrap()[0].id, session);
     assert_eq!(mux.sessions(), []);
 }
 

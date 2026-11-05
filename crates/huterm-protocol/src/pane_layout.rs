@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::{PaneId, SplitId, TerminalId};
+use crate::{PaneId, RuntimeId, SplitId, TerminalId};
 
 /// The sum of the weights of every split's children.
 pub const SPLIT_TOTAL: u32 = 1_000_000;
@@ -499,6 +499,23 @@ impl PaneLayout {
     #[must_use]
     pub fn same_shape(&self, other: &Self) -> bool {
         same_shape(&self.root, &other.root, false)
+    }
+
+    /// The same layout with every pane and split identity moved into
+    /// `runtime`'s scope. Numeric identities, weights, and names stay, so
+    /// every invariant still holds.
+    #[must_use]
+    pub fn in_runtime(&self, runtime: RuntimeId) -> Self {
+        let mut layout = self.clone();
+        rescope(&mut layout.root, runtime);
+        layout
+    }
+
+    /// The number of nodes on the longest path from the root to a pane: 1
+    /// for a single pane.
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        node_depth(&self.root)
     }
 
     /// Whether `other` has the same shape and the same split identities,
@@ -1171,6 +1188,34 @@ fn collect_splits(node: &PaneNode, ids: &mut Vec<SplitId>) {
         ids.push(split.id);
         for child in &split.children {
             collect_splits(&child.node, ids);
+        }
+    }
+}
+
+fn rescope(node: &mut PaneNode, runtime: RuntimeId) {
+    match node {
+        PaneNode::Pane(pane) => {
+            pane.id = PaneId::in_runtime(runtime, pane.id.get());
+        }
+        PaneNode::Split(split) => {
+            split.id = SplitId::in_runtime(runtime, split.id.get());
+            for child in &mut split.children {
+                rescope(&mut child.node, runtime);
+            }
+        }
+    }
+}
+
+fn node_depth(node: &PaneNode) -> usize {
+    match node {
+        PaneNode::Pane(_) => 1,
+        PaneNode::Split(split) => {
+            1 + split
+                .children
+                .iter()
+                .map(|child| node_depth(&child.node))
+                .max()
+                .unwrap_or(0)
         }
     }
 }

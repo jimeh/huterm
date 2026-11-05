@@ -1089,7 +1089,7 @@ fn orphaned_publication_never_terminates_a_retargeted_destination() {
     let mux = runtime.mux.lock().unwrap();
     assert!(mux.session(source).is_none());
     assert!(mux.session(destination).is_some());
-    assert_eq!(mux.capture_hierarchy().attachments, []);
+    assert!(!mux.session_attached(destination));
 }
 
 #[test]
@@ -1149,9 +1149,13 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
     let mut mux = runtime.mux.lock().unwrap();
     let visible = mux.create_session(Some("visible")).unwrap();
     let workspace = mux.create_workspace(visible, None).unwrap();
+    mux.open_tab(workspace, &lifecycle_command()).unwrap();
     let attachment = mux.attach_session(visible).unwrap();
     let unviewed = mux.create_session(Some("unviewed")).unwrap();
-    mux.create_workspace(unviewed, Some("retained")).unwrap();
+    let retained = mux.create_workspace(unviewed, Some("retained")).unwrap();
+    mux.open_tab(retained, &lifecycle_command()).unwrap();
+    // A tabless session, as a tear-off leaves in flight, is not captured.
+    mux.create_session(Some("tabless")).unwrap();
     drop(mux);
     let bounds = WindowBounds::Windowed(Bounds {
         origin: point(px(5.0), px(10.0)),
@@ -1177,14 +1181,14 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
     let restore = restore.as_ref().unwrap();
     assert_eq!(
         restore
-            .hierarchy
+            .runtime
             .sessions
             .iter()
-            .map(|s| s.id)
+            .map(|s| s.info.id.get())
             .collect::<Vec<_>>(),
-        vec![visible, unviewed]
+        vec![visible.get(), unviewed.get()]
     );
-    assert_eq!(restore.hierarchy.workspaces.len(), 2);
+    assert_eq!(restore.runtime.tabs().count(), 2);
     assert_eq!(restore.windows.len(), 1);
     assert_eq!(restore.windows[0].workspace, Some(workspace));
     assert_eq!(restore.windows[0].sidebar_width, px(220.0));
@@ -1197,8 +1201,12 @@ fn a_session_its_last_window_closed_is_absent_from_a_later_quit_capture() {
     let (closed, unviewed, attachment) = {
         let mut mux = runtime.mux.lock().unwrap();
         let closed = mux.create_session(Some("closed")).unwrap();
+        let workspace = mux.create_workspace(closed, None).unwrap();
+        mux.open_tab(workspace, &lifecycle_command()).unwrap();
         let attachment = mux.attach_session(closed).unwrap();
         let unviewed = mux.create_session(Some("unviewed")).unwrap();
+        let workspace = mux.create_workspace(unviewed, None).unwrap();
+        mux.open_tab(workspace, &lifecycle_command()).unwrap();
         (closed, unviewed, attachment)
     };
     let window = runtime
@@ -1212,29 +1220,30 @@ fn a_session_its_last_window_closed_is_absent_from_a_later_quit_capture() {
         .result
         .unwrap();
     let restore = runtime.restore.lock().unwrap();
-    let sessions: Vec<SessionId> = restore
+    let sessions: Vec<u64> = restore
         .as_ref()
         .unwrap()
-        .hierarchy
+        .runtime
         .sessions
         .iter()
-        .map(|session| session.id)
+        .map(|session| session.info.id.get())
         .collect();
-    assert_eq!(sessions, [unviewed]);
-    assert!(!sessions.contains(&closed));
+    assert_eq!(sessions, [unviewed.get()]);
+    assert!(!sessions.contains(&closed.get()));
 }
 
 #[test]
 fn rejected_quit_never_sets_termination_gate_or_capture() {
     let runtime = DesktopRuntime::default();
-    runtime.mux.lock().unwrap().create_session(None).unwrap();
+    let open_session = |name: Option<&str>| {
+        let mut mux = runtime.mux.lock().unwrap();
+        let session = mux.create_session(name).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        mux.open_tab(workspace, &lifecycle_command()).unwrap();
+    };
+    open_session(None);
     let assessment = runtime.assess(CloseRequest::Application).result.unwrap();
-    runtime
-        .mux
-        .lock()
-        .unwrap()
-        .create_session(Some("new survivor"))
-        .unwrap();
+    open_session(Some("new survivor"));
     assert!(matches!(
         runtime.commit(&assessment, false, Some(Vec::new())).result,
         Err(MuxError::StaleClose)
@@ -1255,7 +1264,7 @@ fn rejected_quit_never_sets_termination_gate_or_capture() {
             .unwrap()
             .as_ref()
             .unwrap()
-            .hierarchy
+            .runtime
             .sessions
             .len(),
         2

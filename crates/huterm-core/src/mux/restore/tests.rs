@@ -437,12 +437,12 @@ fn refused_restores_change_nothing() {
         .move_pane(pane_ref(&mux, d), beside(&mux, c, SplitDirection::Left))
         .unwrap();
     mux.move_tab(alpha, moved, gamma, None).unwrap();
-    let state = mux.capture_hierarchy();
+    let state = mux.structure();
     let marks = (mux.hierarchy_seq(), mux.revision, mux.next_id);
     let refused = |mux: &mut Mux, change: &LayoutChange, expected: &str| {
         let error = mux.restore_tabs(change, Undo).unwrap_err();
         assert_eq!(format!("{error:?}"), expected);
-        assert_eq!(mux.capture_hierarchy(), state);
+        assert_eq!(mux.structure(), state);
         assert_eq!((mux.hierarchy_seq(), mux.revision, mux.next_id), marks);
     };
 

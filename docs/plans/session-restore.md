@@ -1,7 +1,7 @@
 # Session restore (#42)
 
-Status: approved. Jim accepted every recommendation on 2026-11-04;
-implementation is in progress as two pull requests.
+Status: in progress: pull request 1 (core and persistence) implemented;
+desktop restore pending. Jim accepted every recommendation on 2026-11-04.
 
 Delivers [#42](https://github.com/jimeh/huterm/issues/42) under the
 [#17](https://github.com/jimeh/huterm/issues/17) epic. Styled history is

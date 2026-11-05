@@ -123,7 +123,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, process-info, UI component, Ghostty binding, and IPC simulation boundaries"
+description = "Check dependency-neutral protocol, process-info, UI component, state, Ghostty binding, and IPC simulation boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -145,6 +145,17 @@ fi
 ui_dependencies="$(cargo tree --locked -p huterm-ui --target all --depth 1 --prefix none --edges normal,build | tail -n +2)"
 if echo "$ui_dependencies" | rg -v '^(gpui-pre|unicode-segmentation) '; then
   echo "huterm-ui may depend only on gpui-pre and unicode-segmentation; extend this allowlist deliberately" >&2
+  exit 1
+fi
+# huterm-state owns persistence; core and protocol stay serialization-free.
+state_dependencies="$(cargo tree --locked -p huterm-state --target all --depth 1 --prefix none --edges normal,build | tail -n +2)"
+if echo "$state_dependencies" | rg -v '^(huterm-protocol|nix|serde|serde_json) '; then
+  echo "huterm-state may depend only on huterm-protocol, nix, serde, and serde_json; extend this allowlist deliberately" >&2
+  exit 1
+fi
+core_dependencies="$(cargo tree --locked -p huterm-core --target all --prefix none --edges normal,build | tail -n +2)"
+if echo "$core_dependencies" | rg '^(huterm-state|serde|serde_json) '; then
+  echo "huterm-core must not depend on huterm-state or serialization crates" >&2
   exit 1
 fi
 ghostty_dependencies="$(cargo tree --locked -p huterm-ghostty --target all --prefix none --edges normal,build | tail -n +2)"

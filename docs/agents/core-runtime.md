@@ -356,6 +356,31 @@ A restore advances the revision when a terminal changes tabs or a tab
 opens, is removed, or changes workspace or position, and emits
 `PanesRearranged` even for one tab, where the forward swap emitted
 `PaneLayoutChanged`.
+Session restore (`mux/capture.rs`, unrelated to `restore_tabs`) captures
+and recreates structure, never processes. `Mux::capture_runtime` records
+sessions that hold a tab, in order, with unscoped numeric IDs, the
+allocator watermark, and both creation ordinals, plus up to three
+directory candidates per shown terminal, read from registry status
+without waiting on its thread: the local effective directory, the root
+shell directory, and the launch directory `TerminalRuntime` keeps,
+without repeats. It records no program, argument, environment, title,
+process, command record, or exit state. Restore runs in two steps so the
+Mux lock covers only insertion: `SpawnedTerminals::spawn` starts every
+pane's terminal with `spawn_in` outside the lock, checking its
+cancellation callback before each spawn and stopping and joining what it
+started; then `Mux::restore` refuses unless the Mux holds no session,
+workspace, or terminal and the spawned set came from this `RuntimeId` for
+exactly this capture, and validates all or nothing through
+`RuntimeCapture::validate`, which `huterm-state` shares. Every refusal
+stops and joins the spawned runtimes. A restore raises `next_id` to the
+watermark, so later allocations of every kind land above restored IDs,
+keeps both ordinals, scopes saved IDs into its `RuntimeId`, takes pane
+fallback names from the commands it launched, and emits the creation
+events so existing subscribers follow. A pane whose terminal failed
+leaves its layout through `without_pane`, a tab left with no pane is
+removed, and the report names both and every session left without a tab.
+Tear-off orphan cleanup asks `Mux::session_attached`; no API snapshots the
+whole hierarchy with its attachments.
 Moves retain empty workspaces and sessions and never change terminal lifetime.
 Desktop windows retain their attachment identity for assessed close. Orphaned
 spawn cleanup must preserve resources adopted by another attachment or moved

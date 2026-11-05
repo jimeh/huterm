@@ -1,0 +1,17 @@
+[package]
+name = "huterm-state"
+description = "Saved runtime structure and desktop layouts for Huterm session restore"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "0.27.0"
+
+[dependencies]
+huterm-protocol.workspace = true
+nix.workspace = true
+serde.workspace = true
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

@@ -3,8 +3,8 @@
 mod holder_fixture;
 
 use super::{
-    AttachmentId, Mux, MuxError, PaneId, RuntimeClient, RuntimeId, Session,
-    SessionId, Tab, TabId, TerminalId, Workspace, WorkspaceId,
+    AttachmentId, Mux, MuxError, PaneId, RuntimeClient, RuntimeId, SessionId,
+    Tab, TabId, TerminalId, Workspace, WorkspaceId,
 };
 use crate::JobState;
 use std::time::{Duration, Instant};
@@ -88,19 +88,6 @@ pub enum CloseEffect {
     },
     /// Terminate the entire runtime.
     Application,
-}
-
-/// Versionless in-memory hierarchy captured before teardown, without history.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HierarchySnapshot {
-    /// Logical socket name.
-    pub socket_name: String,
-    /// All surviving sessions in canonical order.
-    pub sessions: Vec<Session>,
-    /// All workspace records, including their ordered tab layouts.
-    pub workspaces: Vec<Workspace>,
-    /// Open view attachments and their current sessions.
-    pub attachments: Vec<(AttachmentId, SessionId)>,
 }
 
 /// Immutable structural close scope. Inspect jobs after releasing the Mux lock.
@@ -242,6 +229,13 @@ impl Mux {
             .copied()
             .ok_or(MuxError::UnknownAttachment(attachment))
     }
+    /// Whether any attachment views the session.
+    #[must_use]
+    pub fn session_attached(&self, session: SessionId) -> bool {
+        self.attachments
+            .values()
+            .any(|attached| *attached == session)
+    }
     /// Detaches without closing the session, including when no views remain.
     /// # Errors
     /// Rejects foreign or invalidated attachments.
@@ -272,20 +266,6 @@ impl Mux {
         self.invalidate_attachment_authority(attachment);
         self.attachments.insert(attachment, session);
         Ok(())
-    }
-    /// Captures every session and layout before any destructive teardown.
-    #[must_use]
-    pub fn capture_hierarchy(&self) -> HierarchySnapshot {
-        HierarchySnapshot {
-            socket_name: self.socket_name.clone(),
-            sessions: self.sessions.clone(),
-            workspaces: self.workspaces.values().cloned().collect(),
-            attachments: self
-                .attachments
-                .iter()
-                .map(|(a, s)| (*a, *s))
-                .collect(),
-        }
     }
     /// Resolves an exact close scope while holding exclusive structural access.
     /// # Errors

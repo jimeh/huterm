@@ -5,12 +5,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+mod capture;
 mod cell_text;
 mod command;
 mod hierarchy;
 mod layout_template;
 mod pane_layout;
 mod viewer;
+pub use capture::{
+    CaptureError, MAX_DIRECTORY_CANDIDATES, RuntimeCapture, SessionCapture,
+    TerminalCapture, TerminalLaunch, WorkspaceCapture,
+};
 pub use cell_text::CellText;
 pub use command::{
     ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
