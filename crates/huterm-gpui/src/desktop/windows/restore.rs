@@ -5,11 +5,12 @@
 //! opens the scope's [`Store`] (taking its lock), loads both files, and sets
 //! aside what the plan's Failures table says to. With something to restore,
 //! the launch callback calls [`start`] instead of opening a fresh window.
-//! The bootstrap spawns every saved terminal on a worker, inserts the
-//! structure with [`Mux::restore`] under one short lock, installs the
+//! The bootstrap spawns every saved terminal on a worker thread, inserts
+//! the structure with [`Mux::restore`] under one short lock, installs the
 //! populated projection, and opens each saved window attached to its
 //! session. Reopen, Quake shortcuts, checkpoints, and `maybe_exit` wait
-//! until it settles.
+//! until it settles. Until Mux owns the spawned terminals, the worker does,
+//! so termination waits for it through [`Worker`].
 
 use super::persistence::{Persistence, State};
 use super::*;
@@ -296,6 +297,21 @@ pub(super) struct Focus {
     pub(super) panes: Vec<(TabId, PaneId)>,
 }
 
+/// What [`plan`] does with a restored session.
+enum Planned {
+    Open(Reopen),
+    /// Waits in `quake_stash` for the named Quake profile's first summon.
+    Stash(String, Reopen),
+}
+
+impl Planned {
+    fn reopen_mut(&mut self) -> &mut Reopen {
+        match self {
+            Self::Open(reopen) | Self::Stash(_, reopen) => reopen,
+        }
+    }
+}
+
 /// A window to open attached to a restored session.
 #[derive(Clone, Debug)]
 pub(super) struct Reopen {
@@ -305,6 +321,9 @@ pub(super) struct Reopen {
     pub(super) placement: Option<Placement>,
     pub(super) focus: Focus,
     pub(super) notices: Vec<NoticeContent>,
+    /// The saved window layout of a session waiting in `quake_stash`, which
+    /// captures write while it waits, so a relaunch stashes it again.
+    pub(super) stashed: Option<huterm_state::WindowLayout>,
 }
 
 /// Bootstrap progress, on `Desktop` until it settles.
@@ -404,14 +423,91 @@ pub(super) fn start_with(cx: &mut App, saved: Saved, base: TerminalCommand) {
     }
     let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
     let capture = saved.capture.clone();
-    let task = cx
-        .background_executor()
-        .spawn(async move { run(&runtime, &capture, &base).await });
+    let (sender, outcome) = async_channel::bounded(1);
+    // Its own thread: spawning blocks for each terminal, and termination
+    // waits for it to stop what it spawned.
+    let started = std::thread::Builder::new()
+        .name("huterm-restore".into())
+        .spawn(move || {
+            let _ = sender.send_blocking(run(&runtime, &capture, &base));
+        });
+    if let Err(error) = started {
+        cx.global::<Desktop>().runtime.persistence.suspend();
+        fail(cx, &format!("the restore could not start: {error}"));
+        return;
+    }
     cx.spawn(async move |cx| {
-        let outcome = task.await;
+        let outcome = outcome.recv().await.unwrap_or_else(|_| {
+            Outcome::Failed("the restore stopped unexpectedly".into())
+        });
         cx.update(|cx| finish(cx, &saved, outcome));
     })
     .detach();
+}
+
+/// The restore worker's claim on the terminals it spawned before
+/// [`Mux::restore`] takes them. Termination sets the gate, then waits here,
+/// without the Mux lock, until the worker stopped and joined them or
+/// handed them to Mux.
+#[derive(Debug, Default)]
+pub(super) struct Worker {
+    running: Mutex<bool>,
+    finished: std::sync::Condvar,
+    /// Threads waiting in [`Self::wait`], so tests can see one wait.
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+/// Held while the worker runs; dropping it releases [`Worker::wait`].
+struct Running<'a>(&'a Worker);
+
+impl Worker {
+    fn lock(&self) -> std::sync::MutexGuard<'_, bool> {
+        self.running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Marks the worker running, unless termination already began.
+    fn begin<'a>(&'a self, terminating: &AtomicBool) -> Option<Running<'a>> {
+        let mut running = self.lock();
+        // Checked under the lock `wait` takes after setting the gate, so
+        // either this sees the gate or `wait` sees the worker.
+        if terminating.load(Ordering::Acquire) {
+            return None;
+        }
+        *running = true;
+        Some(Running(self))
+    }
+
+    /// Waits until no worker runs. Call after setting the termination
+    /// gate, and never with the Mux lock held: the worker takes it.
+    pub(super) fn wait(&self) {
+        #[cfg(test)]
+        self.waiting.fetch_add(1, Ordering::AcqRel);
+        let mut running = self.lock();
+        while *running {
+            running = self
+                .finished
+                .wait(running)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        #[cfg(test)]
+        self.waiting.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// How many threads wait for the worker now.
+    #[cfg(test)]
+    pub(super) fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        *self.0.lock() = false;
+        self.0.finished.notify_all();
+    }
 }
 
 /// Where a restored terminal started instead of its first saved directory.
@@ -447,16 +543,10 @@ fn restored_command(
     }
 }
 
-/// The worker half: spawns outside the lock, then restores and attaches
-/// under it. Checks the termination gate between spawns and under the lock.
-#[cfg_attr(
-    not(all(test, feature = "test-support")),
-    expect(
-        clippy::unused_async,
-        reason = "only test hooks await between the worker's stages"
-    )
-)]
-async fn run(
+/// The worker half, on the restore thread: spawns outside the lock, then
+/// restores and attaches under it. Checks the termination gate between
+/// spawns and under the lock.
+fn run(
     runtime: &DesktopRuntime,
     capture: &RuntimeCapture,
     base: &TerminalCommand,
@@ -464,8 +554,7 @@ async fn run(
     #[cfg(all(test, feature = "test-support"))]
     if runtime
         .worker_hooks
-        .enter(worker_hooks::Stage::Restore)
-        .await
+        .enter_blocking(worker_hooks::Stage::Restore)
     {
         return Outcome::Failed("injected restore failure".into());
     }
@@ -474,8 +563,7 @@ async fn run(
     if matches!(outcome, Outcome::Restored(_)) {
         runtime
             .worker_hooks
-            .enter(worker_hooks::Stage::Restored)
-            .await;
+            .enter_blocking(worker_hooks::Stage::Restored);
     }
     outcome
 }
@@ -485,21 +573,14 @@ fn restore_blocking(
     capture: &RuntimeCapture,
     base: &TerminalCommand,
 ) -> Outcome {
+    // Held until the spawned terminals are inserted or stopped.
+    let Some(_running) = runtime.restore_worker.begin(&runtime.terminating)
+    else {
+        return Outcome::Cancelled;
+    };
     let runtime_id = runtime.lock().runtime_id();
     runtime.persistence.mark_restore_attempt();
-    let mut fallbacks = HashMap::new();
-    let spawned = SpawnedTerminals::spawn(
-        runtime_id,
-        capture,
-        |record| {
-            let (command, fallback) = restored_command(base, record);
-            if let Some(fallback) = fallback {
-                fallbacks.insert(record.id, fallback);
-            }
-            command
-        },
-        || runtime.terminating.load(Ordering::Acquire),
-    );
+    let (spawned, fallbacks) = spawn_saved(runtime, runtime_id, capture, base);
     let spawned = match spawned {
         Ok(spawned) => spawned,
         Err(MuxError::RestoreCancelled) => return Outcome::Cancelled,
@@ -577,6 +658,47 @@ fn restore_blocking(
     }))
 }
 
+/// Starts every saved terminal from `base` outside the Mux lock, with the
+/// directory each fell back from. Checks the termination gate before each
+/// spawn, and once it is set stops and joins what already started.
+fn spawn_saved(
+    runtime: &DesktopRuntime,
+    runtime_id: huterm_protocol::RuntimeId,
+    capture: &RuntimeCapture,
+    base: &TerminalCommand,
+) -> (
+    Result<SpawnedTerminals, MuxError>,
+    HashMap<TerminalId, Fallback>,
+) {
+    let mut fallbacks = HashMap::new();
+    #[cfg(all(test, feature = "test-support"))]
+    let mut checks = 0;
+    let spawned = SpawnedTerminals::spawn(
+        runtime_id,
+        capture,
+        |record| {
+            let (command, fallback) = restored_command(base, record);
+            if let Some(fallback) = fallback {
+                fallbacks.insert(record.id, fallback);
+            }
+            command
+        },
+        || {
+            #[cfg(all(test, feature = "test-support"))]
+            {
+                checks += 1;
+                if checks == 2 {
+                    runtime
+                        .worker_hooks
+                        .enter_blocking(worker_hooks::Stage::RestoreSpawned);
+                }
+            }
+            runtime.terminating.load(Ordering::Acquire)
+        },
+    );
+    (spawned, fallbacks)
+}
+
 /// Reports a restore that restored nothing and opens a fresh window.
 fn fail(cx: &mut App, reason: &str) {
     eprintln!("Huterm restore failed: {reason}");
@@ -633,13 +755,16 @@ fn finish(cx: &mut App, saved: &Saved, outcome: Outcome) {
         .and_then(|layout| layout.active_window)
         .and_then(|index| saved.layout.as_ref()?.windows.get(index))
         .map(|window| SessionId::in_runtime(runtime, window.session.get()));
-    for (profile, reopen) in reopens {
-        if let Some(profile) = profile {
-            cx.global_mut::<Desktop>()
-                .quake_stash
-                .insert(profile, reopen);
-            continue;
-        }
+    for planned in reopens {
+        let reopen = match planned {
+            Planned::Open(reopen) => reopen,
+            Planned::Stash(profile, reopen) => {
+                cx.global_mut::<Desktop>()
+                    .quake_stash
+                    .insert(profile, reopen);
+                continue;
+            }
+        };
         let session = reopen.session;
         let attachment = reopen.attachment;
         match open_restored(cx, reopen) {
@@ -696,7 +821,8 @@ fn close_unopened(cx: &mut App, session: SessionId, attachment: AttachmentId) {
 }
 
 /// The windows to reopen, in saved order and then one per session no
-/// saved window shows, each with the Quake profile it waits for, if any.
+/// saved window shows, and the sessions that wait for a Quake profile's
+/// first summon instead.
 #[expect(
     clippy::too_many_lines,
     reason = "saved windows map onto the restored hierarchy in one pass"
@@ -708,7 +834,7 @@ fn plan(
     fallbacks: &HashMap<TerminalId, Fallback>,
     runtime: huterm_protocol::RuntimeId,
     cx: &App,
-) -> Vec<(Option<String>, Reopen)> {
+) -> Vec<Planned> {
     let desktop = cx.global::<Desktop>();
     let state = desktop.hierarchy.state();
     let scoped_session =
@@ -719,7 +845,7 @@ fn plan(
             .find(|(id, _)| *id == session)
             .map(|(_, attachment)| *attachment)
     };
-    let mut planned: Vec<(Option<String>, Reopen)> = Vec::new();
+    let mut planned: Vec<Planned> = Vec::new();
     let mut shown = HashSet::new();
     let windows = saved
         .layout
@@ -776,35 +902,35 @@ fn plan(
         let profile = window.quake_profile.clone().filter(|name| {
             desktop.config.quake.profiles.contains_key(name)
                 && quake_windows::summons(cx, name)
-                && !planned
-                    .iter()
-                    .any(|(other, _)| other.as_deref() == Some(name.as_str()))
+                && !planned.iter().any(|other| {
+                    matches!(other, Planned::Stash(other, _) if other == name)
+                })
         });
-        let placement = profile.is_none().then(|| Placement {
-            bounds: (window.quake_profile.is_none()).then(|| Bounds {
-                origin: point(px(window.bounds.x), px(window.bounds.y)),
-                size: size(px(window.bounds.width), px(window.bounds.height)),
+        let reopen = Reopen {
+            attachment,
+            session,
+            workspace,
+            placement: None,
+            focus,
+            notices: Vec::new(),
+            stashed: None,
+        };
+        planned.push(match profile {
+            Some(profile) => Planned::Stash(
+                profile,
+                Reopen {
+                    stashed: Some(huterm_state::WindowLayout {
+                        workspace: WorkspaceId::new(workspace.get()),
+                        ..window.clone()
+                    }),
+                    ..reopen
+                },
+            ),
+            None => Planned::Open(Reopen {
+                placement: Some(placement(window)),
+                ..reopen
             }),
-            display: window.display.clone(),
-            mode: if window.quake_profile.is_some() {
-                WindowMode::Windowed
-            } else {
-                window.mode
-            },
-            sidebar_width: px(window.sidebar_width),
-            appearance: appearance(window.appearance),
         });
-        planned.push((
-            profile,
-            Reopen {
-                attachment,
-                session,
-                workspace,
-                placement,
-                focus,
-                notices: Vec::new(),
-            },
-        ));
     }
     for &(session, attachment) in attachments {
         if shown.contains(&session) {
@@ -813,23 +939,108 @@ fn plan(
         let Some(workspace) = first_workspace(state, session) else {
             continue;
         };
-        planned.push((
-            None,
-            Reopen {
-                attachment,
-                session,
-                workspace,
-                placement: None,
-                focus: Focus::default(),
-                notices: Vec::new(),
-            },
-        ));
+        planned.push(Planned::Open(Reopen {
+            attachment,
+            session,
+            workspace,
+            placement: None,
+            focus: Focus::default(),
+            notices: Vec::new(),
+            stashed: None,
+        }));
     }
-    for (_, reopen) in &mut planned {
+    for planned in &mut planned {
+        let reopen = planned.reopen_mut();
         reopen.notices =
             window_notices(&saved.capture, report, fallbacks, reopen.session);
     }
     planned
+}
+
+/// Where a saved window reopens as a regular window. A Quake window's
+/// saved bounds were its profile's, so it opens windowed at the default
+/// size instead.
+fn placement(window: &huterm_state::WindowLayout) -> Placement {
+    let quake = window.quake_profile.is_some();
+    Placement {
+        bounds: (!quake).then(|| Bounds {
+            origin: point(px(window.bounds.x), px(window.bounds.y)),
+            size: size(px(window.bounds.width), px(window.bounds.height)),
+        }),
+        display: window.display.clone(),
+        mode: if quake {
+            WindowMode::Windowed
+        } else {
+            window.mode
+        },
+        sidebar_width: px(window.sidebar_width),
+        appearance: appearance(window.appearance),
+    }
+}
+
+/// The saved layouts of the sessions waiting for a Quake summon, by profile
+/// name, for a capture: a Quit or crash before the first summon keeps them.
+pub(super) fn stashed_layouts(cx: &App) -> Vec<huterm_state::WindowLayout> {
+    let desktop = cx.global::<Desktop>();
+    let state = desktop.hierarchy.state();
+    let mut stashed: Vec<_> = desktop
+        .quake_stash
+        .iter()
+        .filter(|(_, reopen)| state.session(reopen.session).is_some())
+        .filter_map(|(name, reopen)| Some((name, reopen.stashed.as_ref()?)))
+        .collect();
+    stashed.sort_by_key(|(name, _)| *name);
+    stashed
+        .into_iter()
+        .map(|(name, layout)| huterm_state::WindowLayout {
+            quake_profile: Some(name.clone()),
+            ..layout.clone()
+        })
+        .collect()
+}
+
+/// Brings the sessions waiting for a Quake summon up to a reload: a
+/// renamed profile's session follows the rename, and one whose profile is
+/// gone, no longer has a registered shortcut, or is already served opens
+/// in a regular window, as a launch does for a missing profile. Runs
+/// before the windows reconcile, which drop the renames the reload read.
+pub(super) fn reconcile_stash(cx: &mut App) {
+    let mut stash: Vec<_> =
+        std::mem::take(&mut cx.global_mut::<Desktop>().quake_stash)
+            .into_iter()
+            .collect();
+    stash.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let mut kept = HashMap::new();
+    let mut orphans = Vec::new();
+    for (name, mut reopen) in stash {
+        let desktop = cx.global::<Desktop>();
+        let profiles = &desktop.config.quake.profiles;
+        let target = desktop
+            .windows
+            .quake_rename_target(&name, |name| profiles.contains_key(name))
+            .filter(|target| {
+                quake_windows::summons(cx, target)
+                    && !kept.contains_key(target)
+                    && desktop.windows.quake_window(target).is_none()
+            });
+        match target {
+            Some(target) => {
+                if let Some(layout) = &mut reopen.stashed {
+                    layout.quake_profile = Some(target.clone());
+                }
+                kept.insert(target, reopen);
+            }
+            None => orphans.push(reopen),
+        }
+    }
+    cx.global_mut::<Desktop>().quake_stash = kept;
+    for mut reopen in orphans {
+        reopen.placement = reopen.stashed.take().as_ref().map(placement);
+        let (session, attachment) = (reopen.session, reopen.attachment);
+        if open_restored(cx, reopen).is_none() {
+            close_unopened(cx, session, attachment);
+        }
+    }
 }
 
 fn first_workspace(

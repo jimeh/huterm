@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 
 const directory = await mkdtemp(join(tmpdir(), "huterm-manual-viewers-"));
 const app = Bun.spawn([resolve(Bun.argv[2] ?? "target/debug/examples/palette_smoke")], {
-  env: { ...process.env, HUTERM_PALETTE_SMOKE: directory },
+  env: { ...process.env, HUTERM_PALETTE_SMOKE: directory, HUTERM_STATE_DIR: join(directory, "saved-state") },
   stdout: "inherit",
   stderr: "inherit",
 });

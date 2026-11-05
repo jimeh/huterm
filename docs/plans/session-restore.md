@@ -361,8 +361,11 @@ Directory fill-in for server spawns stays with #45.
 ## Constraints
 
 - `huterm-protocol` stays dependency-free; serialization stays out of it.
-- Core alone owns PTYs and runtime state. Restore spawns on a worker, never
-  the UI thread, and holds the Mux lock only to insert.
+- Core alone owns PTYs and runtime state. Restore spawns the saved
+  terminals on a worker, never the UI thread, and holds the Mux lock only
+  to insert them; a replacement tab for an emptied session uses the
+  ordinary new-tab path, which spawns under the Mux lock like every new
+  tab.
 - Restore never executes saved text.
 - Shutdown changes must still prove that live children and workers
   terminate, including children spawned by a cancelled restore.

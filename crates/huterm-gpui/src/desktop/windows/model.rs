@@ -444,6 +444,22 @@ impl WindowModel {
                 .any(|rename| rename.noted.is_some() && rename.from == name)
     }
 
+    /// The first name `has` accepts that profile `name` reaches through the
+    /// renames noted or running, starting with `name` itself; `None` when
+    /// the renames end at a name `has` rejects.
+    pub(super) fn quake_rename_target(
+        &self,
+        name: &str,
+        has: impl Fn(&str) -> bool,
+    ) -> Option<String> {
+        let mut name = name;
+        let mut renames = self.renames.iter();
+        while !has(name) {
+            name = renames.find(|rename| rename.from == name)?.to.as_str();
+        }
+        Some(name.to_owned())
+    }
+
     /// Brings the quake associations up to a reload whose file has the
     /// profiles `has` names and was read once `read` renames were noted. A
     /// window whose profile the file lacks follows the renames noted or
@@ -459,13 +475,8 @@ impl WindowModel {
         let moves: Vec<(WindowId, String)> = self
             .quake_windows()
             .filter_map(|(profile, id)| {
-                let mut name = profile;
-                let mut renames = self.renames.iter();
-                while !has(name) {
-                    name =
-                        renames.find(|rename| rename.from == name)?.to.as_str();
-                }
-                (name != profile).then(|| (id, name.to_owned()))
+                let name = self.quake_rename_target(profile, &has)?;
+                (name != profile).then_some((id, name))
             })
             .collect();
         let mut renamed = Vec::new();

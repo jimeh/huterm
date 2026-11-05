@@ -100,11 +100,19 @@ fn quit_waits_for_a_checkpoint_in_flight_and_writes_after_it() {
     let persistence = Arc::new(owner(&fake, State::Running));
     let (entered, release) = fake.hold_next();
     let (capture, layout) = saved(1);
-    assert!(persistence.checkpoint(capture, layout));
+    assert!(persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
     entered.recv().unwrap();
     // Queued behind the held write; it must not land after Quit's.
     let (capture, layout) = saved(3);
-    assert!(persistence.checkpoint(capture, layout));
+    assert!(persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
     let quitting = Arc::clone(&persistence);
     let quit = std::thread::spawn(move || quitting.finish(|| saved(2)));
     // Quit has moved to Final and now waits on the held write.
@@ -133,7 +141,11 @@ fn only_the_first_termination_writes() {
             .is_none()
     );
     let (capture, layout) = saved(2);
-    assert!(!persistence.checkpoint(capture, layout));
+    assert!(!persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
     assert!(!persistence.set_enabled(true));
     persistence.flush();
     assert_eq!(fake.events(), [Event::Saved(1)]);
@@ -145,12 +157,16 @@ fn turning_off_deletes_after_the_write_in_flight_and_on_writes_again() {
     let persistence = owner(&fake, State::Running);
     let (entered, release) = fake.hold_next();
     let (capture, layout) = saved(1);
-    persistence.checkpoint(capture, layout);
+    persistence.checkpoint(persistence.begin_capture(), capture, layout);
     entered.recv().unwrap();
     assert!(!persistence.set_enabled(false));
     assert_eq!(persistence.state(), State::Off);
     let (capture, layout) = saved(2);
-    assert!(!persistence.checkpoint(capture, layout));
+    assert!(!persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
     release.send(()).unwrap();
     persistence.flush();
     assert_eq!(fake.events(), [Event::Saved(1), Event::Removed]);
@@ -158,7 +174,11 @@ fn turning_off_deletes_after_the_write_in_flight_and_on_writes_again() {
     // capture, since the removal emptied the files.
     assert!(persistence.set_enabled(true));
     let (capture, layout) = saved(1);
-    assert!(persistence.checkpoint(capture, layout));
+    assert!(persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
     persistence.flush();
     assert_eq!(
         fake.events(),
@@ -172,7 +192,7 @@ fn an_unchanged_capture_is_not_written_again() {
     let persistence = owner(&fake, State::Running);
     for next_id in [1, 1, 2] {
         let (capture, layout) = saved(next_id);
-        persistence.checkpoint(capture, layout);
+        persistence.checkpoint(persistence.begin_capture(), capture, layout);
     }
     persistence.flush();
     let (written, _) = persistence.finish(|| saved(2)).unwrap();
@@ -185,7 +205,11 @@ fn quit_during_a_restore_only_removes_the_marker() {
     let fake = Fake::default();
     let persistence = owner(&fake, State::Bootstrapping);
     let (capture, layout) = saved(1);
-    assert!(!persistence.checkpoint(capture, layout));
+    assert!(!persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
     persistence.mark_restore_attempt();
     persistence
         .finish(|| panic!("a restore in progress captures nothing"))
@@ -205,7 +229,11 @@ fn settling_a_restore_clears_the_marker_and_starts_checkpoints() {
     persistence.mark_restore_attempt();
     assert!(persistence.settle());
     let (capture, layout) = saved(1);
-    assert!(persistence.checkpoint(capture, layout));
+    assert!(persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
     persistence.flush();
     assert_eq!(
         fake.events(),
@@ -236,14 +264,132 @@ fn a_failed_write_is_reported_once_and_retried_at_the_next_change() {
     *fake.fail.lock().unwrap() = Some("disk full".into());
     for _ in 0..2 {
         let (capture, layout) = saved(1);
-        persistence.checkpoint(capture, layout);
+        persistence.checkpoint(persistence.begin_capture(), capture, layout);
     }
     persistence.flush();
     assert!(reports.recv().unwrap().contains("disk full"));
     assert!(reports.try_recv().is_err());
     *fake.fail.lock().unwrap() = None;
     let (capture, layout) = saved(1);
-    persistence.checkpoint(capture, layout);
+    persistence.checkpoint(persistence.begin_capture(), capture, layout);
     persistence.flush();
     assert_eq!(fake.events(), [Event::Saved(1)]);
+}
+
+/// Runs `finish` on another thread while the writer is paused behind the
+/// jobs queued so far, and returns the events the backend had seen when it
+/// returned. The writer resumes once `finish` either returned or queued
+/// its own job, so a `finish` that waits for the queue sees it handled.
+fn finish_behind_a_paused_writer(
+    fake: &Fake,
+    persistence: &Arc<Persistence>,
+    resume: mpsc::Sender<()>,
+    saved: Saved,
+) -> Vec<Event> {
+    let queued = persistence.sent();
+    let quitting = Arc::clone(persistence);
+    let seen = fake.clone();
+    let quit = std::thread::spawn(move || {
+        quitting.finish(|| saved).unwrap();
+        seen.events()
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !quit.is_finished() && persistence.sent() == queued {
+        assert!(
+            Instant::now() < deadline,
+            "Quit neither returned nor queued"
+        );
+        std::thread::yield_now();
+    }
+    drop(resume);
+    quit.join().unwrap()
+}
+
+#[test]
+fn quit_after_turning_off_returns_only_once_the_files_are_gone() {
+    let fake = Fake::default();
+    let persistence = Arc::new(owner(&fake, State::Running));
+    let resume = persistence.pause();
+    assert!(!persistence.set_enabled(false));
+    let seen =
+        finish_behind_a_paused_writer(&fake, &persistence, resume, saved(1));
+    assert_eq!(seen, [Event::Removed]);
+}
+
+#[test]
+fn a_removal_queued_before_turning_on_never_deletes_the_quit_write() {
+    let fake = Fake::default();
+    let persistence = Arc::new(owner(&fake, State::Running));
+    let resume = persistence.pause();
+    assert!(!persistence.set_enabled(false));
+    assert!(persistence.set_enabled(true));
+    finish_behind_a_paused_writer(&fake, &persistence, resume, saved(2));
+    persistence.flush();
+    assert_eq!(fake.events(), [Event::Removed, Event::Saved(2)]);
+}
+
+#[test]
+fn quit_right_after_a_restore_settles_clears_the_marker_before_writing() {
+    let fake = Fake::default();
+    let persistence = Arc::new(owner(&fake, State::Bootstrapping));
+    persistence.mark_restore_attempt();
+    let resume = persistence.pause();
+    assert!(persistence.settle());
+    let seen =
+        finish_behind_a_paused_writer(&fake, &persistence, resume, saved(1));
+    assert_eq!(seen, [Event::Marked, Event::Cleared, Event::Saved(1)]);
+}
+
+#[test]
+fn a_checkpoint_that_started_earlier_never_lands_after_a_later_one() {
+    let fake = Fake::default();
+    let persistence = owner(&fake, State::Running);
+    let earlier = persistence.begin_capture();
+    let later = persistence.begin_capture();
+    let (capture, layout) = saved(2);
+    assert!(persistence.checkpoint(later, capture, layout));
+    let (capture, layout) = saved(1);
+    assert!(persistence.checkpoint(earlier, capture, layout));
+    persistence.flush();
+    assert_eq!(fake.events(), [Event::Saved(2)]);
+}
+
+#[test]
+fn a_suspended_owner_stays_off_when_the_setting_turns_on() {
+    let fake = Fake::default();
+    let persistence = owner(&fake, State::Running);
+    persistence.suspend();
+    assert!(!persistence.set_enabled(true));
+    assert_eq!(persistence.state(), State::Off);
+    let (capture, layout) = saved(1);
+    assert!(!persistence.checkpoint(
+        persistence.begin_capture(),
+        capture,
+        layout
+    ));
+    persistence.flush();
+    assert_eq!(fake.events(), []);
+}
+
+#[test]
+fn a_setting_change_during_a_restore_applies_when_it_settles() {
+    // Off and back on: the restore settles into running, deleting nothing.
+    let fake = Fake::default();
+    let persistence = owner(&fake, State::Bootstrapping);
+    assert!(!persistence.set_enabled(false));
+    assert_eq!(persistence.state(), State::Bootstrapping);
+    assert!(!persistence.set_enabled(true));
+    assert_eq!(persistence.state(), State::Bootstrapping);
+    assert!(persistence.settle());
+    persistence.flush();
+    assert_eq!(fake.events(), [Event::Cleared]);
+    // Off: the restore settles into off and deletes the saved files.
+    let fake = Fake::default();
+    let persistence = owner(&fake, State::Bootstrapping);
+    assert!(!persistence.set_enabled(false));
+    assert_eq!(persistence.state(), State::Bootstrapping);
+    assert!(!persistence.settle());
+    assert_eq!(persistence.state(), State::Off);
+    persistence.flush();
+    assert_eq!(fake.events(), [Event::Cleared, Event::Removed]);
 }

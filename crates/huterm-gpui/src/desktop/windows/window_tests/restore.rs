@@ -468,6 +468,69 @@ fn quit_after_the_restore_inserted_its_shells_terminates_them(
     assert_eq!(harness.recorder.saved(), []);
 }
 
+/// Holds a restore's worker after its first shell started, runs `quit` on
+/// another thread, and checks that it returned only once that shell was
+/// reaped, that nothing else started, and that nothing was saved.
+fn quit_while_the_restore_spawns(
+    cx: &mut TestAppContext,
+    quit: impl FnOnce(&DesktopRuntime) + Send + 'static,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::installed(
+        cx,
+        |_| {},
+        persistence::State::Bootstrapping,
+    );
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::RestoreSpawned);
+    let saved = startup::Saved::new(capture(&scratch), Some(layout()));
+    let base = fixture(&scratch.reporting());
+    harness.cx.update(|cx| startup::start_with(cx, saved, base));
+    harness.wait_for("the first restored shell to start", |_| {
+        runtime.worker_hooks.held(Stage::RestoreSpawned) == 1
+            && scratch.reports().len() == 1
+    });
+    let pid = scratch.reports()[0].0;
+    let quitting = Arc::clone(&runtime);
+    let quit = std::thread::spawn(move || {
+        quit(&quitting);
+        gone(pid)
+    });
+    harness.wait_for("Quit to wait for the restore worker", |_| {
+        quit.is_finished() || runtime.restore_worker.waiting() == 1
+    });
+    runtime.worker_hooks.release(Stage::RestoreSpawned);
+    assert!(
+        quit.join().unwrap(),
+        "Quit returned while restored shell {pid} still ran"
+    );
+    harness.wait_settled();
+    assert_eq!(scratch.reports().len(), 1, "a shell started after Quit");
+    assert_eq!(runtime.lock().terminal_count(), 0);
+    let recorded = harness.recorder.recorded();
+    assert_eq!(recorded.saved, [], "Quit during a restore saved state");
+    assert_eq!(recorded.cleared, 1);
+}
+
+#[gpui::test]
+fn committing_quit_while_the_restore_spawns_waits_for_its_shells(
+    cx: &mut TestAppContext,
+) {
+    quit_while_the_restore_spawns(cx, |runtime| {
+        let assessment =
+            runtime.assess(CloseRequest::Application).result.unwrap();
+        let windows = Some(huterm_state::DesktopLayout::default());
+        runtime.commit(&assessment, true, windows).result.unwrap();
+    });
+}
+
+#[gpui::test]
+fn the_native_quit_cleanup_while_the_restore_spawns_waits_for_its_shells(
+    cx: &mut TestAppContext,
+) {
+    quit_while_the_restore_spawns(cx, |runtime| runtime.terminate().unwrap());
+}
+
 /// Restores two tabs whose shells exit at once, holding view installs
 /// until both exited, so no view existed when they did.
 fn restore_exiting(
@@ -563,12 +626,16 @@ fn a_checkpoint_follows_a_change_and_drops_a_closed_tab(
         .lock()
         .close_tab(WorkspaceId::in_runtime(runtime, 2), closed)
         .unwrap();
+    // The window drops the tab after the runtime does; a checkpoint taken
+    // in between is followed by one that has the window's change too.
     harness.wait_for("a checkpoint without the closed tab", |_| {
         recorder.saved().len() > before
-            && recorder
-                .saved()
-                .last()
-                .is_some_and(|(capture, _)| capture.tabs().count() == 2)
+            && recorder.saved().last().is_some_and(|(capture, layout)| {
+                capture.tabs().count() == 2
+                    && layout.windows.iter().all(|window| {
+                        window.tab_history.iter().all(|tab| tab.get() != 9)
+                    })
+            })
     });
     let (capture, layout) = harness.recorder.saved().pop().unwrap();
     assert!(capture.tabs().all(|tab| tab.id.get() != 9));
@@ -607,6 +674,37 @@ fn closing_the_last_window_writes_an_empty_set_before_exit(
     );
 }
 
+/// Applies a manual reload of the current configuration after `change`,
+/// read once `renames` quake profile renames were noted.
+fn reload_with(
+    harness: &mut DesktopHarness,
+    renames: u64,
+    change: impl FnOnce(&mut Config),
+) {
+    harness.cx.update(|cx| {
+        let mut changed = cx.global::<Desktop>().config.clone();
+        change(&mut changed);
+        finish_reload(
+            cx,
+            ReloadKind::Manual,
+            Path::new("huterm-test.toml"),
+            config::Reloaded {
+                config: Ok(changed),
+                inputs: config::Inputs::default(),
+                missing: false,
+            },
+            renames,
+        );
+    });
+}
+
+/// Reloads with `[general] restore_sessions` set to `enabled`.
+fn reload(harness: &mut DesktopHarness, enabled: bool) {
+    reload_with(harness, 0, |config| {
+        config.general.restore_sessions = enabled;
+    });
+}
+
 #[gpui::test]
 fn turning_restore_off_deletes_saved_state_and_on_saves_again(
     cx: &mut TestAppContext,
@@ -615,23 +713,6 @@ fn turning_restore_off_deletes_saved_state_and_on_saves_again(
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     harness.wait_text(window, tab, "READY");
-    let reload = |harness: &mut DesktopHarness, enabled: bool| {
-        harness.cx.update(|cx| {
-            let mut changed = cx.global::<Desktop>().config.clone();
-            changed.general.restore_sessions = enabled;
-            finish_reload(
-                cx,
-                ReloadKind::Manual,
-                Path::new("huterm-test.toml"),
-                config::Reloaded {
-                    config: Ok(changed),
-                    inputs: config::Inputs::default(),
-                    missing: false,
-                },
-                0,
-            );
-        });
-    };
     reload(&mut harness, false);
     let recorder = harness.recorder.clone();
     harness.wait_for("the saved files to go", |_| {
@@ -648,6 +729,45 @@ fn turning_restore_off_deletes_saved_state_and_on_saves_again(
     reload(&mut harness, true);
     assert_eq!(recorder.recorded().removed, 1);
     harness.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn turning_restore_off_and_on_during_a_restore_saves_only_once_it_settles(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::installed(
+        cx,
+        |_| {},
+        persistence::State::Bootstrapping,
+    );
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Restored);
+    let saved = startup::Saved::new(capture(&scratch), Some(layout()));
+    harness
+        .cx
+        .update(|cx| startup::start_with(cx, saved, fixture(ECHO)));
+    harness.wait_for("the restore to insert its shells", |_| {
+        runtime.worker_hooks.held(Stage::Restored) == 1
+    });
+    reload(&mut harness, false);
+    reload(&mut harness, true);
+    harness.cx.run_until_parked();
+    runtime.persistence.flush();
+    let early = harness.recorder.recorded();
+    assert_eq!(early.saved, [], "a checkpoint landed before settling");
+    assert_eq!(early.removed, 0);
+    assert_eq!(
+        runtime.persistence.state(),
+        persistence::State::Bootstrapping
+    );
+    runtime.worker_hooks.release(Stage::Restored);
+    harness.wait_settled();
+    let recorder = harness.recorder.clone();
+    harness.wait_for("the settle checkpoint", |_| !recorder.saved().is_empty());
+    assert_eq!(recorder.recorded().removed, 0);
+    assert_eq!(runtime.persistence.state(), persistence::State::Running);
+    runtime.terminate().unwrap();
 }
 
 #[gpui::test]
@@ -692,6 +812,48 @@ fn a_checkpoint_waits_for_a_reserved_tear_off_and_saves_no_tabless_session(
 }
 
 #[gpui::test]
+fn a_checkpoint_whose_capture_meets_a_tear_off_waits_for_it_to_settle(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let second = harness.open_tab(ECHO);
+    let source = harness.attach_showing(&[first, second]);
+    harness.wait_text(source, first, "READY");
+    let runtime = Arc::clone(&harness.runtime);
+    // The capture starts before the tear-off reserves anything, and takes
+    // the Mux lock only after it did.
+    runtime.worker_hooks.hold(Stage::Checkpoint);
+    runtime.worker_hooks.hold(Stage::Transfer);
+    harness.cx.update(take_checkpoint);
+    harness.wait_for("the capture to start", |_| {
+        runtime.worker_hooks.held(Stage::Checkpoint) == 1
+    });
+    harness.invoke(source, ids::MOVE_TAB_TO_NEW_WINDOW).unwrap();
+    harness.wait_for("the tear-off to reserve its destination", |cx| {
+        !cx.global::<Desktop>().cross.reserved.is_empty()
+            && runtime.worker_hooks.held(Stage::Transfer) == 1
+    });
+    runtime.worker_hooks.release(Stage::Checkpoint);
+    harness.cx.run_until_parked();
+    runtime.persistence.flush();
+    assert_eq!(
+        harness.recorder.saved(),
+        [],
+        "saved a capture that met a tear-off"
+    );
+    runtime.worker_hooks.release(Stage::Transfer);
+    let recorder = harness.recorder.clone();
+    harness.wait_for("the checkpoint after the transfer settles", |_| {
+        !recorder.saved().is_empty()
+    });
+    let (capture, layout) = recorder.saved().remove(0);
+    assert_eq!(capture.sessions.len(), 2);
+    assert_eq!(layout.windows.len(), 2);
+    harness.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
 fn a_window_whose_quake_profile_is_gone_reopens_as_a_regular_window(
     cx: &mut TestAppContext,
 ) {
@@ -717,6 +879,178 @@ fn a_window_whose_quake_profile_is_gone_reopens_as_a_regular_window(
     harness.runtime.terminate().unwrap();
 }
 
+/// The Quake profile whose session waits for its first summon.
+const DROP: &str = "drop";
+
+/// [`layout`] with session 1's window as profile [`DROP`]'s.
+fn quake_layout() -> huterm_state::DesktopLayout {
+    let mut saved = layout();
+    saved.windows[0].quake_profile = Some(DROP.into());
+    saved
+}
+
+impl DesktopHarness {
+    /// A settled desktop with profile [`DROP`], which a registered shortcut
+    /// summons, restored from `capture` and `layout`.
+    fn restoring_quake(
+        cx: &mut TestAppContext,
+        capture: RuntimeCapture,
+        layout: huterm_state::DesktopLayout,
+    ) -> Self {
+        let mut harness = Self::installed(
+            cx,
+            |config| {
+                config.quake.profiles.insert(
+                    DROP.into(),
+                    huterm_config::quake::Profile::default(),
+                );
+            },
+            persistence::State::Bootstrapping,
+        );
+        harness.cx.update(|cx| {
+            cx.global_mut::<Desktop>()
+                .quake
+                .summoned
+                .insert(DROP.into());
+            let saved = startup::Saved::new(capture, Some(layout));
+            startup::start_with(cx, saved, fixture(ECHO));
+        });
+        harness.wait_settled();
+        harness
+    }
+
+    /// The profiles whose sessions wait for their first summon.
+    fn stashed(&mut self) -> Vec<String> {
+        self.cx.update(|cx| {
+            let mut names: Vec<String> =
+                cx.global::<Desktop>().quake_stash.keys().cloned().collect();
+            names.sort();
+            names
+        })
+    }
+
+    /// Whether an open window shows `session`.
+    fn showing(&mut self, session: SessionId) -> bool {
+        self.cx.update(|cx| {
+            cx.global::<Desktop>()
+                .windows
+                .records()
+                .any(|record| record.session == Some(session))
+        })
+    }
+
+    /// The saved window of session 1, as a capture now writes it.
+    fn saved_work_window(&mut self) -> Option<huterm_state::WindowLayout> {
+        self.cx.update(|cx| {
+            capture_windows(cx)
+                .windows
+                .into_iter()
+                .find(|window| window.session == SessionId::new(1))
+        })
+    }
+}
+
+#[gpui::test]
+fn a_stashed_quake_session_is_saved_and_waits_again_after_a_relaunch(
+    cx: &mut TestAppContext,
+    relaunched: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness =
+        DesktopHarness::restoring_quake(cx, capture(&scratch), quake_layout());
+    assert_eq!(harness.stashed(), [DROP]);
+    assert!(!harness.showing(SessionId::in_runtime(harness.runtime_id(), 1)));
+    let recorder = harness.recorder.clone();
+    harness.wait_for("the settle checkpoint", |_| !recorder.saved().is_empty());
+    let (saved, saved_layout) = recorder.saved().remove(0);
+    let stashed = saved_layout
+        .windows
+        .iter()
+        .find(|window| window.session == SessionId::new(1));
+    assert_eq!(
+        stashed.and_then(|window| window.quake_profile.as_deref()),
+        Some(DROP),
+        "{saved_layout:?}"
+    );
+    harness.runtime.terminate().unwrap();
+    let mut relaunch =
+        DesktopHarness::restoring_quake(relaunched, saved, saved_layout);
+    assert_eq!(relaunch.stashed(), [DROP]);
+    assert!(!relaunch.showing(SessionId::in_runtime(relaunch.runtime_id(), 1)));
+    relaunch.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn a_renamed_quake_profile_keeps_its_stashed_session(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let mut harness =
+        DesktopHarness::restoring_quake(cx, capture(&scratch), quake_layout());
+    harness.cx.update(|cx| {
+        let desktop = cx.global_mut::<Desktop>();
+        let rename = desktop.windows.quake_rename_started(DROP, "dropdown");
+        desktop.windows.quake_rename_settled(rename, true);
+        desktop.quake.summoned.insert("dropdown".into());
+    });
+    reload_with(&mut harness, 1, |config| {
+        let profile = config.quake.profiles.remove(DROP).unwrap();
+        config.quake.profiles.insert("dropdown".into(), profile);
+    });
+    assert_eq!(harness.stashed(), ["dropdown"]);
+    assert!(!harness.showing(SessionId::in_runtime(harness.runtime_id(), 1)));
+    let saved = harness.saved_work_window().expect("the stash is saved");
+    assert_eq!(saved.quake_profile.as_deref(), Some("dropdown"));
+    harness.runtime.terminate().unwrap();
+}
+
+/// Restores session 1 into profile [`DROP`]'s stash, applies `change`, and
+/// checks that the session then shows in a regular window.
+fn a_stash_its_profile_cannot_summon_opens(
+    cx: &mut TestAppContext,
+    change: impl FnOnce(&mut DesktopHarness),
+) {
+    let scratch = Scratch::new();
+    let mut harness =
+        DesktopHarness::restoring_quake(cx, capture(&scratch), quake_layout());
+    change(&mut harness);
+    assert_eq!(harness.stashed(), Vec::<String>::new());
+    let window =
+        harness.window_of(SessionId::in_runtime(harness.runtime_id(), 1));
+    harness.cx.update(|cx| {
+        let record = cx
+            .global::<Desktop>()
+            .windows
+            .record(window.window_id())
+            .unwrap();
+        assert!(record.quake.is_none());
+    });
+    let saved = harness.saved_work_window().expect("the window is saved");
+    assert_eq!(saved.quake_profile, None);
+    harness.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn a_stashed_session_whose_profile_is_removed_opens_as_a_regular_window(
+    cx: &mut TestAppContext,
+) {
+    a_stash_its_profile_cannot_summon_opens(cx, |harness| {
+        reload_with(harness, 0, |config| {
+            config.quake.profiles.remove(DROP);
+        });
+    });
+}
+
+#[gpui::test]
+fn a_stashed_session_whose_shortcut_is_gone_opens_as_a_regular_window(
+    cx: &mut TestAppContext,
+) {
+    a_stash_its_profile_cannot_summon_opens(cx, |harness| {
+        harness.cx.update(|cx| {
+            cx.global_mut::<Desktop>().quake.summoned.clear();
+        });
+        reload_with(harness, 0, |_| {});
+    });
+}
+
 #[gpui::test]
 fn a_restore_that_fails_keeps_the_saved_state_and_stops_saving(
     cx: &mut TestAppContext,
@@ -732,22 +1066,12 @@ fn a_restore_that_fails_keeps_the_saved_state_and_stops_saving(
         // The fresh window a failed restore opens would start the user's
         // shell; this test only checks what happens to the saved state.
         cx.global_mut::<Desktop>().quitting = true;
+        // A window without a shell keeps the desktop from exiting.
+        open_window_inner(cx, false);
         let saved = startup::Saved::new(capture(&scratch), Some(layout()));
         startup::start_with(cx, saved, fixture(ECHO));
     });
     harness.wait_settled();
-    harness.runtime.persistence.flush();
-    let recorded = harness.recorder.recorded();
-    assert_eq!(recorded.removed, 0, "a failed restore deleted saved state");
-    assert_eq!(recorded.saved, []);
-    // The marker stays, so the next launch sets the files aside. With no
-    // window left the desktop quit, from Off: a Quit during the restore
-    // would have removed the marker.
-    assert_eq!(recorded.cleared, 0);
-    assert_eq!(
-        harness.runtime.persistence.state(),
-        persistence::State::Final
-    );
     harness.cx.update(|cx| {
         let latched = &cx.global::<Desktop>().latched;
         assert!(
@@ -756,6 +1080,24 @@ fn a_restore_that_fails_keeps_the_saved_state_and_stops_saving(
             "{latched:?}"
         );
     });
+    // Turning the setting on again does not resume saving.
+    reload(&mut harness, true);
+    harness.cx.run_until_parked();
+    harness.runtime.persistence.flush();
+    let recorded = harness.recorder.recorded();
+    assert_eq!(recorded.saved, [], "saved after a failed restore");
+    assert_eq!(recorded.removed, 0, "a failed restore deleted saved state");
+    assert_eq!(harness.runtime.persistence.state(), persistence::State::Off);
+    harness.runtime.terminate().unwrap();
+    let recorded = harness.recorder.recorded();
+    assert_eq!(recorded.saved, []);
+    // The marker stays, so the next launch sets the files aside. Quit came
+    // from Off: a Quit during the restore would have removed the marker.
+    assert_eq!(recorded.cleared, 0);
+    assert_eq!(
+        harness.runtime.persistence.state(),
+        persistence::State::Final
+    );
 }
 
 #[gpui::test]

@@ -4,10 +4,11 @@
 //! [`CHECKPOINT_DELAY`](super::persistence::CHECKPOINT_DELAY) without
 //! further changes. One timer runs only while a change waits, so an idle
 //! desktop schedules nothing. A capture due while a cross-window transfer is
-//! reserved waits until the transfer settles.
+//! reserved waits until the transfer settles, and so does one that a
+//! transfer reserved under while it ran.
 
 use super::persistence::{CHECKPOINT_DELAY, State};
-use super::{App, Arc, Desktop, Duration, Instant, capture_windows};
+use super::{App, Arc, Desktop, Duration, Instant, Ordering, capture_windows};
 
 /// The debounce state on `Desktop`.
 pub(super) struct Checkpoints {
@@ -107,7 +108,10 @@ pub(in crate::desktop) fn directory_changed(cx: &mut App) {
 }
 
 /// Captures now and hands the result to the writer, unless a transfer is
-/// reserved, in which case the capture waits for it to settle.
+/// reserved, in which case the capture waits for it to settle. A capture
+/// that a transfer reserved under before it read the runtime may hold the
+/// transfer half done; it is dropped and taken again once that transfer
+/// settles.
 pub(super) fn take_checkpoint(cx: &mut App) {
     let desktop = cx.global_mut::<Desktop>();
     if desktop.runtime.persistence.state() != State::Running {
@@ -118,14 +122,29 @@ pub(super) fn take_checkpoint(cx: &mut App) {
         return;
     }
     desktop.checkpoints.waiting_transfer = false;
+    let sequence = desktop.runtime.persistence.begin_capture();
+    let transfers = desktop.runtime.transfers.load(Ordering::Acquire);
     let layout = capture_windows(cx);
     let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-    cx.background_executor()
-        .spawn(async move {
-            let capture = runtime.lock().capture_runtime();
-            runtime.persistence.checkpoint(capture, layout);
-        })
-        .detach();
+    let task = cx.background_executor().spawn(async move {
+        #[cfg(all(test, feature = "test-support"))]
+        runtime
+            .worker_hooks
+            .enter(super::worker_hooks::Stage::Checkpoint)
+            .await;
+        let capture = runtime.lock().capture_runtime();
+        if runtime.transfers.load(Ordering::Acquire) != transfers {
+            return false;
+        }
+        runtime.persistence.checkpoint(sequence, capture, layout);
+        true
+    });
+    cx.spawn(async move |cx| {
+        if !task.await {
+            cx.update(take_checkpoint);
+        }
+    })
+    .detach();
 }
 
 /// Notes that `window` reserved, or no longer reserves, a cross-window
@@ -137,6 +156,7 @@ pub(super) fn set_transfer_reserved(
 ) {
     let desktop = cx.global_mut::<Desktop>();
     if reserved {
+        desktop.runtime.transfers.fetch_add(1, Ordering::AcqRel);
         desktop.cross.reserved.insert(window);
         return;
     }

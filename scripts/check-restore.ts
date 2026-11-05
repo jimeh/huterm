@@ -173,8 +173,11 @@ try {
     // still comes back.
     const bounds = (state: Record<string, string>) => state[`${window}.bounds`]?.split(",").map(Number) ?? [];
     const [was, now] = [bounds(before), bounds(after)];
+    if (![was, now].every((values) => values.length === 4 && values.every(Number.isFinite))) {
+      throw new Error(`${window} bounds are not four numbers: ${was} and ${now}`);
+    }
     const compared = process.platform === "linux" ? [2, 3] : [0, 1, 2, 3];
-    if (compared.some((index) => Math.abs((was[index] ?? NaN) - (now[index] ?? NaN)) > 1)) {
+    if (compared.some((index) => Math.abs(was[index]! - now[index]!) > 1)) {
       throw new Error(`${window} bounds ${was} came back as ${now}`);
     }
   }

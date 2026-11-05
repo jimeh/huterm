@@ -370,6 +370,11 @@ struct DesktopRuntime {
     /// Orders every write of the scope's saved state; the Quit write runs
     /// inside the commit callback on a worker.
     persistence: persistence::Persistence,
+    /// The launch restore's worker, which termination waits for.
+    restore_worker: restore::Worker,
+    /// Counts cross-window transfer reservations, so a checkpoint capture
+    /// can tell that a transfer began while it ran.
+    transfers: std::sync::atomic::AtomicU64,
     #[cfg(all(test, feature = "test-support"))]
     worker_hooks: worker_hooks::WorkerHooks,
 }
@@ -732,18 +737,26 @@ impl DesktopRuntime {
         windows: Option<huterm_state::DesktopLayout>,
     ) -> Committed<Result<(), MuxError>> {
         let current = assessment.recheck();
-        let mut mux = self.lock();
-        let result =
-            mux.commit_close_with(assessment, &current, confirmed, |mux| {
-                if let Some(windows) = windows {
-                    self.terminating.store(true, Ordering::Release);
-                    self.capture(mux, windows);
-                }
-            });
-        Committed {
-            result,
-            seq: mux.hierarchy_seq(),
+        let committed = {
+            let mut mux = self.lock();
+            let result =
+                mux.commit_close_with(assessment, &current, confirmed, |mux| {
+                    if let Some(windows) = windows {
+                        self.terminating.store(true, Ordering::Release);
+                        self.capture(mux, windows);
+                    }
+                });
+            Committed {
+                result,
+                seq: mux.hierarchy_seq(),
+            }
+        };
+        // A committed Quit approves exit only once a launch restore stopped
+        // the terminals Mux does not own yet.
+        if self.terminating.load(Ordering::Acquire) {
+            self.restore_worker.wait();
         }
+        committed
     }
 
     /// Takes the Quit write once, whichever exit path gets here first:
@@ -847,6 +860,9 @@ impl DesktopRuntime {
         // A queued spawn must observe termination after it acquires the same
         // mutex, even when it had not started when the native quit hook ran.
         self.terminating.store(true, Ordering::Release);
+        // A launch restore stops and joins what it spawned before Mux owns
+        // it; the process must not exit first.
+        self.restore_worker.wait();
         let assessment = self.assess(CloseRequest::Application).result?;
         assessment.record_cleanup_groups();
         let mut mux = self
@@ -2287,7 +2303,9 @@ fn capture_windows(cx: &App) -> huterm_state::DesktopLayout {
                 .map(|handle| handle.window_id())
                 .filter(|id| regular(*id))
         });
-    desktop.windows.desktop_layout(active)
+    let mut layout = desktop.windows.desktop_layout(active);
+    layout.windows.extend(restore::stashed_layouts(cx));
+    layout
 }
 
 fn maybe_exit(cx: &mut App) {

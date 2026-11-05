@@ -17,6 +17,10 @@ pub(super) struct Registry {
     return_focus: Option<native::Focus>,
     pub(super) failed_spawn: Option<(String, String)>,
     smoke_journal: Option<SmokeJournal>,
+    /// Profiles tests treat as summoned by a registered shortcut, since
+    /// GPUI tests cannot register global shortcuts.
+    #[cfg(test)]
+    pub(super) summoned: std::collections::HashSet<String>,
 }
 
 impl Default for Registry {
@@ -28,6 +32,8 @@ impl Default for Registry {
             failed_spawn: None,
             smoke_journal: std::env::var_os("HUTERM_QUAKE_SMOKE")
                 .map(|_| SmokeJournal::new()),
+            #[cfg(test)]
+            summoned: std::collections::HashSet::new(),
         }
     }
 }
@@ -465,8 +471,12 @@ pub(super) fn keep_alive(cx: &App) -> bool {
 }
 /// Whether a registered global shortcut summons profile `name`.
 pub(super) fn summons(cx: &App, name: &str) -> bool {
-    cx.global::<Desktop>()
-        .quake
+    let quake = &cx.global::<Desktop>().quake;
+    #[cfg(test)]
+    if quake.summoned.contains(name) {
+        return true;
+    }
+    quake
         .registrations
         .as_ref()
         .is_some_and(|registrations| registrations.summons(name))
@@ -1168,6 +1178,8 @@ pub(super) fn close(
 /// profile's window takes its new name once the file read has it, and the
 /// windows of profiles the file no longer has become ordinary windows.
 pub(super) fn reconcile(cx: &mut App, read: u64) {
+    // Before the windows, which drop the renames this reload read.
+    restore::reconcile_stash(cx);
     let desktop = cx.global_mut::<Desktop>();
     let profiles = &desktop.config.quake.profiles;
     let reconciled = desktop
