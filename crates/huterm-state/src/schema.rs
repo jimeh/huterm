@@ -343,8 +343,9 @@ pub(crate) fn check_runtime(
 }
 
 /// Encodes a runtime capture, refusing one over a bound. Directory
-/// candidates JSON cannot hold (not UTF-8) or a restore cannot use (not
-/// absolute) are left out; a restore falls back to the next one.
+/// candidates are optional, so ones JSON cannot hold (not UTF-8), a restore
+/// cannot use (not absolute), or over the path bound are left out; a
+/// restore falls back to the next one. The reader rejects all three.
 pub(crate) fn encode_runtime(
     capture: &RuntimeCapture,
     scope_id: ScopeId,
@@ -352,9 +353,12 @@ pub(crate) fn encode_runtime(
 ) -> Result<Vec<u8>, InvalidState> {
     let mut capture = capture.clone();
     for terminal in &mut capture.terminals {
-        terminal
-            .directories
-            .retain(|path| path.is_absolute() && path.to_str().is_some());
+        terminal.directories.retain(|path| {
+            path.is_absolute()
+                && path
+                    .to_str()
+                    .is_some_and(|text| text.len() <= MAX_PATH_BYTES)
+        });
     }
     check_runtime(&capture)?;
     let file = RuntimeFile {

@@ -65,6 +65,10 @@ pub enum SaveError {
     /// The runtime file on disk came from a newer version, which this
     /// build never overwrites.
     NewerVersion,
+    /// No load has found `runtime.json` missing or valid, and no corrupt
+    /// one was set aside, so this store cannot tell that replacing it is
+    /// safe.
+    RuntimeUnresolved,
     /// Writing failed; files not yet replaced keep their previous content.
     Io(io::Error),
 }
@@ -76,6 +80,9 @@ impl fmt::Display for SaveError {
             Self::NewerVersion => {
                 f.write_str("saved state came from a newer Huterm")
             }
+            Self::RuntimeUnresolved => f.write_str(
+                "the saved runtime file has not been loaded or set aside",
+            ),
             Self::Io(error) => write!(f, "could not save: {error}"),
         }
     }

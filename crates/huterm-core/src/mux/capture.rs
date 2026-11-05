@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use huterm_protocol::{
-    HierarchyEvent, PaneId, PaneLayout, PaneNode, RuntimeCapture, RuntimeId,
-    SessionCapture, SessionId, SessionInfo, TabId, TabInfo, TerminalCapture,
-    TerminalCommand, TerminalId, TerminalLaunch, WorkspaceCapture, WorkspaceId,
-    WorkspaceInfo,
+    HierarchyEvent, PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeCapture,
+    RuntimeId, SessionCapture, SessionId, SessionInfo, TabId, TabInfo,
+    TerminalCapture, TerminalCommand, TerminalId, TerminalLaunch,
+    WorkspaceCapture, WorkspaceId, WorkspaceInfo,
 };
 
 use super::{Mux, MuxError, Session, Tab, Workspace, fallback_name, position};
@@ -25,7 +25,8 @@ const UNSCOPED: RuntimeId = RuntimeId::new(0);
 
 /// Terminals started for a [`Mux::restore`], with the ones that failed.
 ///
-/// Dropping the set stops and joins every runtime it still holds.
+/// Dropping the set stops and joins every runtime it still holds, as
+/// [`Self::shutdown`] does.
 #[derive(Debug)]
 pub struct SpawnedTerminals {
     runtime: RuntimeId,
@@ -142,7 +143,8 @@ impl SpawnedTerminals {
         &self.failures
     }
 
-    /// Stops and joins every started terminal.
+    /// Stops and joins every started terminal: closes them all first, then
+    /// joins each.
     ///
     /// # Errors
     /// Returns the last cleanup failure after stopping every terminal.
@@ -170,6 +172,12 @@ impl SpawnedTerminals {
             .chain(self.failures.iter().map(|failure| &failure.terminal))
             .all(|id| seen.insert(*id));
         accounted && seen == pane_terminals(capture).into_iter().collect()
+    }
+}
+
+impl Drop for SpawnedTerminals {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
     }
 }
 
@@ -269,9 +277,9 @@ impl Mux {
         }
     }
 
-    /// Recreates a captured structure in this empty runtime with its saved
+    /// Recreates a captured structure in this fresh runtime with its saved
     /// numeric identities, now in this runtime's scope, and the terminals
-    /// [`SpawnedTerminals::spawn`] started for it. Raises the allocator to
+    /// [`SpawnedTerminals::spawn`] started for it. Sets the allocator to
     /// the capture's watermark and restores both creation ordinals, so new
     /// allocations never collide and automatic names continue. Emits the
     /// events creation emits, so subscribers stay current.
@@ -281,10 +289,12 @@ impl Mux {
     /// without a tab.
     ///
     /// # Errors
-    /// Refuses, changing nothing, unless the runtime holds no session,
-    /// workspace, or terminal, the terminals were spawned in this runtime's
-    /// scope for exactly this capture, and the capture validates. A
-    /// refusal stops and joins every spawned terminal.
+    /// Refuses, changing nothing, unless the runtime is fresh (it holds no
+    /// session, workspace, or terminal and has allocated no identity or
+    /// creation ordinal, so no restored identity can repeat one it handed
+    /// out), the capture names this runtime's socket, the terminals were
+    /// spawned in this runtime's scope for exactly this capture, and the
+    /// capture validates. A refusal stops and joins every spawned terminal.
     pub fn restore(
         &mut self,
         capture: &RuntimeCapture,
@@ -293,8 +303,13 @@ impl Mux {
         let refusal = if !self.sessions.is_empty()
             || !self.workspaces.is_empty()
             || !self.terminals.is_empty()
+            || self.next_id != 0
+            || self.session_ordinal != 0
+            || self.workspace_ordinal != 0
         {
-            Some(MuxError::RestoreNotEmpty)
+            Some(MuxError::RestoreNotFresh)
+        } else if capture.socket_name != self.socket_name {
+            Some(MuxError::RestoreForeignSocket)
         } else if spawned.runtime != self.runtime_id {
             Some(MuxError::ForeignRuntime(spawned.runtime))
         } else if let Err(error) = capture.validate() {
@@ -309,11 +324,9 @@ impl Mux {
             return Err(error);
         }
         self.changed();
-        self.next_id = self.next_id.max(capture.next_id);
-        self.session_ordinal =
-            self.session_ordinal.max(capture.session_ordinal);
-        self.workspace_ordinal =
-            self.workspace_ordinal.max(capture.workspace_ordinal);
+        self.next_id = capture.next_id;
+        self.session_ordinal = capture.session_ordinal;
+        self.workspace_ordinal = capture.workspace_ordinal;
         let failed: HashMap<TerminalId, RuntimeError> = spawned
             .failures
             .drain(..)
@@ -435,7 +448,14 @@ impl Mux {
         if layout.pane_count() < 2 {
             zoomed = None;
         }
-        let layout = with_fallback_names(&layout, spawned);
+        let layout = with_fallback_names(&layout, |pane| {
+            spawned
+                .terminals
+                .get(&pane.terminal_id)
+                .map_or_else(String::new, |started| {
+                    started.fallback_name.clone()
+                })
+        });
         for pane in layout.panes() {
             let started = spawned
                 .terminals
@@ -466,39 +486,36 @@ impl Mux {
     }
 }
 
-/// A tab's record with unscoped identities.
+/// A tab's record with unscoped identities and no fallback pane names,
+/// which are process labels a capture never carries.
 fn unscoped_tab(tab: &Tab) -> TabInfo {
     TabInfo {
         id: TabId::new(tab.id.get()),
-        layout: tab.layout.in_runtime(UNSCOPED),
+        layout: with_fallback_names(&tab.layout.in_runtime(UNSCOPED), |_| {
+            String::new()
+        }),
         zoomed: tab.zoomed.map(|pane| PaneId::new(pane.get())),
         ..tab.info()
     }
 }
 
-/// The layout with each pane's fallback name taken from the command its
-/// restored terminal launched, as a new pane's is.
+/// The layout with each pane's fallback name replaced by `name`'s.
 fn with_fallback_names(
     layout: &PaneLayout,
-    spawned: &SpawnedTerminals,
+    name: impl Fn(&PaneInfo) -> String,
 ) -> PaneLayout {
-    fn rename(node: &mut PaneNode, spawned: &SpawnedTerminals) {
+    fn rename(node: &mut PaneNode, name: &impl Fn(&PaneInfo) -> String) {
         match node {
-            PaneNode::Pane(pane) => {
-                if let Some(started) = spawned.terminals.get(&pane.terminal_id)
-                {
-                    pane.fallback_name.clone_from(&started.fallback_name);
-                }
-            }
+            PaneNode::Pane(pane) => pane.fallback_name = name(pane),
             PaneNode::Split(split) => {
                 for child in &mut split.children {
-                    rename(&mut child.node, spawned);
+                    rename(&mut child.node, name);
                 }
             }
         }
     }
     let mut root = layout.root().clone();
-    rename(&mut root, spawned);
+    rename(&mut root, &name);
     PaneLayout::new(root).expect("renaming panes keeps a layout valid")
 }
 

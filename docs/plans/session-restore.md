@@ -121,9 +121,12 @@ saved client layout may name those numeric IDs only when its `scope_id` and
   persistence off for the scope and says so.
 - Bounds, the same for writer and reader: file size 4 MiB; 256 sessions,
   1,024 workspaces, 4,096 tabs, 16,384 panes, layout depth 32; the runtime's
-  name rules; paths 4,096 bytes. The reader checks counts and lengths before
-  allocating. A capture over a bound is not written, and the run reports it
-  once.
+  name rules; paths 4,096 bytes. The reader checks the file size before
+  reading, stops each list at its bound while parsing, and checks aggregate
+  counts, path lengths, and depth after parsing; the 4 MiB cap bounds
+  memory. A capture over a bound is not written, and the run reports it
+  once. Directory candidates are optional, so the writer drops one that is
+  not UTF-8, not absolute, or over the path bound instead.
 - Validation is all-or-nothing: a duplicate ID across kinds, an ID above the
   saved watermark, an orphaned reference, or an invalid layout rejects the
   file.
@@ -247,7 +250,8 @@ writer thread and has one state:
    `usable_launch_directory` accepts, else the default directory with a
    recorded fallback. The task checks the terminating flag between spawns.
 4. Under one short lock, `Mux::restore(capture, spawned)` checks that the Mux
-   is still empty, raises the allocator to the watermark, restores the
+   is still fresh (empty, with no identity or ordinal allocated) and has the
+   capture's socket name, sets the allocator to the watermark, restores the
    ordinals, and inserts sessions, workspaces, and tabs with their saved IDs
    and the spawned runtimes. A pane that failed to spawn leaves its layout,
    and a tab with no pane left is removed. It returns a report.
@@ -284,7 +288,8 @@ spawning would need a pending-terminal state in core and is a non-goal.
 | Lock held by another process | Untouched | Off | Persistent info notice, first window |
 | `runtime.json` corrupt, over bounds, or invalid | Renamed `.corrupt` (one kept); `desktop.json` ignored | Running, fresh `scope_id` | Fresh window; persistent notice |
 | `runtime.json` newer version | Untouched | Off | Fresh window; persistent notice |
-| `desktop.json` corrupt, newer, or mismatched | Corrupt one renamed; newer one left | Running | Default windows per session; info notice |
+| `runtime.json` unreadable (I/O error) | Untouched | Off | Fresh window; persistent notice |
+| `desktop.json` corrupt, newer, or mismatched | Corrupt one renamed; a newer one is left untouched and never overwritten, while runtime saves continue | Running | Default windows per session; info notice |
 | Rename aside fails | Untouched | Off | Persistent notice |
 | Leftover `restore-attempt` | Both renamed `.corrupt` | Running, fresh state | Fresh window; persistent notice |
 | A pane fails to spawn | Next checkpoint drops it | Running | Persistent warning in its window |

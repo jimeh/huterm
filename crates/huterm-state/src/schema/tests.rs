@@ -189,15 +189,36 @@ fn layouts_stop_at_their_depth_bound() {
 fn saved_paths_stop_at_their_bound() {
     let with_path = |bytes: usize| {
         let mut capture = capture(1, 1, 1, 1);
-        capture.terminals[0].directories =
-            vec![PathBuf::from(format!("/{}", "a".repeat(bytes - 1)))];
+        capture.terminals[0].directories = vec![
+            PathBuf::from(format!("/{}", "a".repeat(bytes - 1))),
+            PathBuf::from("/kept"),
+        ];
         capture
     };
-    assert_bound(
-        &with_path(MAX_PATH_BYTES),
-        &with_path(MAX_PATH_BYTES + 1),
-        "longer than 4096 bytes",
+    let within = with_path(MAX_PATH_BYTES);
+    let bytes = encode_runtime(&within, SCOPE, 1).unwrap();
+    match decode_runtime(&bytes) {
+        Decoded::Ok(file) => assert_eq!(file.content, within),
+        other => panic!("the bound itself was rejected: {other:?}"),
+    }
+    // The writer drops an over-long candidate, which is optional, and
+    // saves the rest.
+    let over = with_path(MAX_PATH_BYTES + 1);
+    let bytes = encode_runtime(&over, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_runtime(&bytes) else {
+        panic!("the file did not decode");
+    };
+    assert_eq!(
+        file.content.terminals[0].directories,
+        [PathBuf::from("/kept")]
     );
+    // The reader rejects one in a file it did not write.
+    match decode_runtime(&unchecked(&over)) {
+        Decoded::Corrupt(error) => {
+            assert!(error.contains("longer than 4096 bytes"), "{error}");
+        }
+        other => panic!("the reader accepted {other:?}"),
+    }
 }
 
 #[test]

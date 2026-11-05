@@ -1334,10 +1334,15 @@ pub enum MuxError {
     /// have recorded.
     #[error("the recorded layout change is invalid")]
     InvalidRestore,
-    /// A runtime restore found the runtime already holding structure or
-    /// terminals.
-    #[error("a restore needs an empty runtime")]
-    RestoreNotEmpty,
+    /// A runtime restore found the runtime holding structure or
+    /// terminals, or having allocated an identity or creation ordinal, so
+    /// restored identities could repeat ones it already handed out.
+    #[error("a restore needs a fresh runtime")]
+    RestoreNotFresh,
+    /// A runtime capture names a different logical socket than the
+    /// restoring runtime's.
+    #[error("the saved structure belongs to another socket")]
+    RestoreForeignSocket,
     /// A runtime capture breaks a rule restore relies on.
     #[error("the saved structure is invalid: {0}")]
     InvalidCapture(CaptureError),

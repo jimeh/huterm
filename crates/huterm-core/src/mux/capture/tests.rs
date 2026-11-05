@@ -143,6 +143,21 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     assert_eq!(sessions, [fixture.main.get(), fixture.unviewed.get()]);
     assert!(!sessions.contains(&fixture.tabless.get()));
     assert_eq!(capture.terminals.len(), 6);
+    // Fallback names are process labels, which captures never carry.
+    let live = fixture
+        .mux
+        .tab(fixture.editor)
+        .unwrap()
+        .first_pane()
+        .clone();
+    assert_eq!(live.fallback_name, "sh");
+    assert!(
+        capture
+            .tabs()
+            .flat_map(|tab| tab.layout.panes())
+            .all(|pane| pane.fallback_name.is_empty()),
+        "{capture:?}"
+    );
     assert_eq!(capture.next_id, fixture.mux.next_id);
     assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 4));
 
@@ -413,11 +428,43 @@ fn a_refused_restore_changes_nothing_and_reaps_every_spawned_child() {
     let pids = spawned_pids(&spawned);
     assert!(matches!(
         restored.restore(&capture, spawned),
-        Err(MuxError::RestoreNotEmpty)
+        Err(MuxError::RestoreNotFresh)
     ));
     assert_reaped(&pids);
     assert_eq!(restored.structure(), before);
     restored.shutdown().unwrap();
+    fixture.mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_restore_needs_a_fresh_runtime_of_the_captured_socket() {
+    let mut fixture = fixture();
+    let capture = fixture.mux.capture_runtime();
+
+    // Emptied after allocating, so restored identities could repeat ones
+    // already handed out.
+    let mut used = Mux::default();
+    let session = used.create_session(None).unwrap();
+    used.close_session(session).unwrap();
+    assert_eq!(used.sessions(), []);
+    let seq = used.hierarchy_seq();
+    let spawned = spawn_all(&used, &capture);
+    let pids = spawned_pids(&spawned);
+    let error = used.restore(&capture, spawned).unwrap_err();
+    assert!(matches!(error, MuxError::RestoreNotFresh), "{error:?}");
+    assert_reaped(&pids);
+    assert_eq!(used.sessions(), []);
+    assert_eq!(used.hierarchy_seq(), seq);
+
+    // A fresh runtime of another socket.
+    let mut other = Mux::new("other").unwrap();
+    let spawned = spawn_all(&other, &capture);
+    let pids = spawned_pids(&spawned);
+    let error = other.restore(&capture, spawned).unwrap_err();
+    assert!(matches!(error, MuxError::RestoreForeignSocket), "{error:?}");
+    assert_reaped(&pids);
+    assert_eq!(other.sessions(), []);
+    assert_eq!(other.terminal_count(), 0);
     fixture.mux.shutdown().unwrap();
 }
 

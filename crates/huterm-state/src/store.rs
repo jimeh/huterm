@@ -73,9 +73,9 @@ pub enum RuntimeLoad {
     /// aside before the next save replaces it.
     Corrupt(String),
     /// Written by a newer version, or naming a newer feature. This store
-    /// refuses to overwrite it.
+    /// refuses to overwrite it for the rest of its life.
     Newer(String),
-    /// The file exists but could not be read.
+    /// The file exists but could not be read. Saves refuse to replace it.
     Unreadable(String),
 }
 
@@ -88,7 +88,8 @@ pub enum DesktopLoad {
     Loaded(DesktopLayout),
     /// Unparseable, invalid, or over a bound, with the reason.
     Corrupt(String),
-    /// Written by a newer version.
+    /// Written by a newer version. Saves leave it in place for the rest of
+    /// the store's life and write only the runtime file.
     Newer(String),
     /// A valid layout from another save than the runtime file's, or with
     /// no runtime file to name, so its identities cannot be trusted.
@@ -117,10 +118,22 @@ pub struct Store {
     /// The identity the last load or save recorded; the next save keeps
     /// its scope and writes the following generation.
     identity: Option<(ScopeId, u64)>,
-    /// The last load found a newer runtime file, which saves never
-    /// overwrite.
-    newer_runtime: bool,
+    /// Whether a save may replace `runtime.json`.
+    runtime_guard: RuntimeGuard,
+    /// A load found a newer `desktop.json`, which saves never overwrite.
+    newer_desktop: bool,
     _lock: ScopeLock,
+}
+
+/// What a store knows about the `runtime.json` a save would replace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeGuard {
+    /// Not yet found missing or valid, nor set aside.
+    Unresolved,
+    /// Missing, valid, or set aside, so a save may replace it.
+    Replaceable,
+    /// Written by a newer version, so no save replaces it.
+    Newer,
 }
 
 impl Store {
@@ -148,7 +161,8 @@ impl Store {
             directory,
             socket_name: socket_name.into(),
             identity: None,
-            newer_runtime: false,
+            runtime_guard: RuntimeGuard::Unresolved,
+            newer_desktop: false,
             _lock: lock,
         })
     }
@@ -162,6 +176,10 @@ impl Store {
     /// Reads and classifies both files. A desktop layout counts only when
     /// its scope identity and generation match the runtime file's. Nothing
     /// is renamed or deleted.
+    ///
+    /// Saves wait for a load that finds `runtime.json` missing or valid. A
+    /// newer runtime or desktop file stays protected from saves for the
+    /// rest of the store's life, whatever later loads find.
     pub fn load(&mut self) -> Loaded {
         let runtime = match self.read(StateFile::Runtime) {
             FileRead::Missing => RuntimeLoad::Missing,
@@ -182,7 +200,17 @@ impl Store {
                 Decoded::Newer(reason) => RuntimeLoad::Newer(reason),
             },
         };
-        self.newer_runtime = matches!(runtime, RuntimeLoad::Newer(_));
+        if self.runtime_guard != RuntimeGuard::Newer {
+            self.runtime_guard = match runtime {
+                RuntimeLoad::Missing | RuntimeLoad::Loaded(_) => {
+                    RuntimeGuard::Replaceable
+                }
+                RuntimeLoad::Newer(_) => RuntimeGuard::Newer,
+                RuntimeLoad::Corrupt(_) | RuntimeLoad::Unreadable(_) => {
+                    RuntimeGuard::Unresolved
+                }
+            };
+        }
         self.identity = match &runtime {
             RuntimeLoad::Loaded(saved) => {
                 Some((saved.scope_id, saved.generation))
@@ -205,6 +233,7 @@ impl Store {
                 Decoded::Newer(reason) => DesktopLoad::Newer(reason),
             },
         };
+        self.newer_desktop |= matches!(desktop, DesktopLoad::Newer(_));
         Loaded { runtime, desktop }
     }
 
@@ -212,11 +241,13 @@ impl Store {
     /// identity (a new one when no runtime file loaded) and the next
     /// generation, which it returns. Both are validated before either is
     /// written. A failure leaves every file not yet replaced as it was, so
-    /// a layout from an earlier save then no longer matches.
+    /// a layout from an earlier save then no longer matches. A newer
+    /// `desktop.json` is left in place and only `runtime.json` is written.
     ///
     /// # Errors
-    /// Refuses a capture or layout over a bound or invalid, and refuses to
-    /// replace a newer runtime file; reports write failures.
+    /// Refuses a capture or layout over a bound or invalid, refuses until a
+    /// load or [`Self::set_aside`] shows `runtime.json` may be replaced,
+    /// and refuses to replace a newer runtime file; reports write failures.
     pub fn save(
         &mut self,
         capture: &RuntimeCapture,
@@ -233,8 +264,12 @@ impl Store {
         layout: &DesktopLayout,
         mut before_rename: impl FnMut(StateFile) -> io::Result<()>,
     ) -> Result<u64, SaveError> {
-        if self.newer_runtime {
-            return Err(SaveError::NewerVersion);
+        match self.runtime_guard {
+            RuntimeGuard::Unresolved => {
+                return Err(SaveError::RuntimeUnresolved);
+            }
+            RuntimeGuard::Newer => return Err(SaveError::NewerVersion),
+            RuntimeGuard::Replaceable => {}
         }
         if capture.socket_name != self.socket_name {
             return Err(
@@ -259,6 +294,9 @@ impl Store {
             |_| before_rename(StateFile::Runtime),
         )?;
         self.identity = Some((scope_id, generation));
+        if self.newer_desktop {
+            return Ok(generation);
+        }
         atomic::write_with(
             &self.directory,
             StateFile::Desktop.name(),
@@ -269,21 +307,25 @@ impl Store {
     }
 
     /// Renames `file` to its `.corrupt` name, replacing an older copy. A
-    /// missing file is left alone. A set-aside runtime file means the next
-    /// save starts a new scope identity.
+    /// missing file is left alone. Once a runtime file is set aside, the
+    /// next save may write one, with a new scope identity, unless a load
+    /// found a newer one.
     ///
     /// # Errors
     /// Reports a failed rename or directory sync.
     pub fn set_aside(&mut self, file: StateFile) -> io::Result<()> {
-        if file == StateFile::Runtime {
-            self.identity = None;
-            self.newer_runtime = false;
-        }
         match atomic::rename(&self.directory, file.name(), file.corrupt_name())
         {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            result => result,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            result => result?,
         }
+        if file == StateFile::Runtime {
+            self.identity = None;
+            if self.runtime_guard != RuntimeGuard::Newer {
+                self.runtime_guard = RuntimeGuard::Replaceable;
+            }
+        }
+        Ok(())
     }
 
     /// Creates the `restore-attempt` marker and syncs it, so a crash during

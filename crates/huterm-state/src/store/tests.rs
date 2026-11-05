@@ -324,6 +324,7 @@ fn a_layout_from_another_save_or_scope_is_mismatched() {
     let capture = rich_capture();
     let layout = layout_for(&capture);
     let mut store = Store::open(root.path(), "default").unwrap();
+    store.load();
     store.save(&capture, &layout).unwrap();
     // A crash between the two renames leaves the new runtime file beside
     // the previous layout.
@@ -376,6 +377,7 @@ fn unreadable_content_is_classified_and_newer_files_are_never_overwritten() {
     let capture = rich_capture();
     let layout = layout_for(&capture);
     let mut store = Store::open(root.path(), "default").unwrap();
+    store.load();
     store.save(&capture, &layout).unwrap();
     let runtime = store.directory().join("runtime.json");
     let desktop = store.directory().join("desktop.json");
@@ -426,14 +428,80 @@ fn unreadable_content_is_classified_and_newer_files_are_never_overwritten() {
 
     fs::write(&runtime, &valid).unwrap();
     let layout_text = fs::read_to_string(&desktop).unwrap();
-    fs::write(
-        &desktop,
-        layout_text.replace("\"version\":1", "\"version\":7"),
-    )
-    .unwrap();
-    assert_eq!(store.load().desktop, DesktopLoad::Newer("version 7".into()));
     fs::write(&desktop, layout_text.replace("maximized", "minimized")).unwrap();
     assert!(matches!(store.load().desktop, DesktopLoad::Corrupt(_)));
+
+    // A newer layout is left alone while saves keep writing the runtime
+    // file, so the next load finds the layout from another save.
+    drop(store);
+    let mut store = Store::open(root.path(), "default").unwrap();
+    let newer = layout_text.replace("\"version\":1", "\"version\":7");
+    fs::write(&desktop, &newer).unwrap();
+    assert_eq!(store.load().desktop, DesktopLoad::Newer("version 7".into()));
+    let generation = store.save(&capture, &layout).unwrap();
+    assert_eq!(fs::read_to_string(&desktop).unwrap(), newer);
+    let loaded = store.load();
+    assert!(matches!(
+        &loaded.runtime,
+        RuntimeLoad::Loaded(saved) if saved.generation == generation
+    ));
+    assert_eq!(loaded.desktop, DesktopLoad::Newer("version 7".into()));
+    store.save(&capture, &layout).unwrap();
+    assert_eq!(fs::read_to_string(&desktop).unwrap(), newer);
+}
+
+#[test]
+fn saves_wait_until_the_runtime_file_is_known_safe_to_replace() {
+    let root = TempDir::new();
+    let capture = rich_capture();
+    let layout = layout_for(&capture);
+    let mut store = Store::open(root.path(), "default").unwrap();
+    store.load();
+    store.save(&capture, &layout).unwrap();
+    let runtime = store.directory().join("runtime.json");
+    let valid = fs::read_to_string(&runtime).unwrap();
+    drop(store);
+    let refused = |store: &mut Store| {
+        assert!(matches!(
+            store.save(&capture, &layout),
+            Err(SaveError::RuntimeUnresolved)
+        ));
+    };
+
+    // Before any load, a newer runtime file keeps its scope identity.
+    let newer = valid.replace("\"version\":1", "\"version\":2");
+    fs::write(&runtime, &newer).unwrap();
+    let mut store = Store::open(root.path(), "default").unwrap();
+    refused(&mut store);
+    assert_eq!(fs::read_to_string(&runtime).unwrap(), newer);
+    // Once found newer, it stays protected even if a later load succeeds.
+    assert!(matches!(store.load().runtime, RuntimeLoad::Newer(_)));
+    fs::write(&runtime, &valid).unwrap();
+    assert!(matches!(store.load().runtime, RuntimeLoad::Loaded(_)));
+    assert!(matches!(
+        store.save(&capture, &layout),
+        Err(SaveError::NewerVersion)
+    ));
+    assert_eq!(fs::read_to_string(&runtime).unwrap(), valid);
+    drop(store);
+
+    // A file that exists but cannot be read is never replaced.
+    fs::remove_file(&runtime).unwrap();
+    fs::create_dir(&runtime).unwrap();
+    let mut store = Store::open(root.path(), "default").unwrap();
+    assert!(matches!(store.load().runtime, RuntimeLoad::Unreadable(_)));
+    refused(&mut store);
+    assert!(runtime.is_dir());
+    fs::remove_dir(&runtime).unwrap();
+
+    // A corrupt file is replaced only once it has been set aside.
+    fs::write(&runtime, b"{not json").unwrap();
+    assert!(matches!(store.load().runtime, RuntimeLoad::Corrupt(_)));
+    refused(&mut store);
+    assert_eq!(fs::read(&runtime).unwrap(), b"{not json");
+    store.set_aside(StateFile::Runtime).unwrap();
+    assert_eq!(store.save(&capture, &layout).unwrap(), 1);
+    assert!(matches!(store.load().runtime, RuntimeLoad::Loaded(_)));
 }
 
 #[test]
@@ -441,6 +509,7 @@ fn a_file_over_the_size_bound_is_rejected_before_its_body_is_read() {
     let root = TempDir::new();
     let capture = rich_capture();
     let mut store = Store::open(root.path(), "default").unwrap();
+    store.load();
     store.save(&capture, &layout_for(&capture)).unwrap();
     let runtime = store.directory().join("runtime.json");
     let limit = usize::try_from(MAX_FILE_BYTES).unwrap();

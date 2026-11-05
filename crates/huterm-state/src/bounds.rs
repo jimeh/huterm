@@ -14,7 +14,8 @@ pub const MAX_TABS: usize = 4096;
 pub const MAX_PANES: usize = 16_384;
 /// Nodes on the longest root-to-pane path of one tab's layout.
 pub const MAX_LAYOUT_DEPTH: usize = 32;
-/// Bytes in one saved directory path.
+/// Bytes in one saved directory path. Directory candidates are optional, so
+/// the writer drops a longer one instead of refusing the capture.
 pub const MAX_PATH_BYTES: usize = 4096;
 /// Windows in a desktop layout.
 pub const MAX_WINDOWS: usize = MAX_SESSIONS;
