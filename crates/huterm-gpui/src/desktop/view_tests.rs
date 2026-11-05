@@ -1177,6 +1177,9 @@ fn a_word_expanding_when_its_viewer_is_revoked_completes_through_the_replacement
         view.complete_expansion(ticket, Err(RuntimeError::Revoked), cx);
         assert!(view.selection.is_some(), "the selection waits");
         assert!(view.expanding());
+        // A hidden view requests no snapshot, whose completion would also
+        // send the expansion, so only the replacement can send it.
+        view.visible = false;
         let start = view.viewer_start();
         view.replace_viewer(replacement, &start, true, cx);
     });

@@ -191,6 +191,14 @@ fn a_line_keeps_its_indentation_but_not_text_before_it() {
         selected(&deep, at(1, 6), at(1, 6), SelectionUnit::Line).as_deref(),
         Some("                         deep")
     );
+    // A prompt that fills a wrapped row bounds the indented input after it.
+    let wrapped_prompt =
+        engine(b"\x1b]133;A\x07$                   \x1b]133;B\x07  ls");
+    assert_eq!(
+        selected(&wrapped_prompt, at(1, 2), at(1, 2), SelectionUnit::Line)
+            .as_deref(),
+        Some("ls")
+    );
     // The third row is a shell-integration prompt followed by its input.
     let engine = engine(
         b"    spaced in\r\n\tTabbed in\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls -la",
