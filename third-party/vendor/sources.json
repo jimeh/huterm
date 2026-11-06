@@ -105,6 +105,11 @@
           "name": "native-key-identity",
           "file": "patches/gpui-pre-macos/native-key-identity.patch",
           "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
+        },
+        {
+          "name": "vm-display-link",
+          "file": "patches/gpui-pre-macos/vm-display-link.patch",
+          "description": "Pace windows with CVDisplayLink instead of CAMetalDisplayLink when kern.hv_vmm_present reports a virtual machine, where the Metal link stops issuing updates, and print the selected frame source once when GPUI_FRAME_SOURCE_DEBUG is set."
         }
       ]
     },

@@ -1,8 +1,9 @@
 //! Frame pacing for macOS windows.
 //!
 //! On macOS 14 and later a window is paced by a `CAMetalDisplayLink` on its
-//! layer ([`gpui_apple::display_link::MetalFrameSource`]). Earlier systems use
-//! the shared `CVDisplayLink` registry described below ([`WindowFrameSource`]).
+//! layer ([`gpui_apple::display_link::MetalFrameSource`]). Earlier systems and
+//! virtual machines use the shared `CVDisplayLink` registry described below
+//! ([`WindowFrameSource`]).
 //!
 //! CVDisplayLink has no safe teardown: `CVDisplayLinkStop` merely flags the
 //! link's io thread to exit "soon" and returns immediately, and there is no

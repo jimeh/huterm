@@ -653,13 +653,65 @@ unsafe fn apply_simple_fullscreen_plan(
     }
 }
 
-/// What paces a window's frames. The choice depends only on the OS version,
-/// so it is made once per window.
+/// What paces a window's frames. The choice depends only on the OS version
+/// and whether it runs in a virtual machine, so it is made once per window.
 enum FrameSource {
     /// macOS 14+: a `CAMetalDisplayLink` that hands out each frame's drawable.
     Metal(Rc<MetalFrames>),
-    /// Earlier systems: the shared `CVDisplayLink` registry, joined on first start.
+    /// Earlier systems and virtual machines: the shared `CVDisplayLink`
+    /// registry, joined on first start.
     DisplayLink(Option<WindowFrameSource>),
+}
+
+/// Whether windows are paced by `CAMetalDisplayLink`. On Apple-virtualized
+/// displays (`kern.hv_vmm_present` is 1) the Metal link stops issuing updates
+/// after a short burst while `CVDisplayLink` keeps ticking, so virtual machines
+/// keep `CVDisplayLink`. Set `GPUI_FRAME_SOURCE_DEBUG` to print the choice once.
+fn uses_metal_frame_source() -> bool {
+    static USES_METAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *USES_METAL.get_or_init(|| {
+        let hv_vmm_present = hv_vmm_present();
+        let metal = MetalFrameSource::is_available() && hv_vmm_present != Some(1);
+        if std::env::var_os("GPUI_FRAME_SOURCE_DEBUG").is_some() {
+            eprintln!(
+                "gpui: frame source {}, kern.hv_vmm_present={}",
+                if metal {
+                    "CAMetalDisplayLink"
+                } else {
+                    "CVDisplayLink"
+                },
+                hv_vmm_present.map_or_else(|| "unavailable".to_string(), |value| value.to_string())
+            );
+        }
+        metal
+    })
+}
+
+/// The `kern.hv_vmm_present` sysctl: 1 in a virtual machine, 0 on hardware, or
+/// `None` when the kernel does not report it.
+fn hv_vmm_present() -> Option<i32> {
+    unsafe extern "C" {
+        fn sysctlbyname(
+            name: *const std::ffi::c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *mut c_void,
+            newlen: usize,
+        ) -> std::ffi::c_int;
+    }
+    let mut value: i32 = 0;
+    let mut len = mem::size_of::<i32>();
+    // SAFETY: the name is NUL-terminated and `value` has room for `len` bytes.
+    let status = unsafe {
+        sysctlbyname(
+            c"kern.hv_vmm_present".as_ptr(),
+            (&raw mut value).cast(),
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0 && len == mem::size_of::<i32>()).then_some(value)
 }
 
 struct MacWindowState {
@@ -1123,7 +1175,7 @@ impl MacWindow {
             let native_view: *mut AnyObject = msg_send![native_view, initWithFrame: content_bounds];
             assert!(!native_view.is_null());
 
-            let metal_frames = MetalFrameSource::is_available().then(Rc::<MetalFrames>::default);
+            let metal_frames = uses_metal_frame_source().then(Rc::<MetalFrames>::default);
             let state = Rc::new(Mutex::new(MacWindowState {
                 handle,
                 foreground_executor,

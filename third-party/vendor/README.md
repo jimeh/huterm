@@ -9,7 +9,8 @@ Keep each coherent fix together. GPUI's core crate has hidden-window creation,
 file-drop pointer-modality, test-window accessibility, keystroke held-flag, and
 App-free keybinding loader patches, its Linux crate has X11 file-drop,
 fullscreen-state, and key-repeat patches, and its macOS crate has
-offscreen-screen and per-window frame-constraint patches.
+offscreen-screen, per-window frame-constraint, and virtual-machine display-link
+patches.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -223,6 +224,19 @@ Huterm enables it throughout quake presentation and disables it on regular
 conversion and retained-window cleanup. AppKit clamps intermediate top-edge
 animation frames even with a zero borderless style mask. The native smoke checks
 actual slide intermediates and restored constraints on regular conversion.
+
+## GPUI frame source in virtual machines
+
+GPUI 0.3.11 paces each macOS 14+ window with a `CAMetalDisplayLink`. On
+Apple-virtualized macOS, such as GitHub's macOS runners, that link stops
+issuing updates after a short burst while a `CVDisplayLink` on the same
+display keeps ticking, so smokes waiting on drawn frames time out. The
+`vm-display-link` patch reads `kern.hv_vmm_present` through `sysctlbyname`
+once per process and keeps the `CVDisplayLink` source when it reports 1; a
+failed or absent sysctl counts as real hardware, which keeps upstream's Metal
+link. Setting `GPUI_FRAME_SOURCE_DEBUG` prints the chosen source and the
+sysctl value to stderr once. Drop the patch when a reviewed snapshot delivers
+Metal-link frames on GitHub's macOS runners; CI's macOS smokes fail without it.
 
 ## GPUI keybinding loading without an App
 

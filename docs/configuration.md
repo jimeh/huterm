@@ -739,14 +739,16 @@ windows.
 power_frame_limits = true
 ```
 
-Terminal windows draw at most about 30 frames per second while the system
-saves power, and at most about 60 under serious or critical thermal pressure.
+Terminal windows and the macOS floating drag preview draw at most about 30
+frames per second while the system saves power, and at most about 60 under
+serious or critical thermal pressure.
 On macOS, Low Power Mode engages the first cap and the system's thermal state
 the second. On Linux, power-profiles-daemon's `power-saver` profile engages the
 first cap; Linux reports no thermal state, so the second never engages there.
 Set `power_frame_limits = false` to turn both caps off.
 Settings lists it under Windows with the advanced settings. Changes apply to
-windows opened afterwards; open windows keep the limits they opened with.
+windows opened afterwards, and to the drag preview from the next drag; open
+windows keep the limits they opened with.
 
 ## Tab bar
 

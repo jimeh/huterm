@@ -2671,9 +2671,7 @@ fn open_window_with_profile(
             }),
             window_min_size: Some(WINDOW_MIN_SIZE),
             app_id: Some(APP_ID.into()),
-            ..frame_limits::terminal_window_options(
-                config.window.power_frame_limits,
-            )
+            ..frame_limits::window_options(config.window.power_frame_limits)
         },
         |window, cx| {
             if let Some(display) = display_id {

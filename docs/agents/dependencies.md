@@ -135,6 +135,12 @@ macOS and Linux populate it before normalization. Drop them when a reviewed
 snapshot supplies equivalent native identity. The vendor README records the
 platform derivation and required input-smoke checks.
 
+The `gpui-pre-macos` `vm-display-link` patch keeps `CVDisplayLink` frame
+pacing when `kern.hv_vmm_present` reports a virtual machine, where GPUI's
+`CAMetalDisplayLink` stops issuing updates. Drop it when a reviewed snapshot
+delivers Metal-link frames on GitHub's macOS runners; CI's macOS smokes are the
+check. [Window presentation](window-presentation.md) records the evidence.
+
 `gpui-pre` archives carry no Cargo VCS file; their manifest entries set
 `"snapshot": "gpui-pre"` so the checker reads the Zed crate and revision from
 `package.metadata.gpui-pre`. The archive remains the exact source baseline.

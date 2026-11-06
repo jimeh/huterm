@@ -11054,7 +11054,7 @@
         },
         "power_frame_limits": {
           "default": true,
-          "description": "Cap terminal windows at about 30 frames per second in Low Power Mode\nor a power-saver profile, and about 60 under serious or critical\nthermal pressure.",
+          "description": "Cap terminal windows and the macOS drag preview at about 30 frames\nper second in Low Power Mode or a power-saver profile, and about 60\nunder serious or critical thermal pressure.",
           "type": "boolean",
           "x-huterm-advanced": true,
           "x-huterm-apply": "new_windows",

@@ -172,11 +172,12 @@ Low Power Mode or the Linux `power-saver` profile) and makes the about 60 fps
 cap under serious or critical thermal pressure, macOS only, configurable as
 `thermal_frame_interval`; 0.3.10 hardcoded it for forced renders and
 next-frame callbacks, so turning the setting off also removes a cap older
-builds had. `frame_limits::terminal_window_options` sets all three
-for terminal windows and keeps or clears the power pair from `[window]
-power_frame_limits`. GPUI reads the intervals once, when it creates the
-window, so the setting applies to new windows. The Settings window and
-fixture windows keep GPUI's defaults.
+builds had. `frame_limits::window_options` sets all three for terminal
+windows and the macOS drag preview (`drag_preview::window_options`) and keeps
+or clears the power pair from `[window] power_frame_limits`. GPUI reads the
+intervals once, when it creates the window, so the setting applies to new
+windows; the preview reads the drag source window's value each time it opens
+for a drag. The Settings window and fixture windows keep GPUI's defaults.
 
 Animations share that window callback and one earliest-deadline timer. Report
 frame work and deadline work separately from presentation changes: a static hold
