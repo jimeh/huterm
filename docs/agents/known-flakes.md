@@ -518,9 +518,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   palette, and a late Enter and Escape gave the extra tab. The fixed step
   passed both 6 of 6 times. Under heavy CPU load the unmodified smoke hit
   the extra tab once in 240 runs, with no ESC in the terminal bytes as in
-  CI; the fixed smoke had no busy-step failure in 240 runs. Its two
-  failures there, the wheel step above and a `show_quake` timeout, also
-  appear without the fix under that load.
+  CI. Where the Escape after `busy-off` went in those failures is still
+  unexplained; the fix does not depend on it. The fixed smoke had no
+  busy-step failure in 240 runs. Its two failures there were the wheel
+  flake above and a `show_quake` timeout, which the unmodified smoke also
+  hit under heavier load.
 - **Fix (PR #427):** the step waits for the palette to open and take
   focus before `busy-on`. After Enter it waits for the palette's
   `diagnostic=Some("Unavailable: structural operation in progress")`,
@@ -543,12 +545,12 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   against about 13 locally, and the PR touched no tab code. The last state
   still held both tabs with the active one unchanged, so the click had not
   closed the inactive tab before the harness deadline.
-- **Fifth occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
+- **Second occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
   124475722453, head `5199386c`), in `Checks (Linux aarch64)`, so not
   macOS only. The `huterm-gpui` suite took 77.22 seconds there. The PR
   changes Settings and the terminal window's title row, not menus or
   selection.
-- **Sixth occurrence:** 2026-11-05 on PR #412 (run 42100951208, attempt 1,
+- **Third occurrence:** 2026-11-05 on PR #412 (run 42100951208, attempt 1,
   job 127504182683, head `606f1b21`), hosted macOS, now failing at
   `window_tests.rs:510` with the same message and both tabs still open.
   The `huterm-gpui` suite took 199.48 seconds against about 23 locally.

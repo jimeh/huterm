@@ -242,14 +242,15 @@ Tab's move, sent a second Tab, and left focus on the row's switch. On X11,
 keys go through `xdotool` rather than file commands, so `command_sequence`
 does not order them; wait first for anything else that moves focus, as the
 rebind step waits for the rebound row. A file command can also overtake an
-`xdotool` key, or a macOS `native` key that is queued but not yet
-dispatched, sent before it. Before a command whose outcome depends on that
-key, wait for state that only the key's handling produces, not for state
-that already held. In the palette smoke's busy step, `busy-on` overtook the
-palette shortcut and the busy window refused to open the palette. An Enter
-handled after `busy-off` opened a tab, because the check before `busy-off`
-already held before Enter. The step now waits for the open palette, and for
-the refused Enter's `diagnostic`.
+`xdotool` key sent before it, and so can a macOS `native` key, whose
+acknowledgment means only that it was queued (see below). Before a command
+whose outcome depends on that key, wait for state that only the key's
+handling produces, not for state that already held. In the palette smoke's
+busy step, `busy-on` overtook the palette shortcut and the busy window
+refused to open the palette. An Enter handled after `busy-off` opened a
+tab, because the check before `busy-off` already held before Enter. The
+step now waits for the open palette, and for the refused Enter's
+`diagnostic`.
 
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
@@ -262,9 +263,10 @@ it, consuming an empty or partial command; in the fullscreen smoke this showed
 up as a spurious window-index error. Readers must never observe partial
 contents.
 
-Integration fixture native-command acknowledgments mean NSEvents were queued,
-not dispatched. Assert observed state transitions after each press/release;
-check independent Right release and link ownership in the same published state.
+Native-command acknowledgments, in the integration and palette fixtures,
+mean NSEvents were queued, not dispatched. Assert observed state transitions
+after each press/release; check independent Right release and link ownership
+in the same published state.
 
 The XDND source publishes terminal acknowledgements before closing Xlib and
 exiting. Await successful process exit and clear its fixture handle after
