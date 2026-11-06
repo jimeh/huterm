@@ -138,6 +138,15 @@ defaults, restores the defaults before rendering, and compares effective colors
 before consuming damage. This keeps explicit overrides and cached row colors
 coherent without forcing unrelated rows to rebuild.
 
+Snapshot rows carry each row's soft-wrap flag and OSC 133 prompt mark. The
+render state copies a row's flags only when it rebuilds a dirty row. A soft
+wrap dirties the row it marks, because the cursor leaves that row, but an OSC
+133 mark on the cursor row leaves it clean with a stale copy. After any
+semantic prompt effect, the next snapshot therefore reads the live grid's
+flags for clean rows and rebuilds a row whose flags changed. `RowMatcher`
+compares flags as well as cells, so a row that becomes wrapped never reuses
+its unwrapped `Arc`. Contract tests in both crates pin this behavior.
+
 Ghostty resolves a `Point::Viewport` grid reference from the viewport's own
 position, and with the `page-list-pin-nearest` patch a `Point::Screen`
 reference by walking page nodes from the nearer end of history. Link lookup

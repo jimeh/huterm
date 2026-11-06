@@ -368,6 +368,11 @@ fn screen_cell_and_row_keys_write_exactly_their_output_type() {
         key_probe::row::<row::Grapheme>(value, &false)
     );
     exact!(rows, Styled, key_probe::row::<row::Styled>(value, &false));
+    exact!(
+        rows,
+        SemanticPrompt,
+        key_probe::row::<row::SemanticPrompt>(value, &0)
+    );
     covers(rows, row::KEYS);
 
     let mut builds = Vec::new();

@@ -926,6 +926,29 @@ pub(crate) const ENUMS: &[Enum] = &[
         ],
     },
     Enum {
+        name: "GhosttyRowSemanticPrompt",
+        size: size_of::<ffi::GhosttyRowSemanticPrompt>(),
+        align: align_of::<ffi::GhosttyRowSemanticPrompt>(),
+        values: &[
+            (
+                "GHOSTTY_ROW_SEMANTIC_NONE",
+                ffi::GHOSTTY_ROW_SEMANTIC_NONE as i64,
+            ),
+            (
+                "GHOSTTY_ROW_SEMANTIC_PROMPT",
+                ffi::GHOSTTY_ROW_SEMANTIC_PROMPT as i64,
+            ),
+            (
+                "GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION",
+                ffi::GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION as i64,
+            ),
+            (
+                "GHOSTTY_ROW_SEMANTIC_MAX_VALUE",
+                ffi::GHOSTTY_ROW_SEMANTIC_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
         name: "GhosttyRowData",
         size: size_of::<ffi::GhosttyRowData>(),
         align: align_of::<ffi::GhosttyRowData>(),

@@ -34,8 +34,8 @@ use crate::ffi::{
     TerminalOption, TerminalPointer,
 };
 use crate::types::{
-    Cell, CellContent, CellWidth, Fill, Point, PointSpace, Rgb, Row, Scroll,
-    Style, StyleColor,
+    Cell, CellContent, CellWidth, Fill, Point, PointSpace, Rgb, Row,
+    RowSemanticPrompt, Scroll, Style, StyleColor,
 };
 
 /// An allocator that outlives every object created with it. `None` selects
@@ -964,6 +964,16 @@ impl Row {
     /// Fails if the library rejects the key.
     pub fn has_styles(self) -> Result<bool> {
         self.get::<ffi::keys::row_data::Styled>()
+    }
+
+    /// The row's OSC 133 prompt mark.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the library rejects the key.
+    pub fn semantic_prompt(self) -> Result<RowSemanticPrompt> {
+        self.get::<ffi::keys::row_data::SemanticPrompt>()
+            .map(RowSemanticPrompt::from_ffi)
     }
 }
 

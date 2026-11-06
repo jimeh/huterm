@@ -4459,8 +4459,7 @@ mod tests {
 
     #[test]
     fn snapshot_comparison_ignores_generation_but_not_rows_or_viewport() {
-        let row =
-            || Arc::new(huterm_protocol::TerminalRow { cells: Vec::new() });
+        let row = || Arc::new(huterm_protocol::TerminalRow::default());
         let shown = TerminalSnapshot {
             terminal_id: huterm_protocol::TerminalId::new(1),
             generation: 1,

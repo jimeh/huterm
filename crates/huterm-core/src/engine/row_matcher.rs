@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use huterm_protocol::{Cell, TerminalRow};
+use huterm_protocol::TerminalRow;
 
 /// Offset from a current viewport row to the retained row that held the same
 /// screen line: positive when output or scrolling moved content upward.
@@ -18,10 +18,11 @@ pub(super) fn viewport_shift(
         .unwrap_or(isize::MAX)
 }
 
-/// Finds a retained row with identical cells so unchanged content keeps its
-/// `Arc`. Rows are immutable, so any equal row is valid, even at another
-/// index. The history-derived shift misses once scrollback reaches its limit,
-/// so a bounded scan recovers the offset without trusting one anchor.
+/// Finds a retained row with identical cells and flags so unchanged content
+/// keeps its `Arc`. Rows are immutable, so any equal row is valid, even at
+/// another index. The history-derived shift misses once scrollback reaches
+/// its limit, so a bounded scan recovers the offset without trusting one
+/// anchor.
 pub(super) struct RowMatcher<'a> {
     previous: &'a [Arc<TerminalRow>],
     shift: isize,
@@ -44,7 +45,7 @@ impl<'a> RowMatcher<'a> {
     pub(super) fn find(
         &mut self,
         index: usize,
-        cells: &[Cell],
+        current: &TerminalRow,
     ) -> Option<&'a Arc<TerminalRow>> {
         let offsets = [Some(0), Some(self.shift), self.last];
         for (position, offset) in offsets.iter().enumerate() {
@@ -57,7 +58,7 @@ impl<'a> RowMatcher<'a> {
             if let Some(row) = index
                 .checked_add_signed(offset)
                 .and_then(|row| self.previous.get(row))
-                && row.cells == cells
+                && **row == *current
             {
                 self.last = Some(offset);
                 return Some(row);
@@ -69,7 +70,7 @@ impl<'a> RowMatcher<'a> {
                 return None;
             }
             self.scan_budget -= 1;
-            if row.cells == cells {
+            if **row == *current {
                 self.last = isize::try_from(row_index)
                     .ok()
                     .zip(isize::try_from(index).ok())
@@ -84,7 +85,7 @@ impl<'a> RowMatcher<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huterm_protocol::{CellColor, CellStyle};
+    use huterm_protocol::{Cell, CellColor, CellStyle, RowPrompt};
 
     fn row(text: &str) -> Arc<TerminalRow> {
         Arc::new(TerminalRow {
@@ -97,6 +98,7 @@ mod tests {
                     style: CellStyle::default(),
                 })
                 .collect(),
+            ..TerminalRow::default()
         })
     }
 
@@ -111,7 +113,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, text)| {
-                matcher.find(index, &row(text).cells).map(|found| {
+                matcher.find(index, &row(text)).map(|found| {
                     previous
                         .iter()
                         .position(|row| Arc::ptr_eq(row, found))
@@ -140,5 +142,23 @@ mod tests {
             matches(&previous, 2, &["C   ", "D   ", "E   ", "F   "]),
             [Some(2), Some(3), None, None]
         );
+    }
+
+    #[test]
+    fn row_matcher_does_not_reuse_equal_cells_with_other_flags() {
+        let plain = row("A   ");
+        let wrapped = Arc::new(TerminalRow {
+            wrapped: true,
+            ..(*plain).clone()
+        });
+        let prompt = Arc::new(TerminalRow {
+            prompt: RowPrompt::Primary,
+            ..(*plain).clone()
+        });
+        let previous = [Arc::clone(&wrapped), Arc::clone(&prompt)];
+        let mut matcher = RowMatcher::new(&previous, 0);
+        assert!(matcher.find(0, &plain).is_none());
+        let found = matcher.find(1, &wrapped).unwrap();
+        assert!(Arc::ptr_eq(found, &wrapped));
     }
 }

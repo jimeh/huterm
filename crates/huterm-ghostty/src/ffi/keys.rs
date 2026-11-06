@@ -798,7 +798,8 @@ pub(crate) mod row_data {
 
     /// Every key below, for tests that must cover them all.
     #[cfg(test)]
-    pub(crate) const KEYS: &[&str] = &["WRAP", "GRAPHEME", "STYLED"];
+    pub(crate) const KEYS: &[&str] =
+        &["WRAP", "GRAPHEME", "STYLED", "SEMANTIC_PROMPT"];
 
     /// `GHOSTTY_ROW_DATA_WRAP`.
     #[derive(Debug)]
@@ -825,6 +826,15 @@ pub(crate) mod row_data {
     impl super::super::RowData for Styled {
         const KEY: ffi::GhosttyRowData = ffi::GHOSTTY_ROW_DATA_STYLED;
         type Out = bool;
+    }
+
+    /// `GHOSTTY_ROW_DATA_SEMANTIC_PROMPT`.
+    #[derive(Debug)]
+    pub(crate) enum SemanticPrompt {}
+
+    impl super::super::RowData for SemanticPrompt {
+        const KEY: ffi::GhosttyRowData = ffi::GHOSTTY_ROW_DATA_SEMANTIC_PROMPT;
+        type Out = ffi::GhosttyRowSemanticPrompt;
     }
 }
 

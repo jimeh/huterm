@@ -498,6 +498,31 @@ pub struct Cell(pub(crate) ffi::GhosttyCell);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Row(pub(crate) ffi::GhosttyRow);
 
+/// The OSC 133 prompt mark of a row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RowSemanticPrompt {
+    /// The row holds no prompt cells.
+    None,
+    /// The row holds prompt cells and starts a prompt.
+    Prompt,
+    /// The row holds prompt cells and continues a multiline prompt.
+    Continuation,
+    /// A mark this binding does not know.
+    Unknown(i32),
+}
+
+impl RowSemanticPrompt {
+    pub(crate) const fn from_ffi(mark: ffi::GhosttyRowSemanticPrompt) -> Self {
+        match mark {
+            ffi::GHOSTTY_ROW_SEMANTIC_NONE => Self::None,
+            ffi::GHOSTTY_ROW_SEMANTIC_PROMPT => Self::Prompt,
+            ffi::GHOSTTY_ROW_SEMANTIC_PROMPT_CONTINUATION => Self::Continuation,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
 /// What a cell holds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]

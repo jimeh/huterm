@@ -902,10 +902,30 @@ pub struct TerminalModes {
 }
 
 /// One immutable row shared between complete snapshot generations.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TerminalRow {
     /// Cells in display-column order.
     pub cells: Vec<Cell>,
+    /// The row soft-wraps into the next row: its text continues there
+    /// without a line break, so copying joins the two rows.
+    pub wrapped: bool,
+    /// The shell integration (OSC 133) prompt mark of the row.
+    pub prompt: RowPrompt,
+}
+
+/// Whether a row holds a shell prompt, as shell integration (OSC 133)
+/// marks it. The mark covers the row, not where its prompt text ends.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum RowPrompt {
+    /// The row holds no prompt.
+    #[default]
+    None,
+    /// The row starts a prompt: the first row of the prompt before a
+    /// command.
+    Primary,
+    /// The row continues a prompt, such as a later row of a multiline
+    /// prompt or the prompt of a continued command line.
+    Continuation,
 }
 
 /// Immutable viewport snapshot produced by the terminal runtime.

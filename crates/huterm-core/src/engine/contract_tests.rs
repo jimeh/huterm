@@ -1,6 +1,7 @@
 use super::*;
 use huterm_protocol::{
     BufferPoint, CellColor, CursorShape, MouseEncoding, MouseTracking, Rgb,
+    RowPrompt,
 };
 use std::sync::Arc;
 
@@ -246,6 +247,77 @@ fn ghostty_resizes_reflows_and_preserves_soft_wrapped_selection() {
         assert_eq!(snapshot.rows.len(), 4);
         assert!(snapshot.rows.iter().all(|row| row.cells.len() == 12));
         assert_eq!(engine.extract_text(generation, range).unwrap(), None);
+    });
+}
+
+fn wrapped(snapshot: &TerminalSnapshot) -> Vec<bool> {
+    snapshot.rows.iter().map(|row| row.wrapped).collect()
+}
+
+fn prompts(snapshot: &TerminalSnapshot) -> Vec<RowPrompt> {
+    snapshot.rows.iter().map(|row| row.prompt).collect()
+}
+
+#[test]
+fn ghostty_snapshots_mark_soft_wrapped_rows_until_reflow_unwraps_them() {
+    with_engine(|engine| {
+        // A full row waits for the next character to wrap.
+        engine.process(b"abcdefgh").unwrap();
+        assert_eq!(wrapped(&engine.snapshot().unwrap()), [false; 3]);
+        engine.process(b"ij\r\nk").unwrap();
+        assert_eq!(wrapped(&engine.snapshot().unwrap()), [true, false, false]);
+        engine
+            .resize(
+                GridSize::clamped(12, 3),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            )
+            .unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(snapshot.rows[0].cells[9].text, "j");
+        assert_eq!(snapshot.rows[1].cells[0].text, "k");
+        assert_eq!(wrapped(&snapshot), [false; 3]);
+    });
+}
+
+#[test]
+fn ghostty_snapshots_report_osc_133_prompt_rows() {
+    with_engine(|engine| {
+        engine
+            .process(
+                b"\x1b]133;A\x07$ \x1b]133;B\x07ls\x1b]133;C\x07\r\nout\r\n\
+                  \x1b]133;A;k=c\x07> ",
+            )
+            .unwrap();
+        assert_eq!(
+            prompts(&engine.snapshot().unwrap()),
+            [RowPrompt::Primary, RowPrompt::None, RowPrompt::Continuation]
+        );
+    });
+}
+
+#[test]
+fn ghostty_snapshots_refresh_a_prompt_mark_on_an_otherwise_clean_row() {
+    with_engine(|engine| {
+        engine.process(b"x\r\n").unwrap();
+        let before = engine.snapshot().unwrap();
+        // Ghostty marks the cursor row without dirtying it.
+        engine.process(b"\x1b]133;A\x07").unwrap();
+        let marked = engine.snapshot().unwrap();
+        assert_eq!(
+            prompts(&marked),
+            [RowPrompt::None, RowPrompt::Primary, RowPrompt::None]
+        );
+        assert_eq!(marked.rows[1].cells, before.rows[1].cells);
+        assert!(Arc::ptr_eq(&marked.rows[0], &before.rows[0]));
+        assert_eq!(engine.last_snapshot_stats().allocated, 1);
+        engine.process(b"\x1b]133;A;k=c\x07").unwrap();
+        assert_eq!(
+            engine.snapshot().unwrap().rows[1].prompt,
+            RowPrompt::Continuation
+        );
     });
 }
 
