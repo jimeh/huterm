@@ -2495,6 +2495,11 @@ fn cross_window_s1_marks_the_pane_only_while_outside_and_tearing_off(
         )
     });
     assert_eq!(
+        h.update_view(source, |view, _, _| *view.drawn_tear_off.borrow()),
+        None,
+        "a pane tear-off draws no tab bar pill"
+    );
+    assert_eq!(
         pill.center(),
         frame.center(),
         "the pill centres in the pane"
