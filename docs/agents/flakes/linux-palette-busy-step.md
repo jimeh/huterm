@@ -156,16 +156,15 @@ note = "closed palette"
   state that already held before Enter, then sent `busy-off`, so an Enter
   handled after `busy-off` ran `new_tab`.
 - **Reproduction:** in the Linux container, probe copies of the smoke that
-  queued each `xdotool` key 150ms late, in order, reproduced both CI states
-  6 of 6 times: late keys from the palette shortcut on gave the closed
-  palette, and a late Enter and Escape gave the extra tab. The fixed step
-  passed both 6 of 6 times. Under heavy CPU load the unmodified smoke hit
-  the extra tab once in 240 runs, with no ESC in the terminal bytes as in
-  CI. Where the Escape after `busy-off` went in those failures is still
-  unexplained; the fix does not depend on it. The fixed smoke had no
-  busy-step failure in 240 runs. Its two failures there were the wheel
-  flake above and a `show_quake` timeout, which the unmodified smoke also
-  hit under heavier load.
+  queued each `xdotool` key 150ms late, in order, reproduced both CI states 6 of
+  6 times: late keys from the palette shortcut on gave the closed palette, and a
+  late Enter and Escape gave the extra tab. The fixed step passed both 6 of 6
+  times. Under heavy CPU load the unmodified smoke hit the extra tab once in 240
+  runs, with no ESC in the terminal bytes as in CI. Where the Escape after
+  `busy-off` went in those failures is still unexplained; the fix does not
+  depend on it. The fixed smoke had no busy-step failure in 240 runs. Its two
+  failures there were the [wheel flake](linux-palette-wheel-scroll.md) and a
+  `show_quake` timeout, which the unmodified smoke also hit under heavier load.
 - **Fix (PR #427):** the step waits for the palette to open and take
   focus before `busy-on`. After Enter it waits for the palette's
   `diagnostic=Some("Unavailable: structural operation in progress")`,

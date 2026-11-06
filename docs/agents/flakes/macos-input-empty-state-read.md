@@ -50,5 +50,8 @@ platform = "macos-arm64"
   failed read into an empty string as well.
   Seen locally on 2026-10-30 as "no pane_grids in" at the divider step,
   while adding the modifier drag step.
-- **Fix:** `currentState()` now retries an empty read until the file holds
-  the state. If the error returns, the read is failing in another way.
+- **Fix:** `currentState()` retries an empty read until the file holds the
+  state. Since 2026-11-06 `input_smoke.rs` also writes the state to a
+  temporary file and renames it into place, as every other smoke fixture
+  does, so a reader can no longer see a truncated file. If the error
+  returns, the read is failing in another way.

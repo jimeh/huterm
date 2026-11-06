@@ -27,6 +27,13 @@ pr = 202
   refocused frame and was dropped, as documented for other input smokes.
 - **Mitigation:** the post-drag acknowledgment now resends its token within a
   bound and logs `CLIENT_FRAME_SMOKE ... ackdragx retry=N` when it had to.
+- **Gate (2026-11-06):** after the window manager releases its grab, the
+  smoke now also waits for `w0.active=true` and for the X server's input
+  focus (`xdotool getwindowfocus`) to return to the window before typing,
+  since XTest keys go to the server's focus. If the focus does not return
+  within 3 seconds it logs `CLIENT_FRAME_SMOKE ... ackdragx x11_focus=` and
+  continues to the bounded resend.
 - **Triage:** a `retry=` line shows the drop recurred and the mitigation
-  absorbed it. A failure after ten attempts means input stopped reaching the
+  absorbed it; an `x11_focus=` line before it shows whether server focus
+  had returned. A failure after ten attempts means input stopped reaching the
   window, which is a real regression.

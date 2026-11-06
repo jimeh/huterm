@@ -576,7 +576,16 @@ done
     // The window moves before Openbox handles the release; until then its
     // move grab holds the keyboard and swallows typed keys.
     await waitFor(async () => !keyboardGrabbed(windowId), "window manager keyboard grab release");
-    await state("w0.maximized=false", "w0.frame_inset=10", "w0.terminal_focused=true");
+    await state("w0.maximized=false", "w0.frame_inset=10", "w0.terminal_focused=true", "w0.active=true");
+    // XTest keys go to the server's input focus, which Openbox restores to the
+    // window only after its grab ends. Wait for it rather than resend into the
+    // gap; the bounded resend below stays as evidence if a key still drops.
+    let focus = "";
+    try {
+      await waitFor(async () => (focus = run(["xdotool", "getwindowfocus"])) === windowId, "X11 input focus back on the window after the drag", 3_000);
+    } catch {
+      console.log(`CLIENT_FRAME_SMOKE ${engine} ackdragx x11_focus=${focus} window=${windowId}`);
+    }
     await ackAfterFocusChange("ackdragx");
 
     // 6. Fullscreen drops the inset and restores exact root geometry.

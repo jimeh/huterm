@@ -30,7 +30,12 @@ note = "Dependabot"
   to the smoke state, a bounded press retry that logs
   `DESKTOP_INTEGRATION ... retry=N`, and a state dump on hover timeouts. The
   retry may only reduce the rate.
-- **Triage:** read the failure dump. A `retry=` line means the press had no
-  target at press time. No retry line with an emptied `owned_link` means the
-  target was lost during the hold, which the retry cannot cover. Check
+- **Gate (2026-11-06):** on Linux, every link hover now waits for
+  `window_active=true` before it presses the link modifier, so a modifier
+  sent during an X11 focus change cannot silently start no lookup. A
+  timeout there means the window lost focus, which the state dump shows.
+- **Triage:** read the failure dump. A timeout at "window active before
+  hovering" confirms the focus-flicker theory. A `retry=` line means the press
+  had no target at press time. No retry line with an emptied `owned_link` means
+  the target was lost during the hold, which the retry cannot cover. Check
   `window_active` for the X11 focus-flicker theory.

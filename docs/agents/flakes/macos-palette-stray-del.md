@@ -35,8 +35,15 @@ platform = "macos-arm64"
   explain the DEL: the `query="tfs"` check between them passes only if that
   Backspace reached the palette. Real HID events from another process on
   the host, such as the quake witness's global shortcuts, go to whichever
-  window is frontmost. It is not the race fixed in the Linux palette
-  smoke busy step below: posted events stay in order with each other, and
+  window is frontmost. It is not the race fixed in the
+  [Linux palette smoke busy step](linux-palette-busy-step.md): posted
+  events stay in order with each other, and
   no file command sits between that Backspace and the `query="tfs"` check.
+- **Status (2026-11-06):** marked fixed. Both failures were local, before
+  the host smoke lock (PR #331) stopped other Huterm smokes from sending
+  HID events at the same time. Since 2026-11-06 every palette step that
+  types after the palette shortcut waits for `w0.palette_focused=true`
+  first, which removes keys typed before the palette's first frame as
+  another candidate.
 - **Triage:** keep the failing step, its expected and received bytes, and a
-  list of what else was running on the host; record them here, then rerun.
+  list of what else was running on the host; record them here.
