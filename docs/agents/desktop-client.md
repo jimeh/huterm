@@ -364,6 +364,15 @@ the candidates in order, its navigation memory first, then the sessions
 no other window or stash holds, most recently viewed first, and the worker
 (`attach_first`) takes the first that still exists under one lock, so a
 candidate that closed since the window chose it gives way to the next.
+Closing the window's own session holds one of `pending_spawns` from its
+check to its follow-up's settle (`close_hold`), so a Quit waits for it.
+While that close shows its confirmation, the hold is in
+`confirming_holds` and no longer holds Quit back: `request_quit` hosts the
+Quit in that window, whose `Application` check replaces the dialog and
+ends the hold, and a Quit already waiting moves there when the dialog
+appears (`sync_quit_hold`) or when only such holds remain. An own-session
+Close Session is refused while a Quit is requested or runs, as a switch
+is.
 The completion installs it as a switch does (`install_session` with the
 new attachment). With no candidate left, or when the attach fails for
 another reason, the window closes, except that on Linux the last window
@@ -375,7 +384,10 @@ Other windows on the closed session take the session-gone path, and
 `reconcile` drops Quake stashes and navigation memory of closed sessions.
 Close Window resolves through `window_close_target`: on Linux, the last open
 window with no Quake shortcut quits instead while a session no window shows
-remains, so restore keeps it; macOS keeps running, and `on_reopen` calls
+remains, so restore keeps it, unless a Quit is already requested, queued,
+or running (`last_window_strands`), since that Quit covers every session.
+An emptied close of that window turns into Quit by the same rule
+(`emptied_close_target`). macOS keeps running, and `on_reopen` calls
 `session_switch::reopen_window`, which opens a window on the most recently
 viewed session no window or stash holds (`WindowModel::unviewed_sessions`,
 whose viewed order survives window removal), else a fresh one; a session
@@ -822,11 +834,15 @@ its place. Its "exited" tags come from `Mux::exited_sessions`, read on a
 worker each time it opens; a generation drops a superseded answer. Huterm's
 popover opens first and takes the tags when the read answers. A native menu
 is a snapshot, so it waits for the read (`native_session_pending`, which
-shows the control open). `cancel_pending_session_menu` drops the request
-and supersedes the read when the control toggles it, `close_menu` runs
-(Escape, window deactivation, a command that replaces the menu), or the
-palette or another menu opens; a window that went away presents nothing.
-Tier 2 tests hold the read at `Stage::ExitedRead`.
+shows the control open). No menu is mounted meanwhile, so the root takes
+the `menu` key context for the request (`pending_session_menu_takes_keys`):
+`menu_close` (Escape) cancels it, and the other `menu_*` commands do
+nothing rather than reach the terminal. `cancel_pending_session_menu`
+drops the request and supersedes the read when the control toggles it,
+`menu_close` runs, `close_menu` runs (window deactivation, a command that
+replaces the menu), or the palette or another menu opens; a window that
+went away presents nothing. Tier 2 tests hold the read at
+`Stage::ExitedRead`.
 Its native lowering puts each session's Open in New Window in an
 alternate item (`setAlternate:` with the Command mask and no
 key), which AppKit swaps in while Command is held, and lists the

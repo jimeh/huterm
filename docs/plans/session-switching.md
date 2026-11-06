@@ -471,11 +471,15 @@ Recorded during implementation:
   so a Quit from another window saves it. A Close Session of the window's
   own session takes the same hold as its check begins, before the
   assessment, and keeps it through any confirmation until the follow-up
-  settles, so a Quit requested meanwhile waits for it.
+  settles, so a Quit requested meanwhile waits for it. While that close's
+  confirmation shows, a Quit moves into its window and replaces the
+  dialog, so it never waits unseen; a Quit requested during the
+  assessment does so once the dialog appears. Closing the window's own
+  session is refused while a Quit is requested or runs, as a switch is.
 - A native session menu opens once its "exited" read answers, since a
   native menu cannot take tags later; Huterm's popover still opens at once
-  and adds them. A dismissal, window deactivation, the palette, or another
-  menu drops the waiting request.
+  and adds them. A dismissal, Escape, window deactivation, the palette, or
+  another menu drops the waiting request.
 - Open in New Window's Cmd/Ctrl-Enter is a menu command,
   `menu_confirm_alternate`, bound only inside menus. Settled decision 8's
   "no default key bindings" covers the session commands. In the native
@@ -488,7 +492,8 @@ Recorded during implementation:
 - On Linux, a last window that takes an emptied close while unviewed
   sessions remain runs Quit instead, as its Close Window does, so the
   process never stays alive without a window. A cancelled Quit leaves the
-  window open.
+  window open. Neither close turns into Quit while a Quit is already
+  requested, queued, or running: that Quit covers every session.
 - The macOS smoke opens the fullscreen hosts' menu by command: a
   synthetic click at the screen's top-right corner can reach the
   auto-hidden menu bar or the notification corner. A window test clicks

@@ -94,6 +94,17 @@ fn release_at(
     );
 }
 
+/// A harness whose one-tab windows draw the session control on both
+/// platforms. Without client decorations a Linux window has no title row,
+/// and a one-tab window hides its bar, which would leave the control no
+/// host; an always-shown bar hosts it there, while macOS keeps it in the
+/// title strip.
+fn control_harness(cx: &mut TestAppContext) -> DesktopHarness {
+    DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    })
+}
+
 impl DesktopHarness {
     /// Waits for the session control to paint and returns its bounds.
     fn session_control(&mut self, window: AnyWindowHandle) -> Bounds<Pixels> {
@@ -133,7 +144,7 @@ impl DesktopHarness {
 fn the_control_names_its_session_and_toggles_its_menu_below_it(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = control_harness(cx);
     let (window, tab) = harness.named_window("main");
     let control = harness.session_control(window);
     harness.cx.update(|cx| {
@@ -187,7 +198,7 @@ fn the_control_names_its_session_and_toggles_its_menu_below_it(
 fn the_keyboard_walks_the_menu_and_escape_or_a_pick_returns_focus(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = control_harness(cx);
     let (window, tab) = harness.named_window("main");
     let other = harness.other_session("other", 1);
     harness.wait_projection();
@@ -266,7 +277,7 @@ fn the_alternate_key_opens_the_selected_session_in_a_new_window(
 fn the_open_menu_follows_other_clients_and_keeps_its_place(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = control_harness(cx);
     let (window, _) = harness.named_window("main");
     let first = harness.other_session("first", 1);
     let second = harness.other_session("second", 2);
@@ -388,16 +399,23 @@ fn the_title_row_keeps_its_gestures_and_drop_region_beside_the_control(
     press_at(&mut harness, window, empty, 1);
     assert_eq!(title_row(&mut harness), (true, 0));
     release_at(&mut harness, window, empty);
-    press_at(&mut harness, window, empty, 2);
-    assert_eq!(title_row(&mut harness), (false, 0), "the double-click");
-    release_at(&mut harness, window, empty);
+    // A Linux double-click zooms the window, which GPUI's test window does
+    // not implement.
+    if cfg!(target_os = "macos") {
+        press_at(&mut harness, window, empty, 2);
+        assert_eq!(title_row(&mut harness), (false, 0), "the double-click");
+        release_at(&mut harness, window, empty);
+    }
 }
 
 #[gpui::test]
 fn session_button_false_hides_the_control_but_keeps_its_menu(
     cx: &mut TestAppContext,
 ) {
+    // The always-shown bar gives a Linux window a menu button to wait for,
+    // as `control_harness` describes.
     let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
         config.window.session_button = false;
     });
     let (window, tab) = harness.named_window("main");

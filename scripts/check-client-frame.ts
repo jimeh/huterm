@@ -325,6 +325,19 @@ done
     }, `${label} state ${expected.join(", ")}`);
     return text;
   }
+  /**
+   * Waits for `expected` in a state whose open menu has painted. The state
+   * names a menu open before a frame draws it, and reports `menu_rect` only
+   * from a drawn frame.
+   */
+  async function paintedMenu(...expected: string[]): Promise<string> {
+    let text = "";
+    await waitFor(async () => {
+      text = await current();
+      return expected.every((value) => text.includes(value)) && field(text, "menu_rect") !== "none";
+    }, `${label} painted menu with ${expected.join(", ")}`);
+    return text;
+  }
   async function command(value: string): Promise<string> {
     const index = sequence++;
     const pending = join(directory, "command-next");
@@ -483,7 +496,7 @@ done
     }
     const centre = { x: control.rect.x + control.rect.w / 2, y: control.rect.y + control.rect.h / 2 };
     click(centre.x * scale, centre.y * scale);
-    const opened = await state("w0.menu_kind=session", "w0.session_open=true", "w0.menu_selection=none");
+    const opened = await paintedMenu("w0.menu_kind=session", "w0.session_open=true", "w0.menu_selection=none");
     assertNone(`${engine} ${label} ${step} session menu`, menuProblems(parseRect(field(opened, "menu_rect")), control.rect, false, content));
     key("Escape");
     await state("w0.menu=false", "w0.session_open=false", "w0.terminal_focused=true");

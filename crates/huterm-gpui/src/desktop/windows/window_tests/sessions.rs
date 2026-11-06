@@ -332,9 +332,15 @@ fn a_window_whose_session_closes_before_the_commit_takes_the_session_gone_path(
     });
     harness.close_session();
     runtime.worker_hooks.release(Stage::Switch);
-    harness.wait_closed(window);
-    // The target was never touched.
-    assert!(runtime.lock().session(other.session).is_some());
+    if Platform::current() == Platform::Linux {
+        // The last window quits rather than leave the target running with
+        // no window, and the capture shows the target was never touched.
+        harness.wait_quit(other.session);
+    } else {
+        harness.wait_closed(window);
+        // The target was never touched.
+        assert!(runtime.lock().session(other.session).is_some());
+    }
     assert_eq!(harness.close_failures(), 0);
 }
 
@@ -405,8 +411,15 @@ fn a_target_closed_after_the_commit_removes_the_window_and_keeps_its_old_session
     });
     runtime.lock().close_session(other.session).unwrap();
     runtime.worker_hooks.release(Stage::Switched);
-    harness.wait_closed(window);
-    assert!(session_exists(&harness));
+    if Platform::current() == Platform::Linux {
+        // The last window quits rather than leave its old session running
+        // with no window, and the capture keeps that session.
+        let session = harness.session;
+        harness.wait_quit(session);
+    } else {
+        harness.wait_closed(window);
+        assert!(session_exists(&harness));
+    }
     assert_eq!(harness.close_failures(), 0);
 }
 
@@ -965,6 +978,177 @@ fn a_cancelled_close_of_the_windows_own_session_releases_quit(
     assert!(session_exists(&harness));
 }
 
+/// Two windows: `one` shows a tab that runs a job in the harness session,
+/// so closing that session asks first, and `two` shows another session's
+/// echo tab and is active. The Quit's resume action is registered, as the
+/// production startup does.
+fn own_session_close_windows(
+    harness: &mut DesktopHarness,
+) -> (AnyWindowHandle, AnyWindowHandle, Other) {
+    let tab = harness.open_tab(RUNS_JOB);
+    let one = harness.attach_showing(&[tab]);
+    harness.wait_text(one, tab, "READY");
+    let other = harness.other_session("other", 1);
+    let two = harness.attach_showing(&[tab]);
+    harness.switch_to(two, other.session, &other.tabs);
+    harness.cx.update(|cx| {
+        cx.on_action(|action: &InvokeApp, cx| {
+            let _ = Desktop::invoke(cx, &action.0, None);
+        });
+        two.update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+    });
+    (one, two, other)
+}
+
+/// The confirmation `window` shows, if any.
+fn confirmation(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> Option<CloseTarget> {
+    harness.update_view(window, |view, _, _| view.close.confirmation.clone())
+}
+
+/// Waits until `window` shows Quit's confirmation.
+fn wait_quit_dialog(harness: &mut DesktopHarness, window: AnyWindowHandle) {
+    harness.wait_for("the Quit dialog in the confirming window", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx).close.confirmation
+                        == Some(CloseTarget::Application)
+                })
+            })
+            .unwrap_or(false)
+    });
+}
+
+#[gpui::test]
+fn a_quit_replaces_an_own_session_close_confirmation_in_its_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (one, two, other) = own_session_close_windows(&mut harness);
+    let own = CloseTarget::Session(harness.session);
+    harness.invoke(one, ids::CLOSE_SESSION).unwrap();
+    harness.wait_for("the confirmation", |cx| confirming(cx, one));
+    assert_eq!(confirmation(&mut harness, one), Some(own.clone()));
+
+    // A Quit from the other window shows its dialog in place of the
+    // Close Session one, instead of waiting unseen behind it.
+    harness.cx.update(request_quit);
+    wait_quit_dialog(&mut harness, one);
+    harness.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        assert!(!desktop.quit_pending);
+        assert_eq!(desktop.pending_spawns, 0, "the close's hold ended");
+    });
+    assert_eq!(confirmation(&mut harness, two), None);
+    // Cancelling it cancels both and leaves a working application.
+    harness.update_view(one, |view, window, cx| {
+        view.cancel_confirmation(window, cx);
+    });
+    harness
+        .cx
+        .update(|cx| assert!(!cx.global::<Desktop>().quitting));
+    assert!(session_exists(&harness));
+    harness.answer(two, other.tabs[0], "after-cancel");
+
+    // A Quit from the same window replaces the dialog too, and confirming
+    // it quits.
+    harness.invoke(one, ids::CLOSE_SESSION).unwrap();
+    harness.wait_for("the confirmation", |cx| confirming(cx, one));
+    harness.cx.update(|cx| {
+        one.update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+    });
+    harness.cx.update(request_quit);
+    wait_quit_dialog(&mut harness, one);
+    harness.update_view(one, |view, window, cx| {
+        let generation = view.close.generation;
+        view.confirm_confirmation(
+            CloseTarget::Application,
+            generation,
+            window,
+            cx,
+        );
+    });
+    // The Quit, not the Close Session it replaced, ended the session: the
+    // capture still holds it.
+    let session = harness.session;
+    harness.wait_quit(session);
+}
+
+#[gpui::test]
+fn a_quit_waiting_on_an_assessing_own_session_close_joins_its_dialog(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (one, two, other) = own_session_close_windows(&mut harness);
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Assess);
+    harness.invoke(one, ids::CLOSE_SESSION).unwrap();
+    harness.wait_for("the close to assess", |_| {
+        runtime.worker_hooks.held(Stage::Assess) == 1
+    });
+    harness.cx.update(request_quit);
+    harness.cx.update(|cx| {
+        assert!(cx.global::<Desktop>().quit_pending, "Quit did not wait");
+    });
+    runtime.worker_hooks.release(Stage::Assess);
+    wait_quit_dialog(&mut harness, one);
+    harness.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        assert!(!desktop.quit_pending);
+        assert_eq!(desktop.pending_spawns, 0);
+    });
+    harness.update_view(one, |view, window, cx| {
+        view.cancel_confirmation(window, cx);
+    });
+    harness
+        .cx
+        .update(|cx| assert!(!cx.global::<Desktop>().quitting));
+    assert!(session_exists(&harness));
+    harness.answer(two, other.tabs[0], "after-cancel");
+}
+
+#[gpui::test]
+fn closing_the_windows_own_session_is_refused_while_a_quit_runs(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (one, two, other) = own_session_close_windows(&mut harness);
+    // Window one hosts a Quit that asks first.
+    harness.cx.update(|cx| {
+        one.update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+    });
+    harness.cx.update(request_quit);
+    harness.wait_for("the Quit dialog", |cx| confirming(cx, one));
+    // Window two may not close its own session meanwhile, from the
+    // command or as its menu row shows it.
+    let refused = harness.invoke(two, ids::CLOSE_SESSION);
+    assert!(
+        matches!(&refused, Err(CommandError::Unavailable(reason))
+            if reason.contains("quitting")),
+        "{refused:?}"
+    );
+    let available = harness.update_view(two, |view, _, cx| {
+        let target = PaletteTarget {
+            session: view.attached_session(cx),
+            workspace: view.workspace_id(cx),
+            tab: view.active_tab(cx),
+            terminal: None,
+            terminal_view: None,
+            contexts: Vec::new(),
+        };
+        view.command_availability(ids::CLOSE_SESSION, &target, cx)
+    });
+    assert!(available.is_err(), "{available:?}");
+    assert_eq!(confirmation(&mut harness, two), None);
+    assert!(harness.runtime.lock().session(other.session).is_some());
+}
+
 #[gpui::test]
 fn open_in_new_window_shares_the_session_and_a_failed_open_detaches_only_its_own(
     cx: &mut TestAppContext,
@@ -1165,6 +1349,50 @@ fn the_last_windows_emptied_close_on_linux_quits_while_unviewed_sessions_remain(
             "the unviewed session keeps running"
         );
     }
+}
+
+#[gpui::test]
+fn the_last_windows_close_on_linux_stays_a_close_while_a_quit_waits(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let left = harness.other_session("left", 1);
+    harness.switch_to(window, left.session, &left.tabs);
+    harness.switch_to(window, harness.session, &[tab]);
+    let linux_targets = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, cx| {
+            (
+                view.window_close_target(Platform::Linux, cx),
+                view.emptied_close_target(Platform::Linux, cx),
+            )
+        })
+    };
+    assert_eq!(
+        linux_targets(&mut harness),
+        (CloseTarget::Application, CloseTarget::Application)
+    );
+    // A Quit waits for a pending spawn: a hold that the window's removal
+    // releases. It resumes through the application action, which the
+    // production startup registers.
+    let id = window.window_id();
+    harness.cx.update(|cx| {
+        cx.on_action(|action: &InvokeApp, cx| {
+            let _ = Desktop::invoke(cx, &action.0, None);
+        });
+        session_switch::hold_switch_spawn(cx, id);
+        request_quit(cx);
+        assert!(cx.global::<Desktop>().quit_pending);
+    });
+    // That Quit covers every session, so neither close turns into one.
+    assert_eq!(
+        linux_targets(&mut harness),
+        (CloseTarget::Window, CloseTarget::Emptied)
+    );
+    harness.close_tab(tab);
+    harness.wait_closed(window);
+    harness.wait_quit(left.session);
 }
 
 #[gpui::test]

@@ -320,7 +320,12 @@ fn the_native_window_menu_lists_copy_and_paste_and_opens_below_its_button(
 fn the_native_session_menu_switches_or_opens_a_window_from_its_picks(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    // A Linux window without client decorations has no title row, and a
+    // one-tab window hides its bar; an always-shown bar draws the control
+    // that the menu opens below on both platforms.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
     let (window, _, presenter) = harness.native_window();
     let other = harness.other_session("other", 1);
     harness.wait_projection();
@@ -469,6 +474,29 @@ fn a_native_session_menu_whose_window_deactivates_before_its_read_never_shows(
     harness.cx.update(|cx| {
         assert_eq!(native_kind(cx, window), Some(MenuKind::Session));
     });
+}
+
+#[gpui::test]
+fn escape_cancels_a_native_session_menu_before_its_read_answers(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, presenter) = harness.native_window();
+    harness.supersede_session_menu(window, |harness| {
+        harness.press(window, "escape");
+        assert!(
+            !session_menu_open(harness, window),
+            "Escape left the menu waiting for its read"
+        );
+    });
+    assert!(
+        presenter.shown.borrow().is_empty(),
+        "the menu showed after Escape"
+    );
+    harness.cx.update(|cx| assert!(focused(cx, window, tab)));
+    // The next request still opens one.
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.wait_shown(&presenter, 1);
 }
 
 #[gpui::test]

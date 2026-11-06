@@ -2921,6 +2921,35 @@ fn hold_the_emptied_close_at(
     });
 }
 
+/// Starts the emptied close of `tab`, `window`'s only view, as
+/// [`hold_the_emptied_close_at`] does, and only then creates a session no
+/// window shows, which keeps the application running once the window is
+/// gone; returns it. The emptied close waits at `stage`, which is
+/// `Stage::Assess` or a later stage.
+///
+/// On Linux the last window's emptied close turns into Quit when such a
+/// session exists as the close begins (`emptied_close_target`), so the
+/// session comes after that decision; it also comes before the assessment,
+/// so a commit does not go stale on it.
+fn hold_an_emptied_close_then_leave_a_session(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    tab: TabId,
+    stage: Stage,
+) -> SessionId {
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hold_the_emptied_close_at(harness, window, tab, Stage::Assess);
+    let unviewed = harness.unviewed_session();
+    if stage != Stage::Assess {
+        hooks.hold(stage);
+        hooks.release(Stage::Assess);
+        harness
+            .wait_for("the emptied close to wait", |_| hooks.held(stage) == 1);
+    }
+    unviewed
+}
+
 #[gpui::test]
 fn a_session_closed_while_an_emptied_close_commits_removes_the_window_silently(
     cx: &mut TestAppContext,
@@ -2945,10 +2974,14 @@ fn a_quit_queued_behind_an_emptied_close_of_a_closed_session_still_quits(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
-    let unviewed = harness.unviewed_session();
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Assess);
+    let unviewed = hold_an_emptied_close_then_leave_a_session(
+        &mut harness,
+        window,
+        tab,
+        Stage::Assess,
+    );
     harness.queue_quit(window);
     harness.close_session();
     harness.runtime.worker_hooks.release(Stage::Assess);
@@ -2962,10 +2995,14 @@ fn a_quit_queued_behind_a_committing_emptied_close_still_quits(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
-    let unviewed = harness.unviewed_session();
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Commit);
+    let unviewed = hold_an_emptied_close_then_leave_a_session(
+        &mut harness,
+        window,
+        tab,
+        Stage::Commit,
+    );
     harness.queue_quit(window);
     harness.runtime.worker_hooks.release(Stage::Commit);
     harness.wait_closed(window);
@@ -3060,10 +3097,14 @@ fn a_failed_emptied_close_assessment_keeps_a_queued_quit(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
-    let unviewed = harness.unviewed_session();
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Assess);
+    let unviewed = hold_an_emptied_close_then_leave_a_session(
+        &mut harness,
+        window,
+        tab,
+        Stage::Assess,
+    );
     harness.queue_quit(window);
     let runtime = Arc::clone(&harness.runtime);
     let hooks = &runtime.worker_hooks;

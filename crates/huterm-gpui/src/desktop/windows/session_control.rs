@@ -383,9 +383,16 @@ impl WorkspaceView {
         self.present_session_menu(from_keyboard, window, cx);
     }
 
+    /// Whether a native session menu waiting for its exited read takes the
+    /// `menu_*` commands, while no other menu is mounted.
+    pub(super) fn pending_session_menu_takes_keys(&self) -> bool {
+        self.menu.is_none() && self.native_session_pending.is_some()
+    }
+
     /// Drops a native session menu still waiting for its exited read, and
     /// supersedes that read, so its answer presents nothing: a dismissal,
-    /// window deactivation, the palette, or another menu replaced it.
+    /// Escape, window deactivation, the palette, or another menu replaced
+    /// it.
     /// Returns whether one was waiting.
     pub(super) fn cancel_pending_session_menu(
         &mut self,

@@ -63,8 +63,14 @@ type Fixture = {
 /** Function keys the Linux fixture binds, since X11 has no command channel. */
 const linuxKeys: Record<string, string> = { new_window: "F1", new_tab: "F2", split_right: "F3" };
 
+/**
+ * The fixture's config. Windows are 36 columns wide, about 296 points, so
+ * two fit side by side. The session control is off: on Linux it ends the
+ * tab bar, and its width would scroll the three-tab strip until the tab
+ * the drag grabs is mostly out of view.
+ */
 export function fixtureConfig(options: { preview: boolean; alwaysShow: boolean }): string {
-  return `[window]\ninitial_columns=36\ninitial_rows=12\nmacos_drag_preview=${options.preview}\n[tabs]\nposition="top"\nalways_show=${options.alwaysShow}\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f3"\ncommand="split_right"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`;
+  return `[window]\ninitial_columns=36\ninitial_rows=12\nsession_button=false\nmacos_drag_preview=${options.preview}\n[tabs]\nposition="top"\nalways_show=${options.alwaysShow}\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f3"\ncommand="split_right"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`;
 }
 
 /** Launches one fixture app with recorder shells, runs `body`, and always

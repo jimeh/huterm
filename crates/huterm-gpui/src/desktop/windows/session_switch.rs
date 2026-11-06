@@ -732,6 +732,26 @@ impl WorkspaceView {
         (true, follow)
     }
 
+    /// Refuses Close Session of this window's own session while a Quit is
+    /// requested or runs: its follow-up moves the window to another
+    /// session, which would race the Quit as a switch would.
+    pub(super) fn check_close_session_available(
+        &self,
+        session: SessionId,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        let desktop = cx.global::<Desktop>();
+        if (desktop.quitting || desktop.quit_pending)
+            && Some(session) == self.attached_session(cx)
+        {
+            Err(CommandError::Unavailable(
+                "application is quitting".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Whether `target` is a Close Session of this window's own session.
     fn closes_own_session(&self, target: &CloseTarget, cx: &App) -> bool {
         matches!(target, CloseTarget::Session(session)
@@ -761,7 +781,28 @@ impl WorkspaceView {
     /// that ends without a follow-up install.
     pub(super) fn release_close_hold(&mut self, cx: &mut App) {
         if std::mem::take(&mut self.close_hold) {
+            cx.global_mut::<Desktop>()
+                .confirming_holds
+                .remove(&self.window);
             release_switch_spawn(cx, self.window);
+        }
+    }
+
+    /// Records whether this window's Close Session hold shows its
+    /// confirmation, which hosts a Quit rather than keep it waiting. A
+    /// Quit that waits for pending spawns moves here once only such holds
+    /// remain, and its dialog replaces this one.
+    pub(super) fn sync_quit_hold(&self, cx: &mut App) {
+        let confirming = self.close_hold && self.close.confirmation.is_some();
+        let desktop = cx.global_mut::<Desktop>();
+        if !confirming {
+            desktop.confirming_holds.remove(&self.window);
+        } else if desktop.confirming_holds.insert(self.window)
+            && desktop.quit_pending
+            && blocking_spawns(desktop) == 0
+        {
+            desktop.quit_pending = false;
+            cx.defer(request_quit);
         }
     }
 
@@ -833,9 +874,17 @@ impl WorkspaceView {
 
     /// Whether closing this window would leave sessions running that no
     /// window shows, with no other window or Quake shortcut to reach them.
+    /// A Quit already requested, queued, or in progress covers every
+    /// session, so the close stays a close and the Quit follows it.
     fn last_window_strands(&self, cx: &App) -> bool {
         let desktop = cx.global::<Desktop>();
-        if quake_windows::keep_alive(cx)
+        let quit_requested = desktop.quitting
+            || desktop.quit_pending
+            || [&self.close.current, &self.close.pending]
+                .into_iter()
+                .any(|target| *target == Some(CloseTarget::Application));
+        if quit_requested
+            || quake_windows::keep_alive(cx)
             || desktop
                 .windows
                 .records()
@@ -896,7 +945,11 @@ pub(super) fn drop_followed(
 /// Quit that waited for it.
 pub(super) fn settle_session_spawn(cx: &mut App) {
     let desktop = cx.global_mut::<Desktop>();
-    if settle_spawn(&mut desktop.pending_spawns, &mut desktop.quit_pending) {
+    if settle_spawn(
+        &mut desktop.pending_spawns,
+        desktop.confirming_holds.len(),
+        &mut desktop.quit_pending,
+    ) {
         cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
     } else if desktop.pending_spawns == 0 {
         maybe_exit(cx);

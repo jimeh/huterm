@@ -930,6 +930,10 @@ struct Desktop {
     /// from its check to its follow-up, holds one of `pending_spawns` until
     /// its navigation settles.
     switch_spawns: std::collections::HashSet<gpui::WindowId>,
+    /// The windows of `switch_spawns` whose Close Session hold shows its
+    /// confirmation. Such a hold keeps no Quit waiting: the window hosts
+    /// the Quit, whose dialog replaces its own and covers the session.
+    confirming_holds: std::collections::HashSet<gpui::WindowId>,
     quit_pending: bool,
     /// The Settings window, which is not in `windows`: it shows no session.
     settings: Option<gpui::WindowHandle<settings_window::SettingsView>>,
@@ -1755,6 +1759,7 @@ fn install_desktop(
         quit_committed: false,
         pending_spawns: 0,
         switch_spawns: std::collections::HashSet::new(),
+        confirming_holds: std::collections::HashSet::new(),
         settings: None,
         quit_pending: false,
         unavailable_fonts: UnavailableFonts::default(),
@@ -1797,6 +1802,7 @@ fn install_desktop(
         desktop.cross.windows.retain(|(id, _)| *id != window);
         checkpoints::set_transfer_reserved(cx, window, false);
         checkpoints::set_switching(cx, window, false);
+        cx.global_mut::<Desktop>().confirming_holds.remove(&window);
         session_switch::release_switch_spawn(cx, window);
         restore::window_settled(cx, window);
         let desktop = cx.global_mut::<Desktop>();
@@ -2200,10 +2206,23 @@ fn spawn_disposition(
 }
 
 /// Settles one spawn: Quit deferred behind pending spawns resumes when the
-/// last one settles. Returns whether it resumes.
-fn settle_spawn(pending_spawns: &mut usize, quit_pending: &mut bool) -> bool {
+/// last one settles, or when only `hosting` remain, the holds of Close
+/// Session confirmations that host it. Returns whether it resumes.
+fn settle_spawn(
+    pending_spawns: &mut usize,
+    hosting: usize,
+    quit_pending: &mut bool,
+) -> bool {
     *pending_spawns = pending_spawns.saturating_sub(1);
-    *pending_spawns == 0 && std::mem::take(quit_pending)
+    *pending_spawns <= hosting && std::mem::take(quit_pending)
+}
+
+/// The pending spawns a Quit waits for: every one but the holds of Close
+/// Session confirmations, whose windows host it instead.
+fn blocking_spawns(desktop: &Desktop) -> usize {
+    desktop
+        .pending_spawns
+        .saturating_sub(desktop.confirming_holds.len())
 }
 
 /// The window that hosts Quit's assessment: the active window, else the
@@ -2326,18 +2345,28 @@ fn observe_keystroke(
 
 fn request_quit(cx: &mut App) {
     let desktop = cx.global_mut::<Desktop>();
-    if !quit_now(desktop.pending_spawns, &mut desktop.quit_pending) {
+    if !quit_now(blocking_spawns(desktop), &mut desktop.quit_pending) {
         return;
     }
     let desktop = cx.global::<Desktop>();
     // Only a terminal window can host the confirmation; the Settings
     // window has no record.
-    let host = quit_host(cx.active_window(), &cx.windows(), |handle| {
+    let closing = |handle: AnyWindowHandle| {
         desktop
             .windows
             .record(handle.window_id())
             .is_none_or(|record| record.closing)
-    });
+    };
+    let windows = cx.windows();
+    // A window whose Close Session confirmation held the Quit hosts it, so
+    // Quit's dialog replaces that one there.
+    let confirming: Vec<_> = windows
+        .iter()
+        .copied()
+        .filter(|handle| desktop.confirming_holds.contains(&handle.window_id()))
+        .collect();
+    let host = quit_host(cx.active_window(), &confirming, closing)
+        .or_else(|| quit_host(cx.active_window(), &windows, closing));
     if let Some(handle) = host {
         let _ = handle.update(cx, |root, window, cx| {
             if let Ok(view) = root.downcast::<WorkspaceView>() {
@@ -8571,6 +8600,7 @@ impl WorkspaceView {
                 let desktop = cx.global_mut::<Desktop>();
                 if settle_spawn(
                     &mut desktop.pending_spawns,
+                    desktop.confirming_holds.len(),
                     &mut desktop.quit_pending,
                 ) {
                     cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
@@ -8837,6 +8867,7 @@ impl WorkspaceView {
                 let desktop = cx.global_mut::<Desktop>();
                 if settle_spawn(
                     &mut desktop.pending_spawns,
+                    desktop.confirming_holds.len(),
                     &mut desktop.quit_pending,
                 ) {
                     cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
@@ -9624,7 +9655,13 @@ impl WorkspaceView {
                 | ids::MENU_SELECT_LEFT
                 | ids::MENU_CONFIRM
                 | ids::MENU_CONFIRM_ALTERNATE
-                | ids::MENU_CLOSE => self.open_menu_entity().map(|_| ()),
+                | ids::MENU_CLOSE => {
+                    if self.pending_session_menu_takes_keys() {
+                        Ok(())
+                    } else {
+                        self.open_menu_entity().map(|_| ())
+                    }
+                }
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available(cx)
                 }
@@ -9748,6 +9785,7 @@ impl WorkspaceView {
                                 "window has no session".into(),
                             )
                         })?;
+                        self.check_close_session_available(session, cx)?;
                         self.close.check_close_available(&CloseTarget::Session(
                             session,
                         ))
@@ -9830,9 +9868,15 @@ impl WorkspaceView {
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
     /// `reordering`, and `fullscreen` while those states hold. The About
     /// panel sets `confirming` too, so the `dialog_*` bindings close it.
+    /// A native session menu waiting for its exited read sets `menu`, so
+    /// Escape cancels it before it appears instead of reaching the
+    /// terminal.
     fn key_context(&self, _window: &Window) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Workspace");
+        if self.pending_session_menu_takes_keys() {
+            context.add(huterm_ui::components::menu::KEY_CONTEXT);
+        }
         if self.dialog_showing() {
             context.add("confirming");
         }
@@ -10416,6 +10460,7 @@ impl WorkspaceView {
                             "window has no session".to_owned(),
                         )
                     })?;
+                self.check_close_session_available(session, cx)?;
                 let target = CloseTarget::Session(session);
                 self.close.check_close_available(&target)?;
                 self.request_close(target, window, cx);
@@ -10769,6 +10814,7 @@ impl WorkspaceView {
     /// such as on a terminal, stays. Every change of top dialog comes here,
     /// and each frame checks it.
     fn sync_dialog(&mut self, window: &mut Window, cx: &mut App) {
+        self.sync_quit_hold(cx);
         let top = self.top_dialog();
         if top == self.dialog_shown {
             return;
@@ -15804,6 +15850,14 @@ impl WorkspaceView {
         command: huterm_protocol::CommandId,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        if self.pending_session_menu_takes_keys() {
+            // `menu_close` cancels the native session menu before it
+            // appears; the others have no rows to act on yet.
+            if command == ids::MENU_CLOSE {
+                self.cancel_pending_session_menu(cx);
+            }
+            return Ok(CommandOutcome::Completed);
+        }
         let menu = self.open_menu_entity()?;
         menu.update(cx, |menu, cx| {
             match command {

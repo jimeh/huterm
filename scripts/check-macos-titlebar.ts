@@ -139,6 +139,19 @@ label = "title"
     }, `state ${expected.join(", ")}`);
     return text;
   }
+  /**
+   * Waits for `expected` in a state whose open menu has painted. The state
+   * names a menu open before a frame draws it, and reports `menu_rect` only
+   * from a drawn frame.
+   */
+  async function paintedMenu(...expected: string[]): Promise<string> {
+    let text = "";
+    await waitFor(async () => {
+      text = await current();
+      return expected.every((value) => text.includes(value)) && field(text, "menu_rect") !== "none";
+    }, `painted menu with ${expected.join(", ")}`);
+    return text;
+  }
   async function command(value: string): Promise<string> {
     const index = sequence++;
     const pending = join(directory, "command-next");
@@ -206,7 +219,7 @@ label = "title"
    */
   async function openSessionMenu(rect: Rect, upward: boolean): Promise<void> {
     click(centre(rect));
-    const opened = await state("w0.menu_kind=session", "w0.session_open=true", "w0.menu_selection=none");
+    const opened = await paintedMenu("w0.menu_kind=session", "w0.session_open=true", "w0.menu_selection=none");
     const window = frame();
     assertNone(`${engine}: ${position} session menu`, menuProblems(parseRect(field(opened, "menu_rect")), rect, upward, { x: 0, y: 0, w: window.w, h: window.h }));
     await input.key("escape");
@@ -457,6 +470,19 @@ notch = "off"
     }, `state ${expected.join(", ")}`);
     return text;
   }
+  /**
+   * Waits for `expected` in a state whose open menu has painted. The state
+   * names a menu open before a frame draws it, and reports `menu_rect` only
+   * from a drawn frame.
+   */
+  async function paintedMenu(...expected: string[]): Promise<string> {
+    let text = "";
+    await waitFor(async () => {
+      text = await current();
+      return expected.every((value) => text.includes(value)) && field(text, "menu_rect") !== "none";
+    }, `painted menu with ${expected.join(", ")}`);
+    return text;
+  }
   async function command(value: string): Promise<string> {
     const index = sequence++;
     const pending = join(directory, "command-next");
@@ -506,7 +532,7 @@ notch = "off"
     const rect = sessionControl(text).rect;
     if (via === "click") click(centre(rect));
     else await command("invoke\topen_session_menu");
-    const opened = await state("w0.menu_kind=session", "w0.session_open=true");
+    const opened = await paintedMenu("w0.menu_kind=session", "w0.session_open=true");
     const window = frame();
     assertNone(`${engine}: ${label} session menu`, menuProblems(parseRect(field(opened, "menu_rect")), rect, upward, { x: 0, y: 0, w: window.w, h: window.h }));
     await input.key("escape");
