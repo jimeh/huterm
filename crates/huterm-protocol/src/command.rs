@@ -844,6 +844,9 @@ pub mod ids {
     pub const REDO: CommandId = CommandId::new("redo");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
+    /// Opens the window's session menu.
+    pub const OPEN_SESSION_MENU: CommandId =
+        CommandId::new("open_session_menu");
     /// Focuses the window's notice list.
     pub const FOCUS_NOTICES: CommandId = CommandId::new("focus_notices");
     /// Dismisses every notice in the window.
@@ -888,6 +891,9 @@ pub mod ids {
     pub const MENU_SELECT_LEFT: CommandId = CommandId::new("menu_select_left");
     /// Runs the selected menu item.
     pub const MENU_CONFIRM: CommandId = CommandId::new("menu_confirm");
+    /// Runs the selected menu row's alternate action.
+    pub const MENU_CONFIRM_ALTERNATE: CommandId =
+        CommandId::new("menu_confirm_alternate");
     /// Closes the open menu.
     pub const MENU_CLOSE: CommandId = CommandId::new("menu_close");
     /// Closes the open panel.
@@ -1833,6 +1839,13 @@ const CATALOG: &[CommandSpec] = &[
         &[],
     ),
     spec(
+        ids::OPEN_SESSION_MENU,
+        CommandScope::Window,
+        "Open Session Menu",
+        "Open this window's session menu to switch, create, or rename sessions.",
+        &[],
+    ),
+    spec(
         ids::FOCUS_NOTICES,
         CommandScope::Window,
         "Focus Notices",
@@ -1971,6 +1984,15 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Menu: Run Item",
         "Run the selected menu item.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_CONFIRM_ALTERNATE,
+        CommandScope::Window,
+        "Menu: Run Alternate Action",
+        "Run the selected row's alternate action, such as a session row's \
+         Open in New Window.",
         &[],
     ),
     spec_in(

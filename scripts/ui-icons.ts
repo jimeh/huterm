@@ -38,6 +38,13 @@ export const iconNames = [
   "columns-2",
   "rows-2",
   "check",
+  "layers",
+  "chevron-down",
+  "app-window",
+  "external-link",
+  "pencil",
+  "eraser",
+  "trash-2",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

@@ -224,6 +224,7 @@ mod tests {
                 MenuRow::Item(item) => format!("{}!", item.id),
                 MenuRow::Separator => "-".to_owned(),
                 MenuRow::Buttons { .. } => "buttons".to_owned(),
+                MenuRow::Hint(text) => format!("({text})"),
                 MenuRow::Submenu { item, .. } => format!("{}>", item.id),
             })
             .collect()

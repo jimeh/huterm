@@ -492,6 +492,7 @@ fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
         ("menu", ids::MENU_SELECT_RIGHT),
         ("menu", ids::MENU_SELECT_LEFT),
         ("menu", ids::MENU_CONFIRM),
+        ("menu", ids::MENU_CONFIRM_ALTERNATE),
         ("menu", ids::MENU_CLOSE),
         ("notices", ids::NOTICE_NEXT),
         ("notices", ids::NOTICE_PREVIOUS),
@@ -520,7 +521,12 @@ fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
     }
     // Entry points into those contexts are unconditional so they can be
     // bound and listed anywhere.
-    for id in [ids::OPEN_MENU, ids::FOCUS_NOTICES, ids::DISMISS_ALL_NOTICES] {
+    for id in [
+        ids::OPEN_MENU,
+        ids::OPEN_SESSION_MENU,
+        ids::FOCUS_NOTICES,
+        ids::DISMISS_ALL_NOTICES,
+    ] {
         let spec = validate(&CommandInvocation::new(id, Vec::new())).unwrap();
         assert_eq!(spec.scope, CommandScope::Window, "{id}");
         assert_eq!(spec.context, None, "{id}");

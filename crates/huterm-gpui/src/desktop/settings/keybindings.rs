@@ -101,6 +101,7 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
     (
         "Sessions",
         &[
+            ids::OPEN_SESSION_MENU,
             ids::NEW_SESSION,
             ids::SELECT_SESSION,
             ids::OPEN_SESSION_IN_NEW_WINDOW,

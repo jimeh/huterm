@@ -20,6 +20,7 @@ pub mod item;
 pub mod kbd;
 pub mod key_recorder;
 pub mod menu;
+pub mod menu_trigger;
 pub mod number_field;
 pub mod popover;
 pub mod prose;

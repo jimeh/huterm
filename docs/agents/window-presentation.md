@@ -422,6 +422,21 @@ While the tab bar is hidden, the row's empty space accepts a pane from a split
 tab to open a new tab. `title_row_layout` shares its bounds and control
 exclusions between rendering and pane-drop hit testing.
 
+The session control follows the menu button one slot further in
+(`session_control_host` beside `menu_button_placement`), and one resolved
+`SessionControlPlacement` with its measured width feeds rendering, the tab
+strip's trailing widths (`bar_trailing`, which `TabStrip::new` and the
+tear-off pill read), `title_row_layout`'s corner exclusion and title
+padding, menu anchoring, and smoke state (`session_host`, `session_rect`).
+Bar geometry uses the bar-shown variant (`bar_session_placement`), as the
+menu button's does, so an overlay bar's reveal never moves the slots. It
+collapses to its icon by the room its host leaves, not the window width:
+a share of a title row or bar, a right column's whole top strip, and only
+the icon in a column's new-tab row. Beside a left or right column under a
+title strip both controls paint above the occluding full-height bar at the
+window's top-right corner. Like the menu button it occludes and stops
+presses, so the row's move and double-click gestures never start on it.
+
 The macOS Settings window hides AppKit's title bar the same way: a
 transparent title bar with `app_owns_titlebar_drag`, the title still
 "Settings" for accessibility and the Window menu, and the traffic lights

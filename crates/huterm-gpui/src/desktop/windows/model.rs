@@ -366,13 +366,6 @@ impl WindowModel {
     /// How many open windows other than `except` show `session`. Counts
     /// window records, not attachments: a Quake stash holds an attachment
     /// with no window.
-    #[cfg_attr(
-        not(all(test, feature = "test-support")),
-        expect(
-            dead_code,
-            reason = "the session menu's window badge (#26 phase C) reads it"
-        )
-    )]
     pub(super) fn other_windows_showing(
         &self,
         session: SessionId,

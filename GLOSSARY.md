@@ -101,6 +101,13 @@ tab, activation history, each tab's focused pane, and its layout history.
 Switching back applies it. It belongs to its window, is saved without the
 layout history, and goes when its session closes.
 
+**Session control**:
+The control that names a window's session and opens the session menu, which
+switches, creates, renames, and closes sessions and opens one in a new window.
+Its state and commands do not depend on where it is drawn; #26 draws it in the
+title bar beside the window menu button.
+_Avoid_: Session switcher, session picker.
+
 **Restoration**:
 Recreating saved workspace structure and client layout after a restart, with
 fresh terminal processes when the previous runtime is no longer alive. The

@@ -711,6 +711,22 @@ impl WorkspaceView {
         }
     }
 
+    /// The close an owed emptied close takes: on Linux, when this is the
+    /// last window and other sessions no window shows would stay running
+    /// out of reach, Quit hosted by this window, as Close Window does
+    /// there; otherwise the emptied close itself.
+    pub(super) fn emptied_close_target(
+        &self,
+        platform: Platform,
+        cx: &App,
+    ) -> CloseTarget {
+        if platform == Platform::Linux && self.last_window_strands(cx) {
+            CloseTarget::Application
+        } else {
+            CloseTarget::Emptied
+        }
+    }
+
     /// Whether closing this window would leave sessions running that no
     /// window shows, with no other window or Quake shortcut to reach them.
     fn last_window_strands(&self, cx: &App) -> bool {

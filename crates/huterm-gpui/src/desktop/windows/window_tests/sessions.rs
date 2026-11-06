@@ -12,14 +12,14 @@ use super::*;
 
 /// A session with its own workspace and one echo tab per name, named
 /// `name`, as another client would make it.
-struct Other {
-    session: SessionId,
-    workspace: WorkspaceId,
-    tabs: Vec<TabId>,
+pub(super) struct Other {
+    pub(super) session: SessionId,
+    pub(super) workspace: WorkspaceId,
+    pub(super) tabs: Vec<TabId>,
 }
 
 impl DesktopHarness {
-    fn other_session(&self, name: &str, tabs: usize) -> Other {
+    pub(super) fn other_session(&self, name: &str, tabs: usize) -> Other {
         let mut mux = self.runtime.lock();
         let session = mux.create_session(Some(name)).unwrap();
         let workspace = mux.create_workspace(session, None).unwrap();
@@ -44,7 +44,7 @@ impl DesktopHarness {
 
     /// Switches `window` to `session` and waits until the switch settled
     /// with every tab in `tabs` installed.
-    fn switch_to(
+    pub(super) fn switch_to(
         &mut self,
         window: AnyWindowHandle,
         session: SessionId,
@@ -54,7 +54,7 @@ impl DesktopHarness {
         self.wait_switched(window, session, tabs);
     }
 
-    fn wait_switched(
+    pub(super) fn wait_switched(
         &mut self,
         window: AnyWindowHandle,
         session: SessionId,
@@ -99,7 +99,10 @@ fn pick(
 }
 
 /// The session `window`'s record shows.
-fn shown_session(cx: &mut App, window: AnyWindowHandle) -> Option<SessionId> {
+pub(super) fn shown_session(
+    cx: &mut App,
+    window: AnyWindowHandle,
+) -> Option<SessionId> {
     cx.global::<Desktop>()
         .windows
         .record(window.window_id())
@@ -857,6 +860,48 @@ fn the_last_windows_close_on_linux_quits_while_unviewed_sessions_remain(
     if cfg!(target_os = "linux") {
         harness.invoke(window, ids::CLOSE_WINDOW).unwrap();
         harness.wait_quit(left.session);
+    }
+}
+
+#[gpui::test]
+fn the_last_windows_emptied_close_on_linux_quits_while_unviewed_sessions_remain(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let emptied_target = |harness: &mut DesktopHarness, platform| {
+        harness.update_view(window, |view, _, cx| {
+            view.emptied_close_target(platform, cx)
+        })
+    };
+    // With no other session, the window simply closes.
+    assert_eq!(
+        emptied_target(&mut harness, Platform::Linux),
+        CloseTarget::Emptied
+    );
+    let left = harness.other_session("left", 1);
+    harness.switch_to(window, left.session, &left.tabs);
+    harness.switch_to(window, harness.session, &[tab]);
+    assert_eq!(
+        emptied_target(&mut harness, Platform::Linux),
+        CloseTarget::Application
+    );
+    assert_eq!(
+        emptied_target(&mut harness, Platform::MacOs),
+        CloseTarget::Emptied,
+        "macOS keeps running for a Dock reopen"
+    );
+    // The window's last shell goes, as when it exits.
+    harness.close_tab(tab);
+    if cfg!(target_os = "linux") {
+        harness.wait_quit(left.session);
+    } else {
+        harness.wait_closed(window);
+        assert!(
+            harness.runtime.lock().session(left.session).is_some(),
+            "the unviewed session keeps running"
+        );
     }
 }
 

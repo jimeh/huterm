@@ -467,10 +467,17 @@ async fn attach_window(
             existing,
         ))
     })?;
-    let attachment = cx
+    let (attachment, seq) = cx
         .background_executor()
-        .spawn(async move { runtime.lock().attach_session(session) })
+        .spawn(async move {
+            let mut mux = runtime.lock();
+            mux.attach_session(session)
+                .map(|attachment| (attachment, mux.hierarchy_seq()))
+        })
         .await?;
+    // Adopt only once the projection holds the attachment, as production
+    // attaches do; an earlier adoption owes a spurious emptied close.
+    super::projected(cx, seq).await;
     cx.update(|cx| {
         super::open_window_inner(cx, false);
         let handle = cx

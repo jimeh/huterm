@@ -184,15 +184,28 @@ them back.
 
 ### Switching sessions
 
-New Session, Switch Session, Open Session in New Window, Rename Session, Clear
-Session Name, and Close Session are in the command palette
-([commands](docs/keybindings.md#commands)). Switching keeps both sessions
-running; the window returns to the tab and pane it last showed in each, with
-its own undo, and a restart restores that too. Two windows can show one
-session and switch independently. Closing one of those windows only detaches
-it, without a prompt, and the session's last window closes the session. A
-shell that exits while no window shows its tab keeps the exited tab, even with
-`close_on_exit`, because only a view sees the exit.
+The session control at the right end of the title bar, just before the
+window menu button, names the window's session; an automatic name such as
+"Session 2" shows dimmed. Clicking it, or running `open_session_menu`, opens
+the session menu: every session with its tab count, a window tag on sessions
+other windows show, and an "exited" tag on sessions whose shells all exited,
+then New Session, Rename Session…, Clear Name (while the session has a custom
+name), and Close Session…. Picking a session switches the window to it, and
+the selected row's Open in New Window button (or Cmd-Enter on macOS,
+Ctrl-Enter on Linux) shows it in a new window. Without a title bar, in
+fullscreen, Quake windows, and Linux without client-side decorations, the
+control ends a top or bottom tab bar, or sits icon-only beside `+` in a left
+or right column. A long name truncates, and a narrow window shows only the
+icon. `[window] session_button = false` hides it; the menu and every session
+command stay available. New Session, Switch Session, Open Session in New
+Window, Rename Session, Clear Session Name, and Close Session are also in the
+command palette ([commands](docs/keybindings.md#commands)). Switching keeps
+both sessions running; the window returns to the tab and pane it last showed
+in each, with its own undo, and a restart restores that too. Two windows can
+show one session and switch independently. Closing one of those windows only
+detaches it, without a prompt, and the session's last window closes the
+session. A shell that exits while no window shows its tab keeps the exited
+tab, even with `close_on_exit`, because only a view sees the exit.
 
 ## Develop
 

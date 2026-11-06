@@ -1092,6 +1092,47 @@ fn detaching_preserves_terminal_and_unobserved_output_and_exit() {
     mux.shutdown().unwrap();
 }
 
+#[test]
+fn a_session_counts_as_exited_once_every_terminal_in_it_exited() {
+    let mut mux = Mux::default();
+    let exiting = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(exiting, None).unwrap();
+    let first = mux.open_test_tab(workspace, &command("exit 0")).unwrap();
+    let second = mux
+        .open_test_tab(workspace, &command("read value; exit 0"))
+        .unwrap();
+    let running = mux.create_session(None).unwrap();
+    let other = mux.create_workspace(running, None).unwrap();
+    let _kept = mux.open_test_tab(other, &command("read value")).unwrap();
+    let empty = mux.create_session(None).unwrap();
+    let exited = |mux: &Mux, terminal: TerminalId| {
+        matches!(
+            mux.terminals[&terminal].registry().status().lifecycle,
+            TerminalLifecycle::Exited(_)
+        )
+    };
+    let wait = |mux: &Mux, terminal: TerminalId| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !exited(mux, terminal) {
+            assert!(Instant::now() < deadline, "the shell did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait(&mux, first.tab.first_pane().terminal_id);
+    // One shell still runs, so the session has not exited.
+    assert!(!exited(&mux, second.tab.first_pane().terminal_id));
+    assert_eq!(mux.exited_sessions(), Vec::<SessionId>::new());
+    second
+        .client
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    wait(&mux, second.tab.first_pane().terminal_id);
+    // A session with no terminal never counts as exited.
+    assert_eq!(mux.exited_sessions(), vec![exiting]);
+    assert!(mux.session(empty).is_some());
+    mux.shutdown().unwrap();
+}
+
 pub(super) fn shell_pid(
     client: &crate::test_support::TestClient,
 ) -> nix::unistd::Pid {

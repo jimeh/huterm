@@ -45,15 +45,16 @@ pub(super) struct TabStrip {
     reason = "tab counts fit practical pixel geometry"
 )]
 impl TabStrip {
-    /// `menu_slot` reserves a second control slot at a horizontal bar's far
-    /// end for the window menu button; a vertical column shares the new-tab
-    /// row instead and ignores it.
+    /// `trailing` reserves the length the controls after `+` take at a
+    /// horizontal bar's far end, the session control's and the window menu
+    /// button's slots; a vertical column shares the new-tab row instead and
+    /// ignores it.
     pub(super) fn new(
         mut bounds: Bounds<Pixels>,
         vertical: bool,
         extents: TabExtents,
         offset: Pixels,
-        menu_slot: bool,
+        trailing: Pixels,
     ) -> Self {
         let available = if vertical {
             bounds.size.height
@@ -64,10 +65,8 @@ impl TabStrip {
         // it does not touch the window edge when tabs overflow.
         let reserved = if vertical {
             CONTROL_SLOT + VERTICAL_END_MARGIN
-        } else if menu_slot {
-            CONTROL_SLOT * 2.0
         } else {
-            CONTROL_SLOT
+            CONTROL_SLOT + trailing.max(px(0.0))
         };
         let viewport = (available - reserved).max(px(0.0));
         let fit = matches!(extents, TabExtents::Fit(_)) && !vertical;
@@ -290,7 +289,7 @@ mod tests {
             vertical,
             TabExtents::Uniform(count),
             px(offset),
-            false,
+            px(0.0),
         )
     }
 
@@ -300,18 +299,20 @@ mod tests {
             false,
             TabExtents::Fit(widths.iter().map(|width| px(*width)).collect()),
             px(offset),
-            false,
+            px(0.0),
         )
     }
 
     #[test]
-    fn a_menu_slot_shortens_horizontal_bars_and_leaves_columns_alone() {
+    fn trailing_slots_shorten_horizontal_bars_and_leave_columns_alone() {
+        // The menu button's 32-point slot.
+        let menu = px(32.0);
         let with_menu = TabStrip::new(
             bounds(),
             false,
             TabExtents::Uniform(6),
             px(0.0),
-            true,
+            menu,
         );
         assert_eq!(with_menu.available(), px(568.0));
         assert_eq!(with_menu.max_offset(), px(152.0));
@@ -320,7 +321,7 @@ mod tests {
             false,
             TabExtents::Fit(vec![px(240.0); 4]),
             px(0.0),
-            true,
+            menu,
         );
         assert_eq!(fitting.available(), px(568.0));
         assert_eq!(fitting.max_offset(), px(392.0));
@@ -329,7 +330,7 @@ mod tests {
             false,
             TabExtents::Fit(vec![px(100.0); 2]),
             px(0.0),
-            true,
+            menu,
         );
         assert_eq!(short.available(), px(200.0), "follows the last tab");
         let column = TabStrip::new(
@@ -337,9 +338,43 @@ mod tests {
             true,
             TabExtents::Uniform(20),
             px(0.0),
-            true,
+            menu,
         );
         assert_eq!(column.available(), strip(true, 20, 0.0).available());
+    }
+
+    #[test]
+    fn the_session_controls_slot_moves_overflow_scroll_and_drop_targets() {
+        // The menu button's slot and a 120-point session control's.
+        let trailing = px(32.0 + 126.0);
+        let strip = TabStrip::new(
+            bounds(),
+            false,
+            TabExtents::Fit(vec![px(150.0); 3]),
+            px(0.0),
+            trailing,
+        );
+        // 632 less `+`, the menu button, and the control.
+        assert_eq!(strip.available(), px(632.0 - 32.0 - 158.0));
+        assert_eq!(strip.max_offset(), px(450.0 - 442.0));
+        assert_eq!(strip.reveal(2), px(8.0), "the last tab scrolls into view");
+        // A pointer over the control maps to the slot after the last tab,
+        // never to a tab label beneath it.
+        let over_control = point(px(20.0 + 600.0), px(50.0));
+        assert_eq!(strip.slot(over_control), 3);
+        assert_eq!(
+            strip.label_zone(over_control, Some(0)),
+            Some(LabelZone::Slot(3))
+        );
+        // Without the control the same tabs fit.
+        let roomy = TabStrip::new(
+            bounds(),
+            false,
+            TabExtents::Fit(vec![px(150.0); 3]),
+            px(0.0),
+            px(32.0),
+        );
+        assert_eq!(roomy.max_offset(), px(0.0));
     }
 
     #[test]
@@ -369,7 +404,7 @@ mod tests {
             true,
             TabExtents::Fit(vec![px(300.0); 2]),
             px(0.0),
-            false,
+            px(0.0),
         );
         assert_eq!(ignored.tab_extent(1), TAB_HEIGHT);
     }

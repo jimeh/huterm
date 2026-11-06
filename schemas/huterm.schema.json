@@ -1446,6 +1446,7 @@
                 "undo",
                 "redo",
                 "open_menu",
+                "open_session_menu",
                 "focus_notices",
                 "dismiss_all_notices",
                 "select_all",
@@ -1464,6 +1465,7 @@
                 "menu_select_right",
                 "menu_select_left",
                 "menu_confirm",
+                "menu_confirm_alternate",
                 "menu_close",
                 "panel_close",
                 "panel_focus_next",
@@ -5980,6 +5982,57 @@
           "if": {
             "properties": {
               "command": {
+                "const": "open_session_menu"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open this window's session menu to switch, create, or rename sessions.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_session_menu",
+                "description": "Open this window's session menu to switch, create, or rename sessions.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
                 "const": "focus_notices"
               }
             },
@@ -6867,6 +6920,57 @@
               "command": {
                 "const": "menu_confirm",
                 "description": "Run the selected menu item.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "menu_confirm_alternate"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Run the selected row's alternate action, such as a session row's Open in New Window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "menu_confirm_alternate",
+                "description": "Run the selected row's alternate action, such as a session row's Open in New Window.",
                 "type": "string"
               },
               "description": {
@@ -11429,6 +11533,16 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Lower frame rate to save power",
           "x-huterm-order": 33,
+          "x-huterm-section": "windows"
+        },
+        "session_button": {
+          "default": true,
+          "description": "Show the session control, which names the window's session and opens\nthe session menu, beside the window menu button.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Session button",
+          "x-huterm-order": 15,
           "x-huterm-section": "windows"
         },
         "shortcut_hints": {

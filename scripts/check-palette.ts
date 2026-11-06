@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { discoverX11Window, withOpenbox } from "./check-desktop-integration";
 import { checkClientFrame, withCompositor } from "./check-client-frame";
-import { checkMacTitlebar } from "./check-macos-titlebar";
+import { checkMacSessionHosts, checkMacTitlebar } from "./check-macos-titlebar";
 import { checkOverlays } from "./check-overlays";
 import { checkSettings } from "./check-settings";
 import { checkViewers } from "./check-viewers";
@@ -1217,7 +1217,8 @@ if (import.meta.main) {
     if (process.platform === "darwin") {
       await checks();
       if (!only || only === "titlebar") {
-        for (const position of ["titlebar", "top", "left", "right"] as const) await checkMacTitlebar(executable, pointer, position);
+        for (const position of ["titlebar", "top", "bottom", "left", "right"] as const) await checkMacTitlebar(executable, pointer, position);
+        await checkMacSessionHosts(executable, pointer);
       }
     }
     else {

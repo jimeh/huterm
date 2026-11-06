@@ -321,10 +321,13 @@ impl DesktopHarness {
     }
 
     /// Opens a window without a shell and attaches it to the session, as
-    /// the smoke fixture's `attach-window` does.
+    /// the smoke fixture's `attach-window` does. Like production attaches,
+    /// it waits for the projection first: a window that adopts a session
+    /// the projection does not hold yet owes an emptied close.
     fn attach_window(&mut self) -> AnyWindowHandle {
         let attachment =
             self.runtime.lock().attach_session(self.session).unwrap();
+        self.wait_projection();
         let (session, workspace) = (self.session, self.workspace);
         self.cx.update(|cx| {
             let existing = cx.windows();
@@ -1257,6 +1260,9 @@ fn closing_the_claiming_window_during_its_assessment_hands_the_close_on(
     let exits = harness.open_tab(EXITS);
     let stays = harness.open_tab(ECHO);
     let claimer = harness.attach_window();
+    // The claimer must see the shell running, or the exit is no
+    // transition for it and nothing is owed.
+    harness.wait_text(claimer, exits, "READY");
     let runtime = Arc::clone(&harness.runtime);
     let hooks = &runtime.worker_hooks;
     hooks.hold(Stage::Assess);
@@ -5387,6 +5393,7 @@ mod pane_layouts;
 mod pane_moves;
 mod pane_names;
 mod restore;
+mod session_control;
 mod sessions;
 mod settings;
 mod settings_controls;

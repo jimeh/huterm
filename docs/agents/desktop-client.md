@@ -777,7 +777,26 @@ included; `NativeMenu::entries` and `id_at` read the same order, and
 `appkit_menu`'s `check_built` checks it in `smoke:macos-menus`.
 
 Each open menu carries a `MenuKind` and pointer anchor; derive button state
-and pick targets from them, not from whether any menu is open. A terminal
+and pick targets from them, not from whether any menu is open. The session
+menu (`MenuKind::Session`, `windows/session_control.rs`) anchors to the
+session control's painted bounds, or the window menu's fallback anchor while
+the control is hidden. The popover has one trigger probe, so only the open
+menu's trigger mounts it: the menu button while any other menu is open, the
+session control while its menu is. A probe in the wrong trigger makes the
+guard count a press on the open trigger as outside, so the toggle reopens
+the menu. The session menu reads the projection at every refresh, so the
+window is a title consumer while it is open: `reconcile` notifies every
+window when names or attachments change (every control names its session
+and the menu counts other windows) and open session menus on any structural
+batch (tab counts). It refreshes through `Menu::set_model_keeping_place`,
+which moves a selection whose session closed elsewhere to the row that took
+its place. Its "exited" tags come from `Mux::exited_sessions`, read on a
+worker each time it opens; the menu opens first and a generation drops a
+superseded answer. Its native lowering puts each session's Open in New
+Window in an alternate item (`setAlternate:` with the Command mask and no
+key), which AppKit swaps in while Command is held, and the detail in
+`subtitle` only when the item responds to `setSubtitle:`, which arrived in
+macOS 14.4 while the floor is 14.0. A terminal
 menu's kind names the terminal it opened over, and a pane menu's its pane,
 because their picks act on whatever is focused: `menu_target_live` closes
 either renderer's menu once focus leaves that target, such as when its pane
@@ -981,6 +1000,15 @@ AppKit menu clicks reach GPUI as no pointer event. A
 button with a tooltip shows it below itself while its ring shows and it is
 not clipped (`tooltip::focused`), an expanded button shows none, and an
 icon-only button's label is its tooltip.
+
+The session control is a `huterm_ui::components::menu_trigger::MenuTrigger`:
+its accessible name ("Session: name") differs from its visible label, which
+`Button` cannot do, since a button's label is its name. The owner measures
+the name (`measure_session_label`, run wherever tab widths are measured) and
+passes the label width it resolved, so layout, hit testing, and the drawn
+control agree; `menu_trigger::width_for_label` is the one width formula.
+Size it with the title row's `CONTROL_SIZE`: the component's default height
+is the 24-point control height, not the row's 26.
 
 Text fields are `huterm_ui::components::input::Input` entities, and
 `huterm_ui::text` holds the UTF-16 range conversions that `Input` and

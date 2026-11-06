@@ -659,7 +659,7 @@ fn reorder_projection_and_preview_stay_in_bar_for_all_four_placements() {
             position.vertical(),
             TabExtents::Uniform(8),
             px(0.0),
-            false,
+            px(0.0),
         );
         let extent = strip.tab_extent(0);
         let pointer = if strip.vertical {
@@ -2160,7 +2160,7 @@ fn the_title_bar_row_holds_tabs_after_the_traffic_lights() {
         false,
         TabExtents::Uniform(3),
         px(0.0),
-        true,
+        CONTROL_SLOT,
     );
     assert_eq!(
         strip_geometry.available(),

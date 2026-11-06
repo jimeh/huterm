@@ -1090,7 +1090,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
         )
     }));
     entries.extend(dialog_defaults());
-    entries.extend(menu_defaults());
+    entries.extend(menu_defaults(platform));
     entries.extend(panel_defaults(platform));
     entries.extend(notice_defaults());
     entries.extend(settings_defaults(platform));
@@ -1114,10 +1114,15 @@ fn dialog_defaults() -> Vec<BindingEntry> {
     ]
 }
 
-/// Menu bindings, identical on both platforms. Their commands carry the
-/// `menu` context, so they match only while a menu has focus and reserve
-/// nothing from terminals.
-fn menu_defaults() -> Vec<BindingEntry> {
+/// Menu bindings, identical on both platforms but for the alternate
+/// action's platform modifier. Their commands carry the `menu` context, so
+/// they match only while a menu has focus and reserve nothing from
+/// terminals.
+fn menu_defaults(platform: Platform) -> Vec<BindingEntry> {
+    let alternate = match platform {
+        Platform::MacOs => "cmd-enter",
+        Platform::Linux => "ctrl-enter",
+    };
     vec![
         default("down", ids::MENU_SELECT_NEXT, "Next Item"),
         default("up", ids::MENU_SELECT_PREVIOUS, "Previous Item"),
@@ -1127,6 +1132,11 @@ fn menu_defaults() -> Vec<BindingEntry> {
         default("left", ids::MENU_SELECT_LEFT, "Previous Button or Back"),
         default("enter", ids::MENU_CONFIRM, "Run Item"),
         default("space", ids::MENU_CONFIRM, "Run Item"),
+        default(
+            alternate,
+            ids::MENU_CONFIRM_ALTERNATE,
+            "Run Alternate Action",
+        ),
         default("escape", ids::MENU_CLOSE, "Close"),
         default("tab", ids::MENU_CLOSE, "Close"),
         default("shift-tab", ids::MENU_CLOSE, "Close"),

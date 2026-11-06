@@ -19,6 +19,11 @@
  * The composited run finishes by starting an XSettings manager, as GNOME's
  * settings daemon would, and changing its `Gtk/DecorationLayout`: the drawn
  * window buttons must follow it live to the start or end of the row.
+ *
+ * In both runs the session control ends the tab bar just before the menu
+ * button, before any window buttons at the end of the row: a real click
+ * opens the session menu below it, `open_session_menu` opens it from the
+ * keyboard, and Escape returns focus to the terminal.
  */
 import { dlopen, ptr } from "bun:ffi";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -26,6 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverX11Window } from "./check-desktop-integration";
 import { field, parseRect } from "./check-overlays";
+import { assertNone, menuProblems, placementProblems, sessionControl } from "./session-control";
 
 type X11Process = Pick<Bun.Subprocess, "pid" | "exitCode" | "signalCode">;
 
@@ -446,6 +452,7 @@ done
     const tabs = field(text, "tabs_rects").split(";").map(parseRect);
     const last = tabs[tabs.length - 1];
     const button = parseRect(field(text, "menu_button"));
+    const control = sessionControl(text).rect;
     const first = windowButtons(text)[0]?.rect;
     const content = parseRect(field(text, "content"));
     if (!last || !first) throw new Error(`${engine} ${label}: no tab or window button rects: ${text}`);
@@ -454,9 +461,39 @@ done
       throw new Error(`${engine} ${label}: the menu button ${field(text, "menu_button")} is not between the + slot after ${field(text, "tabs_rects")} and the window buttons ${field(text, "window_buttons")}`);
     }
     const left = last.x + last.w + 32 + 8;
-    const right = button.x - 8;
+    // The session control sits just before the menu button.
+    const right = control.x - 8;
     if (right - left < 40) throw new Error(`${engine} ${label}: no empty row space between ${left} and ${right}`);
     return { x: (left + right) / 2, y: content.y + 16 };
+  }
+  /**
+   * Checks the control at the end of the tab bar, before the menu button,
+   * then opens its menu with a real click and from the keyboard.
+   */
+  async function checkSessionControl(step: string, scale: number): Promise<string> {
+    const text = await current();
+    const control = sessionControl(text);
+    const content = parseRect(field(text, "content"));
+    const tab = parseRect(field(text, "tabs_rects").split(";")[0] ?? "");
+    const row = { x: content.x, y: tab.y - 4, w: content.w, h: tab.h + 8 };
+    assertNone(`${engine} ${label} ${step} session control`, placementProblems(control, "BarEnd", row, parseRect(field(text, "menu_button"))));
+    const first = windowButtons(text).find(({ rect }) => rect.x > control.rect.x)?.rect;
+    if (first && control.rect.x + control.rect.w > first.x - 6) {
+      throw new Error(`${engine} ${label}: the session control ${field(text, "session_rect")} overlaps the window buttons ${field(text, "window_buttons")}`);
+    }
+    const centre = { x: control.rect.x + control.rect.w / 2, y: control.rect.y + control.rect.h / 2 };
+    click(centre.x * scale, centre.y * scale);
+    const opened = await state("w0.menu_kind=session", "w0.session_open=true", "w0.menu_selection=none");
+    assertNone(`${engine} ${label} ${step} session menu`, menuProblems(parseRect(field(opened, "menu_rect")), control.rect, false, content));
+    key("Escape");
+    await state("w0.menu=false", "w0.session_open=false", "w0.terminal_focused=true");
+    await command("invoke\topen_session_menu");
+    await state("w0.menu_kind=session", "w0.menu_selection=session:");
+    key("Down");
+    await state("w0.menu_selection=new_session");
+    key("Escape");
+    await state("w0.menu=false", "w0.terminal_focused=true");
+    return field(text, "session_rect");
   }
 
   try {
@@ -491,7 +528,9 @@ done
         throw new Error(`${engine} ${label}: content is inset without a frame: ${field(fallback, "content")} for ${outer.width}x${outer.height}`);
       }
       await assertPtyMatchesGrid();
-      console.log(`CLIENT_FRAME_SMOKE ${engine} ${label} decorations=server extents=absent`);
+      const fallbackControl = await checkSessionControl("fallback", scale);
+      await ack("acksessionx");
+      console.log(`CLIENT_FRAME_SMOKE ${engine} ${label} decorations=server extents=absent session-control=${fallbackControl}@BarEnd,click-opens,keyboard-opens`);
       await command("quit");
       await waitFor(async () => app.exitCode !== null, "desktop cleanup");
       if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);
@@ -512,6 +551,11 @@ done
       throw new Error(`${engine} ${label}: terminal ${field(framed, "terminal_bounds")} escapes the row and frame ${field(framed, "content")}`);
     }
     await assertPtyMatchesGrid();
+
+    // 1b. The session control ends the merged row's bar before the menu
+    // button and the window buttons.
+    const framedControl = await checkSessionControl("framed", scale);
+    await ack("acksessionx");
 
     // 2. The drawn close control takes the assessed path: a live job gets
     // the dialog, and cancelling leaves its shell alive.
@@ -616,6 +660,14 @@ done
       if (!maximize || firstTab.x < maximize.x + maximize.w + 6) {
         throw new Error(`${engine} ${label}: the first tab ${JSON.stringify(firstTab)} overlaps the leading buttons ${field(leftText, "window_buttons")}`);
       }
+      // With the buttons at the start, the control and the menu button
+      // end the row.
+      const leading = sessionControl(leftText).rect;
+      const menuButton = parseRect(field(leftText, "menu_button"));
+      const contentRight = parseRect(field(leftText, "content"));
+      if (menuButton.x + menuButton.w < contentRight.x + contentRight.w - 8 || leading.x + leading.w > menuButton.x) {
+        throw new Error(`${engine} ${label}: with leading buttons the session control ${field(leftText, "session_rect")} and menu button ${field(leftText, "menu_button")} do not end the row`);
+      }
       const leftClose = centre(left.get("close"));
       click(leftClose.x, leftClose.y);
       await state("w0.confirming=true", 'w0.dialog_title="Close this window?"');
@@ -636,7 +688,7 @@ done
     await settledButtons(["minimize", "maximize", "close"], 0);
     await ack("acklayoutx");
 
-    console.log(`CLIENT_FRAME_SMOKE ${engine} ${label} decorations=client extents=${inset} close=assessed-cancel minimize=hidden-restored maximize=double-click-zero-extents drag=moved fullscreen=exact-root-geometry layout=leading-then-close-only-then-standard`);
+    console.log(`CLIENT_FRAME_SMOKE ${engine} ${label} decorations=client extents=${inset} close=assessed-cancel minimize=hidden-restored maximize=double-click-zero-extents drag=moved fullscreen=exact-root-geometry layout=leading-then-close-only-then-standard session-control=${framedControl}@BarEnd,click-opens,keyboard-opens`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

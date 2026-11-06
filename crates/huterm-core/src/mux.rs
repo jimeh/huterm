@@ -1140,6 +1140,35 @@ impl Mux {
     pub fn terminal_count(&self) -> usize {
         self.terminals.len()
     }
+    /// The sessions whose every terminal's root process has exited, in
+    /// session order, read from each terminal's published status without
+    /// waiting on its runtime. A session with no terminal is not listed.
+    #[must_use]
+    pub fn exited_sessions(&self) -> Vec<SessionId> {
+        self.sessions
+            .iter()
+            .filter(|session| {
+                let mut terminals = session
+                    .workspaces
+                    .iter()
+                    .filter_map(|id| self.workspaces.get(id))
+                    .flat_map(|workspace| &workspace.tabs)
+                    .flat_map(|tab| tab.layout.panes())
+                    .map(|pane| pane.terminal_id)
+                    .peekable();
+                terminals.peek().is_some()
+                    && terminals.all(|terminal| {
+                        self.terminals.get(&terminal).is_some_and(|runtime| {
+                            matches!(
+                                runtime.registry().status().lifecycle,
+                                huterm_protocol::TerminalLifecycle::Exited(_)
+                            )
+                        })
+                    })
+            })
+            .map(|session| session.id)
+            .collect()
+    }
 }
 /// Stops and joins a runtime Mux no longer owns. A runtime that had
 /// `stopped` on its own before this close already surfaced its failure to

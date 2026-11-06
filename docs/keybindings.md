@@ -302,6 +302,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `minimize` | Window | |
 | `zoom` | Window | |
 | `open_menu` | Window | |
+| `open_session_menu` | Window | Opens the session menu at the title bar's session control, or at the window menu's place while the control is hidden, with the first session selected. No default binding. |
 | `open_context_menu` | Window | Opens the active terminal's context menu at its cursor. |
 | `focus_notices` | Window | Focuses the newest notice; unavailable without notices. |
 | `dismiss_all_notices` | Window | Dismisses every notice; unavailable without notices. |
@@ -332,6 +333,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `menu_select_right` | Window | Selects the next button in a button row, or opens the selected submenu. Bound only while `menu`. |
 | `menu_select_left` | Window | Selects the previous button in a button row, or returns from a submenu to its row. Bound only while `menu`. |
 | `menu_confirm` | Window | Bound only while `menu`. |
+| `menu_confirm_alternate` | Window | Runs the selected row's alternate action, such as a session row's Open in New Window. Bound only while `menu`. |
 | `menu_close` | Window | Bound only while `menu`. |
 | `panel_close` | Window | Bound only while `Panel`. Closes the panel and returns focus to the terminal. |
 | `panel_focus_next` | Window | Bound only while `Panel`. |
@@ -598,6 +600,13 @@ in a split tab, opens a submenu in place of the rows with Right, Enter, or a
 click; Left or its `‹` back row returns to it. Escape, Tab, running an item,
 or clicking elsewhere closes the menu and returns focus to the terminal.
 
+The session menu binds the same keys. The session control opens it with
+nothing selected, and `open_session_menu` selects the first session. Enter
+switches the window to the selected session, and `menu_confirm_alternate`
+opens it in a new window instead, as the selected row's inline button does.
+In a native macOS session menu, holding Command turns each session row into
+its Open in New Window item.
+
 | Command | macOS | Linux |
 | --- | --- | --- |
 | `menu_select_next` | `down` | `down` |
@@ -607,6 +616,7 @@ or clicking elsewhere closes the menu and returns focus to the terminal.
 | `menu_select_right` | `right` | `right` |
 | `menu_select_left` | `left` | `left` |
 | `menu_confirm` | `enter`, `space` | `enter`, `space` |
+| `menu_confirm_alternate` | `cmd-enter` | `ctrl-enter` |
 | `menu_close` | `escape`, `tab`, `shift-tab` | `escape`, `tab`, `shift-tab` |
 
 ### Window Transparency panel

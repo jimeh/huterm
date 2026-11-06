@@ -775,6 +775,7 @@ padding_y = 4.0
 padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
+session_button = true # the session control beside the menu button
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
 macos_native_menus = true # native macOS menus; ignored on Linux
 macos_drag_preview = true # floating drag preview; ignored on Linux
@@ -1004,7 +1005,21 @@ fullscreen or on Linux without client-side decorations, it joins the tab bar:
 at the far right of a top or bottom bar, or beside `+` in a left or right
 column. It hides with an auto-hidden bar. A yellow dot marks waiting notices.
 `menu_button = false` removes the button; `open_menu` and every menu item stay
-available through the palette and shortcuts. Right-clicking empty tab-bar
+available through the palette and shortcuts.
+
+`session_button` shows the session control just before the menu button: a
+layers icon, the window's session name, and a chevron. It opens the session
+menu, which switches, creates, renames, and closes sessions and opens one in
+a new window. It follows the menu button's placement one slot further in, so
+the menu button keeps the rightmost slot, and takes the button's slot when
+`menu_button = false`. In a left or right column without a title bar it shows
+only its icon in the new-tab row. Its name truncates at 168 points and in
+narrow hosts, and below about 345 points of title bar it shows only the icon;
+the tooltip and accessible name keep the full name. It hides with an
+auto-hidden bar. `session_button = false` removes it; `open_session_menu` and
+the session commands stay available. The session menu follows
+`macos_native_menus` like the other menus; a native menu shows each session's
+tab count and tags as a subtitle on macOS 14.4 and later. Right-clicking empty tab-bar
 space also opens the window menu, except in Huterm's own Linux title row,
 where it opens the window manager's menu.
 
@@ -1014,7 +1029,7 @@ and the arrows drawn as icons on both. The scroll pill, the close
 confirmation's buttons, the About panel, and the Licenses view show key hints
 only with `shortcut_hints = true`.
 
-On macOS the window, tab, pane, and terminal menus, and a text field's
+On macOS the window, tab, pane, terminal, and session menus, and a text field's
 right-click menu, open as native macOS menus while
 `macos_native_menus = true`, the default. They list the same
 items with the same shortcuts, follow the theme's light or dark appearance,

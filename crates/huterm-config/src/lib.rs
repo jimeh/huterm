@@ -918,6 +918,16 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub menu_button: bool,
+    /// Show the session control, which names the window's session and opens
+    /// the session menu, beside the window menu button.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "windows",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Session button",
+        "x-huterm-order" = 15,
+        "x-huterm-apply" = "live",
+    )))]
+    pub session_button: bool,
     /// Show key hints on the scroll pill and on dialog and panel buttons.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
@@ -1204,6 +1214,7 @@ impl Default for WindowConfig {
             padding_y: 4.0,
             padding_balance: false,
             menu_button: true,
+            session_button: true,
             shortcut_hints: false,
             macos_native_menus: true,
             macos_drag_preview: true,

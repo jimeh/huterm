@@ -216,6 +216,8 @@ mod pane_moves;
 mod persistence;
 mod projection;
 mod restore;
+mod session_control;
+mod session_menu;
 mod session_switch;
 mod settings_window;
 mod system_appearance;
@@ -281,8 +283,8 @@ use tab_visibility::{Presentation, Reveal};
 use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu};
 use views::{Views, broadcast, update_windows};
 use window_menu::{
-    MenuButtonPlacement, WindowMenuInput, menu_button_placement,
-    split_new_tab_row, window_menu,
+    MenuButtonPlacement, SessionControlHost, WindowMenuInput,
+    menu_button_placement, split_new_tab_row, window_menu,
 };
 /// Space the tab strip reserves for the new-tab control on its axis.
 const CONTROL_SLOT: Pixels = TAB_HEIGHT;
@@ -2045,6 +2047,18 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     // A window whose history lost an entry refreshes its open palette and
     // menu, which may offer the entry.
     update_windows(cx, &pruned, |_, cx| cx.notify());
+    // Every window's session control names its session, and its menu
+    // counts other windows, so a rename, a new or closed session, or a
+    // window switching redraws them all. These batches are rare.
+    if touched.names_changed() || touched.attachments_changed() {
+        let all: Vec<gpui::WindowId> = cx
+            .global::<Desktop>()
+            .windows
+            .records()
+            .map(|record| record.id)
+            .collect();
+        update_windows(cx, &all, |_, cx| cx.notify());
+    }
     if !activate.is_empty() {
         // Selecting needs the window, which reconcile does not have here;
         // a deferred update runs once no window is on GPUI's update stack.
@@ -2088,7 +2102,9 @@ fn activate_reconciled_tabs(
 /// Refreshes the views that show titles they do not own. A structural batch
 /// or any title change rebuilds open palettes, which compare their rows
 /// before notifying; a confirmation redraws when a title in its scope
-/// changed. It never changes a confirmation's assessment or focus.
+/// changed, and an open session menu on every structural batch, since it
+/// counts every session's tabs. It never changes a confirmation's
+/// assessment or focus.
 fn refresh_title_consumers(
     cx: &mut App,
     structural: bool,
@@ -2101,6 +2117,10 @@ fn refresh_title_consumers(
     update_windows(cx, &hosts, |view, cx| {
         if view.palette.is_some() {
             view.refresh_palette_hierarchy(cx);
+        }
+        // An open session menu counts tabs and windows in every session.
+        if structural && view.session_menu_open() {
+            cx.notify();
         }
         let in_scope = match &view.close.confirmation {
             Some(CloseTarget::Application) => !retitled.is_empty(),
@@ -2990,6 +3010,10 @@ fn open_window_with_profile(
                 native_menu: None,
                 native_menu_token: 0,
                 menu_button_bounds: Rc::new(Cell::new(None)),
+                session_button_bounds: Rc::new(Cell::new(None)),
+                session_label: session_control::SessionLabel::default(),
+                exited_sessions: HashSet::new(),
+                exited_read: 0,
                 popover: Popover::new(),
                 window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
@@ -4485,6 +4509,16 @@ struct WorkspaceView {
     /// Where the menu button was last painted, for anchoring the menu and
     /// for smoke state; `None` while the button is not drawn.
     menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Where the session control was last painted, for anchoring the
+    /// session menu and for smoke state; `None` while it is not drawn.
+    session_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The session name the control last measured and its width, so the
+    /// tab strip and title row reserve its slot between renders.
+    session_label: session_control::SessionLabel,
+    /// Sessions whose every shell exited, as the last read for the session
+    /// menu found them, and that read's generation.
+    exited_sessions: HashSet<SessionId>,
+    exited_read: u64,
     /// The window controls' painted bounds in Huterm's own title row, for
     /// smoke pointer fixtures; `None` while the row is not drawn.
     /// The painted window buttons, by [`WindowButton::index`].
@@ -4535,13 +4569,15 @@ enum MenuKind {
     Pane { tab: TabId, pane: PaneId },
     /// A text field's context menu, in the palette or the Licenses view.
     Field(WeakEntity<Input>),
+    /// The session menu, from the session control or `open_session_menu`.
+    Session,
 }
 
 impl MenuKind {
     /// The tab the menu's tab-targeted picks act on.
     fn tab(&self) -> Option<TabId> {
         match self {
-            Self::Window | Self::Field(_) => None,
+            Self::Window | Self::Field(_) | Self::Session => None,
             Self::Tab(tab)
             | Self::Terminal { tab, .. }
             | Self::Pane { tab, .. } => Some(*tab),
@@ -4555,7 +4591,20 @@ impl MenuKind {
             Self::Window
             | Self::Tab(_)
             | Self::Terminal { .. }
-            | Self::Field(_) => None,
+            | Self::Field(_)
+            | Self::Session => None,
+        }
+    }
+
+    /// The name smoke state and labels use.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Window => "window",
+            Self::Tab(_) => "tab",
+            Self::Terminal { .. } => "terminal",
+            Self::Pane { .. } => "pane",
+            Self::Field(_) => "field",
+            Self::Session => "session",
         }
     }
 }
@@ -6585,10 +6634,12 @@ impl WorkspaceView {
         }
     }
 
-    /// Records whether this window shows a title consumer: an open palette
-    /// or a close confirmation.
+    /// Records whether this window shows a title consumer: an open palette,
+    /// a close confirmation, or the session menu.
     fn sync_title_consumer(&self, cx: &mut App) {
-        let host = self.palette.is_some() || self.close.confirmation.is_some();
+        let host = self.palette.is_some()
+            || self.close.confirmation.is_some()
+            || self.session_menu_open();
         cx.global_mut::<Desktop>()
             .title_consumers
             .set_host(self.window, host);
@@ -6804,6 +6855,11 @@ impl WorkspaceView {
     fn title_row_layout(&self, layout: &ChromeLayout) -> TitleRowLayout {
         let position = self.layout_tabs().position;
         let menu = self.menu_button_placement();
+        // The menu button's slot and the session control's beside it.
+        let corner = session_control::title_strip_corner(
+            menu,
+            self.session_control_placement(layout),
+        );
         let titlebar = self.title_row();
         let content = layout.content;
         let (left, width) = if position.vertical() {
@@ -6820,12 +6876,7 @@ impl WorkspaceView {
         } else {
             TRAFFIC_LIGHT_INSET
         };
-        let trailing = layout.frame.buttons.trailing.width()
-            + if menu == MenuButtonPlacement::TitleStrip {
-                CONTROL_SLOT
-            } else {
-                px(0.0)
-            };
+        let trailing = layout.frame.buttons.trailing.width() + corner;
         let drop_left =
             (content.origin.x + leading).clamp(left, bounds.right());
         let drop_right =
@@ -6835,14 +6886,13 @@ impl WorkspaceView {
         let title_padding = if position.vertical() {
             let leading =
                 (content.origin.x + TRAFFIC_LIGHT_INSET - left).max(px(0.0));
-            let trailing = if menu == MenuButtonPlacement::TitleStrip {
-                (bounds.right() - (content.right() - CONTROL_SLOT)).max(px(0.0))
-            } else {
-                px(0.0)
-            };
+            let trailing =
+                (bounds.right() - (content.right() - corner)).max(px(0.0));
             leading.max(trailing)
         } else {
-            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT)
+            layout
+                .strip_inset
+                .max(layout.strip_trailing + corner.max(CONTROL_SLOT))
         };
         TitleRowLayout {
             bounds,
@@ -7754,8 +7804,25 @@ impl WorkspaceView {
             tabs.position.vertical(),
             extents,
             self.tab_scroll,
-            self.bar_menu_placement() == MenuButtonPlacement::BarEnd,
+            self.bar_trailing(&layout),
         )
+    }
+
+    /// The bar length a top or bottom bar's trailing controls take after
+    /// `+`: the session control's slot and the menu button's.
+    pub(super) fn bar_trailing(&self, layout: &ChromeLayout) -> Pixels {
+        let menu = if self.bar_menu_placement() == MenuButtonPlacement::BarEnd {
+            CONTROL_SLOT
+        } else {
+            px(0.0)
+        };
+        let session = self.bar_session_placement(layout);
+        let session = if session.host == SessionControlHost::BarEnd {
+            session.slot()
+        } else {
+            px(0.0)
+        };
+        menu + session
     }
 
     /// Whether the window draws its tab bar: reserved, or an overlay bar
@@ -9516,6 +9583,7 @@ impl WorkspaceView {
                     self.notice_availability(command)
                 }
                 ids::OPEN_MENU => self.check_available(false),
+                ids::OPEN_SESSION_MENU => self.session_menu_availability(cx),
                 ids::WINDOW_TRANSPARENCY => {
                     if self.panel.is_some() {
                         Ok(())
@@ -9533,6 +9601,7 @@ impl WorkspaceView {
                 | ids::MENU_SELECT_RIGHT
                 | ids::MENU_SELECT_LEFT
                 | ids::MENU_CONFIRM
+                | ids::MENU_CONFIRM_ALTERNATE
                 | ids::MENU_CLOSE => self.open_menu_entity().map(|_| ()),
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available(cx)
@@ -10252,6 +10321,7 @@ impl WorkspaceView {
             }
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
+            ids::OPEN_SESSION_MENU => self.open_session_menu(true, window, cx),
             ids::WINDOW_TRANSPARENCY => self.toggle_panel(window, cx),
             ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
@@ -10260,6 +10330,7 @@ impl WorkspaceView {
             | ids::MENU_SELECT_RIGHT
             | ids::MENU_SELECT_LEFT
             | ids::MENU_CONFIRM
+            | ids::MENU_CONFIRM_ALTERNATE
             | ids::MENU_CLOSE => self.run_menu_command(invocation.id, cx),
             ids::CLOSE_TAB | ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
                 self.run_tab_close(invocation, window, cx)
@@ -11889,6 +11960,20 @@ impl WorkspaceView {
                 Some(CloseTarget::Pane { tab, pane })
             })
             .filter(|target| can_take || *target != CloseTarget::Emptied);
+        // On Linux the last window's emptied close becomes Quit while
+        // sessions no window shows remain. It is no longer owed, so a
+        // cancelled Quit leaves the window open for the session control
+        // rather than asking again.
+        let target = target.map(|target| {
+            if target != CloseTarget::Emptied {
+                return target;
+            }
+            let target = self.emptied_close_target(Platform::current(), cx);
+            if target == CloseTarget::Application {
+                self.close.emptied = EmptiedClose::None;
+            }
+            target
+        });
         if let Some(target) = target {
             self.request_close(target, window, cx);
             true
@@ -13188,6 +13273,16 @@ impl Render for WorkspaceView {
             // A hidden button anchors nothing; `open_menu` falls back.
             self.menu_button_bounds.set(None);
         }
+        let session_placement = self.session_control_placement(&layout);
+        if session_placement.host == SessionControlHost::Hidden {
+            self.session_button_bounds.set(None);
+        }
+        // The menu button's slot, which the session control sits before.
+        let menu_slot = if menu_placement == MenuButtonPlacement::Hidden {
+            px(0.0)
+        } else {
+            CONTROL_SLOT
+        };
         for button in WindowButton::ALL {
             if !frame.buttons.contains(button) {
                 self.window_button_bounds[button.index()].set(None);
@@ -13529,6 +13624,22 @@ impl Render for WorkspaceView {
             == MenuButtonPlacement::TitleStrip
             && !sidebar_title_row)
             .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
+        // The session control sits in its slot just before the menu
+        // button, or in the button's slot without it.
+        let title_session_control = (session_placement.host
+            == SessionControlHost::TitleStrip
+            && !sidebar_title_row)
+            .then(|| {
+                self.session_control_element(session_placement, colors, cx)
+            })
+            .flatten()
+            .map(|control| {
+                control.mr(if title_menu_button.is_some() {
+                    CONTROL_SLOT - CONTROL_SIZE
+                } else {
+                    CONTROL_INSET
+                })
+            });
         // The window buttons that start the row Huterm draws.
         let title_leading = (!frame.buttons.leading.is_empty()).then(|| {
             self.window_controls_element(
@@ -13545,6 +13656,7 @@ impl Render for WorkspaceView {
             .ml_auto()
             .flex()
             .items_center()
+            .children(title_session_control)
             .children(title_menu_button)
             .when(!frame.buttons.trailing.is_empty(), |trailing| {
                 trailing.child(self.window_controls_element(
@@ -14113,11 +14225,13 @@ impl Render for WorkspaceView {
                     );
                 }
             }
-            // A vertical column shares the new-tab row with the menu control.
+            // A vertical column shares the new-tab row with the session and
+            // menu controls.
             let row = split_new_tab_row(
                 (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
                     .max(px(0.0)),
                 menu_placement == MenuButtonPlacement::SplitRow,
+                session_placement.host == SessionControlHost::SplitRow,
             );
             chrome = chrome.child(bar).child(
                 Button::new("new-tab", "New Tab", swatch)
@@ -14205,6 +14319,40 @@ impl Render for WorkspaceView {
                         .top(origin.y),
                 );
             }
+            // The session control's slot ends where the menu button's
+            // starts, or at the bar's end without it.
+            let bar_session_control = match session_placement.host {
+                SessionControlHost::BarEnd => Some(point(
+                    layout.strip_bounds(tabs).right()
+                        - clip.origin.x
+                        - menu_slot
+                        - session_placement.slot()
+                        + CONTROL_INSET,
+                    strip.bounds.origin.y - clip.origin.y + bar_inset,
+                )),
+                SessionControlHost::SplitRow => row.session_x.map(|x| {
+                    let row_height = CONTROL_SLOT - VERTICAL_ROW_MARGIN_Y * 2.0;
+                    point(
+                        strip.bounds.origin.x - clip.origin.x
+                            + VERTICAL_ROW_MARGIN_X
+                            + x,
+                        strip.bounds.origin.y - clip.origin.y
+                            + strip.available()
+                            + VERTICAL_ROW_MARGIN_Y
+                            + (row_height - CONTROL_SIZE) / 2.0,
+                    )
+                }),
+                SessionControlHost::TitleStrip | SessionControlHost::Hidden => {
+                    None
+                }
+            };
+            if let Some(origin) = bar_session_control
+                && let Some(control) =
+                    self.session_control_element(session_placement, colors, cx)
+            {
+                chrome = chrome
+                    .child(control.absolute().left(origin.x).top(origin.y));
+            }
             if sidebar_title_row {
                 chrome = chrome.child(
                     self.title_row_gestures(
@@ -14220,9 +14368,35 @@ impl Render for WorkspaceView {
                             .window_control_area(WindowControlArea::Drag),
                     ),
                 );
+                // The full-height bar occludes the root title row, so the
+                // window's top-right controls paint above that bar: the
+                // terminal column's title row beside a left column, the
+                // column's own top strip on the right.
+                if session_placement.host == SessionControlHost::TitleStrip
+                    && let Some(control) = self.session_control_element(
+                        session_placement,
+                        colors,
+                        cx,
+                    )
+                {
+                    chrome = chrome.child(
+                        control
+                            .absolute()
+                            .left(
+                                content.right()
+                                    - menu_slot
+                                    - session_placement.slot()
+                                    + CONTROL_INSET
+                                    - clip.origin.x,
+                            )
+                            .top(
+                                content.origin.y
+                                    + (titlebar - CONTROL_SIZE) / 2.0
+                                    - clip.origin.y,
+                            ),
+                    );
+                }
                 if menu_placement == MenuButtonPlacement::TitleStrip {
-                    // The full-height bar occludes the root title row.
-                    // Paint the window-corner button above that bar.
                     chrome = chrome.child(
                         self.menu_button_element(colors, cx)
                             .absolute()
@@ -14681,6 +14855,7 @@ fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
     matches!(
         command,
         ids::OPEN_MENU
+            | ids::OPEN_SESSION_MENU
             | ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
             | ids::MENU_SELECT_FIRST
@@ -14688,6 +14863,7 @@ fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
             | ids::MENU_SELECT_RIGHT
             | ids::MENU_SELECT_LEFT
             | ids::MENU_CONFIRM
+            | ids::MENU_CONFIRM_ALTERNATE
             | ids::MENU_CLOSE
     )
 }
@@ -15179,6 +15355,7 @@ impl WorkspaceView {
             kind @ MenuKind::Field(_) => {
                 Self::field_menu_spec(kind, &menu.contexts, cx)
             }
+            MenuKind::Session => Some(self.session_menu_spec(cx)),
         };
         spec.map(|spec| spec.to_listbox(Platform::current()))
     }
@@ -15213,6 +15390,7 @@ impl WorkspaceView {
             MenuKind::Terminal { .. } => "Terminal",
             MenuKind::Pane { .. } => "Pane",
             MenuKind::Field(_) => "Edit",
+            MenuKind::Session => "Sessions",
         };
         let view = cx.new(|cx| {
             clock.observe(cx);
@@ -15247,13 +15425,14 @@ impl WorkspaceView {
         });
         menu_focus.focus(window, cx);
         // The button's anchor follows its painted bounds at every render.
+        let trigger = if kind == MenuKind::Session {
+            &self.session_button_bounds
+        } else {
+            &self.menu_button_bounds
+        };
         self.popover.open(
             pointer.map_or_else(
-                || {
-                    Anchor::Trigger(
-                        self.menu_button_bounds.get().unwrap_or_default(),
-                    )
-                },
+                || Anchor::Trigger(trigger.get().unwrap_or_default()),
                 Anchor::Pointer,
             ),
             true,
@@ -15327,9 +15506,21 @@ impl WorkspaceView {
         else {
             return;
         };
+        // The session menu keeps the keyboard's place when another window
+        // closes the selected session.
+        let keep_place = self
+            .menu
+            .as_ref()
+            .is_some_and(|menu| menu.kind == MenuKind::Session);
         match self.current_menu_model(cx) {
             Some(model) => {
-                menu.update(cx, |menu, cx| menu.set_model(model, cx));
+                menu.update(cx, |menu, cx| {
+                    if keep_place {
+                        menu.set_model_keeping_place(model, cx);
+                    } else {
+                        menu.set_model(model, cx);
+                    }
+                });
             }
             None => {
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
@@ -15440,6 +15631,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if *kind == MenuKind::Session {
+            self.run_session_pick(id, window, cx);
+            return;
+        }
         // A field menu's picks edit its field, not the window.
         if let MenuKind::Field(field) = kind {
             if let Some(field) = field.upgrade() {
@@ -15586,6 +15781,7 @@ impl WorkspaceView {
                 ids::MENU_SELECT_RIGHT => menu.select_right(cx),
                 ids::MENU_SELECT_LEFT => menu.select_left(cx),
                 ids::MENU_CONFIRM => menu.confirm(cx),
+                ids::MENU_CONFIRM_ALTERNATE => menu.confirm_alternate(cx),
                 ids::MENU_CLOSE => MenuView::dismiss(cx),
                 other => return Err(CommandError::UnknownCommand(other)),
             }
@@ -15625,10 +15821,9 @@ impl WorkspaceView {
     fn menu_button_open(&self) -> bool {
         self.menu.as_ref().is_some_and(|menu| {
             menu.kind == MenuKind::Window && menu.pointer.is_none()
-        }) || self
-            .native_menu
-            .as_ref()
-            .is_some_and(|session| session.from_button)
+        }) || self.native_menu.as_ref().is_some_and(|session| {
+            session.from_button && session.kind == MenuKind::Window
+        })
     }
 
     /// The menu control: a 14-point icon in the 26-point control with the
@@ -15690,7 +15885,10 @@ impl WorkspaceView {
                 .absolute()
                 .inset_0(),
             )
-            .child(self.popover.trigger_probe())
+            // The session control holds the probe while its menu is open.
+            .when(!self.session_menu_open(), |button| {
+                button.child(self.popover.trigger_probe())
+            })
     }
 
     /// The gestures of a title row Huterm owns, on its empty space: a
@@ -15844,6 +16042,9 @@ impl WorkspaceView {
             MenuView::content_height(menu.read(cx).model(), window.rem_size());
         let anchor = match open.pointer {
             Some(pointer) => Anchor::Pointer(pointer),
+            None if open.kind == MenuKind::Session => {
+                Anchor::Trigger(self.session_menu_anchor(layout))
+            }
             None => Anchor::Trigger(self.menu_anchor(layout)),
         };
         // The menu's labels follow the interface scale, and so does its
@@ -15876,13 +16077,7 @@ impl WorkspaceView {
                 let menu = open.view.read(cx);
                 let selection =
                     menu.selected_id().unwrap_or_else(|| "none".into());
-                let kind = match open.kind {
-                    MenuKind::Window => "window",
-                    MenuKind::Tab(_) => "tab",
-                    MenuKind::Terminal { .. } => "terminal",
-                    MenuKind::Pane { .. } => "pane",
-                    MenuKind::Field(_) => "field",
-                };
+                let kind = open.kind.name();
                 let (overflow, indicator) = menu.scroll_state();
                 format!(
                     "{prefix}menu=true {prefix}menu_kind={kind} {prefix}menu_focused={} {prefix}menu_selection={selection} {prefix}menu_items={} {prefix}menu_overflow={overflow} {prefix}menu_indicator={indicator}",
@@ -15894,16 +16089,9 @@ impl WorkspaceView {
                 "{prefix}menu=false {prefix}menu_kind=none {prefix}menu_focused=false {prefix}menu_selection=none {prefix}menu_items=none {prefix}menu_overflow=false {prefix}menu_indicator=false"
             ),
         };
-        let native = match self.native_menu_kind() {
-            Some(MenuKind::Window) => "window",
-            Some(MenuKind::Tab(_)) => "tab",
-            Some(MenuKind::Terminal { .. }) => "terminal",
-            Some(MenuKind::Pane { .. }) => "pane",
-            Some(MenuKind::Field(_)) => "field",
-            None => "none",
-        };
+        let native = self.native_menu_kind().map_or("none", |kind| kind.name());
         format!(
-            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={}",
+            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={} {}",
             self.menu_button_open(),
             self.popover.content_bounds().map_or_else(
                 || "none".to_owned(),
@@ -15914,7 +16102,8 @@ impl WorkspaceView {
                     f32::from(bounds.size.width),
                     f32::from(bounds.size.height)
                 )
-            )
+            ),
+            self.session_control_smoke_state(prefix, window, cx),
         )
     }
 
@@ -16177,7 +16366,8 @@ impl WorkspaceView {
                 MenuKind::Window
                 | MenuKind::Terminal { .. }
                 | MenuKind::Pane { .. }
-                | MenuKind::Field(_) => None,
+                | MenuKind::Field(_)
+                | MenuKind::Session => None,
             })
             .and_then(|tab| {
                 self.tabs.iter().position(|record| record.id == tab)
@@ -16338,7 +16528,7 @@ fn menu_items_state(model: &MenuModel) -> String {
                     rows.replace(',', ";")
                 ));
             }
-            MenuRow::Separator => {}
+            MenuRow::Separator | MenuRow::Hint(_) => {}
         }
     }
     ids.join(",")

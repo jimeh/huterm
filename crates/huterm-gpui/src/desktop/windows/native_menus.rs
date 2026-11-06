@@ -61,7 +61,8 @@ pub(super) fn tracking() -> bool {
 /// The open native menu.
 pub(super) struct NativeMenuSession {
     pub(super) kind: MenuKind,
-    /// Opened from the menu button, which then shows it open.
+    /// Opened from the menu button or the session control, which then
+    /// shows it open.
     pub(super) from_button: bool,
     menu: NativeMenu,
     /// The terminal whose right press opened the menu. The menu takes that
@@ -131,7 +132,7 @@ impl WorkspaceView {
             terminal: matches!(kind, MenuKind::Terminal { .. })
                 .then(|| terminal.map(|terminal| terminal.downgrade()))
                 .flatten(),
-            from_button: kind == MenuKind::Window
+            from_button: matches!(kind, MenuKind::Window | MenuKind::Session)
                 && matches!(anchor, MenuAnchor::Below(_)),
             kind,
             menu,
@@ -211,7 +212,7 @@ impl WorkspaceView {
         cx: &gpui::App,
     ) -> bool {
         match kind {
-            MenuKind::Window => true,
+            MenuKind::Window | MenuKind::Session => true,
             MenuKind::Tab(tab) => {
                 self.tabs.iter().any(|record| record.id == *tab)
             }

@@ -1269,6 +1269,10 @@ fn a_layout_reflows_a_shrunk_pane_and_leaves_an_unchanged_one_alone(
     harness.wait_for("every pane at its own grid", |cx| {
         shown(cx, tab, &panes) == "R[500000:C[700000:0,300000:1],500000:2]"
             && panes.iter().all(|pane| {
+                // The views install after the projection holds the tab.
+                if pane_view(cx, window, tab, *pane).is_none() {
+                    return false;
+                }
                 let (requested, displayed, _, _) =
                     view_of(cx, window, tab, *pane);
                 pane_screen(cx, window, tab, *pane)

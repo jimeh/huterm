@@ -316,6 +316,66 @@ fn the_native_window_menu_lists_copy_and_paste_and_opens_below_its_button(
 }
 
 #[gpui::test]
+fn the_native_session_menu_switches_or_opens_a_window_from_its_picks(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, presenter) = harness.native_window();
+    let other = harness.other_session("other", 1);
+    harness.wait_projection();
+    let own = harness.session.get();
+    let theirs = other.session.get();
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.wait_shown(&presenter, 1);
+    {
+        let shown = presenter.shown.borrow();
+        // Below the control, which the native menu's open state follows.
+        let MenuAnchor::Below(anchor) = shown[0].anchor else {
+            panic!("the menu opens below the control");
+        };
+        let control = harness
+            .update_view(window, |view, _, _| view.session_button_bounds.get());
+        assert_eq!(Some(anchor), control);
+        // Each session row is followed by its Command alternate, Open in
+        // New Window; the automatic name has nothing to clear.
+        assert_eq!(
+            shown[0].ids(),
+            [
+                format!("session:{own}"),
+                format!("session-window:{own}"),
+                format!("session:{theirs}"),
+                format!("session-window:{theirs}"),
+                "-".to_owned(),
+                "new_session".to_owned(),
+                "rename_session".to_owned(),
+                "-".to_owned(),
+                "close_session".to_owned(),
+            ]
+        );
+    }
+    harness.cx.update(|cx| {
+        assert_eq!(
+            super::menus::a11y_node(cx, window, "session-control")["aria"]
+                ["expanded"],
+            true
+        );
+    });
+    presenter.shown.borrow()[0].pick(&format!("session:{theirs}"));
+    harness.wait_switched(window, other.session, &other.tabs);
+    // The alternate opens a second window on the window's session now.
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.wait_shown(&presenter, 2);
+    let before = harness.cx.update(|cx| cx.windows().len());
+    presenter.shown.borrow()[1].pick(&format!("session-window:{own}"));
+    harness.wait_for("a window on the left session", |cx| {
+        cx.windows().len() == before + 1
+            && cx.global::<Desktop>().windows.records().any(|record| {
+                record.session.is_some_and(|session| session.get() == own)
+            })
+    });
+}
+
+#[gpui::test]
 fn menu_requests_while_a_native_menu_is_opening_are_dropped_quietly(
     cx: &mut TestAppContext,
 ) {
