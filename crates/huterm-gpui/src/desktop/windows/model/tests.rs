@@ -496,6 +496,7 @@ fn the_saved_layout_takes_open_attached_windows_in_opening_order() {
                 blur: Some(12),
                 ..huterm_state::WindowAppearance::default()
             }),
+            remembered: Vec::new(),
         }
     );
     assert_eq!(quake.quake_profile.as_deref(), Some("logs"));

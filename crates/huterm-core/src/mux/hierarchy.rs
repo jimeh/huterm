@@ -157,7 +157,8 @@ impl Mux {
         self.hierarchy.seq
     }
 
-    /// Captures the current hierarchy and subscribes to every later event.
+    /// Captures the current hierarchy, attachments included, and subscribes
+    /// to every later event.
     ///
     /// The snapshot is current through [`Self::hierarchy_seq`] and the
     /// subscription's first event carries the following sequence.
@@ -180,6 +181,9 @@ impl Mux {
                     }),
                 )
             }),
+            self.attachments
+                .iter()
+                .map(|(attachment, session)| (*attachment, *session)),
         )
         .expect("canonical hierarchy has unique, scoped identities");
         let queue = Arc::new(Mutex::new(Queue::default()));
@@ -264,8 +268,8 @@ mod tests {
     use super::*;
     use crate::mux::tests::command;
     use huterm_protocol::{
-        ApplyOutcome, NodeId, PaneId, PaneNode, SessionId, SplitDirection,
-        SplitId, TabId, WorkspaceId,
+        ApplyOutcome, AttachmentId, NodeId, PaneId, PaneNode, SessionId,
+        SplitDirection, SplitId, TabId, WorkspaceId,
     };
 
     /// Drains the real subscription into `state`, then compares it with a
@@ -736,6 +740,88 @@ mod tests {
     }
 
     #[test]
+    fn attachment_changes_emit_once_and_snapshots_hold_attachments() {
+        let mut mux = Mux::default();
+        let first = mux.create_session(None).unwrap();
+        let second = mux.create_session(None).unwrap();
+        let (mut state, subscription) = mux.subscribe_hierarchy();
+        // Each change emits exactly one event before the call returns.
+        let emitted =
+            |mux: &mut Mux,
+             state: &mut HierarchyState,
+             expected: &dyn Fn(&HierarchyEvent) -> bool| {
+                let seq = state.seq();
+                assert_eq!(mux.hierarchy_seq(), seq + 1);
+                let envelope = subscription.try_recv().unwrap();
+                assert!(expected(&envelope.event), "{envelope:?}");
+                assert_eq!(
+                    subscription.try_recv(),
+                    Err(HierarchyRecvError::Empty)
+                );
+                assert!(subscription.take_wake());
+                assert!(matches!(
+                    state.apply(envelope),
+                    ApplyOutcome::Applied(_)
+                ));
+                let (fresh, _) = mux.subscribe_hierarchy();
+                assert_eq!(*state, fresh);
+            };
+
+        let one = mux.attach_session(first).unwrap();
+        emitted(&mut mux, &mut state, &|event| {
+            *event
+                == HierarchyEvent::AttachmentCreated {
+                    attachment: one,
+                    session: first,
+                }
+        });
+        let two = mux.attach_session(first).unwrap();
+        emitted(&mut mux, &mut state, &|event| {
+            matches!(event, HierarchyEvent::AttachmentCreated { .. })
+        });
+        mux.retarget_attachment(two, second).unwrap();
+        emitted(&mut mux, &mut state, &|event| {
+            *event
+                == HierarchyEvent::AttachmentRetargeted {
+                    attachment: two,
+                    session: second,
+                }
+        });
+        assert_eq!(state.attachment_session(two), Some(second));
+
+        // Retargeting to the current session and refused changes emit
+        // nothing.
+        let seq = mux.hierarchy_seq();
+        mux.retarget_attachment(two, second).unwrap();
+        let gone = AttachmentId::in_runtime(mux.runtime_id(), u64::MAX);
+        let stale_session = SessionId::in_runtime(mux.runtime_id(), u64::MAX);
+        assert!(mux.attach_session(stale_session).is_err());
+        assert!(mux.retarget_attachment(gone, first).is_err());
+        assert!(mux.retarget_attachment(two, stale_session).is_err());
+        assert!(mux.detach_session(gone).is_err());
+        assert_eq!(mux.hierarchy_seq(), seq);
+        assert_eq!(subscription.try_recv(), Err(HierarchyRecvError::Empty));
+        assert!(!subscription.take_wake());
+
+        mux.detach_session(one).unwrap();
+        emitted(&mut mux, &mut state, &|event| {
+            *event == HierarchyEvent::AttachmentDetached { attachment: one }
+        });
+        assert_eq!(state.session_attachments(first).count(), 0);
+
+        // Closing a session emits only its closure, which drops its
+        // attachments from the projection.
+        mux.close_session(second).unwrap();
+        emitted(&mut mux, &mut state, &|event| {
+            *event == HierarchyEvent::SessionClosed { session: second }
+        });
+        assert_eq!(state.attachment_session(two), None);
+        mux.attach_session(first).unwrap();
+        mux.shutdown().unwrap();
+        converge(&mut mux, &mut state, &subscription);
+    }
+
+    #[test]
     fn rejected_and_unchanged_operations_emit_nothing() {
         let mut mux = Mux::default();
         let session = mux.create_session(None).unwrap();
@@ -914,7 +1000,11 @@ mod tests {
         assert!(!second.take_wake());
         assert_eq!(second.try_recv(), Err(HierarchyRecvError::Lagged));
 
+        // The replacement snapshot holds what the lagged stream lost,
+        // attachments included.
+        let attachment = mux.attach_session(session).unwrap();
         let (recovered, third) = mux.subscribe_hierarchy();
+        assert_eq!(recovered.attachment_session(attachment), Some(session));
         state = recovered;
         let workspace = mux.create_workspace(session, None).unwrap();
         mux.rename_workspace(workspace, Some("after")).unwrap();

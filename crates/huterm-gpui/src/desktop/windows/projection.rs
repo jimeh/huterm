@@ -460,7 +460,8 @@ impl PendingInstalls {
     }
 }
 
-/// Windows a summary concerns: those showing a touched workspace or tab.
+/// Windows a summary concerns: those showing a touched workspace or tab,
+/// or every window once any session's attachments changed, which is rare.
 pub(super) fn windows_to_visit(
     model: &WindowModel,
     touched: &Touched,
@@ -471,7 +472,7 @@ pub(super) fn windows_to_visit(
     model
         .records()
         .filter(|record| {
-            touched.is_everything()
+            touched.attachments_changed()
                 || record.workspace.is_some_and(|workspace| {
                     touched.contains_workspace(workspace)
                 })

@@ -404,8 +404,16 @@ they are process labels), and emits the creation
 events so existing subscribers follow. A pane whose terminal failed
 leaves its layout through `without_pane`, a tab left with no pane is
 removed, and the report names both and every session left without a tab.
-Tear-off orphan cleanup asks `Mux::session_attached`; no API snapshots the
-whole hierarchy with its attachments.
+Tear-off orphan cleanup asks `Mux::session_attached` under the lock.
+Attachments are part of the hierarchy stream: `attach_session`,
+`retarget_attachment` (only when the session changes), and `detach_session`
+emit `AttachmentCreated`, `AttachmentRetargeted`, and `AttachmentDetached`
+under the lock that makes the change, so restore's attachments emit too.
+`close_session` emits only `SessionClosed`, which drops the session's
+attachments from a projection, and `subscribe_hierarchy` snapshots the
+attachment map. The reducer refuses a foreign or repeated attachment, a
+retarget or detach of an unknown one, and one naming an unknown session.
+Any session's attachment change makes `windows_to_visit` visit every window.
 Moves retain empty workspaces and sessions and never change terminal lifetime.
 Desktop windows retain their attachment identity for assessed close. Orphaned
 spawn cleanup must preserve resources adopted by another attachment or moved

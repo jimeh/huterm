@@ -5,6 +5,7 @@ const HALF: u32 = SPLIT_TOTAL / 2;
 
 const RUNTIME: RuntimeId = RuntimeId::new(7);
 const STREAM: StreamId = StreamId::new(RUNTIME);
+const NO_ATTACHMENTS: [(AttachmentId, SessionId); 0] = [];
 
 fn session_id(value: u64) -> SessionId {
     SessionId::in_runtime(RUNTIME, value)
@@ -74,6 +75,7 @@ fn seeded(seq: u64) -> HierarchyState {
             ),
             (session(2), vec![]),
         ],
+        NO_ATTACHMENTS,
     )
     .unwrap()
 }
@@ -94,6 +96,7 @@ fn touched_layouts(
         workspaces: workspaces.iter().copied().map(workspace_id).collect(),
         tabs: tabs.iter().copied().map(tab_id).collect(),
         layouts: layouts.iter().copied().map(tab_id).collect(),
+        attachments: HashSet::new(),
     })
 }
 
@@ -758,6 +761,7 @@ fn layouts_that_reuse_another_tabs_panes_or_name_foreign_zoom_are_inconsistent()
                 ],
             )],
         )],
+        NO_ATTACHMENTS,
     );
     assert!(reused.is_none());
 }
@@ -843,6 +847,18 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
             tab: tab_id(20),
             input_sync: true,
         }),
+        variant(HierarchyEvent::AttachmentCreated {
+            attachment: AttachmentId::in_runtime(RUNTIME, 40),
+            session: session_id(1),
+        }),
+        variant(HierarchyEvent::AttachmentCreated {
+            attachment: AttachmentId::in_runtime(RUNTIME, 40),
+            session: session_id(2),
+        }),
+        variant(HierarchyEvent::AttachmentCreated {
+            attachment: AttachmentId::in_runtime(RUNTIME, 41),
+            session: session_id(1),
+        }),
     ];
     for (index, digest) in digests.iter().enumerate() {
         assert!(
@@ -858,6 +874,7 @@ fn snapshots_reject_repeated_or_foreign_identities() {
         STREAM,
         0,
         [(session(1), vec![(workspace(10), vec![tab(20), tab(20)])])],
+        NO_ATTACHMENTS,
     );
     assert!(repeated.is_none());
     let foreign = HierarchyState::from_sessions(
@@ -870,8 +887,218 @@ fn snapshots_reject_repeated_or_foreign_identities() {
             },
             Vec::<(WorkspaceInfo, Vec<TabInfo>)>::new(),
         )],
+        NO_ATTACHMENTS,
     );
     assert!(foreign.is_none());
+}
+
+fn attachment_id(value: u64) -> AttachmentId {
+    AttachmentId::in_runtime(RUNTIME, value)
+}
+
+/// A summary that lists only these sessions' attachments, and the names
+/// when `names` is set.
+fn touched_attachments(names: bool, sessions: &[u64]) -> ApplyOutcome {
+    ApplyOutcome::Applied(Touched {
+        names,
+        attachments: sessions.iter().copied().map(session_id).collect(),
+        ..Touched::default()
+    })
+}
+
+#[test]
+fn attachment_events_apply_and_name_the_sessions_they_touched() {
+    let mut state = seeded(1);
+    let created = |attachment, session| HierarchyEvent::AttachmentCreated {
+        attachment: attachment_id(attachment),
+        session: session_id(session),
+    };
+    let retargeted =
+        |attachment, session| HierarchyEvent::AttachmentRetargeted {
+            attachment: attachment_id(attachment),
+            session: session_id(session),
+        };
+    assert_eq!(
+        apply(&mut state, created(40, 1)),
+        touched_attachments(false, &[1])
+    );
+    assert_eq!(
+        apply(&mut state, created(41, 1)),
+        touched_attachments(false, &[1])
+    );
+    assert_eq!(
+        state.session_attachments(session_id(1)).collect::<Vec<_>>(),
+        [attachment_id(40), attachment_id(41)]
+    );
+    assert_eq!(
+        apply(&mut state, retargeted(41, 2)),
+        touched_attachments(false, &[1, 2])
+    );
+    assert_eq!(
+        state.attachment_session(attachment_id(41)),
+        Some(session_id(2))
+    );
+    assert_eq!(
+        state.session_attachments(session_id(1)).collect::<Vec<_>>(),
+        [attachment_id(40)]
+    );
+    // Retargeting to the session it already views changes nothing.
+    let unchanged = apply(&mut state, retargeted(41, 2));
+    assert_eq!(unchanged, ApplyOutcome::Applied(Touched::default()));
+    assert_eq!(
+        apply(
+            &mut state,
+            HierarchyEvent::AttachmentDetached {
+                attachment: attachment_id(40),
+            },
+        ),
+        touched_attachments(false, &[1])
+    );
+    assert_eq!(state.attachment_session(attachment_id(40)), None);
+    assert_eq!(state.session_attachments(session_id(1)).count(), 0);
+
+    // A snapshot of the same structure holds the same attachments.
+    let snapshot = |seq| {
+        HierarchyState::from_sessions(
+            STREAM,
+            seq,
+            [
+                (
+                    session(1),
+                    vec![
+                        (workspace(10), vec![tab(20), tab(21)]),
+                        (workspace(11), vec![tab(22)]),
+                    ],
+                ),
+                (session(2), vec![]),
+            ],
+            [(attachment_id(41), session_id(2))],
+        )
+        .unwrap()
+    };
+    assert_eq!(state, snapshot(state.seq()));
+
+    // Closing a session invalidates its attachments with it.
+    apply(&mut state, created(42, 2));
+    assert_eq!(
+        apply(
+            &mut state,
+            HierarchyEvent::SessionClosed {
+                session: session_id(2),
+            },
+        ),
+        touched_attachments(true, &[2])
+    );
+    assert_eq!(state.attachment_session(attachment_id(41)), None);
+    assert_eq!(state.attachment_session(attachment_id(42)), None);
+    // A session closed without attachments touches none.
+    let mut closed = seeded(1);
+    assert_eq!(
+        apply(
+            &mut closed,
+            HierarchyEvent::SessionClosed {
+                session: session_id(2),
+            },
+        ),
+        touched_attachments(true, &[])
+    );
+    // Reset removes every attachment.
+    apply(&mut state, created(43, 1));
+    assert_eq!(
+        apply(&mut state, HierarchyEvent::Reset),
+        ApplyOutcome::Applied(Touched::everything())
+    );
+    assert_eq!(state.attachment_session(attachment_id(43)), None);
+}
+
+#[test]
+fn an_attachment_summary_reports_its_sessions_and_merges() {
+    let ApplyOutcome::Applied(mut summary) = touched_attachments(false, &[1])
+    else {
+        unreachable!();
+    };
+    assert!(!summary.is_empty());
+    assert!(summary.attachments_changed());
+    assert!(summary.contains_attachments(session_id(1)));
+    assert!(!summary.contains_attachments(session_id(2)));
+    assert!(!summary.names_changed());
+    let ApplyOutcome::Applied(other) = touched_attachments(false, &[2]) else {
+        unreachable!();
+    };
+    summary.merge(other);
+    assert!(summary.contains_attachments(session_id(2)));
+    assert!(!Touched::default().attachments_changed());
+    assert!(Touched::everything().contains_attachments(session_id(9)));
+}
+
+#[test]
+fn attachment_events_that_contradict_the_state_require_resync() {
+    let mut state = HierarchyState::from_sessions(
+        STREAM,
+        1,
+        [(session(1), Vec::<(WorkspaceInfo, Vec<TabInfo>)>::new())],
+        [(attachment_id(40), session_id(1))],
+    )
+    .unwrap();
+    let original = state.clone();
+    let foreign = AttachmentId::in_runtime(RuntimeId::new(8), 41);
+    for event in [
+        HierarchyEvent::AttachmentCreated {
+            attachment: foreign,
+            session: session_id(1),
+        },
+        HierarchyEvent::AttachmentCreated {
+            attachment: attachment_id(40),
+            session: session_id(1),
+        },
+        HierarchyEvent::AttachmentCreated {
+            attachment: attachment_id(41),
+            session: session_id(9),
+        },
+        HierarchyEvent::AttachmentRetargeted {
+            attachment: attachment_id(41),
+            session: session_id(1),
+        },
+        HierarchyEvent::AttachmentRetargeted {
+            attachment: attachment_id(40),
+            session: session_id(9),
+        },
+        HierarchyEvent::AttachmentDetached {
+            attachment: attachment_id(41),
+        },
+        HierarchyEvent::AttachmentDetached {
+            attachment: foreign,
+        },
+    ] {
+        let envelope = next(&state, event);
+        assert_eq!(
+            state.apply(envelope.clone()),
+            ApplyOutcome::ResyncRequired(ResyncReason::Inconsistent),
+            "{envelope:?}"
+        );
+        assert_eq!(state, original);
+    }
+}
+
+#[test]
+fn snapshots_reject_dangling_repeated_or_foreign_attachments() {
+    let sessions =
+        || [(session(1), Vec::<(WorkspaceInfo, Vec<TabInfo>)>::new())];
+    let snapshot = |attachments: Vec<(AttachmentId, SessionId)>| {
+        HierarchyState::from_sessions(STREAM, 0, sessions(), attachments)
+    };
+    let foreign = AttachmentId::in_runtime(RuntimeId::new(8), 40);
+    assert!(snapshot(vec![(attachment_id(40), session_id(1))]).is_some());
+    for attachments in [
+        vec![(attachment_id(40), session_id(9))],
+        vec![(foreign, session_id(1))],
+        vec![
+            (attachment_id(40), session_id(1)),
+            (attachment_id(40), session_id(1)),
+        ],
+    ] {
+        assert!(snapshot(attachments.clone()).is_none(), "{attachments:?}");
+    }
 }
 
 fn layout_change(value: u64, layout: PaneLayout) -> TabChange {
@@ -1018,6 +1245,7 @@ fn rearrangements_move_panes_between_tabs_atomically() {
             ),
             (session(2), vec![]),
         ],
+        NO_ATTACHMENTS,
     )
     .unwrap();
     assert_eq!(state, fresh);

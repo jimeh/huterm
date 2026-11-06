@@ -111,6 +111,7 @@ fn layout(capture: &RuntimeCapture) -> DesktopLayout {
             display: None,
             quake_profile: None,
             appearance: None,
+            remembered: Vec::new(),
         }],
         active_window: Some(0),
     }

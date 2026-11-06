@@ -1191,6 +1191,7 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
             display: None,
             quake_profile: None,
             appearance: None,
+            remembered: Vec::new(),
         }],
         active_window: Some(0),
     };

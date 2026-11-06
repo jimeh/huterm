@@ -278,6 +278,15 @@ impl DesktopHarness {
         });
     }
 
+    /// Waits until the projection applied every hierarchy event the
+    /// runtime emitted so far.
+    fn wait_projection(&mut self) {
+        let seq = self.runtime.lock().hierarchy_seq();
+        self.wait_for("the projection to reach the runtime", |cx| {
+            cx.global::<Desktop>().hierarchy.state().seq() >= seq
+        });
+    }
+
     /// The canonical snapshot of `tab`'s terminal, read through a fresh
     /// observing viewer that neither sizes nor focuses it.
     fn canonical(&mut self, tab: TabId) -> Arc<TerminalSnapshot> {
@@ -1437,6 +1446,10 @@ fn a_revoked_view_is_replaced_in_place_and_keeps_focus_and_control(
         .unwrap();
     let digest =
         |cx: &mut App| cx.global::<Desktop>().hierarchy.state().digest();
+    // The observer attachment `wait_canonical` reads through is part of the
+    // hierarchy, so it exists before the structure is recorded.
+    harness.canonical(tab);
+    harness.wait_projection();
     let structure = harness.cx.update(digest);
     harness.hold_replacements(window, true);
     harness.revoke(window);
@@ -1465,6 +1478,7 @@ fn a_revoked_view_is_replaced_in_place_and_keeps_focus_and_control(
         "1b5b4f1b5b49",
         "the revoked viewer's focus ends, then the replacement's begins"
     );
+    harness.wait_projection();
     harness.cx.update(|cx| {
         let view = terminal(cx, window, tab).unwrap();
         assert_eq!(view.entity_id(), original.entity_id(), "replaced in place");

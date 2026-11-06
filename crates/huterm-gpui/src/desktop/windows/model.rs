@@ -815,6 +815,8 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
                 blur: transparency.blur.map(u32::from),
             }
         }),
+        // The window model keeps no navigation for sessions it left yet.
+        remembered: Vec::new(),
     })
 }
 

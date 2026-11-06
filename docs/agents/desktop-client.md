@@ -96,7 +96,9 @@ its own pane, which waits for a later batch that touches the workspace or for
 the persistent notice's "Try Again"; other panes of its tab still install, and
 reconcile withdraws the notice once no failed pane stays projected here
 without a view. A window that gains an attachment runs
-its own full reconcile, because attaching emits no hierarchy event. A view
+its own full reconcile: the batch that carries its `AttachmentCreated` can
+apply before the window records the attachment, and batch reconcile skips a
+window without one. A view
 installed after its pane exited shows the exit from status but announces
 nothing: only the exit transition raises a notice or records an exit-close.
 

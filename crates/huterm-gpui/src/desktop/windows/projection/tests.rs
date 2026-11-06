@@ -3,8 +3,9 @@ use crate::desktop::windows::model::{PaneTitle, TabEntry, WindowLayout};
 use gpui::{Bounds, WindowBounds, point, px, size};
 use huterm_core::Mux;
 use huterm_protocol::{
-    HierarchyEnvelope, HierarchyEvent, PaneId, PaneInfo, PaneLayout, RuntimeId,
-    SessionId, SessionInfo, StreamId, TabInfo, TerminalId, WorkspaceInfo,
+    AttachmentId, HierarchyEnvelope, HierarchyEvent, PaneId, PaneInfo,
+    PaneLayout, RuntimeId, SessionId, SessionInfo, StreamId, TabInfo,
+    TerminalId, WorkspaceInfo,
 };
 
 const RUNTIME: RuntimeId = RuntimeId::new(42);
@@ -403,6 +404,19 @@ fn an_empty_summary_visits_no_window() {
         windows_to_visit(&model, &Touched::everything()),
         [window(1)]
     );
+}
+
+#[test]
+fn an_attachment_change_visits_every_window() {
+    let mut feed = Feed::new();
+    let mut model = WindowModel::default();
+    open_window(&mut model, 1, workspace(10));
+    open_window(&mut model, 2, workspace(11));
+    let touched = feed.apply(HierarchyEvent::AttachmentCreated {
+        attachment: AttachmentId::in_runtime(RUNTIME, 50),
+        session: session(1),
+    });
+    assert_eq!(windows_to_visit(&model, &touched), [window(1), window(2)]);
 }
 
 #[test]

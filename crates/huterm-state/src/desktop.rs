@@ -4,7 +4,7 @@
 use huterm_protocol::{PaneId, SessionId, TabId, WorkspaceId};
 
 use crate::InvalidState;
-use crate::bounds::{MAX_TABS, MAX_WINDOWS};
+use crate::bounds::{MAX_SESSIONS, MAX_TABS, MAX_WINDOWS};
 
 /// The desktop windows to reopen, in opening order. Identities are
 /// unscoped and name records in the runtime file saved with the layout.
@@ -43,6 +43,25 @@ pub struct WindowLayout {
     pub quake_profile: Option<String>,
     /// Per-window appearance overrides, if any.
     pub appearance: Option<WindowAppearance>,
+    /// Where the window last was in each other session it showed, so
+    /// switching back returns there.
+    pub remembered: Vec<SessionNavigation>,
+}
+
+/// A window's place in a session it showed and left: the same navigation
+/// a [`WindowLayout`] saves for the session it shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionNavigation {
+    /// The session.
+    pub session: SessionId,
+    /// The workspace the window showed in it.
+    pub workspace: WorkspaceId,
+    /// The active tab.
+    pub active_tab: Option<TabId>,
+    /// Tabs in activation order, most recent last.
+    pub tab_history: Vec<TabId>,
+    /// The focused pane of each tab that has one.
+    pub focused_panes: Vec<FocusedPane>,
 }
 
 /// A tab's focused pane.
@@ -94,10 +113,11 @@ pub struct WindowAppearance {
 
 impl DesktopLayout {
     /// Checks the bounds and rules a saved layout meets: at most
-    /// [`MAX_WINDOWS`] windows and [`MAX_TABS`] history and focus entries
-    /// per window, nonzero identities, an active window that exists,
-    /// finite geometry with a positive size, display UUIDs in hyphenated
-    /// form, and non-blank profile names.
+    /// [`MAX_WINDOWS`] windows, [`MAX_SESSIONS`] remembered sessions per
+    /// window, and [`MAX_TABS`] history and focus entries per window and
+    /// per remembered session, nonzero identities, an active window that
+    /// exists, finite geometry with a positive size, display UUIDs in
+    /// hyphenated form, and non-blank profile names.
     ///
     /// # Errors
     /// Returns the first rule the layout breaks.
@@ -119,25 +139,27 @@ impl DesktopLayout {
 
 impl WindowLayout {
     fn validate(&self) -> Result<(), InvalidState> {
-        if self.tab_history.len() > MAX_TABS
-            || self.focused_panes.len() > MAX_TABS
-        {
+        check_navigation(
+            self.session,
+            self.workspace,
+            self.active_tab,
+            &self.tab_history,
+            &self.focused_panes,
+        )?;
+        if self.remembered.len() > MAX_SESSIONS {
             return Err(InvalidState::new(format!(
-                "a window lists more than {MAX_TABS} tabs"
+                "a window remembers more than {MAX_SESSIONS} sessions"
             )));
         }
-        let ids = [self.session.get(), self.workspace.get()]
-            .into_iter()
-            .chain(self.active_tab.map(TabId::get))
-            .chain(self.tab_history.iter().map(|tab| tab.get()))
-            .chain(
-                self.focused_panes
-                    .iter()
-                    .flat_map(|focus| [focus.tab.get(), focus.pane.get()]),
-            );
-        if ids.into_iter().any(|id| id == 0) {
-            return Err(InvalidState::new("a window names identity zero"));
-        }
+        self.remembered.iter().try_for_each(|memory| {
+            check_navigation(
+                memory.session,
+                memory.workspace,
+                memory.active_tab,
+                &memory.tab_history,
+                &memory.focused_panes,
+            )
+        })?;
         let WindowBounds {
             x,
             y,
@@ -175,6 +197,35 @@ impl WindowLayout {
         }
         Ok(())
     }
+}
+
+/// Checks one session's saved navigation: at most [`MAX_TABS`] history and
+/// focus entries, and nonzero identities.
+fn check_navigation(
+    session: SessionId,
+    workspace: WorkspaceId,
+    active_tab: Option<TabId>,
+    tab_history: &[TabId],
+    focused_panes: &[FocusedPane],
+) -> Result<(), InvalidState> {
+    if tab_history.len() > MAX_TABS || focused_panes.len() > MAX_TABS {
+        return Err(InvalidState::new(format!(
+            "a window lists more than {MAX_TABS} tabs"
+        )));
+    }
+    let ids = [session.get(), workspace.get()]
+        .into_iter()
+        .chain(active_tab.map(TabId::get))
+        .chain(tab_history.iter().map(|tab| tab.get()))
+        .chain(
+            focused_panes
+                .iter()
+                .flat_map(|focus| [focus.tab.get(), focus.pane.get()]),
+        );
+    if ids.into_iter().any(|id| id == 0) {
+        return Err(InvalidState::new("a window names identity zero"));
+    }
+    Ok(())
 }
 
 /// Whether `value` is a UUID in hyphenated form: 32 hexadecimal digits in

@@ -197,8 +197,15 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
             .is_ok()
     );
 
-    // A subscriber that saw the empty runtime follows the restore.
+    // A subscriber that saw the empty runtime follows the restore and the
+    // attachment a restored window makes.
     drain(&subscription, &mut state);
+    let (fresh, _) = restored.subscribe_hierarchy();
+    assert_eq!(state, fresh);
+    let main = SessionId::in_runtime(runtime, fixture.main.get());
+    let viewer = restored.attach_session(main).unwrap();
+    drain(&subscription, &mut state);
+    assert_eq!(state.attachment_session(viewer), Some(main));
     let (fresh, _) = restored.subscribe_hierarchy();
     assert_eq!(state, fresh);
 
