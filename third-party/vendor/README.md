@@ -9,7 +9,8 @@ Keep each coherent fix together. GPUI's core crate has hidden-window creation,
 file-drop pointer-modality, test-window accessibility, keystroke held-flag, and
 App-free keybinding loader patches, its Linux crate has X11 file-drop,
 fullscreen-state, and key-repeat patches, and its macOS crate has
-offscreen-screen and per-window frame-constraint patches. AccessKit's macOS
+offscreen-screen, per-window frame-constraint, and accessibility view adapter
+patches. AccessKit's macOS
 adapter has the terminal text patches described below.
 
 Normal Cargo builds use the fully patched vendored source through

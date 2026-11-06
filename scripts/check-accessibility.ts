@@ -234,10 +234,9 @@ async function main(executableArgument: string, probeArgument: string): Promise<
       return read.focused && read.value?.includes("AppModelExample") ? read : undefined;
     }, "the focused element to read the sentinel", 20_000);
     report.push(`role=${first.role} application_focus=${first.applicationFocusRole} sentinel=true`);
-    // GPUI's view is the window's first responder, but AccessKit's macOS
-    // adapter subclasses the window's content view, so the application's
-    // focused element can stop at the window. Every other check still runs,
-    // and the smoke fails at the end while it does.
+    // AppKit resolves the application's focused element from GPUI's view,
+    // the first responder, which the vendored GPUI patch hands to AccessKit.
+    // Every other check still runs, and the smoke fails at the end on a gap.
     const gaps: string[] = [];
     if (first.applicationFocusRole !== "AXTextArea") {
       gaps.push(`the application's AXFocusedUIElement is ${first.applicationFocusRole}, not the terminal's AXTextArea`);

@@ -1431,13 +1431,14 @@ rebuilt each time, since rows move between indices. The vendored
 [the vendor README](../../third-party/vendor/README.md). The terminal must
 never post `AXLayoutChanged`.
 
-GPUI's macOS view is a subview of the window's content view and its first
-responder, while GPUI gives AccessKit's `SubclassingAdapter::for_window` the
-window, which subclasses the content view. AppKit resolves the application's
-`AXFocusedUIElement` from the first responder, so it stops at the window even
-though the terminal node reports `AXFocused`. Subclassing GPUI's own view
-fixes it; until that GPUI change lands, `smoke:macos-accessibility` reports
-the gap and fails.
+GPUI's macOS view is a subview of the window's content view and the window's
+first responder. AppKit resolves the application's `AXFocusedUIElement` from
+the first responder, so the AccessKit adapter must subclass GPUI's own view;
+upstream GPUI's `SubclassingAdapter::for_window` subclasses the content view,
+and the focused element stopped at the window even though the terminal node
+reported `AXFocused`. The vendored `accessibility-view-adapter` patch fixes
+it, and `smoke:macos-accessibility` fails if the focused element is anything
+but the terminal's `AXTextArea`.
 
 ## Tab bar layout
 

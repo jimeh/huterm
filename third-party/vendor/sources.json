@@ -105,6 +105,11 @@
           "name": "native-key-identity",
           "file": "patches/gpui-pre-macos/native-key-identity.patch",
           "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
+        },
+        {
+          "name": "accessibility-view-adapter",
+          "file": "patches/gpui-pre-macos/accessibility-view-adapter.patch",
+          "description": "Attach the AccessKit adapter to GPUI's own view rather than the window's content view. GPUIView is a subview of the content view and the first responder, and AppKit resolves the application's focused element from the first responder, so an adapter on the content view left AX clients with the window instead of the focused node."
         }
       ]
     },
