@@ -843,35 +843,6 @@ impl MacWindowState {
     /// weakly to deliver frames.
     fn start_display_link(&mut self, window_state: &Rc<Mutex<MacWindowState>>) {
         self.stop_display_link();
-        // HUTERM_METAL_DIAG
-        {
-            let screen: *mut AnyObject = unsafe { msg_send![self.native_window, screen] };
-            let max_fps: isize = if screen.is_null() {
-                -1
-            } else {
-                unsafe { msg_send![screen, maximumFramesPerSecond] }
-            };
-            let occlusion = self.native_window().occlusionState();
-            let is_visible: bool = unsafe { msg_send![self.native_window, isVisible] };
-            let is_key: bool = unsafe { msg_send![self.native_window, isKeyWindow] };
-            if let Some(display_id) = display_id_for_screen(screen) {
-                crate::display_link::huterm_metal_diag_probe::start(display_id);
-            }
-            metal_diag!(
-                "start_display_link window={:?} metal={} occlusion_visible={} is_visible={} is_key={} screen_null={} display={:?} max_fps={} layer={} drawable_size={:?} max_drawables={:?}",
-                self.native_window,
-                matches!(self.frame_source, FrameSource::Metal(_)),
-                occlusion.contains(NSWindowOcclusionState::Visible),
-                is_visible,
-                is_key,
-                screen.is_null(),
-                display_id_for_screen(screen),
-                max_fps,
-                self.renderer.layer().is_some(),
-                self.renderer.layer().map(|layer| layer.drawableSize()),
-                self.renderer.layer().map(|layer| layer.maximumDrawableCount()),
-            );
-        }
         if !self
             .native_window()
             .occlusionState()
@@ -2189,25 +2160,6 @@ impl PlatformWindow for MacWindow {
 
     fn draw(&self, scene: &gpui::Scene) {
         let mut this = self.0.lock();
-        // HUTERM_METAL_DIAG
-        if let Some(metal_frames) = &self.2
-            && metal_frames.is_attached()
-        {
-            let drawable = this.renderer.set_frame_drawable(None);
-            if drawable.is_none() {
-                let draws = metal_frames.diag.outside_draws.get() + 1;
-                metal_frames.diag.outside_draws.set(draws);
-                if draws <= 20 || draws % 100 == 0 {
-                    metal_diag!(
-                        "link {} draw outside update #{}",
-                        metal_frames.diag.link.get(),
-                        draws
-                    );
-                }
-            } else {
-                this.renderer.set_frame_drawable(drawable);
-            }
-        }
         this.renderer.draw(scene);
     }
 
@@ -3141,14 +3093,6 @@ fn report_visibility(window_state: &Rc<Mutex<MacWindowState>>) {
 extern "C" fn window_did_change_occlusion_state(this: &AnyObject, _: Sel, _: *mut AnyObject) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
-    // HUTERM_METAL_DIAG
-    metal_diag!(
-        "occlusion change window={:?} visible={}",
-        lock.native_window,
-        lock.native_window()
-            .occlusionState()
-            .contains(NSWindowOcclusionState::Visible)
-    );
     if lock
         .native_window()
         .occlusionState()
@@ -3485,8 +3429,6 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
-    // HUTERM_METAL_DIAG
-    metal_diag!("display_layer window={:?}", lock.native_window);
     if let Some(mut callback) = lock.request_frame_callback.take() {
         lock.renderer.set_presents_with_transaction(true);
         lock.stop_display_link();
@@ -3538,75 +3480,10 @@ fn metal_frame(
         return;
     };
     let metal_frames = metal_frames.clone();
-    // HUTERM_METAL_DIAG
-    {
-        let diag = &metal_frames.diag;
-        let callbacks = diag.callbacks.get() + 1;
-        diag.callbacks.set(callbacks);
-        let previous = diag.last_callback.replace(Some(std::time::Instant::now()));
-        let gap_ms = previous.map(|at| at.elapsed().as_millis());
-        if callbacks == 1 {
-            metal_diag!(
-                "link {} first callback after_ms={:?}",
-                diag.link.get(),
-                diag.created_at.get().map(|at| at.elapsed().as_millis()),
-            );
-        } else if callbacks % 240 == 0 || gap_ms.is_some_and(|gap| gap >= 250) {
-            metal_diag!(
-                "link {} callback #{} gap_ms={:?} drawn={} idle={} no_callback={} paused={} target_present={:.4}",
-                diag.link.get(),
-                callbacks,
-                gap_ms,
-                diag.drawn.get(),
-                diag.idle.get(),
-                diag.no_callback.get(),
-                diag.paused.get(),
-                update.targetPresentationTimestamp(),
-            );
-        }
-    }
     let Some(mut callback) = lock.request_frame_callback.take() else {
-        // HUTERM_METAL_DIAG
-        let missing = metal_frames.diag.no_callback.get() + 1;
-        metal_frames.diag.no_callback.set(missing);
-        if missing <= 20 || missing % 100 == 0 {
-            metal_diag!("link {} callback without request_frame_callback #{}", metal_frames.diag.link.get(), missing);
-        }
         return;
     };
-    // HUTERM_METAL_DIAG probe: track when each handed-out drawable returns.
-    let drawable = update.drawable();
-    {
-        use crate::display_link::huterm_metal_diag_probe as probe;
-        use std::sync::atomic::Ordering::Relaxed;
-        probe::CALLBACKS.fetch_add(1, Relaxed);
-        probe::OUTSTANDING.fetch_add(1, Relaxed);
-        let drawable_id: usize = unsafe { msg_send![&*drawable, drawableID] };
-        let handed_out = std::time::Instant::now();
-        let link = metal_frames.diag.link.get();
-        let handler = RcBlock::new(move |returned: NonNull<AnyObject>| {
-            let presented_time: f64 = unsafe { msg_send![returned.as_ref(), presentedTime] };
-            probe::OUTSTANDING.fetch_sub(1, Relaxed);
-            if presented_time > 0.0 {
-                probe::PRESENTED.fetch_add(1, Relaxed);
-            } else {
-                probe::DISCARDED.fetch_add(1, Relaxed);
-            }
-            let age = handed_out.elapsed().as_millis() as u64;
-            probe::MAX_RETURN_MS.fetch_max(age, Relaxed);
-            if age >= 250 {
-                metal_diag!(
-                    "link {} drawable {} returned after_ms={} presented={}",
-                    link,
-                    drawable_id,
-                    age,
-                    presented_time > 0.0
-                );
-            }
-        });
-        let () = unsafe { msg_send![&*drawable, addPresentedHandler: &*handler] };
-    }
-    lock.renderer.set_frame_drawable(Some(drawable));
+    lock.renderer.set_frame_drawable(Some(update.drawable()));
     drop(lock);
     metal_frames.begin_frame();
     callback(RequestFrameOptions {
@@ -3619,12 +3496,6 @@ fn metal_frame(
     // A frame with nothing to draw leaves its drawable unused; releasing it
     // lets the link hand it out again.
     let used_drawable = lock.renderer.set_frame_drawable(None).is_none();
-    // HUTERM_METAL_DIAG
-    if used_drawable {
-        metal_frames.diag.drawn.set(metal_frames.diag.drawn.get() + 1);
-    } else {
-        metal_frames.diag.idle.set(metal_frames.diag.idle.get() + 1);
-    }
     metal_frames.end_frame(used_drawable);
 }
 

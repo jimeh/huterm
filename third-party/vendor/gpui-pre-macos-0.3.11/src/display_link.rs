@@ -306,122 +306,10 @@ pub struct MetalFrames {
     source: RefCell<Option<MetalFrameSource>>,
     /// Whether GPUI asked for a frame since the current update began.
     woken: Cell<bool>,
-    // HUTERM_METAL_DIAG: temporary CI diagnostic state.
-    pub diag: MetalDiag,
-}
-
-// HUTERM_METAL_DIAG: temporary CI diagnostic state.
-#[derive(Default)]
-pub struct MetalDiag {
-    pub link: Cell<u64>,
-    pub created_at: Cell<Option<std::time::Instant>>,
-    pub callbacks: Cell<u64>,
-    pub drawn: Cell<u64>,
-    pub idle: Cell<u64>,
-    pub no_callback: Cell<u64>,
-    pub paused: Cell<bool>,
-    pub pauses: Cell<u64>,
-    pub unpauses: Cell<u64>,
-    pub wakes_without_link: Cell<u64>,
-    pub outside_draws: Cell<u64>,
-    pub last_callback: Cell<Option<std::time::Instant>>,
-}
-
-static HUTERM_METAL_DIAG_LINKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-// HUTERM_METAL_DIAG probe: counters shared with drawable presented handlers,
-// a side CVDisplayLink, and a watchdog thread.
-pub mod huterm_metal_diag_probe {
-    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
-    pub static CALLBACKS: AtomicU64 = AtomicU64::new(0);
-    pub static OUTSTANDING: AtomicI64 = AtomicI64::new(0);
-    pub static PRESENTED: AtomicU64 = AtomicU64::new(0);
-    pub static DISCARDED: AtomicU64 = AtomicU64::new(0);
-    pub static MAX_RETURN_MS: AtomicU64 = AtomicU64::new(0);
-    pub static CV_TICKS: AtomicU64 = AtomicU64::new(0);
-
-    unsafe extern "C" fn cv_tick(
-        _link: *mut super::sys::CVDisplayLink,
-        _now: *const super::sys::CVTimeStamp,
-        _output: *const super::sys::CVTimeStamp,
-        _flags_in: i64,
-        _flags_out: *mut i64,
-        _context: *mut std::ffi::c_void,
-    ) -> i32 {
-        CV_TICKS.fetch_add(1, Relaxed);
-        0
-    }
-
-    pub fn start(display_id: u32) {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            match unsafe { super::sys::DisplayLink::new(display_id, cv_tick, std::ptr::null_mut()) } {
-                Ok(mut link) => {
-                    let started = unsafe { link.start() };
-                    metal_diag!("side cv link display={} started={:?}", display_id, started.is_ok());
-                    std::mem::forget(link);
-                }
-                Err(error) => metal_diag!("side cv link display={} failed: {:?}", display_id, error),
-            }
-            std::thread::spawn(|| {
-                let (mut last_callbacks, mut last_ticks) = (0, 0);
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    let callbacks = CALLBACKS.load(Relaxed);
-                    let ticks = CV_TICKS.load(Relaxed);
-                    metal_diag!(
-                        "watch metal_callbacks=+{} cv_ticks=+{} outstanding={} presented={} discarded={} max_return_ms={}",
-                        callbacks - last_callbacks,
-                        ticks - last_ticks,
-                        OUTSTANDING.load(Relaxed),
-                        PRESENTED.load(Relaxed),
-                        DISCARDED.load(Relaxed),
-                        MAX_RETURN_MS.load(Relaxed),
-                    );
-                    last_callbacks = callbacks;
-                    last_ticks = ticks;
-                }
-            });
-        });
-    }
 }
 
 impl MetalFrames {
     pub fn replace(&self, source: Option<MetalFrameSource>) {
-        // HUTERM_METAL_DIAG
-        let diag = &self.diag;
-        if self.source.borrow().is_some() {
-            metal_diag!(
-                "link {} detached frames={} callbacks={} drawn={} idle={} no_callback={} pauses={} unpauses={} paused={} outside_draws={} lifetime_ms={:?} since_last_callback_ms={:?}",
-                diag.link.get(),
-                self as *const Self as usize,
-                diag.callbacks.get(),
-                diag.drawn.get(),
-                diag.idle.get(),
-                diag.no_callback.get(),
-                diag.pauses.get(),
-                diag.unpauses.get(),
-                diag.paused.get(),
-                diag.outside_draws.get(),
-                diag.created_at.get().map(|at| at.elapsed().as_millis()),
-                diag.last_callback.get().map(|at| at.elapsed().as_millis()),
-            );
-        }
-        if source.is_some() {
-            let link = HUTERM_METAL_DIAG_LINKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            diag.link.set(link);
-            diag.created_at.set(Some(std::time::Instant::now()));
-            diag.callbacks.set(0);
-            diag.drawn.set(0);
-            diag.idle.set(0);
-            diag.no_callback.set(0);
-            diag.paused.set(false);
-            diag.pauses.set(0);
-            diag.unpauses.set(0);
-            diag.outside_draws.set(0);
-            diag.last_callback.set(None);
-            metal_diag!("link {} attached frames={}", link, self as *const Self as usize);
-        }
         *self.source.borrow_mut() = source;
     }
 
@@ -432,39 +320,10 @@ impl MetalFrames {
     pub fn wake(&self) {
         self.woken.set(true);
         // A source being replaced starts unpaused, so skipping it is safe.
-        match self.source.try_borrow() {
-            Ok(source) => match source.as_ref() {
-                Some(source) => {
-                    // HUTERM_METAL_DIAG
-                    if self.diag.paused.replace(false) {
-                        let unpauses = self.diag.unpauses.get() + 1;
-                        self.diag.unpauses.set(unpauses);
-                        if unpauses <= 20 || unpauses % 100 == 0 {
-                            metal_diag!(
-                                "link {} unpause #{} since_last_callback_ms={:?}",
-                                self.diag.link.get(),
-                                unpauses,
-                                self.diag.last_callback.get().map(|at| at.elapsed().as_millis()),
-                            );
-                        }
-                    }
-                    source.set_paused(false);
-                }
-                None => {
-                    // HUTERM_METAL_DIAG
-                    let wakes = self.diag.wakes_without_link.get() + 1;
-                    self.diag.wakes_without_link.set(wakes);
-                    if wakes <= 20 || wakes % 100 == 0 {
-                        metal_diag!(
-                            "wake without link #{} frames={}",
-                            wakes,
-                            self as *const Self as usize
-                        );
-                    }
-                }
-            },
-            // HUTERM_METAL_DIAG
-            Err(_) => metal_diag!("link {} wake while source borrowed", self.diag.link.get()),
+        if let Ok(source) = self.source.try_borrow()
+            && let Some(source) = source.as_ref()
+        {
+            source.set_paused(false);
         }
     }
 
@@ -475,18 +334,8 @@ impl MetalFrames {
     /// Ends an update, pausing the link if GPUI neither used its drawable nor
     /// asked for another frame while it ran. Returns whether it paused.
     pub fn end_frame(&self, used_drawable: bool) -> bool {
-        // HUTERM_METAL_DIAG probe: never pause, to test whether resuming a
-        // paused link is what stalls frame delivery on the CI runner.
-        let pause = false && !used_drawable && !self.woken.get();
+        let pause = !used_drawable && !self.woken.get();
         if pause && let Some(source) = self.source.borrow().as_ref() {
-            // HUTERM_METAL_DIAG
-            if !self.diag.paused.replace(true) {
-                let pauses = self.diag.pauses.get() + 1;
-                self.diag.pauses.set(pauses);
-                if pauses <= 20 || pauses % 100 == 0 {
-                    metal_diag!("link {} pause #{}", self.diag.link.get(), pauses);
-                }
-            }
             source.set_paused(true);
         }
         pause

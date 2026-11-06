@@ -4,9 +4,6 @@
 //! macOS screens have a y axis that goes up from the bottom of the screen and
 //! an origin at the bottom left of the main display.
 
-// HUTERM_METAL_DIAG: temporary CI diagnostic.
-#[macro_use]
-mod metal_diag;
 mod display;
 mod display_link;
 mod events;
