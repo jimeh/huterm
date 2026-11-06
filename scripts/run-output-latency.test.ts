@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkAppliedBudget, checkSnapshotsPerKeyBudget, format, formatCycles, formatKeys, parseCycles, parseIntervals, parseKeyIntervals, summarize, summarizeCycles, summarizeKeys } from "./run-output-latency.ts";
+import { checkAppliedBudget, checkSnapshotsPerKeyBudget, format, formatCycles, formatKeys, parseCycles, parseIntervals, parseKeyIntervals, powerFrameLimits, summarize, summarizeCycles, summarizeKeys } from "./run-output-latency.ts";
 
 const line = (snapshots: number, applied: number, painted: number, elapsed = 1_000_000) =>
   `huterm-render output elapsed_us=${elapsed} snapshots=${snapshots} applied_us_median=${applied} applied_us_max=${applied * 2} paints=${snapshots} painted_us_median=${painted} painted_us_max=${painted * 2}`;
@@ -63,4 +63,11 @@ test("rejects compressed runs whose keys rarely met a pass", () => {
   const log = [cycle(0, true, 900), cycle(1, false, 800), cycle(2, false, 850)].join("\n");
   expect(() => summarizeCycles(parseCycles(log), true, 2)).toThrow("only 1 of 3 keys reached the runtime during a pass");
   expect(() => summarizeCycles(parseCycles(""), false, 40)).toThrow("no compression cycles");
+});
+
+test("power frame limits default on and write an explicit choice into the window table", () => {
+  expect(powerFrameLimits(undefined)).toEqual({ effective: true, config: "" });
+  expect(powerFrameLimits("false")).toEqual({ effective: false, config: "[window]\npower_frame_limits = false\n" });
+  expect(powerFrameLimits("true")).toEqual({ effective: true, config: "[window]\npower_frame_limits = true\n" });
+  expect(() => powerFrameLimits("off")).toThrow("HUTERM_BENCH_POWER_FRAME_LIMITS must be true or false, not off");
 });

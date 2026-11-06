@@ -166,6 +166,15 @@ allowance, including on config reload and snapshot completion. GPUI throttles
 next-frame callbacks in unfocused windows to `inactive_frame_interval`, 30 fps
 by default; desktop windows set it to `None`. With the throttle, Linux
 `bench:scroll` p95 input-to-paint latency rose from about 6.5 ms to 35 ms.
+Since gpui-pre 0.3.11, the frame limits also defer dirty and input-driven
+redraws (zed#66237), and two more apply: `low_power_frame_interval` (about
+30 fps in macOS Low Power Mode or the Linux `power-saver` profile) and
+`thermal_frame_interval` (about 60 fps under serious or critical thermal
+pressure, macOS only). `frame_limits::terminal_window_options` sets all three
+for terminal windows and keeps or clears the power pair from `[window]
+power_frame_limits`. GPUI reads the intervals once, when it creates the
+window, so the setting applies to new windows. The Settings window and
+fixture windows keep GPUI's defaults.
 
 Animations share that window callback and one earliest-deadline timer. Report
 frame work and deadline work separately from presentation changes: a static hold
@@ -287,6 +296,14 @@ skipping a removed window the platform still names as active and every
 window marked `closing`: on macOS a closing window's removal is already
 scheduled and would drop the Quit with it. A refused emptied close whose
 sequence wait is cancelled by teardown decides nothing.
+
+Since gpui-pre 0.3.11 (zed#66181), GPUI handles a native window close on a
+spawned foreground task, which removes the window only if the app has not
+already, so a natively destroyed window stays in `cx.windows()` until that
+task runs. Huterm's closes are app-driven: the close callback returns false
+and the pipeline removes the window, so the deferred task finds it gone. The
+quake smoke covers a final-window close followed by zero-window keepalive and
+recreation, and by application exit without global registrations.
 
 Automatic closes, exit-closes and emptied closes, start only from
 `next_request`: after queued user closes, while the pipeline is idle (not busy

@@ -249,6 +249,19 @@ AppKit returns no NSScreen for a fully offscreen window during quake slides.
 GPUI display-link and maximization getters must handle nil; screen and occlusion
 callbacks restart the display link when the window returns.
 
+Since gpui-pre 0.3.11 (zed#65472), a macOS window chooses its frame source
+once, at creation: a `CAMetalDisplayLink` on its Metal layer when the class
+exists, which it always does on macOS 14+, and `CVDisplayLink` otherwise. The
+Metal link needs no NSScreen, so an offscreen quake window keeps receiving
+frames while AppKit reports it visible. `MetalFrameSource::new` returns `None`
+only when the class is missing, and a window renderer always has a layer, so
+neither leaves a window without frames on supported systems; a window that
+chose Metal never falls back to `CVDisplayLink`. Both sources still stop
+while the window lacks the Visible occlusion bit. The `macos-offscreen-screen`
+patch remains for the maximized check and backing scale. The quake smoke's
+recreated window shows frame delivery indirectly: only a delivered frame
+renews the snapshot allowance, so its echo after `READY` needs one.
+
 Reassert macOS quake geometry during settling after changing presentation options.
 AppKit can move the frame after its initial write. Keep X11 fullscreen geometry
 under the window manager and retain the native-transition gate.

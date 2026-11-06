@@ -10988,6 +10988,17 @@
           "x-huterm-section": "appearance",
           "x-huterm-unit": "pt"
         },
+        "power_frame_limits": {
+          "default": true,
+          "description": "Cap terminal windows at about 30 frames per second in Low Power Mode\nor a power-saver profile, and about 60 under serious thermal pressure.",
+          "type": "boolean",
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "new_windows",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Lower frame rate to save power",
+          "x-huterm-order": 33,
+          "x-huterm-section": "windows"
+        },
         "shortcut_hints": {
           "default": false,
           "description": "Show key hints on the scroll pill and on dialog and panel buttons.",

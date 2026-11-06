@@ -82,10 +82,10 @@ index 0000000000000000000000000000000000000000..cae9c9496f0ec2fdbd0135a2f8d90bed
 +    })
 +}
 diff --git a/src/window.rs b/src/window.rs
-index f22ca79af1a6520a52001cb38955a2b75568d8b5..7cb8cf3c2a8d4fcece98c3922bda4f69235ff2b1 100644
+index a12076fa2cd0f71e577e78c623319fafa39ad8e9..402fb61a6c78ae6503f5f6473ec601697ce4c2b4 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -3564,6 +3564,7 @@ extern "C" fn do_command_by_selector(this: &AnyObject, _: Sel, _: Sel) {
+@@ -3659,6 +3659,7 @@ extern "C" fn do_command_by_selector(this: &AnyObject, _: Sel, _: Sel) {
  
      if let Some((keystroke, callback)) = keystroke.zip(event_callback.as_mut()) {
          let handled = (callback)(PlatformInput::KeyDown(KeyDownEvent {

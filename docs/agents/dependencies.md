@@ -19,7 +19,7 @@ Windows included, and fails when that platform's URL does not resolve. Make
 each `http:` tool's URL template resolve on every locked platform, as
 elvish's `os()`-selected archive extension does.
 
-The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.10 uses
+The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.11 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
 pins Rust 1.99.
 

@@ -1008,6 +1008,24 @@
     "theme": false
   },
   {
+    "name": "window power frame limits on",
+    "toml": "[window]\npower_frame_limits = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window power frame limits off",
+    "toml": "[window]\npower_frame_limits = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window power frame limits wrong type",
+    "toml": "[window]\npower_frame_limits = \"off\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "quake defaults",
     "toml": "[quake.profiles.default]",
     "valid": true

@@ -287,7 +287,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   passed it. On 2026-11-05, during the word and line selection work, one
   `mise run test:ghostty-releasesafe` run failed it with the same message,
   although the change touches no job or close-assessment code; it passed in
-  3 isolated ReleaseSafe reruns.
+  3 isolated ReleaseSafe reruns. On 2026-11-06, during the gpui-pre 0.3.11
+  upgrade, which changes no `huterm-core` code, one full local `mise run
+  test` failed both mux tests (`!orphan.foreground` and "foreground job not
+  observed") at a load average near 20; three `mux::lifecycle` reruns passed.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.

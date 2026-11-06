@@ -1,9 +1,9 @@
 //! Compile the platform parsers' physical-key helpers directly.
 #[rustfmt::skip]
-#[path = "../../../third-party/vendor/gpui-pre-macos-0.3.10/src/key_identity.rs"]
+#[path = "../../../third-party/vendor/gpui-pre-macos-0.3.11/src/key_identity.rs"]
 mod macos;
 #[rustfmt::skip]
-#[path = "../../../third-party/vendor/gpui-pre-linux-0.3.10/src/linux/key_identity.rs"]
+#[path = "../../../third-party/vendor/gpui-pre-linux-0.3.11/src/linux/key_identity.rs"]
 mod linux;
 
 #[test]

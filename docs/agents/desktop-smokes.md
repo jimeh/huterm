@@ -77,6 +77,15 @@ terminal benchmarks under a compositor such as `xcompmgr` for reduced-alpha
 measurements; otherwise the production fallback deliberately measures opaque
 paint. Compare the defaults and background 0.8 independently.
 
+`bench:output-latency` and `bench:scroll` accept
+`HUTERM_BENCH_POWER_FRAME_LIMITS=true|false`, which writes `[window]
+power_frame_limits` into their generated config; unset keeps the default, on.
+Each logs the effective value. The caps engage only in Low Power Mode, the
+`power-saver` profile, or under thermal pressure, so at nominal power both
+values measure the same path. The renderer benchmarks do not read it:
+`bench:renderer-scenarios` opens fixture windows with GPUI's defaults, and
+`bench:renderer` keeps the setting's default.
+
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
 - `mise run bench:renderer-scenarios` times production `prepare` and `paint`

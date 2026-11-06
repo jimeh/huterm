@@ -918,6 +918,19 @@ mod tests {
     }
 
     #[test]
+    fn power_frame_limits_is_an_advanced_new_window_switch() {
+        let model = SettingsModel::load().unwrap();
+        let setting = model.setting("window.power_frame_limits").unwrap();
+        assert_eq!(setting.kind, SettingKind::Bool);
+        assert_eq!(setting.section, SectionId::Windows);
+        assert_eq!(setting.group, "Window");
+        assert_eq!(setting.label, "Lower frame rate to save power");
+        assert_eq!(setting.default, Some(toml::Value::Boolean(true)));
+        assert_eq!(setting.apply, Apply::NewWindows);
+        assert!(setting.advanced);
+    }
+
+    #[test]
     fn the_sidebar_lists_windows_above_tabs() {
         assert_eq!(
             SectionId::ALL.map(SectionId::title),

@@ -148,8 +148,8 @@ patches, and manifest entry, then validate the registry dependency instead.
 ## GPUI snapshot crates
 
 Zed has not published GPUI to crates.io since 0.2.2. Huterm uses `gpui-pre`
-0.3.10, which republishes Zed's workspace crates from revision
-`08cbb88a152c3751a43e853425a70e9f631a5918` as separate Apache-2.0 registry
+0.3.11, which republishes Zed's workspace crates from revision
+`f816e1f9263e3a8ef63c4baaa02e1441ce1c6038` as separate Apache-2.0 registry
 crates. Only the three patched crates are vendored: `gpui-pre` (Zed's
 `crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), and `gpui-pre-macos`
 (`crates/gpui_macos`). The other snapshot crates resolve from the registry.
@@ -195,7 +195,7 @@ positioning the pointer and before each native drop, so it fails without it.
 GPUI still calls `map_window()` even for `WindowOptions { show: false }`.
 The `hidden-window-creation` patch gates that call on `show` and propagates
 mapping errors. Quake addresses the exact window through GPUI's X11 handle.
-GPUI 0.3.10 destroys the X11 window only when its platform window drops, so the
+GPUI 0.3.11 destroys the X11 window only when its platform window drops, so the
 handle cannot outlive it and the former `x11-window-handle` patch is gone. The
 native quake smoke checks an untouched hidden GPUI window before any hide
 operation, then summons a real profile through the OS shortcut and reads its
@@ -226,7 +226,7 @@ actual slide intermediates and restored constraints on regular conversion.
 
 ## GPUI keybinding loading without an App
 
-GPUI 0.3.10 resolves `secondary-` from the application's host OS, so
+GPUI 0.3.11 resolves `secondary-` from the application's host OS, so
 `KeyBinding::load` takes an `App`, and `KeyBinding::new` accepts only static
 keystrokes. Huterm compiles keymaps without an `App`: the configuration
 validator checks a candidate file off the main thread, and unit tests build

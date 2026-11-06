@@ -1,12 +1,6 @@
 {
   "crates": [
     {
-      "name": "block",
-      "version": "^0.1.6",
-      "license": "MIT",
-      "standard": "authors"
-    },
-    {
       "name": "block2",
       "version": "^0.6.2",
       "license": "MIT",
