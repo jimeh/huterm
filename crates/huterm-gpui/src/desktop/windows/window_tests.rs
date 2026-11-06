@@ -5387,6 +5387,7 @@ mod pane_layouts;
 mod pane_moves;
 mod pane_names;
 mod restore;
+mod sessions;
 mod settings;
 mod settings_controls;
 mod settings_dialog;

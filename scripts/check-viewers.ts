@@ -314,6 +314,29 @@ always_show = true
     }
     report.push(`panes=${left.columns}+${right.columns}/${unsplit.columns} extracted=${extracted.columns}`);
 
+    // Two windows on one session switch independently: window 1 opens a
+    // new session while window 0's shell keeps answering, then switches
+    // back to the shared session and its view, and closes the new one.
+    const shared = windowField(await current(), 1, "session");
+    const sharedTabs = windowField(await current(), 1, "tabs");
+    await command("invoke-in\t1\tnew_session");
+    const switched = await stateWhere((state) => {
+      const session = windowField(state, 1, "session");
+      return session !== undefined && session !== "none" && session !== shared
+        && windowField(state, 1, "busy") === "false" && windowField(state, 1, "tabs") === "1"
+        && text(state, 1).includes("READY");
+    }, "window 1 to show a new session");
+    const created = windowField(switched, 1, "session")!;
+    if (windowField(switched, 0, "session") !== shared) throw new Error(`window 0 left its session: ${switched}`);
+    await send(0, "ack while-switched", "ACK:while-switched");
+    await command(`invoke-in\t1\tselect_session\tsession=${shared}`);
+    await stateWhere((state) => windowField(state, 1, "session") === shared && windowField(state, 1, "busy") === "false"
+      && windowField(state, 1, "tabs") === sharedTabs && text(state, 1).includes("ACK:while-switched"),
+    "window 1 to switch back to the shared session");
+    await command(`invoke-in\t1\tclose_session\tsession=${created}`);
+    await send(0, "ack after-switch", "ACK:after-switch");
+    await stateWhere((state) => text(state, 1).includes("ACK:after-switch"), "window 1 to follow the shared session");
+
     // 7. Closing window 1 through the platform's close path detaches it;
     // window 0's shell still answers.
     await command("native-close\t1");

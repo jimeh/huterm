@@ -5,7 +5,8 @@
 //! further changes. One timer runs only while a change waits, so an idle
 //! desktop schedules nothing. A capture due while a cross-window transfer is
 //! reserved waits until the transfer settles, and so does one that a
-//! transfer reserved under while it ran.
+//! transfer reserved under while it ran. A session switch defers captures
+//! the same way from its first phase to its last.
 
 use super::persistence::{CHECKPOINT_DELAY, State};
 use super::{App, Arc, Desktop, Duration, Instant, Ordering, capture_windows};
@@ -19,8 +20,11 @@ pub(super) struct Checkpoints {
     timer: Option<gpui::Task<()>>,
     /// The window-model revision the last change mark saw.
     seen_revision: u64,
-    /// A capture came due while a transfer was reserved.
+    /// A capture came due while a transfer was reserved or a window was
+    /// switching sessions.
     pub(super) waiting_transfer: bool,
+    /// Windows switching sessions; a checkpoint waits until none is left.
+    pub(super) switching: std::collections::HashSet<gpui::WindowId>,
     /// The quiet time before a capture; tests lengthen it to prove that a
     /// write came from elsewhere.
     pub(super) delay: Duration,
@@ -33,6 +37,7 @@ impl Default for Checkpoints {
             timer: None,
             seen_revision: 0,
             waiting_transfer: false,
+            switching: std::collections::HashSet::new(),
             delay: CHECKPOINT_DELAY,
         }
     }
@@ -117,7 +122,9 @@ pub(super) fn take_checkpoint(cx: &mut App) {
     if desktop.runtime.persistence.state() != State::Running {
         return;
     }
-    if !desktop.cross.reserved.is_empty() {
+    if !desktop.cross.reserved.is_empty()
+        || !desktop.checkpoints.switching.is_empty()
+    {
         desktop.checkpoints.waiting_transfer = true;
         return;
     }
@@ -160,8 +167,33 @@ pub(super) fn set_transfer_reserved(
         desktop.cross.reserved.insert(window);
         return;
     }
-    if desktop.cross.reserved.remove(&window)
-        && desktop.cross.reserved.is_empty()
+    if desktop.cross.reserved.remove(&window) {
+        resume_waiting(cx);
+    }
+}
+
+/// Notes that `window` started, or finished, switching sessions. Starting
+/// moves the transfer count, so a capture that read the runtime meanwhile
+/// is taken again.
+pub(super) fn set_switching(
+    cx: &mut App,
+    window: gpui::WindowId,
+    switching: bool,
+) {
+    let desktop = cx.global_mut::<Desktop>();
+    if switching {
+        desktop.runtime.transfers.fetch_add(1, Ordering::AcqRel);
+        desktop.checkpoints.switching.insert(window);
+    } else if desktop.checkpoints.switching.remove(&window) {
+        resume_waiting(cx);
+    }
+}
+
+/// Takes the capture that waited, once no transfer or switch holds it.
+fn resume_waiting(cx: &mut App) {
+    let desktop = cx.global::<Desktop>();
+    if desktop.cross.reserved.is_empty()
+        && desktop.checkpoints.switching.is_empty()
         && desktop.checkpoints.waiting_transfer
     {
         take_checkpoint(cx);

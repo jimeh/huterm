@@ -36,10 +36,19 @@ pub(super) enum Stage {
     Restored,
     /// A checkpoint's runtime capture, before it takes the Mux lock.
     Checkpoint,
+    /// A session switch's worker, before it takes the Mux lock. A failure
+    /// fails the shell the switch would spawn, if it spawns one.
+    Switch,
+    /// A session switch whose commit returned, before its completion waits
+    /// for the projection.
+    Switched,
+    /// Opening a session in a new window, before the worker takes the Mux
+    /// lock. A failure fails the window's open.
+    OpenSession,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 12]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 15]>);
 
 #[derive(Default)]
 struct StageHooks {

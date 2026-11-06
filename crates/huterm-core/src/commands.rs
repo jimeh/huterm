@@ -61,6 +61,12 @@ pub fn execute(
                 .ok_or_else(|| missing("session"))?;
             mux.rename_session(session, name()?)
         }
+        ids::CLEAR_SESSION_NAME => {
+            let session = invocation
+                .session("session")
+                .ok_or_else(|| missing("session"))?;
+            mux.rename_session(session, None)
+        }
         other => {
             return Err(CommandError::Unavailable(format!(
                 "runtime command `{other}` has no executor"
@@ -207,6 +213,41 @@ mod tests {
             Err(CommandError::StaleTarget)
         );
         mux.close_session(session).unwrap();
+    }
+
+    #[test]
+    fn clear_session_name_restores_the_automatic_name() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(Some("build")).unwrap();
+        let clear = |session| {
+            CommandInvocation::new(
+                ids::CLEAR_SESSION_NAME,
+                vec![CommandArgument::new(
+                    "session",
+                    CommandValue::Session(session),
+                )],
+            )
+        };
+        assert_eq!(
+            execute(&mut mux, &clear(session)),
+            Ok(CommandOutcome::Completed)
+        );
+        assert_eq!(mux.session(session).unwrap().custom_name(), None);
+        assert_eq!(
+            execute(
+                &mut mux,
+                &CommandInvocation::new(ids::CLEAR_SESSION_NAME, Vec::new())
+            ),
+            Err(CommandError::MissingArgument {
+                command: ids::CLEAR_SESSION_NAME,
+                name: "session",
+            })
+        );
+        mux.close_session(session).unwrap();
+        assert_eq!(
+            execute(&mut mux, &clear(session)),
+            Err(CommandError::StaleTarget)
+        );
     }
 
     #[test]

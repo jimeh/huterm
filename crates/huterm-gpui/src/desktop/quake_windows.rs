@@ -640,8 +640,9 @@ fn invoke_now(
     }
     let display = place(&native, &config.display, &mut None)
         .map_err(|error| error.to_string())?;
-    // The first summon after a restore shows the profile's saved session.
-    let reopen = cx.global_mut::<Desktop>().quake_stash.remove(name);
+    // The first summon after a restore shows the profile's saved session,
+    // unless it closed meanwhile; then the summon opens a fresh one.
+    let reopen = take_stash(cx, name);
     open_window_with_profile(
         cx,
         reopen.is_none(),
@@ -653,6 +654,17 @@ fn invoke_now(
         return Err(format!("could not create quake profile {name:?}"));
     }
     Ok(())
+}
+
+/// Takes profile `name`'s stashed session, dropping one that closed.
+fn take_stash(cx: &mut App, name: &str) -> Option<restore::Reopen> {
+    let reopen = cx.global_mut::<Desktop>().quake_stash.remove(name)?;
+    cx.global::<Desktop>()
+        .hierarchy
+        .state()
+        .session(reopen.session)
+        .is_some()
+        .then_some(reopen)
 }
 
 /// The display a show from hidden uses, from the displays connected now.

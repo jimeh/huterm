@@ -198,8 +198,11 @@ tab and only once settled.
 It attaches a second window with the fixture's `attach-window` command and
 drives both windows through window-indexed fixture commands (`type-in`,
 `invoke-in`, `resize-window`, `activate`) instead of native input, so it
-needs no per-window X11 focus. Where Xvfb draws no frames it reads
-runtime-backed state: the shell appends `stty size` to a file, ordered
+needs no per-window X11 focus. `invoke-in` carries each argument as text,
+except a `session=<n>` argument, which names a session by the number smoke
+state's `w<i>.session` reports; the step switches the second window to a new
+session and back while the first keeps answering. Where Xvfb draws no
+frames it reads runtime-backed state: the shell appends `stty size` to a file, ordered
 behind every geometry report queued before the line, and `viewport` reads
 the shared viewport and canonical grid through a fresh observing viewer,
 which rearms neither window. Smoke state's `w<i>.snapshots=<builds>,<reuses>`

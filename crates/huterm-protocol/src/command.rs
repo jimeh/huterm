@@ -732,6 +732,18 @@ pub mod ids {
     pub const RENAME_WORKSPACE: CommandId = CommandId::new("rename_workspace");
     /// Renames a session.
     pub const RENAME_SESSION: CommandId = CommandId::new("rename_session");
+    /// Creates a session with a new tab and switches the window to it.
+    pub const NEW_SESSION: CommandId = CommandId::new("new_session");
+    /// Switches the window to another session.
+    pub const SELECT_SESSION: CommandId = CommandId::new("select_session");
+    /// Clears a session's custom name.
+    pub const CLEAR_SESSION_NAME: CommandId =
+        CommandId::new("clear_session_name");
+    /// Opens a new window showing an existing session.
+    pub const OPEN_SESSION_IN_NEW_WINDOW: CommandId =
+        CommandId::new("open_session_in_new_window");
+    /// Closes a session after assessment.
+    pub const CLOSE_SESSION: CommandId = CommandId::new("close_session");
     /// Renames a pane.
     pub const RENAME_PANE: CommandId = CommandId::new("rename_pane");
     /// Activates the most recently used tab.
@@ -1116,6 +1128,16 @@ const TAB: &[ArgumentSpec] = &[ArgumentSpec {
     prompt: false,
 }];
 
+/// Session-targeted commands default to the window's session. The argument
+/// is not prompted so the palette runs them at once; menus and
+/// programmatic callers supply another session.
+const OWN_SESSION: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "session",
+    kind: ArgumentKind::Session,
+    required: Requirement::Optional,
+    prompt: false,
+}];
+
 const CATALOG: &[CommandSpec] = &[
     spec(
         ids::SHOW_QUAKE,
@@ -1417,6 +1439,56 @@ const CATALOG: &[CommandSpec] = &[
                 prompt: true,
             },
         ],
+    ),
+    spec(
+        ids::NEW_SESSION,
+        CommandScope::Window,
+        "New Session",
+        "Create a session with a new tab and switch this window to it.",
+        &[ArgumentSpec {
+            name: "name",
+            kind: ArgumentKind::Text,
+            required: Requirement::Optional,
+            prompt: false,
+        }],
+    ),
+    spec(
+        ids::SELECT_SESSION,
+        CommandScope::Window,
+        "Switch Session",
+        "Show another session in this window; both sessions keep running.",
+        &[ArgumentSpec {
+            name: "session",
+            kind: ArgumentKind::Session,
+            required: Requirement::Always,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::CLEAR_SESSION_NAME,
+        CommandScope::Runtime,
+        "Clear Session Name",
+        "Remove a session's custom name, restoring its automatic one.",
+        OWN_SESSION,
+    ),
+    spec(
+        ids::OPEN_SESSION_IN_NEW_WINDOW,
+        CommandScope::Application,
+        "Open Session in New Window",
+        "Open a new window showing an existing session.",
+        &[ArgumentSpec {
+            name: "session",
+            kind: ArgumentKind::Session,
+            required: Requirement::Always,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::CLOSE_SESSION,
+        CommandScope::Runtime,
+        "Close Session",
+        "Close a session and every tab in it after assessing its terminals.",
+        OWN_SESSION,
     ),
     spec(
         ids::RENAME_PANE,

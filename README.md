@@ -60,8 +60,8 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
 These are not available yet:
 
 - Pane layout presets, and undoing a layout change.
-- Switching sessions or workspaces in a window, and moving tabs between
-  windows. Each window gets a private session.
+- Switching workspaces in a window. Each window gets a private session
+  with one workspace, and can switch to another session.
 - A background server, local IPC, a command-line client, a TUI, or a browser
   client.
 - Saving and restoring sessions or terminal history across restarts.
@@ -177,12 +177,22 @@ Detached processes cannot always be attributed or terminated.
 Quit covers every session, and the Dock's Quit on macOS uses the same
 cancellable path as the application menu. Huterm keeps running without windows
 while a session survives or a quake shortcut is registered, and the macOS Dock
-icon reopens a window. Otherwise it exits when the last window closes.
+icon reopens a window, on the session you left most recently when no window
+shows it. Otherwise it exits when the last window closes. On Linux, closing
+the last window while other sessions run quits instead, so restore brings
+them back.
 
-The runtime and desktop already handle several windows on one session: closing
-one of those windows only detaches it, without a prompt, and the session's last
-window closes the session. No command opens a second window on a session yet;
-that arrives with session switching.
+### Switching sessions
+
+New Session, Switch Session, Open Session in New Window, Rename Session, Clear
+Session Name, and Close Session are in the command palette
+([commands](docs/keybindings.md#commands)). Switching keeps both sessions
+running; the window returns to the tab and pane it last showed in each, with
+its own undo, and a restart restores that too. Two windows can show one
+session and switch independently. Closing one of those windows only detaches
+it, without a prompt, and the session's last window closes the session. A
+shell that exits while no window shows its tab keeps the exited tab, even with
+`close_on_exit`, because only a view sees the exit.
 
 ## Develop
 

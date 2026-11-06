@@ -1154,3 +1154,233 @@ fn a_session_whose_panes_and_fresh_tab_all_fail_is_closed_with_a_warning(
         assert_eq!(closed, 2, "{latched:?}");
     });
 }
+
+/// [`layout`] with a second window on session 1, which last showed tab 9
+/// and is the one to activate.
+fn shared_layout() -> huterm_state::DesktopLayout {
+    let mut saved = layout();
+    let mut second = saved.windows[0].clone();
+    second.active_tab = Some(TabId::new(9));
+    second.tab_history = vec![TabId::new(3), TabId::new(9)];
+    second.bounds.x = 400.0;
+    saved.windows.push(second);
+    saved.active_window = Some(1);
+    saved
+}
+
+impl DesktopHarness {
+    /// The open windows attached to `session`, in opening order.
+    fn windows_of(&mut self, session: SessionId) -> Vec<AnyWindowHandle> {
+        self.cx.update(|cx| {
+            let ids: Vec<gpui::WindowId> = cx
+                .global::<Desktop>()
+                .windows
+                .records()
+                .filter(|record| record.session == Some(session))
+                .map(|record| record.id)
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| {
+                    cx.windows()
+                        .into_iter()
+                        .find(|handle| handle.window_id() == id)
+                })
+                .collect()
+        })
+    }
+}
+
+#[gpui::test]
+fn two_saved_windows_on_one_session_come_back_with_their_own_navigation(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::restoring(
+        cx,
+        |_| {},
+        capture(&scratch),
+        Some(shared_layout()),
+        ECHO,
+    );
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let tab = |id| TabId::in_runtime(runtime, id);
+    let work = SessionId::in_runtime(runtime, 1);
+    let windows = harness.windows_of(work);
+    assert_eq!(windows.len(), 2, "both saved windows show the session");
+    harness.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        let record = |window: AnyWindowHandle| {
+            desktop.windows.record(window.window_id()).unwrap()
+        };
+        let (first, second) = (record(windows[0]), record(windows[1]));
+        assert_ne!(first.attachment, second.attachment);
+        assert_eq!(first.active, Some(tab(3)));
+        assert_eq!(second.active, Some(tab(9)));
+        assert_eq!(
+            desktop.hierarchy.state().session_attachments(work).count(),
+            2
+        );
+        // The saved active window is the second, by its saved identity.
+        assert_eq!(
+            cx.active_window().map(|handle| handle.window_id()),
+            Some(windows[1].window_id())
+        );
+    });
+    harness.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn a_restored_window_that_fails_to_open_detaches_only_its_attachment(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::installed(
+        cx,
+        |_| {},
+        persistence::State::Bootstrapping,
+    );
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().fail_window_opens = 1;
+        let saved =
+            startup::Saved::new(capture(&scratch), Some(shared_layout()));
+        startup::start_with(cx, saved, fixture(ECHO));
+    });
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let work = SessionId::in_runtime(runtime, 1);
+    let windows = harness.windows_of(work);
+    assert_eq!(windows.len(), 1, "the second saved window still opened");
+    harness.wait_projection();
+    harness.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        let state = desktop.hierarchy.state();
+        assert!(state.session(work).is_some(), "its session was closed");
+        assert_eq!(state.session_attachments(work).count(), 1);
+    });
+    // The next window to open raised the warning.
+    harness.cx.update(|cx| {
+        let shown: Vec<String> = cx
+            .windows()
+            .into_iter()
+            .flat_map(|window| notices(cx, window))
+            .collect();
+        assert!(
+            shown
+                .iter()
+                .any(|notice| notice.contains("A window couldn't open.")),
+            "{shown:?}"
+        );
+    });
+    harness.runtime.terminate().unwrap();
+}
+
+/// [`layout`] with its window on session 12, remembering where it was in
+/// session 1 (tab 3's pane 7, after tab 9) and in a session that is gone.
+fn remembering_layout() -> huterm_state::DesktopLayout {
+    let mut saved = layout();
+    let window = &mut saved.windows[0];
+    window.session = SessionId::new(12);
+    window.workspace = WorkspaceId::new(13);
+    window.active_tab = Some(TabId::new(14));
+    window.tab_history = vec![TabId::new(14)];
+    window.focused_panes = Vec::new();
+    window.remembered = vec![
+        huterm_state::SessionNavigation {
+            session: SessionId::new(1),
+            workspace: WorkspaceId::new(2),
+            active_tab: Some(TabId::new(3)),
+            tab_history: vec![TabId::new(9), TabId::new(3)],
+            focused_panes: vec![huterm_state::FocusedPane {
+                tab: TabId::new(3),
+                pane: PaneId::new(7),
+            }],
+        },
+        huterm_state::SessionNavigation {
+            session: SessionId::new(99),
+            workspace: WorkspaceId::new(98),
+            active_tab: None,
+            tab_history: Vec::new(),
+            focused_panes: Vec::new(),
+        },
+    ];
+    saved
+}
+
+#[gpui::test]
+fn saved_navigation_memory_round_trips_and_a_later_switch_lands_on_it(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::restoring(
+        cx,
+        |_| {},
+        capture(&scratch),
+        Some(remembering_layout()),
+        ECHO,
+    );
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let tab = |id| TabId::in_runtime(runtime, id);
+    let work = SessionId::in_runtime(runtime, 1);
+    let unviewed = SessionId::in_runtime(runtime, 12);
+    let window = harness.window_of(unviewed);
+    // The capture writes the memory back, without the session that is gone.
+    let saved = harness.cx.update(|cx| {
+        capture_windows(cx)
+            .windows
+            .into_iter()
+            .find(|saved| saved.session == SessionId::new(12))
+            .unwrap()
+    });
+    assert_eq!(
+        saved.remembered,
+        remembering_layout().windows[0].remembered[..1]
+    );
+    // Switching lands on the remembered tab and pane.
+    harness.update_view(window, |view, window, cx| {
+        view.switch_session(
+            session_switch::SwitchTarget::Existing(work),
+            window,
+            cx,
+        )
+        .unwrap();
+    });
+    harness.wait_for("the remembered session to show", |cx| {
+        cx.global::<Desktop>()
+            .windows
+            .record(window.window_id())
+            .is_some_and(|record| record.session == Some(work))
+            && window
+                .update(cx, |root, _, cx| {
+                    let view = root.downcast::<WorkspaceView>().unwrap();
+                    let view = view.read(cx);
+                    view.switch.is_none() && view.tabs.len() == 2
+                })
+                .unwrap_or(false)
+    });
+    let (active, focused) = harness.update_view(window, |view, _, cx| {
+        let focused = view
+            .tabs
+            .iter()
+            .find(|view| view.id == tab(3))
+            .map(|view| view.focused().pane);
+        (view.active_tab(cx), focused)
+    });
+    assert_eq!(active, Some(tab(3)));
+    assert_eq!(focused, Some(PaneId::in_runtime(runtime, 7)));
+    harness.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn a_stash_whose_session_closes_is_dropped(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let mut harness =
+        DesktopHarness::restoring_quake(cx, capture(&scratch), quake_layout());
+    assert_eq!(harness.stashed(), [DROP]);
+    let work = SessionId::in_runtime(harness.runtime_id(), 1);
+    harness.runtime.lock().close_session(work).unwrap();
+    harness.wait_projection();
+    assert_eq!(harness.stashed(), Vec::<String>::new());
+    harness.runtime.terminate().unwrap();
+}

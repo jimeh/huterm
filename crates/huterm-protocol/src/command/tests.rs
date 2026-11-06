@@ -529,6 +529,65 @@ fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
 }
 
 #[test]
+fn session_commands_prompt_only_for_a_session_they_switch_to() {
+    let session = SessionId::new(3);
+    let bare = |id| CommandInvocation::new(id, Vec::new());
+    let picked = |id| {
+        CommandInvocation::new(
+            id,
+            vec![CommandArgument::new(
+                "session",
+                CommandValue::Session(session),
+            )],
+        )
+    };
+    // The palette asks which session to switch to or open.
+    for (id, scope) in [
+        (ids::SELECT_SESSION, CommandScope::Window),
+        (ids::OPEN_SESSION_IN_NEW_WINDOW, CommandScope::Application),
+    ] {
+        let spec = validate_supplied(&bare(id)).unwrap();
+        assert_eq!(spec.scope, scope, "{id}");
+        assert_eq!(
+            spec.missing_prompted(&bare(id))
+                .iter()
+                .map(|arg| arg.name)
+                .collect::<Vec<_>>(),
+            ["session"],
+            "{id}"
+        );
+        assert_eq!(
+            validate(&bare(id)),
+            Err(CommandError::MissingArgument {
+                command: id,
+                name: "session",
+            }),
+            "{id}"
+        );
+        assert!(validate(&picked(id)).is_ok(), "{id}");
+    }
+    // These default to the window's session and run at once.
+    for id in [ids::CLEAR_SESSION_NAME, ids::CLOSE_SESSION] {
+        let spec = validate(&bare(id)).unwrap();
+        assert_eq!(spec.scope, CommandScope::Runtime, "{id}");
+        assert!(spec.missing_prompted(&bare(id)).is_empty(), "{id}");
+        assert_eq!(picked(id).session("session"), Some(session));
+        assert!(validate(&picked(id)).is_ok(), "{id}");
+    }
+    // A new session takes an optional name, never prompted.
+    let spec = validate(&bare(ids::NEW_SESSION)).unwrap();
+    assert_eq!(spec.scope, CommandScope::Window);
+    assert_eq!(spec.missing_prompted(&bare(ids::NEW_SESSION)).len(), 0);
+    assert!(
+        validate(&CommandInvocation::new(
+            ids::NEW_SESSION,
+            vec![text("name", "build")]
+        ))
+        .is_ok()
+    );
+}
+
+#[test]
 fn tab_targeted_commands_take_an_unprompted_optional_tab() {
     let tab = TabId::new(4);
     for id in [

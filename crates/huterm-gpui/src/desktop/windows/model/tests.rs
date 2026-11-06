@@ -572,3 +572,62 @@ fn transparency_overrides_belong_to_one_window_and_report_changes() {
     assert!(model.record(window(2)).unwrap().transparency.is_empty());
     assert!(!model.set_transparency(window(9), layer), "unknown window");
 }
+
+#[test]
+fn a_switch_files_the_session_left_and_hands_back_the_targets_memory() {
+    let mut model = attached(2);
+    model.set_focused_pane(window(1), TabId::new(1), PaneId::new(5));
+    let revision = model.revision();
+    assert_eq!(
+        model.switch_session(window(1), SessionId::new(2), WorkspaceId::new(4)),
+        None
+    );
+    assert!(model.revision() > revision, "memory is a saved fact");
+    let record = model.record(window(1)).unwrap();
+    assert_eq!(
+        (record.session, record.workspace),
+        (Some(SessionId::new(2)), Some(WorkspaceId::new(4)))
+    );
+    assert_eq!(record.memory.len(), 1);
+    let left = &record.memory[0];
+    assert_eq!(left.session, SessionId::new(1));
+    assert_eq!(left.active, Some(TabId::new(2)));
+    assert_eq!(left.history, [TabId::new(2), TabId::new(1)]);
+    assert_eq!(left.panes, [(TabId::new(1), PaneId::new(5))]);
+    // Saved like the window's own navigation, most recent last.
+    let saved = model.desktop_layout(None).windows.remove(0).remembered;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].tab_history, [TabId::new(1), TabId::new(2)]);
+
+    let back = model
+        .switch_session(window(1), SessionId::new(1), WorkspaceId::new(1))
+        .unwrap();
+    assert_eq!(back.active, Some(TabId::new(2)));
+    let record = model.record(window(1)).unwrap();
+    assert_eq!(
+        record
+            .memory
+            .iter()
+            .map(|memory| memory.session)
+            .collect::<Vec<_>>(),
+        [SessionId::new(2)]
+    );
+}
+
+#[test]
+fn memory_keeps_the_most_recently_left_sessions_within_the_saved_bound() {
+    let mut model = attached(1);
+    let bound = huterm_state::bounds::MAX_SESSIONS;
+    let last = u64::try_from(bound).unwrap() + 10;
+    for session in 2..=last {
+        model.switch_session(
+            window(1),
+            SessionId::new(session),
+            WorkspaceId::new(session),
+        );
+    }
+    let record = model.record(window(1)).unwrap();
+    assert_eq!(record.memory.len(), bound);
+    assert_eq!(record.memory[0].session, SessionId::new(last - 1));
+    assert!(model.desktop_layout(None).validate().is_ok());
+}

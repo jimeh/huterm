@@ -63,12 +63,14 @@ tab waits for the projection and assesses again there. When the pane left
 the window instead, only that close ends, without a notice: an exit-close
 returns to owed, and closes queued behind it still run.
 
-Layout history (`windows/layout_history.rs`) lives in the window record, so
-it dies with the window and needs no view to prune it. Every rearrangement
-completion records through `record_layout_change`, which keeps the commit's
-hierarchy sequence and ignores a completion older than the newest entry.
-`reconcile` prunes every window's entries against the projection after
-every non-empty batch, not only in the windows `windows_to_visit` returns:
+Layout history (`windows/layout_history.rs`) lives in the window record, for
+the session the window shows, so it dies with the window and needs no view to
+prune it; a session switch moves it into that session's navigation memory.
+Every rearrangement completion records through `record_layout_change`, which
+keeps the commit's hierarchy sequence and ignores a completion older than the
+newest entry. `reconcile` prunes every window's entries, those in navigation
+memory included, against the projection after every non-empty batch, not
+only in the windows `windows_to_visit` returns:
 an entry can name tabs in workspaces its window does not show, and a
 workspace moved to another session touches none of its tabs. A window that
 loses an entry is notified, so an open palette or menu stops offering it.
@@ -77,6 +79,34 @@ batch that arrives in between has nothing to prune. A restored pane that
 comes back without a view keeps `restore_focus` until its install
 finishes, then takes the focus. The runtime checks the restore again under
 its lock, so a lagging projection costs a notice, never a wrong layout.
+
+A session switch (`windows/session_switch.rs`) runs in four phases while
+`WorkspaceView::switch` holds its phase and `busy` stays set from the guard
+to the settle. The guard is `check_switch_available`: the full structural
+guard plus a switch or restore in flight, a closing window, Quit, and
+teardown; it cancels drags first, as `new_tab` does. One worker validates
+the attachment and target under one Mux lock, resolves the workspace (the
+remembered one if it still holds a tab, else the first that does, else a
+shell tab in the first, creating one), and only then retargets; a failure
+before the retarget closes only what it created. The completion waits for
+the projection, `WindowModel::switch_session` files the left session's
+`SessionMemory` (navigation and layout history) and hands back the
+target's, and reconcile runs with `WindowReconcile::busy` false while the
+phase is `Installing`, so removals and installs run, and with `note_emptied`
+ignoring the edge its own removals cause: a push clears the mark in the
+common case, but a switch whose every install fails would otherwise take
+an emptied close. `apply_reopen` applies the memory once installs are idle
+and calls `settle_switch`, which clears `busy`, owes the emptied close of a
+window left with nothing to show (the target closed after the commit), and
+resumes queued closes. A worker failure with an invalid attachment
+(`SourceGone`) takes the session-gone path once the phase clears. Every
+switch counts in `pending_spawns`, so Quit waits, and in
+`Checkpoints::switching`, which defers captures and moves
+`DesktopRuntime::transfers`. Tier 2 tests hold `Stage::Switch` before the
+lock (a failure there fails the shell the switch would spawn) and
+`Stage::Switched` after the commit. A tab whose shell exits while no window
+shows it records no exit-close, since only a view's exit transition does,
+and a view installed later keeps the exited tab.
 
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it
@@ -313,6 +343,24 @@ removes the window. The
 quake smoke covers a final-window close followed by zero-window keepalive and
 recreation, and by application exit without global registrations.
 
+`CloseTarget::Session` closes a whole session through `CloseRequest::Session`,
+with consent as for any close; its dialog lists titles from every open
+window. It merges with no other target. When it closes the window's own
+session, the commit's worker attaches the window to its most recently left
+session that still exists (`next_session`, from its navigation memory) right
+after the commit, and the completion installs it as a switch does
+(`install_session` with the new attachment); with none, the window closes.
+Other windows on the closed session take the session-gone path, and
+`reconcile` drops Quake stashes and navigation memory of closed sessions.
+Close Window resolves through `window_close_target`: on Linux, the last open
+window with no Quake shortcut quits instead while a session no window shows
+remains, so restore keeps it; macOS keeps running, and `on_reopen` calls
+`session_switch::reopen_window`, which opens a window on the most recently
+viewed session no window or stash holds (`WindowModel::unviewed_sessions`,
+whose viewed order survives window removal), else a fresh one.
+`open_session_in_new_window` uses the same worker, `attach_existing`, and a
+window that fails to open detaches only its own attachment.
+
 Automatic closes, exit-closes and emptied closes, start only from
 `next_request`: after queued user closes, while the pipeline is idle (not busy
 and no confirmation showing), and never in a closing window or during
@@ -372,11 +420,13 @@ a window-model revision (`WindowModel::revision`, moved only by saved
 facts, watched through `observe_global::<Desktop>`), and a terminal
 directory change restart one timer on the executor clock. Nothing is armed
 while nothing changed. A capture due while `cross.reserved` holds a window
-waits until the transfer settles. The layout comes from the window model on
-the UI thread and the runtime capture from a worker's Mux lock. A
-reservation moves `DesktopRuntime::transfers`, and a capture that sees it
-moved after its runtime read may hold a transfer half done: it is dropped
-and taken again, after that transfer settles if it is still reserved. Views
+waits until the transfer settles, and one due while a window switches
+sessions (`Checkpoints::switching`) until the switch settles. The layout
+comes from the window model on the UI thread and the runtime capture from
+a worker's Mux lock. A reservation moves `DesktopRuntime::transfers`, and a
+capture that sees it moved after its runtime read may hold a transfer half
+done: it is dropped and taken again, after that transfer settles if it is
+still reserved. Views
 publish each tab's focused pane into `TabEntry::focused` from their
 self-observer, writing only what changed.
 
@@ -398,7 +448,15 @@ released the lock. Otherwise AppKit can exit while the worker still holds
 live shells. Each restored window opens attached to its session
 (`open_window_with_profile`'s `Reopen`) and applies its saved focus once
 its installs are idle (`apply_reopen`); the bootstrap settles when every
-window did or went away. GPUI reports window bounds
+window did or went away. The worker takes one attachment per saved window
+and Quake stash of a session, so two windows on one session come back
+independent; `plan` hands them out per window, activates the saved active
+window by its index in the layout, scopes each window's `remembered`
+navigation into the runtime (dropping sessions that did not come back and
+filtering tabs and panes), and returns unused attachments to detach. A
+restored window that fails to open detaches only its own attachment
+(`close_unopened`) and closes its session only when no other restored
+window or stash holds it. GPUI reports window bounds
 relative to the window's display, and macOS reports each display from its
 own origin, so the layout saves bounds with the display's UUID
 (`restore::display_uuid`, kept current by `observe_window_display`).
@@ -418,8 +476,10 @@ launch. A reload (`quake_windows::reconcile`, through
 `restore::reconcile_stash`, before the windows drop the renames it read)
 moves a stash to its profile's recorded new name and opens one whose
 profile is gone, no longer summoned, or already served in a regular
-window, as launch does for a missing profile. GPUI tests cannot register
-global shortcuts; `quake_windows::Registry::summoned` stands in for them.
+window, as launch does for a missing profile. A stash whose session closed
+goes at the next batch, and a summon that finds its stash's session gone
+opens a fresh profile session. GPUI tests cannot register global shortcuts;
+`quake_windows::Registry::summoned` stands in for them.
 `smoke:macos-restore` and `smoke:linux-restore` quit and relaunch on one
 `HUTERM_STATE_DIR`; `HUTERM_STATE_TIMING` prints the final write's
 duration.
@@ -521,7 +581,10 @@ with its command swallows the key without effect. Tier 2 tests read the
 rendered contexts through `Window::context_stack`.
 
 Text arguments accept a blank value: the core executor maps a blank rename name
-to `None`, which clears the custom name, so there are no reset-name commands.
+to `None`, which clears the custom name. Only sessions also get a
+`clear_session_name` command, for the session menu; core runs it.
+`close_session` is Runtime scope for its target but needs consent, so the
+window runs it through its close pipeline and core's executor refuses it.
 The palette prefills a rename's current custom name, selected, whenever the name
 slot is untouched. Palette, text-field, and other UI keyboard operations are
 `Focused`-scope catalog commands with a required context compiled into every
