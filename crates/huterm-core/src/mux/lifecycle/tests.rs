@@ -23,7 +23,7 @@ fn ready(client: &crate::test_support::TestClient, text: &str) {
     loop {
         let snapshot = client.read_snapshot().unwrap();
         let output: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         if output.contains(text) {
             return;
         }

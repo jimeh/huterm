@@ -63,7 +63,7 @@ fn screen(engine: &mut TerminalEngine) -> Vec<String> {
         .unwrap()
         .rows
         .iter()
-        .map(|row| row.cells.iter().map(|cell| cell.text.as_str()).collect())
+        .map(|row| row.cells.iter().map(|cell| cell.text.displayed()).collect())
         .collect()
 }
 

@@ -358,7 +358,13 @@ const KEY_SETS: &[KeySet] = &[
             r#trait: "RowData",
             populate: None,
         },
-        keys: &["WRAP", "GRAPHEME", "STYLED", "SEMANTIC_PROMPT"],
+        keys: &[
+            "WRAP",
+            "WRAP_CONTINUATION",
+            "GRAPHEME",
+            "STYLED",
+            "SEMANTIC_PROMPT",
+        ],
     },
     KeySet {
         header: "mouse/encoder.h",

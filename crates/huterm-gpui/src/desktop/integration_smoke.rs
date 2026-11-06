@@ -173,7 +173,7 @@ fn read_state(cx: &mut gpui::App) -> String {
                 )
                 .unwrap();
                 if let Some(snapshot) = &view.snapshot {
-                    writeln!(state,"generation={}\nsnapshot_columns={}\nmouse={:?}\ntext={}",snapshot.generation,snapshot.size.columns,snapshot.modes.mouse_tracking,snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap();
+                    writeln!(state,"generation={}\nsnapshot_columns={}\nmouse={:?}\ntext={}",snapshot.generation,snapshot.size.columns,snapshot.modes.mouse_tracking,snapshot.cells().map(|cell| cell.text.displayed()).collect::<String>()).unwrap();
                 }
             });
         });

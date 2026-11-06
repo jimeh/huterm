@@ -1,7 +1,7 @@
 use super::*;
 use huterm_protocol::{
-    BufferPoint, CellColor, CursorShape, MouseEncoding, MouseTracking, Rgb,
-    RowPrompt,
+    BufferPoint, CellColor, CellText, CursorShape, MouseEncoding,
+    MouseTracking, Rgb, RowPrompt,
 };
 use std::sync::Arc;
 
@@ -118,7 +118,7 @@ fn ghostty_preserves_shared_scrollback_and_generation_checked_selection() {
             .map(|row| {
                 row.cells
                     .iter()
-                    .map(|cell| cell.text.as_str())
+                    .map(|cell| cell.text.displayed())
                     .collect::<String>()
                     .trim_end()
                     .to_owned()
@@ -279,6 +279,58 @@ fn ghostty_snapshots_mark_soft_wrapped_rows_until_reflow_unwraps_them() {
         assert_eq!(snapshot.rows[0].cells[9].text, "j");
         assert_eq!(snapshot.rows[1].cells[0].text, "k");
         assert_eq!(wrapped(&snapshot), [false; 3]);
+    });
+}
+
+#[test]
+fn ghostty_snapshots_tell_empty_cells_from_written_spaces() {
+    with_engine(|engine| {
+        // A written space, cells skipped by CUF, cells erased with a
+        // background, and a wide character that wraps past a spacer head.
+        engine
+            .process(
+                "a b\x1b[2Cc\r\n\x1b[41m\x1b[3X\x1b[0m\x1b[7C界".as_bytes(),
+            )
+            .unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        let text = |row: usize, column: usize| {
+            snapshot.rows[row].cells[column].text.clone()
+        };
+        assert_eq!(text(0, 1), CellText::BLANK);
+        assert_eq!(text(0, 3), CellText::EMPTY);
+        assert_eq!(text(0, 7), CellText::EMPTY, "never written");
+        let erased = &snapshot.rows[1].cells[0];
+        assert_eq!(erased.text, CellText::EMPTY);
+        assert_eq!(erased.background, CellColor::Indexed(1));
+        let head = &snapshot.rows[1].cells[7];
+        assert!(head.style.wide_spacer && head.text.is_empty());
+        assert_eq!(text(2, 0), "界");
+        assert!(snapshot.rows[2].cells[1].style.wide_spacer);
+        assert_eq!(text(2, 1), CellText::EMPTY);
+    });
+}
+
+fn continuations(snapshot: &TerminalSnapshot) -> Vec<bool> {
+    snapshot
+        .rows
+        .iter()
+        .map(|row| row.wrap_continuation)
+        .collect()
+}
+
+#[test]
+fn ghostty_snapshots_report_wrap_continuations_apart_from_wraps() {
+    with_engine(|engine| {
+        engine.process(b"abcdefghij").unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&snapshot), [true, false, false]);
+        assert_eq!(continuations(&snapshot), [false, true, false]);
+        // Deleting the continuation row moves the row below up without
+        // its flag, while the row above still wraps.
+        engine.process(b"\x1b[2;1H\x1b[M").unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&snapshot), [true, false, false]);
+        assert_eq!(continuations(&snapshot), [false; 3]);
     });
 }
 

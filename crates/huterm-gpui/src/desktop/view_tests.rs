@@ -388,7 +388,7 @@ fn received(view: &TerminalView) -> Option<Vec<u8>> {
 
 fn screen_text(view: &TerminalView) -> Option<String> {
     let snapshot = view.snapshot.as_ref()?;
-    Some(snapshot.cells().map(|cell| cell.text.as_str()).collect())
+    Some(snapshot.cells().map(|cell| cell.text.displayed()).collect())
 }
 
 fn describe(view: &TerminalView) -> String {

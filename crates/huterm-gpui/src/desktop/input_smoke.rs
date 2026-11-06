@@ -127,7 +127,7 @@ fn read_state(cx: &mut gpui::App) -> String {
                 tab.snapshot.as_ref().is_some_and(|snapshot| {
                     snapshot
                         .cells()
-                        .map(|cell| cell.text.as_str())
+                        .map(|cell| cell.text.displayed())
                         .collect::<String>()
                         .contains("READY")
                 })

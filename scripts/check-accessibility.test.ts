@@ -22,10 +22,13 @@ describe("accessibility smoke expectations", () => {
     expect(paintedCursor(state)).toEqual([124, 232, 2, 16]);
   });
 
-  test("lines end in a newline unless they wrap or are the last row", () => {
-    expect(documentLines(rows)).toEqual(["AppModelExample\n", "xxx ", "yy\n", "\n", " "]);
-    // A last row with text has no newline.
+  test("lines end in a newline unless they wrap or end the text", () => {
+    // Copy drops the empty rows after the last text, and its newline.
+    expect(documentLines(rows)).toEqual(["AppModelExample\n", "xxx ", "yy"]);
     expect(documentLines([{ text: "a" }, { text: "b" }])).toEqual(["a\n", "b"]);
+    // An empty row between texts is a line break; a hard row loses its
+    // trailing spaces.
+    expect(documentLines([{ text: "a  " }, { text: "" }, { text: "b" }])).toEqual(["a\n", "\n", "b"]);
   });
 
   test("edges are the outer text cells of the first and last rows", () => {

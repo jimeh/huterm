@@ -1225,7 +1225,7 @@ fn runs(snapshot: &TerminalSnapshot) -> Vec<usize> {
         .map(|row| {
             row.cells
                 .iter()
-                .take_while(|cell| cell.text.as_str() == "w")
+                .take_while(|cell| cell.text.displayed() == "w")
                 .count()
         })
         .filter(|run| *run > 0)

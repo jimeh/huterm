@@ -948,6 +948,17 @@ impl Row {
         self.get::<ffi::keys::row_data::Wrap>()
     }
 
+    /// Whether the row continues a soft-wrapped row. Line insertion and
+    /// deletion clear it on the rows they move without changing the
+    /// previous row's [`Self::wrapped`].
+    ///
+    /// # Errors
+    ///
+    /// Fails if the library rejects the key.
+    pub fn wrap_continuation(self) -> Result<bool> {
+        self.get::<ffi::keys::row_data::WrapContinuation>()
+    }
+
     /// Whether any cell may carry grapheme clusters.
     ///
     /// # Errors

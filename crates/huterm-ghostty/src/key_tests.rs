@@ -364,6 +364,11 @@ fn screen_cell_and_row_keys_write_exactly_their_output_type() {
     exact!(rows, Wrap, key_probe::row::<row::Wrap>(value, &false));
     exact!(
         rows,
+        WrapContinuation,
+        key_probe::row::<row::WrapContinuation>(value, &false)
+    );
+    exact!(
+        rows,
         Grapheme,
         key_probe::row::<row::Grapheme>(value, &false)
     );

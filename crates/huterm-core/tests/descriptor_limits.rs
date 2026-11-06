@@ -102,7 +102,7 @@ fn wait_for_text(client: &TerminalViewer, needle: &str) {
     loop {
         let snapshot = client.read_snapshot().expect("snapshot should work");
         let text: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         if text.contains(needle) {
             return;
         }

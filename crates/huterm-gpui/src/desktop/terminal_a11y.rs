@@ -3,16 +3,19 @@
 //!
 //! The document is the displayed grid, clipped to the painted bounds as
 //! [`GridGeometry`] clips painting and hit testing; scrollback is not part of
-//! it. Each grapheme cell is one character, spacer cells add none, and empty
-//! cells are spaces. Rows lose their trailing blanks (empty cells and
-//! spaces) where Copy trims them: at a hard row end, and on a soft-wrapped
-//! row unless its logical line continues with text on a later displayed
-//! row. A hard row end is a `\n` of its own; a soft-wrapped row has none, as
-//! Copy joins it with the next. No run is empty, because AccessKit's position
-//! and line lookups misbehave next to one (AccessKit #836 and #837): the last
-//! row has no `\n`, and an empty last row is one space. Runs longer than
-//! [`RUN_LIMIT`] characters continue in another run on the same line, since
-//! word starts are `u8` indices.
+//! it. Its text is what Copy copies from the whole displayed grid, and a
+//! selection inside it selects what Copy copies from that selection. Copy is
+//! Ghostty's plain formatter with soft wraps joined and blanks trimmed, and
+//! [`Document`] follows it step by step: empty cells and spaces are blanks,
+//! written as spaces only once later text on their logical line follows; a
+//! line break is written only once text follows it; a row part with no text
+//! at all is a line break of its own. Each character sits on the displayed
+//! row it is drawn on: a grapheme cell is one character, spacers add none,
+//! and a row's line break follows its text. A row with no characters has no
+//! run, because AccessKit's position and line lookups misbehave next to an
+//! empty one (AccessKit #836 and #837). Runs longer than [`RUN_LIMIT`]
+//! characters continue in another run on the same line, since word starts
+//! are `u8` indices.
 //!
 //! Geometry is in window physical pixels, as GPUI reports node bounds.
 //! Building reads only the snapshot the frame paints and the view's own
@@ -20,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,8 +33,8 @@ use gpui::accesskit::{
 };
 use gpui::{A11ySubtreeBuilder, Bounds, Pixels};
 use huterm_protocol::{
-    BufferPoint, BufferRange, Cursor, CursorShape, GridSize, TerminalRow,
-    TerminalSnapshot, Viewport,
+    BufferPoint, BufferRange, CellText, Cursor, CursorShape, GridSize,
+    TerminalRow, TerminalSnapshot, Viewport,
 };
 
 use super::grid_geometry::GridGeometry;
@@ -282,29 +286,105 @@ struct Segment {
     width: f32,
 }
 
-/// A displayed row's characters, built once per row identity, geometry,
-/// and whether its line continues.
+/// How Ghostty's plain formatter reads a cell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Class {
+    /// No text: never written, erased, skipped, or a background alone.
+    Empty,
+    /// A space, combining marks included. Copy trims it as it trims an
+    /// empty cell, but a row part holding one has text.
+    Space,
+    /// Any other character, a no-break or ideographic space included.
+    Text,
+}
+
+impl Class {
+    fn of(text: &CellText) -> Self {
+        if text.is_empty() {
+            Self::Empty
+        } else if text.as_str().starts_with(' ') {
+            Self::Space
+        } else {
+            Self::Text
+        }
+    }
+}
+
+/// A cell that is not a spacer: one character of its row.
 #[derive(Debug)]
-struct RowText {
+struct CellChar {
+    column: usize,
+    class: Class,
+    /// The character in [`RowCells::text`], for a text cell; Copy writes a
+    /// blank as a space.
+    text: Range<usize>,
+    x: f32,
+    width: f32,
+}
+
+/// What a displayed column's cell is to a selection.
+#[derive(Clone, Copy, Debug)]
+enum ColumnCell {
+    /// Character `index` of the row.
+    Char(usize),
+    /// A wide character's spacer, which selects character `index`.
+    Tail(usize),
+    /// A spacer head, left at the end of a row by a wide character that
+    /// wrapped onto the next.
+    Head,
+}
+
+/// A displayed row's cells as the formatter reads them, built once per row
+/// identity and geometry.
+#[derive(Debug)]
+struct RowCells {
     /// Keeps the row alive, so its address names it while cached.
     row: Arc<TerminalRow>,
+    chars: Vec<CellChar>,
+    text: String,
+    columns: Box<[ColumnCell]>,
+    /// The first column whose cell has text, spaces included. Copy's text
+    /// of a selection ending on the row counts the row only from there.
+    first_text: Option<usize>,
+}
+
+impl RowCells {
+    fn character(&self, index: usize) -> &str {
+        let cell = &self.chars[index];
+        match cell.class {
+            Class::Text => &self.text[cell.text.clone()],
+            Class::Empty | Class::Space => " ",
+        }
+    }
+}
+
+/// Which of a row's characters the document holds, in this order.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+struct Plan {
+    /// Blanks of earlier rows that Copy writes only after the line break
+    /// of a row with no text between them and the text that follows. They
+    /// lead the row, with no width.
+    carried: u16,
+    /// How many of the row's own characters, from its first.
+    own: u16,
+    /// Whether a line break follows them.
+    newline: bool,
+}
+
+/// A displayed row's runs, built once per row identity, geometry, and
+/// plan.
+#[derive(Debug)]
+struct RowText {
+    row: Arc<TerminalRow>,
+    /// Empty for a row with no characters.
     segments: Vec<Segment>,
-    /// For each displayed column, the index of the character that starts
-    /// the column's selection, clamped to `text_len`.
-    starts: Box<[u16]>,
-    /// For each displayed column, the index after the last character that
-    /// is not blank up to and including the column: where Copy's text of
-    /// a selection ending there ends on this row.
-    text_ends: Box<[u16]>,
-    /// The index after the row's last character that is not blank.
-    text_end: usize,
-    /// Characters before the row's `\n`, if it has one.
-    text_len: usize,
+    /// Characters in all segments.
+    len: usize,
 }
 
 impl RowText {
     fn position(&self, character: usize) -> (u16, usize) {
-        let last = self.segments.len() - 1;
+        let last = self.segments.len().saturating_sub(1);
         let segment = (character / RUN_LIMIT).min(last);
         let index = character - segment * RUN_LIMIT;
         (u16::try_from(segment).unwrap_or(u16::MAX), index)
@@ -317,17 +397,57 @@ struct RowKey {
     columns: u16,
     cell_width: u32,
     clip_width: u32,
-    last: bool,
-    continues: bool,
 }
 
-/// Each displayed row's characters and run-relative geometry, kept while
-/// the rows stay displayed.
+/// Values kept while the rows they were built for stay displayed: a build
+/// keeps only what it used.
+#[derive(Debug)]
+struct Cache<K, V> {
+    kept: HashMap<K, Rc<V>>,
+    used: HashMap<K, Rc<V>>,
+}
+
+impl<K, V> Default for Cache<K, V> {
+    fn default() -> Self {
+        Self {
+            kept: HashMap::new(),
+            used: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Copy + Eq + Hash, V> Cache<K, V> {
+    fn begin(&mut self) {
+        self.kept.extend(self.used.drain());
+    }
+
+    /// The value cached for `key` if `valid` accepts it, or a new one.
+    fn get(
+        &mut self,
+        key: K,
+        valid: impl Fn(&V) -> bool,
+        build: impl FnOnce() -> V,
+    ) -> Rc<V> {
+        let value = self
+            .kept
+            .remove(&key)
+            .or_else(|| self.used.get(&key).cloned())
+            .filter(|value| valid(value))
+            .unwrap_or_else(|| Rc::new(build()));
+        self.used.insert(key, Rc::clone(&value));
+        value
+    }
+
+    fn end(&mut self) {
+        self.kept.clear();
+    }
+}
+
+/// Each displayed row's cells and runs, kept while the rows stay displayed.
 #[derive(Debug, Default)]
 pub(super) struct ModelBuilder {
-    rows: HashMap<RowKey, Rc<RowText>>,
-    /// Rows the last build used; the next build keeps only those it uses.
-    used: HashMap<RowKey, Rc<RowText>>,
+    cells: Cache<RowKey, RowCells>,
+    texts: Cache<(RowKey, Plan), RowText>,
 }
 
 impl ModelBuilder {
@@ -336,7 +456,6 @@ impl ModelBuilder {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::cast_precision_loss,
         reason = "cell counts are small, positive, and bounded by the grid"
     )]
     pub(super) fn build(&mut self, inputs: &Inputs<'_>) -> Model {
@@ -359,81 +478,71 @@ impl ModelBuilder {
         let columns = visible(area_width, cell_width, snapshot.size.columns);
         let rows = visible(area_height, cell_height, snapshot.size.rows)
             .min(u16::try_from(snapshot.rows.len()).unwrap_or(u16::MAX));
-        let continues = continuing_rows(
-            &snapshot.rows[..usize::from(rows)],
-            usize::from(columns),
-        );
-        self.rows.extend(self.used.drain());
-        let mut texts = Vec::with_capacity(usize::from(rows));
-        for index in 0..rows {
-            let row = &snapshot.rows[usize::from(index)];
+
+        self.cells.begin();
+        self.texts.begin();
+        let mut keys = Vec::with_capacity(usize::from(rows));
+        let mut cells = Vec::with_capacity(usize::from(rows));
+        for row in &snapshot.rows[..usize::from(rows)] {
             let key = RowKey {
                 row: Arc::as_ptr(row) as usize,
                 columns,
                 cell_width: cell_width.to_bits(),
                 clip_width: area_width.to_bits(),
-                last: index + 1 == rows,
-                continues: continues[usize::from(index)],
             };
-            let text = match self.rows.remove(&key) {
-                Some(text) if Arc::ptr_eq(&text.row, row) => text,
-                _ => {
-                    Rc::new(row_text(row, columns, cell_width, area_width, key))
-                }
-            };
-            self.used.insert(key, Rc::clone(&text));
-            texts.push(text);
+            keys.push(key);
+            cells.push(self.cells.get(
+                key,
+                |cached| Arc::ptr_eq(&cached.row, row),
+                || row_cells(row, columns, cell_width, area_width),
+            ));
         }
-        self.rows.clear();
+        let document = Document::new(&cells, usize::from(columns));
+        let texts: Vec<_> = keys
+            .iter()
+            .zip(&cells)
+            .zip(&document.plans)
+            .map(|((key, cells), plan)| {
+                self.texts.get(
+                    (*key, *plan),
+                    |cached| Arc::ptr_eq(&cached.row, &cells.row),
+                    || row_text(cells, *plan, cell_width, area_width),
+                )
+            })
+            .collect();
+        self.cells.end();
+        self.texts.end();
+        debug_assert_eq!(
+            texts.iter().map(|text| text.len).sum::<usize>(),
+            document.len,
+            "the runs hold the document"
+        );
 
-        let mut runs = Vec::new();
-        for (index, text) in texts.iter().enumerate() {
-            let top = origin_y + cell_height * index as f32;
-            let bottom = (top + cell_height).min(origin_y + area_height);
-            let count = text.segments.len();
-            for (segment_index, segment) in text.segments.iter().enumerate() {
-                let mut node = Node::new(Role::TextRun);
-                let left = f64::from(origin_x + segment.x);
-                node.set_bounds(Rect {
-                    x0: left,
-                    y0: f64::from(top),
-                    x1: left + f64::from(segment.width),
-                    y1: f64::from(bottom),
-                });
-                node.set_value(&*segment.value);
-                node.set_character_lengths(&*segment.lengths);
-                node.set_character_positions(&*segment.positions);
-                node.set_character_widths(&*segment.widths);
-                node.set_word_starts(&*segment.word_starts);
-                node.set_text_direction(TextDirection::LeftToRight);
-                runs.push(ModelRun {
-                    key: RunKey {
-                        row: index as u16,
-                        segment: segment_index as u16,
-                    },
-                    node,
-                    continued: segment_index > 0,
-                    continues: segment_index + 1 < count,
-                });
-            }
-        }
+        let runs = runs(
+            &texts,
+            (origin_x, origin_y),
+            cell_height,
+            origin_y + area_height,
+        );
 
-        let caret = snapshot
+        let cursor = snapshot
             .cursor
-            .filter(|cursor| cursor.row < rows && cursor.column < columns)
-            .and_then(|cursor| caret_bounds(cursor, inputs, area));
+            .filter(|cursor| cursor.row < rows && cursor.column < columns);
+        let caret =
+            cursor.and_then(|cursor| caret_bounds(cursor, inputs, area));
+        let position = |index| model_position(&texts, index);
         let selection = inputs
             .selection
-            .and_then(|range| selection(range, snapshot, &texts, columns))
+            .and_then(|range| selection(range, snapshot, &cells, &document))
+            .and_then(|(start, end)| Some((position(start)?, position(end)?)))
             .or_else(|| {
-                let cursor = snapshot.cursor.filter(|cursor| {
-                    cursor.row < rows && cursor.column < columns
-                })?;
-                let text = &texts[usize::from(cursor.row)];
-                let character =
-                    usize::from(text.starts[usize::from(cursor.column)]);
-                let position = model_position(cursor.row, text, character);
-                Some((position, position))
+                let cursor = cursor?;
+                let at = position(document.start(
+                    &cells,
+                    usize::from(cursor.column),
+                    usize::from(cursor.row),
+                ))?;
+                Some((at, at))
             });
         Model {
             runs,
@@ -441,6 +550,53 @@ impl ModelBuilder {
             selection,
         }
     }
+}
+
+/// The rows' runs as nodes, placed from the grid's `origin` down to
+/// `bottom`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "row and run counts are small and bounded by the grid"
+)]
+fn runs(
+    texts: &[Rc<RowText>],
+    (origin_x, origin_y): (f32, f32),
+    cell_height: f32,
+    bottom: f32,
+) -> Vec<ModelRun> {
+    let mut runs = Vec::new();
+    for (index, text) in texts.iter().enumerate() {
+        let top = origin_y + cell_height * index as f32;
+        let row_bottom = (top + cell_height).min(bottom);
+        let count = text.segments.len();
+        for (segment_index, segment) in text.segments.iter().enumerate() {
+            let mut node = Node::new(Role::TextRun);
+            let left = f64::from(origin_x + segment.x);
+            node.set_bounds(Rect {
+                x0: left,
+                y0: f64::from(top),
+                x1: left + f64::from(segment.width),
+                y1: f64::from(row_bottom),
+            });
+            node.set_value(&*segment.value);
+            node.set_character_lengths(&*segment.lengths);
+            node.set_character_positions(&*segment.positions);
+            node.set_character_widths(&*segment.widths);
+            node.set_word_starts(&*segment.word_starts);
+            node.set_text_direction(TextDirection::LeftToRight);
+            runs.push(ModelRun {
+                key: RunKey {
+                    row: index as u16,
+                    segment: segment_index as u16,
+                },
+                node,
+                continued: segment_index > 0,
+                continues: segment_index + 1 < count,
+            });
+        }
+    }
+    runs
 }
 
 /// The painted cursor rectangle, clipped to the displayed grid. A hidden
@@ -470,45 +626,225 @@ fn caret_bounds(
     })
 }
 
-fn model_position(row: u16, text: &RowText, character: usize) -> ModelPosition {
-    let (segment, character_index) = text.position(character);
-    ModelPosition {
-        run: RunKey { row, segment },
+/// Document character `index` as a run and an index in it: at the start of
+/// the row holding it, or at the end of the last row with characters. A
+/// document with no characters has no positions.
+fn model_position(
+    texts: &[Rc<RowText>],
+    index: usize,
+) -> Option<ModelPosition> {
+    let mut start = 0;
+    let mut last = None;
+    for (row, text) in texts.iter().enumerate() {
+        if text.len == 0 {
+            continue;
+        }
+        if index < start + text.len {
+            last = Some((row, index - start));
+            break;
+        }
+        last = Some((row, text.len));
+        start += text.len;
+    }
+    let (row, character) = last?;
+    let (segment, character_index) = texts[row].position(character);
+    Some(ModelPosition {
+        run: RunKey {
+            row: u16::try_from(row).unwrap_or(u16::MAX),
+            segment,
+        },
         character_index,
+    })
+}
+
+/// The displayed grid's text as Copy writes it, and where Copy's text of a
+/// selection inside the grid starts and ends in it.
+///
+/// It runs Ghostty's plain formatter with `unwrap` and `trim`
+/// (`formatter.zig`, `PageFormatter.formatWithStateEmit`) over the
+/// displayed cells. A row with text writes the line breaks pending before
+/// it, then its characters, each blank pending until text on its logical
+/// line follows; a row's own line break pends unless it soft-wraps, and a
+/// row that does not continue a soft-wrapped one drops the pending blanks. A
+/// row with no text adds a pending line break and nothing else, even when
+/// it soft-wraps. Whatever pends at the end is dropped.
+#[derive(Debug)]
+struct Document {
+    plans: Vec<Plan>,
+    len: usize,
+    columns: usize,
+    /// For each row, one slot per displayed column and one after them: the
+    /// first character from a source at or after the slot. A selection
+    /// starting there starts at it.
+    starts: Vec<usize>,
+    /// For each displayed cell: the characters Copy writes before a
+    /// selection ending there ends.
+    ends: Vec<usize>,
+}
+
+impl Document {
+    fn new(rows: &[Rc<RowCells>], columns: usize) -> Self {
+        let slots = columns + 1;
+        let mut plans = vec![Plan::default(); rows.len()];
+        let mut starts = vec![usize::MAX; rows.len() * slots];
+        let mut ends = vec![0; rows.len() * columns];
+        let mut len = 0;
+        // Rows whose line break is pending, and pending blanks as
+        // (row, character).
+        let mut lines: Vec<usize> = Vec::new();
+        let mut blanks: Vec<(usize, usize)> = Vec::new();
+        // The row the last character went to, and whether it was that
+        // row's line break.
+        let mut last: Option<(usize, bool)> = None;
+        // The characters written once each of a row's cells is read.
+        let mut written = Vec::with_capacity(columns);
+        let mut write = |slot: usize, len: &mut usize| {
+            starts[slot] = starts[slot].min(*len);
+            *len += 1;
+        };
+        for (index, cells) in rows.iter().enumerate() {
+            let row_start = len;
+            let Some(first_text) = cells.first_text else {
+                lines.push(index);
+                ends[index * columns..(index + 1) * columns].fill(row_start);
+                continue;
+            };
+            for line in lines.drain(..) {
+                plans[line].newline = true;
+                write(line * slots + columns, &mut len);
+                last = Some((line, true));
+            }
+            if !cells.row.wrapped {
+                lines.push(index);
+            }
+            // The snapshot's continuation flag can outlive a reset wrap
+            // that left its row clean; the row above was rewritten then.
+            let continues = index > 0
+                && rows[index - 1].row.wrapped
+                && cells.row.wrap_continuation;
+            if !continues {
+                blanks.clear();
+            }
+            written.clear();
+            for (char_index, cell) in cells.chars.iter().enumerate() {
+                if cell.class != Class::Text {
+                    blanks.push((index, char_index));
+                    written.push(len);
+                    continue;
+                }
+                for (source, source_index) in blanks.drain(..) {
+                    // Blanks written after a later row's line break lead
+                    // the row after that break.
+                    let target = match last {
+                        Some((row, closed))
+                            if source < row || (source == row && closed) =>
+                        {
+                            let row = if closed { row + 1 } else { row };
+                            debug_assert_eq!(
+                                plans[row].own, 0,
+                                "carried blanks lead their row"
+                            );
+                            plans[row].carried += 1;
+                            row
+                        }
+                        _ => {
+                            debug_assert_eq!(
+                                usize::from(plans[source].own),
+                                source_index,
+                                "a row's characters are written in order"
+                            );
+                            plans[source].own = count(source_index + 1);
+                            source
+                        }
+                    };
+                    let column = rows[source].chars[source_index].column;
+                    write(source * slots + column, &mut len);
+                    last = Some((target, false));
+                }
+                plans[index].own = count(char_index + 1);
+                write(index * slots + cell.column, &mut len);
+                last = Some((index, false));
+                written.push(len);
+            }
+            let row_end = written.last().copied().unwrap_or(row_start);
+            for column in 0..columns {
+                ends[index * columns + column] = if column < first_text {
+                    row_start
+                } else {
+                    match cells.columns.get(column) {
+                        Some(ColumnCell::Char(at) | ColumnCell::Tail(at)) => {
+                            written[*at]
+                        }
+                        Some(ColumnCell::Head) | None => row_end,
+                    }
+                };
+            }
+        }
+        let mut next = len;
+        for start in starts.iter_mut().rev() {
+            next = next.min(*start);
+            *start = next;
+        }
+        Self {
+            plans,
+            len,
+            columns,
+            starts,
+            ends,
+        }
+    }
+
+    /// Where Copy's text of a selection starting at displayed cell
+    /// (`column`, `row`) starts. Ghostty starts a selection on a spacer at
+    /// its wide character, and skips the row of one starting on a spacer
+    /// head.
+    fn start(&self, rows: &[Rc<RowCells>], column: usize, row: usize) -> usize {
+        let slots = self.columns + 1;
+        let slot = match rows[row].columns.get(column) {
+            None => self.columns,
+            Some(ColumnCell::Char(at) | ColumnCell::Tail(at)) => {
+                rows[row].chars[*at].column
+            }
+            Some(ColumnCell::Head) if column == 0 => 0,
+            Some(ColumnCell::Head) => {
+                return self
+                    .starts
+                    .get((row + 1) * slots)
+                    .map_or(self.len, |start| *start);
+            }
+        };
+        self.starts[row * slots + slot]
+    }
+
+    /// Where Copy's text of a selection ending at displayed cell
+    /// (`column`, `row`) ends. Ghostty moves an end on a spacer head onto
+    /// the wide character that wrapped to the next row.
+    fn end(&self, rows: &[Rc<RowCells>], column: usize, row: usize) -> usize {
+        let column = column.min(self.columns - 1);
+        if let Some(ColumnCell::Head) = rows[row].columns.get(column)
+            && row + 1 < rows.len()
+        {
+            return self.ends[(row + 1) * self.columns];
+        }
+        self.ends[row * self.columns + column]
     }
 }
 
-/// For each displayed row, whether it soft-wraps into a logical line that
-/// has text on a later displayed row, so Copy keeps its trailing blanks.
-/// Only a row after a wrapped one is scanned.
-fn continuing_rows(rows: &[Arc<TerminalRow>], columns: usize) -> Vec<bool> {
-    let mut continues = vec![false; rows.len()];
-    for index in (0..rows.len().saturating_sub(1)).rev() {
-        continues[index] = rows[index].wrapped
-            && (continues[index + 1] || has_text(&rows[index + 1], columns));
-    }
-    continues
+fn count(characters: usize) -> u16 {
+    u16::try_from(characters).unwrap_or(u16::MAX)
 }
 
-fn has_text(row: &TerminalRow, columns: usize) -> bool {
-    row.cells
-        .iter()
-        .take(columns)
-        .any(|cell| !cell.style.wide_spacer && !is_blank(cell.text.as_str()))
-}
-
-/// The part of `range` on the displayed rows, as model positions. Its end
-/// moves back to where Copy's text of the range ends, after the last
-/// character that is not blank; a range Copy would copy nothing from is
-/// none, so the caret stands in for it.
+/// The part of `range` on the displayed rows, as document indices: Copy's
+/// text of the range, or of the part a range leaving the displayed rows
+/// has on them. A range Copy would copy nothing from is none, so the caret
+/// stands in for it.
 fn selection(
     range: BufferRange,
     snapshot: &TerminalSnapshot,
-    texts: &[Rc<RowText>],
-    columns: u16,
-) -> Option<(ModelPosition, ModelPosition)> {
-    let rows = texts.len();
-    if rows == 0 {
+    rows: &[Rc<RowCells>],
+    document: &Document,
+) -> Option<(usize, usize)> {
+    if rows.is_empty() || document.columns == 0 {
         return None;
     }
     // Snapshot row `r` is `bottom_offset + (rows - 1 - r)` rows above the
@@ -520,71 +856,20 @@ fn selection(
     let row_of =
         |point: BufferPoint| last_row.checked_sub(point.rows_from_live_bottom);
     let start = match row_of(range.start) {
-        Some(row) if row < rows => {
-            let text = &texts[row];
-            let character = column_character(
-                &text.starts,
-                range.start,
-                columns,
-                text.text_len,
-            );
-            (row, character)
+        Some(row) if row < rows.len() => {
+            document.start(rows, usize::from(range.start.column), row)
         }
         Some(_) => return None,
-        None => (0, 0),
+        None => 0,
     };
-    let (mut row, mut character) = match row_of(range.end) {
+    let end = match row_of(range.end) {
         None => return None,
-        Some(row) if row < rows => {
-            let text = &texts[row];
-            let character = column_character(
-                &text.text_ends,
-                range.end,
-                columns,
-                text.text_end,
-            );
-            (row, character)
+        Some(row) if row < rows.len() => {
+            document.end(rows, usize::from(range.end.column), row)
         }
-        Some(_) => (rows - 1, texts[rows - 1].text_end),
+        Some(_) => document.len,
     };
-    // Blank rows at the end add nothing to Copy's text, nor do the
-    // newlines before them.
-    while character == 0 && row > start.0 {
-        row -= 1;
-        character = texts[row].text_end;
-    }
-    let end = (row, character);
-    if end <= start {
-        return None;
-    }
-    let position = |(row, character): (usize, usize)| {
-        model_position(
-            u16::try_from(row).unwrap_or(u16::MAX),
-            &texts[row],
-            character,
-        )
-    };
-    Some((position(start), position(end)))
-}
-
-/// The character `point`'s column maps to in `characters`, or `past` for a
-/// column past the displayed ones.
-fn column_character(
-    characters: &[u16],
-    point: BufferPoint,
-    columns: u16,
-    past: usize,
-) -> usize {
-    if point.column >= columns {
-        return past;
-    }
-    usize::from(characters[usize::from(point.column)])
-}
-
-/// A cell Copy trims: an empty cell or a space. Any other character,
-/// another space character included, is text.
-fn is_blank(text: &str) -> bool {
-    text.is_empty() || text == " "
+    (start < end).then_some((start, end))
 }
 
 /// A character that separates words.
@@ -595,9 +880,6 @@ fn is_space(text: &str) -> bool {
 /// The longest prefix of `text` that AccessKit's `u8` character length can
 /// hold. Only a cluster of dozens of combining marks is longer.
 fn character(text: &str) -> &str {
-    if text.is_empty() {
-        return " ";
-    }
     if u8::try_from(text.len()).is_ok() {
         return text;
     }
@@ -608,6 +890,59 @@ fn character(text: &str) -> &str {
     &text[..end]
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "column counts fit an f32 exactly"
+)]
+fn row_cells(
+    row: &Arc<TerminalRow>,
+    columns: u16,
+    cell_width: f32,
+    clip_width: f32,
+) -> RowCells {
+    let clip = |x: f32, width: f32| width.min(clip_width - x).max(0.0);
+    let columns = usize::from(columns).min(row.cells.len());
+    let mut chars: Vec<CellChar> = Vec::with_capacity(columns);
+    let mut text = String::new();
+    let mut kinds = Vec::with_capacity(columns);
+    let mut first_text = None;
+    for (column, cell) in row.cells.iter().take(columns).enumerate() {
+        if cell.style.wide_spacer {
+            let tail = column > 0 && row.cells[column - 1].style.wide;
+            kinds.push(match chars.len().checked_sub(1) {
+                Some(wide) if tail => ColumnCell::Tail(wide),
+                _ => ColumnCell::Head,
+            });
+            continue;
+        }
+        let class = Class::of(&cell.text);
+        if class != Class::Empty && first_text.is_none() {
+            first_text = Some(column);
+        }
+        let start = text.len();
+        if class == Class::Text {
+            text.push_str(character(cell.text.as_str()));
+        }
+        let x = cell_width * column as f32;
+        let cells = if cell.style.wide { 2.0 } else { 1.0 };
+        kinds.push(ColumnCell::Char(chars.len()));
+        chars.push(CellChar {
+            column,
+            class,
+            text: start..text.len(),
+            x,
+            width: clip(x, cell_width * cells),
+        });
+    }
+    RowCells {
+        row: Arc::clone(row),
+        chars,
+        text,
+        columns: kinds.into(),
+        first_text,
+    }
+}
+
 /// One character of a row and where it is drawn, relative to the row.
 struct Character<'a> {
     text: &'a str,
@@ -615,96 +950,42 @@ struct Character<'a> {
     width: f32,
 }
 
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "column counts fit an f32 exactly"
-)]
 fn row_text(
-    row: &Arc<TerminalRow>,
-    columns: u16,
+    cells: &RowCells,
+    plan: Plan,
     cell_width: f32,
     clip_width: f32,
-    key: RowKey,
 ) -> RowText {
-    let clip = |x: f32, width: f32| width.min(clip_width - x).max(0.0);
-    let mut characters: Vec<Character<'_>> = Vec::new();
-    let columns = usize::from(columns).min(row.cells.len());
-    let mut starts = Vec::with_capacity(columns);
-    let mut text_ends = Vec::with_capacity(columns);
-    // Characters up to and including the last that is not blank.
-    let mut text_end = 0;
-    for (column, cell) in row.cells.iter().take(columns).enumerate() {
-        let index = characters.len();
-        if cell.style.wide_spacer {
-            // The tail of a wide character selects it; a spacer head, left
-            // at the last column by a wide character that wrapped, holds
-            // none.
-            let wide =
-                index > 0 && column > 0 && row.cells[column - 1].style.wide;
-            if wide {
-                starts.push(index - 1);
-            } else {
-                starts.push(index);
-            }
-            text_ends.push(text_end);
-            continue;
+    let mut characters: Vec<Character<'_>> = Vec::with_capacity(
+        usize::from(plan.carried) + usize::from(plan.own) + 1,
+    );
+    characters.extend((0..plan.carried).map(|_| Character {
+        text: " ",
+        x: 0.0,
+        width: 0.0,
+    }));
+    characters.extend((0..usize::from(plan.own)).map(|index| {
+        let cell = &cells.chars[index];
+        Character {
+            text: cells.character(index),
+            x: cell.x,
+            width: cell.width,
         }
-        let x = cell_width * column as f32;
-        let cells = if cell.style.wide { 2.0 } else { 1.0 };
-        let text = character(cell.text.as_str());
-        characters.push(Character {
-            text,
-            x,
-            width: clip(x, cell_width * cells),
-        });
-        if !is_blank(text) {
-            text_end = index + 1;
-        }
-        starts.push(index);
-        text_ends.push(text_end);
-    }
-    // A line that continues with text keeps its blanks, as Copy writes
-    // them as spaces once that text follows.
-    if !key.continues {
-        characters.truncate(text_end);
-    }
-    let mut text_len = characters.len();
-    let text_right = characters
-        .last()
-        .map_or(0.0, |character| character.x + character.width);
-    if key.last {
-        if characters.is_empty() {
-            characters.push(Character {
-                text: " ",
-                x: 0.0,
-                width: clip(0.0, cell_width),
-            });
-            text_len = 1;
-        }
-    } else if !row.wrapped {
+    }));
+    if plan.newline {
+        let right = characters
+            .last()
+            .map_or(0.0, |character| character.x + character.width);
         characters.push(Character {
             text: "\n",
-            x: text_right.min(clip_width),
-            width: clip(text_right, cell_width),
+            x: right.min(clip_width),
+            width: cell_width.min(clip_width - right).max(0.0),
         });
-    } else if characters.is_empty() {
-        // A soft-wrapped row of blanks still needs a character.
-        characters.push(Character {
-            text: " ",
-            x: 0.0,
-            width: clip(0.0, cell_width),
-        });
-        text_len = 1;
     }
-    let clamp =
-        |index: usize| u16::try_from(index.min(text_len)).unwrap_or(u16::MAX);
     RowText {
-        row: Arc::clone(row),
+        row: Arc::clone(&cells.row),
+        len: characters.len(),
         segments: segments(&characters),
-        starts: starts.into_iter().map(clamp).collect(),
-        text_ends: text_ends.into_iter().map(clamp).collect(),
-        text_end,
-        text_len,
     }
 }
 
@@ -751,13 +1032,12 @@ fn segments(characters: &[Character<'_>]) -> Vec<Segment> {
         });
     }
     debug_assert!(
-        !segments.is_empty()
-            && segments.iter().all(|segment| {
-                !segment.lengths.is_empty()
-                    && segment.lengths.len() <= RUN_LIMIT
-                    && segment.lengths.len() == segment.positions.len()
-                    && segment.lengths.len() == segment.widths.len()
-            }),
+        segments.iter().all(|segment| {
+            !segment.lengths.is_empty()
+                && segment.lengths.len() <= RUN_LIMIT
+                && segment.lengths.len() == segment.positions.len()
+                && segment.lengths.len() == segment.widths.len()
+        }),
         "every run holds 1 to {RUN_LIMIT} characters"
     );
     segments

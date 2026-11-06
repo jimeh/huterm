@@ -319,7 +319,7 @@ fn live_scrolling_reuses_shifted_rows_before_and_at_the_scrollback_limit() {
         let text = |row: &TerminalRow| {
             row.cells
                 .iter()
-                .map(|cell| cell.text.as_str())
+                .map(|cell| cell.text.displayed())
                 .collect::<String>()
         };
         assert_eq!(text(&after.rows[1]), "A       ", "{limit:?}");
@@ -343,7 +343,7 @@ fn screen_text(snapshot: &TerminalSnapshot) -> String {
         .map(|row| {
             row.cells
                 .iter()
-                .map(|cell| cell.text.as_str())
+                .map(|cell| cell.text.displayed())
                 .collect::<String>()
                 .trim_end()
                 .to_owned()

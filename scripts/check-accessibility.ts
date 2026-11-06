@@ -56,14 +56,16 @@ export function paintedCursor(state: State): Rect {
 export type Row = { text: string; wraps?: boolean };
 
 /**
- * The text AXRangeForLine reports for each displayed row: its text, then a
- * newline unless it soft-wraps or is the last row; an empty last row is one
- * space.
+ * The text AXRangeForLine reports for each displayed row up to the last
+ * with text, as Copy writes the grid: the row's text, trimmed unless it
+ * soft-wraps, then a newline unless it soft-wraps or is that last row. The
+ * empty rows after it have no line.
  */
 export function documentLines(rows: Row[]): string[] {
-  return rows.map(({ text, wraps }, index) => {
-    if (index === rows.length - 1) return text || " ";
-    return wraps ? text : `${text}\n`;
+  const last = rows.findLastIndex(({ text }) => text.trimEnd() !== "");
+  return rows.slice(0, last + 1).map(({ text, wraps }, index) => {
+    if (wraps) return text;
+    return index === last ? text.trimEnd() : `${text.trimEnd()}\n`;
   });
 }
 
@@ -218,9 +220,9 @@ async function main(executableArgument: string, probeArgument: string): Promise<
       const [x, y, width, height] = cellRect(value, column, row);
       return [x + width / 2, y + height / 2] as [number, number];
     });
-    // The first and last rows, and every soft-wrapped row and the row it
-    // wraps into.
-    const lines = [...new Set([0, rows.length - 1, ...rows.flatMap(({ wraps }, index) => wraps ? [index, index + 1] : [])])];
+    // The first and last lines, and every soft-wrapped row and the row it
+    // wraps into: up to the last line, displayed row `r` is line `r`.
+    const lines = [...new Set([0, expectedLines.length - 1, ...rows.flatMap(({ wraps }, index) => wraps ? [index, index + 1] : [])])];
     const read = probe(pid, centers, lines);
     if (read.role !== "AXTextArea") fail(`${label}: the focused element is not a text area`, read);
     if (read.value !== document) fail(`${label}: AXValue differs from the written rows`, { value: read.value, document });

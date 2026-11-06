@@ -15,6 +15,12 @@ const ASCII: &str = "\0\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\
 
 /// Text of one terminal cell, including combining characters.
 ///
+/// A cell that holds no text, such as one never written, one erased, one
+/// left behind by cursor movement, or a wide character's spacer, is
+/// [`CellText::EMPTY`]. A written space is [`CellText::BLANK`]. Both look the
+/// same on screen, but Copy tells them apart: Ghostty's formatter treats a
+/// row part that holds no text differently from one holding a space.
+///
 /// Single scalars and short grapheme clusters are stored inline. Only clusters
 /// longer than the inline capacity allocate. Text that fits inline is always
 /// stored inline with zeroed padding, so equal text has one representation and
@@ -33,7 +39,13 @@ enum Repr {
 }
 
 impl CellText {
-    /// A single space, used for cells without text.
+    /// A cell with no text. [`CellText::displayed`] shows it as a space.
+    pub const EMPTY: Self = Self(Repr::Inline {
+        len: 0,
+        bytes: [0; INLINE_CAPACITY],
+    });
+
+    /// A written space.
     pub const BLANK: Self = Self::inline_ascii(b' ');
 
     const fn inline_ascii(byte: u8) -> Self {
@@ -74,10 +86,16 @@ impl CellText {
         }
     }
 
-    /// Reports whether the cell has no text.
+    /// Reports whether the cell has no text: [`CellText::EMPTY`].
     #[must_use]
     pub fn is_empty(&self) -> bool {
         matches!(self.0, Repr::Inline { len: 0, .. })
+    }
+
+    /// The text as the screen shows it: a cell with no text shows a space.
+    #[must_use]
+    pub fn displayed(&self) -> &str {
+        if self.is_empty() { " " } else { self.as_str() }
     }
 
     /// Returns the text's only scalar value, if it has exactly one.
@@ -209,6 +227,18 @@ mod tests {
         }
         assert!(CellText::from("").is_empty());
         assert!(!CellText::BLANK.is_empty());
+    }
+
+    #[test]
+    fn empty_is_distinct_from_a_written_space_but_displays_as_one() {
+        assert_eq!(CellText::from(""), CellText::EMPTY);
+        assert_ne!(CellText::EMPTY, CellText::BLANK);
+        assert_eq!(CellText::EMPTY.as_str(), "");
+        assert_eq!(CellText::EMPTY.as_char(), None);
+        assert_eq!(CellText::EMPTY.displayed(), " ");
+        assert_eq!(CellText::BLANK.displayed(), " ");
+        assert_eq!(CellText::from("e\u{301}").displayed(), "e\u{301}");
+        assert_ne!(hash(&CellText::EMPTY), hash(&CellText::BLANK));
     }
 
     #[test]

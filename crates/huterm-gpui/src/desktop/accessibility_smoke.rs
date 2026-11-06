@@ -193,7 +193,7 @@ fn write_view(output: &mut String, view: &TerminalView, window: &Window) {
         return;
     };
     let screen_text: String =
-        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        snapshot.cells().map(|cell| cell.text.displayed()).collect();
     let Ok((left, top)) = view_origin_on_screen(window) else {
         output.push_str("ready=false\nerror=no native window\n");
         return;

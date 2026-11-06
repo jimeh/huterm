@@ -168,7 +168,7 @@ fn link_label(row: &TerminalRow) -> Option<usize> {
     let text = |range: std::ops::Range<usize>| -> String {
         row.cells[range]
             .iter()
-            .map(|cell| cell.text.as_str())
+            .map(|cell| cell.text.displayed())
             .collect()
     };
     let start = usize::from(LINK_COLUMN);
@@ -353,7 +353,7 @@ fn scroll_clear_over_compressed_history_matches_the_twin() {
                 .position(|row| {
                     row.cells[..7]
                         .iter()
-                        .map(|cell| cell.text.as_str())
+                        .map(|cell| cell.text.displayed())
                         .collect::<String>()
                         == "styled "
                 })

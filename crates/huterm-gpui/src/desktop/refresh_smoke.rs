@@ -107,7 +107,7 @@ fn state(cx: &mut App) -> anyhow::Result<State> {
                 .snapshot
                 .as_ref()
                 .map_or_else(String::new, |snapshot| {
-                    snapshot.cells().map(|cell| cell.text.as_str()).collect()
+                    snapshot.cells().map(|cell| cell.text.displayed()).collect()
                 });
         Ok(State {
             title: terminal.title.clone(),

@@ -126,7 +126,7 @@ fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
     let initial = loop {
         let snapshot = client.read_snapshot().unwrap();
         let text: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         if text.contains("READY") {
             break snapshot;
         }
@@ -164,7 +164,7 @@ fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
         snapshot.rows[0]
             .cells
             .iter()
-            .map(|cell| cell.text.as_str())
+            .map(|cell| cell.text.displayed())
             .collect()
     };
     let first = settle(&mut controller);
@@ -185,7 +185,7 @@ fn height_resize_round_trips_keep_the_top_visible_row_while_scrolled() {
         assert!(
             snapshot
                 .cells()
-                .map(|cell| cell.text.as_str())
+                .map(|cell| cell.text.displayed())
                 .collect::<String>()
                 .contains("READY")
         );

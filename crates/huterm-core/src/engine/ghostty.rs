@@ -1183,16 +1183,17 @@ fn refresh_flags(
         .map_err(|_| RuntimeError::Invariant("viewport row out of range"))?;
     let live = terminal.grid_ref(Point::viewport(0, y))?.row()?;
     let wrapped = live.wrapped()?;
+    let wrap_continuation = live.wrap_continuation()?;
     let prompt = row_prompt(live.semantic_prompt()?);
-    Ok(
-        (wrapped != retained.wrapped || prompt != retained.prompt).then(|| {
-            TerminalRow {
-                cells: retained.cells.clone(),
-                wrapped,
-                prompt,
-            }
-        }),
-    )
+    Ok((wrapped != retained.wrapped
+        || wrap_continuation != retained.wrap_continuation
+        || prompt != retained.prompt)
+        .then(|| TerminalRow {
+            cells: retained.cells.clone(),
+            wrapped,
+            wrap_continuation,
+            prompt,
+        }))
 }
 
 fn row_prompt(mark: RowSemanticPrompt) -> RowPrompt {
@@ -1213,6 +1214,7 @@ fn extract_row(
 ) -> Result<(), RuntimeError> {
     let hints = row.row()?;
     out.wrapped = hints.wrapped()?;
+    out.wrap_continuation = hints.wrap_continuation()?;
     out.prompt = row_prompt(hints.semantic_prompt()?);
     let out = &mut out.cells;
     out.clear();
@@ -1250,23 +1252,25 @@ fn extract_row(
                 ),
                 style.background,
             ),
+            // Ghostty's formatter treats a cell as text when its codepoint
+            // is not zero, so a written space is text and these are not.
             CellContent::Grapheme => {
                 cells.graphemes_utf8(grapheme)?;
                 let text = if grapheme.is_empty() {
-                    CellText::BLANK
+                    CellText::EMPTY
                 } else {
                     CellText::new(&String::from_utf8_lossy(grapheme))
                 };
                 (text, style.background)
             }
             CellContent::BackgroundPalette => (
-                CellText::BLANK,
+                CellText::EMPTY,
                 StyleColor::Palette(cell.background_palette()?),
             ),
             CellContent::BackgroundRgb => {
-                (CellText::BLANK, StyleColor::Rgb(cell.background_rgb()?))
+                (CellText::EMPTY, StyleColor::Rgb(cell.background_rgb()?))
             }
-            _ => (CellText::BLANK, style.background),
+            _ => (CellText::EMPTY, style.background),
         };
         let mut foreground = resolver.foreground(style.foreground);
         let mut background = resolver.background(background);

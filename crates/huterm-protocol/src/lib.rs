@@ -775,7 +775,8 @@ pub struct CellStyle {
 /// One cell in a terminal snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cell {
-    /// Cell text, including combining characters.
+    /// Cell text, including combining characters; [`CellText::EMPTY`] for a
+    /// cell that holds none, spacers included.
     pub text: CellText,
     /// Semantic foreground color.
     pub foreground: CellColor,
@@ -909,6 +910,10 @@ pub struct TerminalRow {
     /// The row soft-wraps into the next row: its text continues there
     /// without a line break, so copying joins the two rows.
     pub wrapped: bool,
+    /// The row continues a soft-wrapped row. It usually matches the
+    /// previous row's `wrapped`, but inserting or deleting lines clears it
+    /// on the rows that move, and Copy reads it.
+    pub wrap_continuation: bool,
     /// The shell integration (OSC 133) prompt mark of the row.
     pub prompt: RowPrompt,
 }

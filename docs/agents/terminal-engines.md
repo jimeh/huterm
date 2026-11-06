@@ -138,14 +138,26 @@ defaults, restores the defaults before rendering, and compares effective colors
 before consuming damage. This keeps explicit overrides and cached row colors
 coherent without forcing unrelated rows to rebuild.
 
-Snapshot rows carry each row's soft-wrap flag and OSC 133 prompt mark. The
-render state copies a row's flags only when it rebuilds a dirty row. A soft
+Snapshot rows carry each row's soft-wrap and wrap-continuation flags and its
+OSC 133 prompt mark. The continuation flag usually equals the previous row's
+wrap flag, but IL and DL clear both flags on the rows they move, so a moved row
+stops continuing a row above that still wraps; Copy reads each row's own flag.
+A cell with no text, whether never written, skipped, erased, a background
+alone, or a spacer, is `CellText::EMPTY`, and a written space is
+`CellText::BLANK`, matching Ghostty's `Cell.hasText` (a nonzero codepoint):
+Copy treats a row part that holds no text differently from one holding a
+space. Clients that draw or print cells use `CellText::displayed`, which shows
+an empty cell as a space. The render state copies a row's flags only when it
+rebuilds a dirty row. A soft
 wrap dirties the row it marks, because the cursor leaves that row, but an OSC
 133 mark on the cursor row leaves it clean with a stale copy. After any
 semantic prompt effect, the next snapshot therefore reads the live grid's
-flags for clean rows and rebuilds a row whose flags changed. `RowMatcher`
-compares flags as well as cells, so a row that becomes wrapped never reuses
-its unwrapped `Arc`. Contract tests in both crates pin this behavior.
+flags for clean rows and rebuilds a row whose flags changed. Ghostty's
+`cursorResetWrap` (ICH, DCH, ECH, EL) also clears the next row's continuation
+without dirtying it, so a client trusts a continuation only while the row
+above still wraps. `RowMatcher` compares flags as well as cells, so a row that
+becomes wrapped never reuses its unwrapped `Arc`. Contract tests in both
+crates pin this behavior.
 
 Ghostty resolves a `Point::Viewport` grid reference from the viewport's own
 position, and with the `page-list-pin-nearest` patch a `Point::Screen`

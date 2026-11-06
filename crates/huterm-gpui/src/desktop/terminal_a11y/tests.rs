@@ -28,9 +28,19 @@ fn cell(text: &str, style: CellStyle) -> Cell {
     }
 }
 
-/// One cell per grapheme, padded with blanks to `columns`. The graphemes
-/// in [`WIDE`] take two cells; `|` at the last column is a spacer head.
+/// One cell per grapheme, padded with empty cells to `columns`. A space is
+/// a written space and `·` an empty cell. The graphemes in [`WIDE`] take
+/// two cells; `|` is a spacer head.
 fn cells(text: &str, columns: u16) -> Vec<Cell> {
+    let spacer = || {
+        cell(
+            "",
+            CellStyle {
+                wide_spacer: true,
+                ..CellStyle::default()
+            },
+        )
+    };
     let mut cells = Vec::new();
     for grapheme in text.graphemes(true) {
         if WIDE.contains(&grapheme) {
@@ -41,27 +51,17 @@ fn cells(text: &str, columns: u16) -> Vec<Cell> {
                     ..CellStyle::default()
                 },
             ));
-            cells.push(cell(
-                " ",
-                CellStyle {
-                    wide_spacer: true,
-                    ..CellStyle::default()
-                },
-            ));
+            cells.push(spacer());
         } else if grapheme == "|" {
-            cells.push(cell(
-                " ",
-                CellStyle {
-                    wide_spacer: true,
-                    ..CellStyle::default()
-                },
-            ));
+            cells.push(spacer());
+        } else if grapheme == "·" {
+            cells.push(cell("", CellStyle::default()));
         } else {
             cells.push(cell(grapheme, CellStyle::default()));
         }
     }
     assert!(cells.len() <= usize::from(columns), "{text:?} overflows");
-    cells.resize_with(usize::from(columns), || cell(" ", CellStyle::default()));
+    cells.resize_with(usize::from(columns), || cell("", CellStyle::default()));
     cells
 }
 
@@ -85,7 +85,18 @@ fn snapshot(columns: u16, lines: &[&str]) -> TerminalSnapshot {
     snapshot_of(columns, rows)
 }
 
-fn snapshot_of(columns: u16, rows: Vec<Arc<TerminalRow>>) -> TerminalSnapshot {
+/// A snapshot of `rows`, each continuing the row above when that one
+/// soft-wraps, as Ghostty marks them.
+fn snapshot_of(
+    columns: u16,
+    mut rows: Vec<Arc<TerminalRow>>,
+) -> TerminalSnapshot {
+    for index in 1..rows.len() {
+        let continues = rows[index - 1].wrapped;
+        if rows[index].wrap_continuation != continues {
+            Arc::make_mut(&mut rows[index]).wrap_continuation = continues;
+        }
+    }
     TerminalSnapshot {
         terminal_id: TerminalId::new(1),
         generation: 1,
@@ -436,15 +447,20 @@ fn wide_characters_span_their_spacer_and_spacer_heads_add_nothing() {
 }
 
 #[test]
-fn blank_cells_and_rows_keep_inner_blanks_and_never_leave_a_run_empty() {
-    let model = build(&snapshot(6, &["a  b", "", "c", ""]));
-    assert_eq!(text(&model), "a  b\n\nc\n ");
-    assert_eq!(lines(&model), ["a  b\n", "\n", "c\n", " "]);
+fn blank_rows_are_line_breaks_and_rows_without_text_have_no_run() {
+    let model = build(&snapshot(6, &["a··b", "", "c", ""]));
+    assert_eq!(text(&model), "a  b\n\nc", "Copy drops what ends the grid");
+    assert_eq!(lines(&model), ["a  b\n", "\n", "c"]);
+    assert_eq!(model.runs.len(), 3, "the empty last row has no run");
     // The blank row's newline sits at its start, one cell wide.
     assert_eq!(bounds_of(&model, 5, 6), cell_rect(0, 1, 1.0));
-    // An empty last row is one space at its first cell.
-    assert_eq!(bounds_of(&model, 8, 9), cell_rect(0, 3, 1.0));
     assert_eq!(model.runs[1].node.word_starts(), [] as [u8; 0]);
+    // An empty grid has no runs, so no selection, but keeps its caret.
+    let empty = with_cursor(snapshot(6, &["", ""]), 0, 0, CursorShape::Block);
+    let model = build(&empty);
+    assert_eq!(model.runs, []);
+    assert_eq!(model.selection, None);
+    assert!(model.caret.is_some());
 }
 
 #[test]
@@ -824,10 +840,14 @@ fn a_selection_ends_where_copy_ends() {
     );
     // So is an inner blank run at the end of a selection.
     assert_eq!(select_cells(&grid, (0, 1), (2, 1)).unwrap().2, "a");
-    // An end in a row's leading blanks ends after the text before it, and
-    // drops the newline too.
-    assert_eq!(select_cells(&grid, (3, 1), (1, 2)).unwrap().2, "b");
-    assert_eq!(select_cells(&grid, (6, 0), (2, 2)).unwrap().2, "beta\na  b");
+    // An end in a later row's leading spaces keeps the newline before
+    // them: written spaces are text to the row, so Copy writes the
+    // newline before it trims them.
+    assert_eq!(select_cells(&grid, (3, 1), (1, 2)).unwrap().2, "b\n");
+    assert_eq!(
+        select_cells(&grid, (6, 0), (2, 2)).unwrap().2,
+        "beta\na  b\n"
+    );
     // Into the empty last row: its placeholder space is not text.
     assert_eq!(select_cells(&grid, (0, 2), (11, 3)).unwrap().2, "   x");
     // Copy copies nothing from the empty last row, or from blanks alone,
@@ -839,10 +859,44 @@ fn a_selection_ends_where_copy_ends() {
         select_cells(&with_cursor, (0, 3), (5, 3)),
         Some((1, 1, String::new()))
     );
+    // An end in leading empty cells, or on an empty row, drops the newline
+    // too: Copy writes a line break only once text follows it.
+    let empty = snapshot(12, &["a··b", "···x", "", "y"]);
+    assert_eq!(select_cells(&empty, (3, 0), (1, 1)).unwrap().2, "b");
+    assert_eq!(
+        select_cells(&empty, (0, 0), (5, 2)).unwrap().2,
+        "a  b\n   x"
+    );
+    assert_eq!(select_cells(&empty, (0, 1), (0, 3)).unwrap().2, "   x\n\ny");
+    // A start in a hard row's trailing blanks starts at its newline.
+    assert_eq!(select_cells(&empty, (6, 1), (0, 3)).unwrap().2, "\n\ny");
     // A selection end in a wrapped row's kept blanks still trims them.
     let wrapped = snapshot(4, &["a\\", "b"]);
     assert_eq!(select_cells(&wrapped, (0, 0), (2, 0)).unwrap().2, "a");
     assert_eq!(select_cells(&wrapped, (0, 0), (0, 1)).unwrap().2, "a   b");
+}
+
+#[test]
+fn a_row_of_written_spaces_keeps_the_newline_before_it() {
+    // Ghostty's formatter writes pending line breaks on reaching a row
+    // part with text, and a written space is text; an empty row is not.
+    let spaces = snapshot(4, &["a", "    ", "b"]);
+    assert_eq!(text(&build(&spaces)), "a\n\nb");
+    assert_eq!(select_cells(&spaces, (0, 0), (0, 1)).unwrap().2, "a\n");
+    let empty = snapshot(4, &["a", "", "b"]);
+    assert_eq!(text(&build(&empty)), "a\n\nb");
+    assert_eq!(select_cells(&empty, (0, 0), (0, 1)).unwrap().2, "a");
+}
+
+#[test]
+fn an_end_on_a_spacer_head_takes_the_wide_character_that_wrapped() {
+    // `a`, two empty cells, then a spacer head: the wide character
+    // wrapped to the next row.
+    let grid = snapshot(4, &["a··|\\", "漢"]);
+    assert_eq!(text(&build(&grid)), "a  漢");
+    assert_eq!(select_cells(&grid, (0, 0), (3, 0)).unwrap().2, "a  漢");
+    // A start on the spacer head skips its row.
+    assert_eq!(select_cells(&grid, (3, 0), (1, 1)).unwrap().2, "漢");
 }
 
 struct Ignore;

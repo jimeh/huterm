@@ -1,10 +1,12 @@
 //! The terminal's accessibility node over a real terminal: the tree GPUI
 //! reports, the publication throttle, and agreement with Copy.
 
-use huterm_protocol::BufferPoint;
+use huterm_protocol::{BufferPoint, BufferRange};
 
 use super::super::terminal_a11y::tests::{selected, text};
-use super::super::terminal_a11y::{Model, PUBLISH_INTERVAL};
+use super::super::terminal_a11y::{
+    Inputs, Model, ModelBuilder, PUBLISH_INTERVAL,
+};
 use super::*;
 
 /// The window's last accessibility tree dump.
@@ -98,7 +100,7 @@ fn with_first_row(
     for (index, cell) in row.cells.iter_mut().enumerate() {
         cell.text = line
             .get(index..=index)
-            .map_or(huterm_protocol::CellText::BLANK, Into::into);
+            .map_or(huterm_protocol::CellText::EMPTY, Into::into);
     }
     snapshot.rows[0] = Arc::new(row);
     snapshot.revision += 1;
@@ -280,7 +282,7 @@ fn the_accessible_selection_reads_what_copy_copies(cx: &mut TestAppContext) {
         harness.wait_for(&format!("Copy's text for {what}"), |view, _| {
             view.selected_text.is_some()
                 && selected(&view.a11y.model()).is_some_and(
-                    |(start, end, _)| expected.is_empty() || start != end,
+                    |(start, end, _)| (start == end) == expected.is_empty(),
                 )
         });
         let (copied, accessible) = harness.read(|view, _| {
@@ -292,4 +294,284 @@ fn the_accessible_selection_reads_what_copy_copies(cx: &mut TestAppContext) {
         assert_eq!(copied, expected, "Copy's text for {what}");
         assert_eq!(accessible, copied, "{what}");
     }
+}
+
+/// A deterministic xorshift generator, so a failing selection reproduces.
+struct Xorshift(u64);
+
+impl Xorshift {
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        usize::try_from(self.0 % u64::try_from(bound).unwrap()).unwrap()
+    }
+}
+
+/// Screens for the 49 by 14 grid the harness requests whose Copy text
+/// exercises Ghostty's whitespace rules: written spaces and empty cells
+/// (left by CUF, EL, ECH, and a background erase), soft wraps at a space,
+/// at spaces, and at empty cells, blank rows inside and at the end, wide
+/// characters wrapping at the last column, combining marks, NBSP, U+3000,
+/// and rows that line deletion and insertion leave after a soft-wrapped
+/// one. Each puts `READY` on row 12, so rows after it stay empty.
+fn parity_fixtures() -> [(&'static str, String); 5] {
+    let run = |character: char, count: usize| {
+        std::iter::repeat_n(character, count).collect::<String>()
+    };
+    let ready = "\\033[13;1H";
+    [
+        (
+            "blanks",
+            format!(
+                "a\\n    \\nb\\033[3Cc   \\n\\n\\n  d  e\\n\\033[5Cf\\n\
+                 g\\302\\240\\nh\\343\\200\\200\\ne\\314\\201 \\314\\201x  \\n\
+                 {ready}"
+            ),
+        ),
+        (
+            "wraps",
+            format!(
+                "{} yy\\n{}    z\\n{}\\033[8Cvu\\n{}\\n{}{}q\\n{}\\033[1Cp{ready}",
+                run('x', 48),
+                run('x', 45),
+                run('w', 40),
+                run('t', 49),
+                run('s', 49),
+                run('r', 49),
+                run('o', 47),
+            ),
+        ),
+        (
+            "wide",
+            format!(
+                "a\\033[47C漢\\n\\033[48C漢\\nb\\033[46C漢\\n字字 字\\n🙂c\\n\
+                 c{}\\033[1C漢\\n\\033[47C字字{ready}",
+                run(' ', 46),
+            ),
+        ),
+        (
+            "erase",
+            format!(
+                "abcdefgh\\033[3D\\033[K\\nijklmnop\\033[4D\\033[2X\\n\
+                 \\033[41mqr\\033[3X\\033[0m\\033[3Cst\\n\
+                 \\033[42m\\033[K\\033[0muv\\n{h} world\\n\
+                 \\033[6;1H\\033[Mnext\\n{g} tail\\n\\033[8;1H\\033[L\
+                 \\033[10;1H\\033[1;31m\\033[7mz\\033[0m  \\033[1C{ready}",
+                h = run('h', 48),
+                g = run('g', 48),
+            ),
+        ),
+        ("rows", format!("$ ls\\n\\nfile one  \\n\\n\\n$ \\n{ready}")),
+    ]
+}
+
+/// Whether Copy's text of the selection from cell `start` through cell
+/// `end`, both (`column`, `row`), passes a row part with no text on a
+/// soft-wrapped row before its last row, after Ghostty moves a start on a
+/// spacer to its wide character, skips the row of a start on a spacer head,
+/// and moves an end on a spacer head to the next row. Ghostty writes such a
+/// part as a line break of its own, and blanks before it after that break,
+/// which no range of a document holding the grid's Copy text reads; see the
+/// terminal accessibility section of `docs/agents/desktop-client.md`.
+fn passes_a_wrapped_part_without_text(
+    snapshot: &TerminalSnapshot,
+    start: (usize, usize),
+    end: (usize, usize),
+) -> bool {
+    let cells = |row: usize| &snapshot.rows[row].cells;
+    let head = |(column, row): (usize, usize)| {
+        let cells = cells(row);
+        column > 0
+            && cells[column].style.wide_spacer
+            && !cells[column - 1].style.wide
+    };
+    let last = if head(end) && end.1 + 1 < snapshot.rows.len() {
+        end.1 + 1
+    } else {
+        end.1
+    };
+    (start.1..last).any(|row| {
+        let from = if row == start.1 {
+            if head(start) {
+                return false;
+            }
+            let (column, cells) = (start.0, cells(row));
+            if cells[column].style.wide_spacer {
+                column - 1
+            } else {
+                column
+            }
+        } else {
+            0
+        };
+        snapshot.rows[row].wrapped
+            && cells(row)[from..].iter().all(|cell| cell.text.is_empty())
+    })
+}
+
+/// What the parity check found.
+#[derive(Default)]
+struct Parity {
+    compared: usize,
+    /// Selections that pass a soft-wrapped row part with no text.
+    exempt: usize,
+    exempt_differing: usize,
+    mismatches: Vec<String>,
+}
+
+/// Selections of the screen `harness` shows, starting with the whole grid:
+/// `count` more with random ends.
+fn parity_ranges(
+    snapshot: &TerminalSnapshot,
+    random: &mut Xorshift,
+    count: usize,
+) -> Vec<BufferRange> {
+    let rows = usize::from(snapshot.size.rows);
+    let columns = usize::from(snapshot.size.columns);
+    let at = |column: usize, row: usize| BufferPoint {
+        rows_from_live_bottom: rows - 1 - row,
+        column: u16::try_from(column).unwrap(),
+    };
+    // Columns near both edges are where the fixtures put their blanks,
+    // wraps, and spacer heads.
+    let column = |random: &mut Xorshift| {
+        if random.below(2) == 0 {
+            random.below(columns)
+        } else {
+            let edge = random.below(8);
+            if random.below(2) == 0 {
+                edge
+            } else {
+                columns - 1 - edge
+            }
+        }
+    };
+    let mut ranges =
+        vec![BufferRange::ordered(at(0, 0), at(columns - 1, rows - 1))];
+    for _ in 0..count {
+        let start = at(column(random), random.below(rows));
+        let end = at(column(random), random.below(rows));
+        ranges.push(BufferRange::ordered(start, end));
+    }
+    ranges
+}
+
+/// Compares the accessible text of `ranges` on the screen `harness` shows
+/// with the runtime's Copy text of each.
+fn check_parity(
+    harness: &mut ViewHarness,
+    name: &str,
+    random: &mut Xorshift,
+    parity: &mut Parity,
+) {
+    const SELECTIONS: usize = 160;
+    let (snapshot, geometry, metrics, scale) = harness.read(|view, window| {
+        (
+            view.snapshot.clone().unwrap(),
+            view.grid_geometry(window),
+            view.metrics,
+            window.scale_factor(),
+        )
+    });
+    assert_eq!(snapshot.size, GridSize::clamped(49, 14), "{name}");
+    let ranges = parity_ranges(&snapshot, random, SELECTIONS);
+    let requests: Vec<_> = harness.update(|view, _, _| {
+        ranges
+            .iter()
+            .map(|range| {
+                view.viewer
+                    .request_selection(snapshot.generation, *range)
+                    .unwrap()
+            })
+            .collect()
+    });
+    let foreground = harness.cx.foreground_executor().clone();
+    let rows = usize::from(snapshot.size.rows);
+    let cell = |point: BufferPoint| {
+        (
+            usize::from(point.column),
+            rows - 1 - point.rows_from_live_bottom,
+        )
+    };
+    let mut builder = ModelBuilder::default();
+    for (index, (range, request)) in ranges.iter().zip(requests).enumerate() {
+        let copied = foreground
+            .block_test(request.recv())
+            .unwrap()
+            .expect("the snapshot's generation is current");
+        let model = builder.build(&Inputs {
+            snapshot: &snapshot,
+            geometry,
+            selection: Some(*range),
+            metrics,
+            scale,
+        });
+        let accessible = if index == 0 {
+            text(&model)
+        } else {
+            selected(&model)
+                .map(|(_, _, text)| text)
+                .unwrap_or_default()
+        };
+        parity.compared += 1;
+        if index > 0
+            && passes_a_wrapped_part_without_text(
+                &snapshot,
+                cell(range.start),
+                cell(range.end),
+            )
+        {
+            parity.exempt += 1;
+            parity.exempt_differing += usize::from(accessible != copied);
+        } else if accessible != copied {
+            parity.mismatches.push(format!(
+                "{name} {:?}..={:?}: copy {copied:?}, accessible \
+                 {accessible:?}",
+                cell(range.start),
+                cell(range.end),
+            ));
+        }
+    }
+}
+
+/// The convergence check for the accessible text: over real terminals, the
+/// document reads what Copy copies from the whole displayed grid, and
+/// every selection inside it reads what Copy copies from that selection,
+/// except one that passes a soft-wrapped row part with no text, which the
+/// document cannot hold (see [`passes_a_wrapped_part_without_text`]).
+#[gpui::test]
+fn the_accessible_text_matches_copy_for_random_selections(
+    cx: &mut TestAppContext,
+) {
+    let mut random = Xorshift(0x5eed_0a11_u64);
+    let mut parity = Parity::default();
+    for (name, fixture) in parity_fixtures() {
+        let mut harness = ViewHarness::new(cx, &text_fixture(&fixture, ""));
+        harness.wait_ready(MouseTracking::Disabled);
+        harness.wait_for("READY on row 12", |view, _| {
+            view.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.rows[12].cells[..5]
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .eq(["R", "E", "A", "D", "Y"])
+            })
+        });
+        check_parity(&mut harness, name, &mut random, &mut parity);
+    }
+    println!(
+        "A11Y_PARITY compared={} exempt={} exempt_differing={} \
+         mismatches={}",
+        parity.compared,
+        parity.exempt,
+        parity.exempt_differing,
+        parity.mismatches.len()
+    );
+    assert!(
+        parity.mismatches.is_empty(),
+        "{} of {} differ:\n{}",
+        parity.mismatches.len(),
+        parity.compared,
+        parity.mismatches.join("\n")
+    );
 }

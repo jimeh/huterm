@@ -798,8 +798,13 @@ pub(crate) mod row_data {
 
     /// Every key below, for tests that must cover them all.
     #[cfg(test)]
-    pub(crate) const KEYS: &[&str] =
-        &["WRAP", "GRAPHEME", "STYLED", "SEMANTIC_PROMPT"];
+    pub(crate) const KEYS: &[&str] = &[
+        "WRAP",
+        "WRAP_CONTINUATION",
+        "GRAPHEME",
+        "STYLED",
+        "SEMANTIC_PROMPT",
+    ];
 
     /// `GHOSTTY_ROW_DATA_WRAP`.
     #[derive(Debug)]
@@ -807,6 +812,16 @@ pub(crate) mod row_data {
 
     impl super::super::RowData for Wrap {
         const KEY: ffi::GhosttyRowData = ffi::GHOSTTY_ROW_DATA_WRAP;
+        type Out = bool;
+    }
+
+    /// `GHOSTTY_ROW_DATA_WRAP_CONTINUATION`.
+    #[derive(Debug)]
+    pub(crate) enum WrapContinuation {}
+
+    impl super::super::RowData for WrapContinuation {
+        const KEY: ffi::GhosttyRowData =
+            ffi::GHOSTTY_ROW_DATA_WRAP_CONTINUATION;
         type Out = bool;
     }
 

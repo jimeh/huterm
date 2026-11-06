@@ -872,7 +872,7 @@ fn read_state(cx: &mut App) -> String {
                 .map(|snapshot| {
                     snapshot
                         .cells()
-                        .map(|cell| cell.text.as_str())
+                        .map(|cell| cell.text.displayed())
                         .collect::<String>()
                         .replace('\n', " ")
                 })

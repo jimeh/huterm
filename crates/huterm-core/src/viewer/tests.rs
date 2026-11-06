@@ -82,7 +82,7 @@ fn sized_viewer(
 }
 
 fn text(snapshot: &TerminalSnapshot) -> String {
-    snapshot.cells().map(|cell| cell.text.as_str()).collect()
+    snapshot.cells().map(|cell| cell.text.displayed()).collect()
 }
 
 fn wait_for_text(
@@ -1654,7 +1654,7 @@ fn rows_text(snapshot: &TerminalSnapshot) -> Vec<String> {
         .rows
         .iter()
         .map(|row| {
-            let text = row.cells.iter().map(|cell| cell.text.as_str());
+            let text = row.cells.iter().map(|cell| cell.text.displayed());
             text.collect::<String>().trim_end().to_owned()
         })
         .collect()
