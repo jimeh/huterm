@@ -1,7 +1,7 @@
 +++
 id = "idle-sample-compile-timeout"
 title = "idle-sample.test.ts native sampler compile timeout"
-status = "open"
+status = "fixed"
 kind = "bun"
 platforms = ["macos-arm64"]
 retries = 0
@@ -43,5 +43,8 @@ note = "mise run verify with test:rust compiling in parallel"
   event loop, so the test timer cannot have interrupted it, and the signal's
   source is unknown; the log shows no compiler output. A slow first `xcrun`
   or SDK lookup on a cold runner is a hypothesis, not a confirmed cause.
-- **Triage:** rerun the job. If it recurs, time the compile step in the
-  test or give it a longer timeout.
+- **Fix (2026-11-06):** the test compiles with an asynchronous `Bun.spawn`
+  under a 60-second limit and a 70-second test timeout, and one assertion
+  reports the exit code, signal, stderr, and elapsed time.
+- **Triage:** a failure after the fix names the signal and how long the
+  compile ran; record it.

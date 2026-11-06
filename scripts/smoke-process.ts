@@ -15,7 +15,16 @@ export type SmokeOutcome = {
   stdout: string;
   stderr: string;
   elapsedMs: number;
+  /** The progress watchdog fired: no progress line arrived within its stall budget. */
+  stalled?: boolean;
 };
+
+/**
+ * A progress watchdog: the process fails once `stallMs` pass without a
+ * standard output line matching `pattern`, while `timeoutMs` stays the cap on
+ * the whole run. A slow but advancing start then passes, and a hang still fails.
+ */
+export type ProgressWatchdog = { pattern: RegExp; stallMs: number };
 
 export async function runSmokeProcess(command: string[], options: {
   timeoutMs: number;
@@ -25,6 +34,7 @@ export async function runSmokeProcess(command: string[], options: {
   stream?: boolean;
   /** Ends the process early once this holds for the standard error so far. */
   stopWhen?: (stderr: string) => boolean;
+  progress?: ProgressWatchdog;
 }): Promise<SmokeOutcome> {
   const [executable, ...args] = command;
   if (!executable) throw new Error("smoke command is empty");
@@ -44,17 +54,28 @@ export async function runSmokeProcess(command: string[], options: {
   let stdout = "";
   let stderr = "";
   let timedOut = false;
+  let stalled = false;
   let stopped = false;
   let interrupted: NodeJS.Signals | null = null;
   let force: ReturnType<typeof setTimeout> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
+  let stall: ReturnType<typeof setTimeout> | undefined;
   const signal = (value: NodeJS.Signals) => {
     if (!child?.pid) return;
     try {
       if (process.platform === "win32") child.kill(value);
       else process.kill(-child.pid, value);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return;
+      // macOS answers EPERM for a group whose members have all exited but are
+      // not yet reaped. Treat only that as finished; a live member still fails.
+      if (code === "EPERM" && process.platform !== "win32") {
+        const members = processGroupMembers(child.pid);
+        event("signal-failed", { signal: value, code, members });
+        if (members.every((member) => member.state.startsWith("Z"))) return;
+      }
+      throw error;
     }
   };
   const terminate = (value: NodeJS.Signals) => {
@@ -102,6 +123,7 @@ export async function runSmokeProcess(command: string[], options: {
       echo(process.stdout, chunk);
       if (directory) appendFileSync(join(directory, "stdout.log"), chunk);
       event("stdout", { text: chunk });
+      watch(chunk);
     });
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
@@ -114,21 +136,46 @@ export async function runSmokeProcess(command: string[], options: {
         terminate("SIGTERM");
       }
     });
-    deadline = setTimeout(() => {
+    const expire = (kind: "deadline" | "stall", details: object = {}) => {
+      if (timedOut) return;
       timedOut = true;
-      event("deadline");
-      if (directory && child?.pid && process.platform === "linux") event("threads", { threads: processGroupThreads(child.pid) });
+      stalled = kind === "stall";
+      event(kind, details);
+      if (directory && child?.pid && process.platform === "linux") {
+        event("threads", { threads: processGroupThreads(child.pid) });
+        event("io", processGroupIo(child.pid));
+      }
       terminate("SIGTERM");
-    }, options.timeoutMs);
+    };
+    deadline = setTimeout(() => expire("deadline"), options.timeoutMs);
+    const progress = options.progress;
+    let lastProgress: string | undefined;
+    const armStall = () => {
+      if (!progress) return;
+      clearTimeout(stall);
+      stall = setTimeout(() => expire("stall", { stallMs: progress.stallMs, lastProgress }), progress.stallMs);
+    };
+    armStall();
+    let partial = "";
+    const watch = (chunk: string) => {
+      if (!progress) return;
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop() ?? "";
+      const advanced = lines.filter((line) => progress.pattern.test(line));
+      if (advanced.length && !timedOut) {
+        lastProgress = advanced.at(-1);
+        armStall();
+      }
+    };
     const status = await new Promise<{ exitCode: number | null; signalCode: string | null }>((resolve, reject) => {
       spawned.once("error", reject);
       spawned.once("exit", (exitCode, signalCode) => event("exit", { exitCode, signalCode }));
       // Wait for output as well as exit; descendants holding pipes are also bounded.
       spawned.once("close", (exitCode, signalCode) => resolve({ exitCode, signalCode }));
     });
-    const outcome = { ...status, signalCode: interrupted ?? status.signalCode, interrupted, timedOut, stopped, stdout, stderr, elapsedMs: elapsed() };
+    const outcome = { ...status, signalCode: interrupted ?? status.signalCode, interrupted, timedOut, stalled, stopped, stdout, stderr, elapsedMs: elapsed() };
     event("closed", status);
-    if (directory) writeFileSync(join(directory, "outcome.json"), `${JSON.stringify({ exitCode: outcome.exitCode, signalCode: outcome.signalCode, timedOut, elapsedMs: outcome.elapsedMs }, null, 2)}\n`);
+    if (directory) writeFileSync(join(directory, "outcome.json"), `${JSON.stringify({ exitCode: outcome.exitCode, signalCode: outcome.signalCode, timedOut, stalled, elapsedMs: outcome.elapsedMs }, null, 2)}\n`);
     return outcome;
   } catch (error) {
     event("error", { message: String(error) });
@@ -138,6 +185,7 @@ export async function runSmokeProcess(command: string[], options: {
     // Writes still queued to a terminal that hung up can fail after this.
     if (!hungUp) for (const output of outputs) output.off("error", ignoreHangup);
     clearTimeout(deadline);
+    clearTimeout(stall);
     clearTimeout(force);
     signal("SIGKILL");
   }
@@ -190,6 +238,35 @@ export function processGroupThreads(group: number): ThreadState[] {
       };
     });
   });
+}
+
+/** Every process in `group` with its `ps` state, such as `S`, `R`, or `Z`. */
+export function processGroupMembers(group: number): { pid: number; state: string }[] {
+  const result = Bun.spawnSync(["ps", "-A", "-o", "pid=,pgid=,stat="], { stdout: "pipe", stderr: "ignore", timeout: 5_000 });
+  return result.stdout.toString().split("\n").flatMap((line) => {
+    const [pid, pgid, state] = line.trim().split(/\s+/);
+    return Number(pgid) === group && pid && state ? [{ pid: Number(pid), state }] : [];
+  });
+}
+
+/**
+ * Linux I/O evidence for a stalled smoke: each group member's `/proc/<pid>/io`
+ * and the system's dirty, writeback, and major-fault counters. A stall waiting
+ * on page I/O shows growing major faults or pending writeback here.
+ */
+export function processGroupIo(group: number): { processes: { pid: number; io?: Record<string, number> }[]; vmstat: Record<string, number> } {
+  if (process.platform !== "linux") return { processes: [], vmstat: {} };
+  const read = (path: string) => {
+    try { return readFileSync(path, "utf8"); } catch { return undefined; }
+  };
+  const fields = (text: string | undefined, separator: RegExp) => Object.fromEntries((text ?? "").split("\n").flatMap((line) => {
+    const [key, value] = line.split(separator);
+    return key && value !== undefined && /^\d+$/.test(value.trim()) ? [[key.trim(), Number(value.trim())]] : [];
+  }));
+  const wanted = new Set(["nr_dirty", "nr_writeback", "pgmajfault", "pgpgin", "pgpgout", "nr_free_pages"]);
+  const vmstat = Object.fromEntries(Object.entries(fields(read("/proc/vmstat"), / /)).filter(([key]) => wanted.has(key)));
+  const processes = [...new Set(processGroupThreads(group).map((thread) => thread.pid))].map((pid) => ({ pid, io: fields(read(`/proc/${pid}/io`), /:/) }));
+  return { processes, vmstat };
 }
 
 export function checkSmokeProcess(outcome: SmokeOutcome, label: string): asserts outcome is SmokeOutcome & { exitCode: 0 } {

@@ -437,8 +437,10 @@ output and records stdout, stderr, elapsed-time events, and exit status under
 `HUTERM_SMOKE_EVIDENCE_DIR/steps/<step>`. Evidence
 is uploaded for successful and failed jobs so timing can be compared. The
 renderer also records its native process events under `renderer-process`,
-distinguishing paint completion from process exit. Its 15-second deadline and
-completion assertions remain enforced.
+distinguishing paint completion from process exit. On Linux it first flushes
+dirty pages and reads its binary and Mesa into the page cache, outside its
+deadline. It then fails after 15 seconds without a new `RENDERER_SMOKE` line,
+or after 60 seconds in total, and its completion assertions remain enforced.
 
 After compilation succeeds, independent smoke steps continue after a failure;
 the failed step still fails the job. Cancellation stops subsequent steps. The

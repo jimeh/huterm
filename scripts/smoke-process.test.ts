@@ -1,9 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, setDefaultTimeout, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSmokeProcess, processGroupThreads, runSmokeProcess, type ThreadState } from "./smoke-process.ts";
+import { checkSmokeProcess, processGroupMembers, processGroupThreads, runSmokeProcess, type ThreadState } from "./smoke-process.ts";
+
+// Each test starts Bun processes. With Cargo compiling in parallel, one start
+// took longer than Bun's default 5-second test timeout.
+setDefaultTimeout(20_000);
 
 const run = (source: string, timeoutMs = 5_000) => runSmokeProcess(
   [process.execPath, "-e", source], { timeoutMs, graceMs: 50, stream: false },
@@ -19,10 +23,10 @@ test("smoke process drains both pipes and records the real exit", async () => {
 });
 
 test("success output does not forgive a stuck exit or ignored TERM", async () => {
-  const result = await run('process.on("SIGTERM", () => {}); console.log("passed"); setInterval(() => {}, 10)', 1_500);
-  expect(result.stdout).toBe("passed\n");
-  expect(result.timedOut).toBe(true);
-  expect(result.signalCode).toBe("SIGKILL");
+  const result = await run('process.on("SIGTERM", () => {}); console.log("passed"); setInterval(() => {}, 10)', 3_000);
+  // One comparison shows the whole outcome if a loaded host breaks the fixture.
+  expect({ stdout: result.stdout, stderr: result.stderr, timedOut: result.timedOut, signalCode: result.signalCode })
+    .toEqual({ stdout: "passed\n", stderr: "", timedOut: true, signalCode: "SIGKILL" });
   expect(() => checkSmokeProcess(result, "fixture")).toThrow("timed out");
 });
 
@@ -45,10 +49,51 @@ test("smoke process distinguishes a signal from its deadline", async () => {
 });
 
 test("smoke deadline closes pipes retained by a descendant after parent exit", async () => {
-  const result = await run('require("node:child_process").spawn("sh", ["-c", "sleep 30"], { stdio: "inherit" }); process.exit(0)', 1_500);
-  expect(result.exitCode).toBe(0);
-  expect(result.timedOut).toBe(true);
-  expect(result.elapsedMs).toBeLessThan(5_000);
+  const directory = await mkdtemp(join(tmpdir(), "huterm-retained-"));
+  const marker = join(directory, "descendant-started");
+  try {
+    // The parent exits only after its descendant has started holding the pipes.
+    const source = `
+      const { existsSync } = require("node:fs");
+      require("node:child_process").spawn("sh", ["-c", 'touch "$0"; exec sleep 30', ${JSON.stringify(marker)}], { stdio: "inherit" });
+      const wait = setInterval(() => { if (existsSync(${JSON.stringify(marker)})) { clearInterval(wait); process.exit(0); } }, 10);
+    `;
+    const result = await run(source, 3_000);
+    expect({ exitCode: result.exitCode, timedOut: result.timedOut, descendantStarted: await Bun.file(marker).exists() })
+      .toEqual({ exitCode: 0, timedOut: true, descendantStarted: true });
+    expect(result.elapsedMs).toBeLessThan(10_000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// macOS answers EPERM, not ESRCH, when it signals a group that holds only
+// exited, unreaped members, so the supervisor checks the members' states.
+test.skipIf(process.platform === "win32")("process group members report unreaped exits as zombies", async () => {
+  // `exec` replaces the shell without reaping its background child.
+  const leader = spawn("sh", ["-c", "true & exec sleep 5"], { detached: true, stdio: "ignore" });
+  const group = leader.pid!;
+  try {
+    const deadline = Date.now() + 5_000;
+    let members = processGroupMembers(group);
+    while (!members.some((member) => member.state.startsWith("Z")) && Date.now() < deadline) {
+      await Bun.sleep(10);
+      members = processGroupMembers(group);
+    }
+    expect(members.find((member) => member.pid === group)?.state).not.toStartWith("Z");
+    expect(members.filter((member) => member.pid !== group).map((member) => member.state[0])).toEqual(["Z"]);
+  } finally {
+    process.kill(-group, "SIGKILL");
+  }
+});
+
+test("a progress watchdog lets an advancing process run past its stall budget", async () => {
+  const progress = { pattern: /^STEP /, stallMs: 700 };
+  const advancing = await runSmokeProcess([process.execPath, "-e", 'let n = 0; const t = setInterval(() => { console.log(`STEP ${n++}`); if (n === 6) { clearInterval(t); } }, 250)'], { timeoutMs: 10_000, graceMs: 50, stream: false, progress });
+  expect({ timedOut: advancing.timedOut, stalled: advancing.stalled, exitCode: advancing.exitCode }).toEqual({ timedOut: false, stalled: false, exitCode: 0 });
+  const stuck = await runSmokeProcess([process.execPath, "-e", 'console.log("STEP 0"); setInterval(() => console.log("noise"), 100)'], { timeoutMs: 10_000, graceMs: 50, stream: false, progress });
+  expect({ timedOut: stuck.timedOut, stalled: stuck.stalled }).toEqual({ timedOut: true, stalled: true });
+  expect(stuck.elapsedMs).toBeLessThan(9_000);
 });
 
 test("smoke evidence records output timing before process completion", async () => {

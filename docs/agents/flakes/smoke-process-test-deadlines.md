@@ -1,7 +1,7 @@
 +++
 id = "smoke-process-test-deadlines"
 title = "smoke-process.test.ts deadlines under parallel builds"
-status = "open"
+status = "fixed"
 kind = "bun"
 platforms = ["macos-arm64"]
 retries = 0
@@ -69,5 +69,16 @@ note = "stdout assertion before the deadline"
   forgive a stuck exit or ignored TERM` at its `stdout` assertion after
   978.75ms, before the fixture's 1,500ms deadline. The next
   `mise run check` passed it.
-- **Triage:** rerun the file alone. If it recurs, record whether the
-  descendant started, for example by having it write a marker file.
+- **Cause of the EPERM:** macOS answers `EPERM`, not `ESRCH`, when
+  `kill(-pgid)` reaches a group whose members have all exited but are not
+  yet reaped; a probe with one zombie-only group reproduced it. That fits a
+  descendant that had already exited, as in the first signature.
+- **Fix (2026-11-06):** the supervisor treats `EPERM` as finished only when
+  every member of the group is a zombie, and records the members and their
+  states in a `signal-failed` event; a live member still fails. The
+  retained-pipe fixture exits only after its descendant writes a marker,
+  and the test asserts that the marker exists. Each test now has a
+  20-second Bun timeout, the stuck-exit fixture's deadline is 3 seconds,
+  and its assertions compare the whole outcome so a failure shows every
+  field.
+- **Triage:** a failure after the fix shows the full outcome; record it.

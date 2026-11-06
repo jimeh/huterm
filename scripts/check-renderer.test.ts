@@ -21,6 +21,8 @@ test("renderer checker requires every completion marker", () => {
 
 test("renderer checker distinguishes process failures", () => {
   expect(() => checkRenderer(outcome({ exitCode: null, signalCode: "SIGTERM", timedOut: true }))).toThrow("timed out");
+  expect(() => checkRenderer(outcome({ exitCode: null, signalCode: "SIGTERM", timedOut: true, stalled: true, elapsedMs: 17_250 })))
+    .toThrow("renderer smoke timed out after 17250ms (no RENDERER_SMOKE progress for 15000ms)");
   expect(() => checkRenderer(outcome({ exitCode: null, signalCode: "SIGKILL" }))).toThrow("terminated by SIGKILL");
   expect(() => checkRenderer(outcome({ exitCode: 7 }))).toThrow("exited 7");
 });
@@ -31,7 +33,7 @@ test("renderer failures retain process evidence", async () => {
     await writeFailureEvidence(directory, outcome({ exitCode: 7, stderr: "native failure\n" }));
     expect(await readFile(join(directory, "renderer", "stdout.log"), "utf8")).toContain("all-panels");
     expect(await readFile(join(directory, "renderer", "stderr.log"), "utf8")).toBe("native failure\n");
-    expect(JSON.parse(await readFile(join(directory, "renderer", "outcome.json"), "utf8"))).toEqual({ exitCode: 7, signalCode: null, timedOut: false });
+    expect(JSON.parse(await readFile(join(directory, "renderer", "outcome.json"), "utf8"))).toEqual({ exitCode: 7, signalCode: null, timedOut: false, stalled: false });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

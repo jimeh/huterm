@@ -148,7 +148,21 @@ platform = "linux-x86_64"
   event the main thread (the lowest thread ID) was in state `D` in
   `folio_wait_bit_common` with syscall `-1`, and the other 11 threads were
   sleeping.
-- **Triage:** download the `smoke-evidence-Linux-*` artifact and read
-  `renderer-process/stdout.log` for the last marker and
-  `renderer-process/events.jsonl` for the `threads` event. Record both here,
-  then rerun once.
+- **Mitigation (2026-11-06):** five of the six dumps show a thread waiting
+  on a page-cache folio, which fits a page fault on freshly linked binary
+  pages still under writeback. Before the timed smoke, `check-renderer.ts`
+  now runs `sync` and reads the smoke binary and Mesa's llvmpipe and LLVM
+  libraries into the page cache, printing a `RENDERER_WARMUP` line with the
+  time each part took. The fixed 15-second deadline became a progress
+  watchdog: the smoke fails after 15 seconds without a new `RENDERER_SMOKE`
+  line, or after 60 seconds in total. At either deadline the supervisor also
+  records an `io` event with each process's `/proc/<pid>/io` and the
+  system's dirty, writeback, and major-fault counters. The fourth dump's
+  running main thread is not covered by the warm-up; the watchdog gives it
+  time as long as markers keep arriving.
+- **Triage:** CI reruns this signature once. Download the
+  `smoke-evidence-Linux-*` artifact and read `renderer-process/stdout.log`
+  for the last marker, and `renderer-process/events.jsonl` for the `stall`
+  or `deadline` event and the `threads` and `io` events after it. Compare
+  the `RENDERER_WARMUP` line in the step log with a passing run. Record the
+  occurrence with `mise run flakes:record`.
