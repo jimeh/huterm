@@ -446,7 +446,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   explain the DEL: the `query="tfs"` check between them passes only if that
   Backspace reached the palette. Real HID events from another process on
   the host, such as the quake witness's global shortcuts, go to whichever
-  window is frontmost.
+  window is frontmost. It is not the race fixed in the Linux palette
+  smoke busy step below: posted events stay in order with each other, and
+  no file command sits between that Backspace and the `query="tfs"` check.
 - **Triage:** keep the failing step, its expected and received bytes, and a
   list of what else was running on the host; record them here, then rerun.
 
@@ -482,77 +484,54 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   wait for a frame drawn after `movePointerToRow` before the wheel, or make
   a hover change in `option_list` request a frame.
 
-## Linux palette smoke extra core tab
+## Linux palette smoke busy step
 
-- **Label:** `Smoke Linux command palette` in `Rust smoke (Linux x86_64)`,
-  "ghostty: expected 3 core tabs, got 4" from the `coreState(3)` call just
-  before `delete-target` in `scripts/check-palette.ts`.
-- **Occurrences:** once, 2026-10-27, on PR #269 (run 40515770496, attempt 1,
-  head `ad082c2b`); the rerun of the failed jobs passed on the same head. The
-  PR does not change the palette smoke or the code it drives. No other failed
-  CI run since 2026-10-21 has this signature, and neither does any first
-  attempt since 2026-10-26 that passed on rerun. It recurred on 2026-10-30
-  on PR #331 (run 41006554547, job 123902649454, head `cad04bc4`), which
-  changes only smoke tooling and runs Linux smokes unchanged, with the
-  same third main-window tab active at `w0.active_index=2`. It recurred
-  again on 2026-10-30 on PR #343 (run 41108259656, job 124243665211, head
-  `10dcb4e7`), which does not touch the palette, with extra tab 16 below
-  `fixture-session` 19 and active at `w0.active_index=2`. It recurred on
-  2026-10-31 on PR #362 (run 41209548791, job 124561468799, head
-  `5bdce63f`), which changes pane indicators and dimming only, again with
-  extra tab 16 below `fixture-session` 19, active at `w0.active_index=2`.
-  It recurred the same day on PR #363 (run 41212003791, job 124568761526,
-  head `e7793fe7`), which changes window chrome and not the palette, again
-  with extra tab 16 below `fixture-session` 19. It recurred on 2026-11-03 on
-  PR #383 (run 41731482596, job 126249669677, head `9d5e1247`), which
-  bundles a terminal font and does not touch the palette or its smoke, again
-  with extra tab 16 below `fixture-session` 19, active at
-  `w0.active_index=2`; the next head passed. It recurred on 2026-11-04 on
-  docs-only PR #397 (run 41792849682, job 126450000000, head `8d7b1431`),
-  again with extra tab 16 below `fixture-session` 19, active at
-  `w0.active_index=2`.
-- **Evidence:** the count includes every core workspace's tabs: two in the
-  main window and one in the quake window from step 2. The failure state
-  shows a third main-window tab, ID 16, active at `w0.active_index=2`. Mux
-  allocates session, workspace, and tab IDs from one counter, so tab 16
-  existed before `fixture-create` made session 19 and workspace 20, and the
-  check after `open-explicit` still counted 3. The only tab-creating input
-  between them is the `new tab` Enter sent while `busy-on` holds the window.
-- **Inference:** that Enter ran after `busy-off`. On Linux it goes through
-  `xdotool`, which is not ordered with the smoke's file commands, and the
-  check after it (`w0.palette=true`, "structural operation in progress")
-  already held before Enter was sent, so the smoke never observed the
-  refusal. This is unconfirmed: the recorded terminal bytes contain no ESC
-  from the Escape that followed, so where that Escape went is unexplained.
-- **Related signature:** on PR #279 (run 40578248073, job 122451107921,
-  head `ad33b662`), the same `busy-on` step timed out instead, waiting for
-  `selected=new_tab` and "structural operation in progress". The state had
-  `w0.busy=true` but `w0.palette=false`: the palette shortcut that
-  `shortcut("palette")` sends through `xdotool` just before `busy-on` never
-  opened the palette, although the `D` typed before it reached the terminal,
-  whose last bytes were `1f 43 44`. The next head passed the same job. Both
-  failures sit in the `busy-on` step, where `xdotool` input and the smoke's
-  file commands are not ordered. It recurred on 2026-10-28 on x86_64 (PR
-  #318 at `bbeb8be1`, run 40767320033, job 123094963780) with the same
-  state, `w0.busy=true` and `w0.palette=false`; the next head passed. It
-  reached aarch64 on 2026-10-30 (PR #331 at `45219c47`, run 41007277899,
-  job 123905010885) with the same state. It recurred on aarch64 on
-  2026-10-31 (PR #354 at `ef1d7012`, run 41161794041, job 124420826357),
-  which does not touch the palette or its smoke, with the same state and
-  the same last bytes. It recurred on x86_64 on 2026-10-31 (PR #355 at
-  `88542f14`, run 41167918791, job 124439483926) with the same state,
-  failing both Verify gates; the rerun passed. It recurred on aarch64 the
-  same day (PR #363 at `c87cb93a`, run 41213983677, job 124574569527),
-  which changes window chrome and not the palette, with the same state. It
-  recurred on aarch64 on 2026-11-03 in the same PR #383 run as the extra
-  tab above (job 126249669688), with the same state; the next head passed.
-  It recurred on x86_64 on 2026-11-05 (PR #412 at `179f5e2b`, run
-  42097959036, job 127493242342), which changes terminal selection and not
-  the palette or its smoke, with the same state and the same last bytes.
-- **Triage:** if it recurs, check that the extra tab's ID is below the
-  `fixture-session` ID and that it is the active tab, record the run here,
-  then rerun. A fix would need an observable sign that the window refused
-  the Enter before the smoke sends `busy-off`.
+- **Label:** `Smoke Linux command palette` in either Linux Rust smoke job,
+  from the `busy-on` step of `scripts/check-palette.ts`, with one of two
+  signatures:
+  - "ghostty: expected 3 core tabs, got 4" from the `coreState(3)` call
+    just before `delete-target`, with an extra main-window tab active at
+    `w0.active_index=2`; where recorded, its ID, 16, was below
+    `fixture-session` 19.
+  - A timeout waiting for `selected=new_tab` and "structural operation in
+    progress", with `w0.busy=true`, `w0.palette=false`, and last terminal
+    bytes `1f 43 44`.
+- **Occurrences:** 15 between 2026-10-27 and 2026-11-05, on x86_64 and
+  aarch64, on PRs that did not change the palette or its smoke, across
+  about 620 CI runs. Reruns and later heads passed where recorded. The extra
+  tab: PRs #269 (run 40515770496), #331 (41006554547), #343 (41108259656),
+  #362 (41209548791), #363 (41212003791), #383 (41731482596), and #397
+  (41792849682). The closed palette: PRs #279 (40578248073), #318
+  (40767320033), #331 (41007277899), #354 (41161794041), #355
+  (41167918791), #363 (41213983677), #383 (41731482596), and #412
+  (42097959036).
+- **Cause:** on Linux the smoke sends keys through `xdotool` and commands
+  through files, and nothing orders the two. Opening the palette checks
+  the window's availability, so a `busy-on` handled before the palette
+  shortcut left the palette closed, and the busy window also kept the
+  typed `new tab` from the terminal. After Enter, the step waited for a
+  state that already held before Enter, then sent `busy-off`, so an Enter
+  handled after `busy-off` ran `new_tab`.
+- **Reproduction:** in the Linux container, probe copies of the smoke that
+  queued each `xdotool` key 150ms late, in order, reproduced both CI states
+  6 of 6 times: late keys from the palette shortcut on gave the closed
+  palette, and a late Enter and Escape gave the extra tab. The fixed step
+  passed both 6 of 6 times. Under heavy CPU load the unmodified smoke hit
+  the extra tab once in 240 runs, with no ESC in the terminal bytes as in
+  CI. Where the Escape after `busy-off` went in those failures is still
+  unexplained; the fix does not depend on it. The fixed smoke had no
+  busy-step failure in 240 runs. Its two failures there were the wheel
+  flake above and a `show_quake` timeout, which the unmodified smoke also
+  hit under heavier load.
+- **Fix (PR #427):** the step waits for the palette to open and take
+  focus before `busy-on`. After Enter it waits for the palette's
+  `diagnostic=Some("Unavailable: structural operation in progress")`,
+  which only the refused Enter sets, before `busy-off`. The macOS smoke
+  runs the same step. Its `native` keys are queued, not dispatched, when
+  the command returns, so it had the same gap, although no macOS failure
+  in this step is recorded.
+- **Triage:** a failure in this step after the fix is new. Remove this
+  entry after about 20 clean Linux palette CI runs with the fix.
 
 ## huterm-gpui inactive tab close button on hosted macOS
 
@@ -566,11 +545,17 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   against about 13 locally, and the PR touched no tab code. The last state
   still held both tabs with the active one unchanged, so the click had not
   closed the inactive tab before the harness deadline.
-- **Fifth occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
+- **Second occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
   124475722453, head `5199386c`), in `Checks (Linux aarch64)`, so not
   macOS only. The `huterm-gpui` suite took 77.22 seconds there. The PR
   changes Settings and the terminal window's title row, not menus or
   selection.
+- **Third occurrence:** 2026-11-05 on PR #412 (run 42100951208, attempt 1,
+  job 127504182683, head `606f1b21`), hosted macOS, now failing at
+  `window_tests.rs:510` with the same message and both tabs still open.
+  The `huterm-gpui` suite took 199.48 seconds against about 23 locally.
+  The rerun passed, although its suite took 197.29 seconds, so a slow
+  suite alone does not make the test fail.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, the harness wait or the close path needs a
   closer look; otherwise record the run here and rerun.
