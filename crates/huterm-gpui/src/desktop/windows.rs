@@ -42,8 +42,8 @@ use super::licenses::{
     Done as LicensesDone, LicensesFocus, LicensesState, LicensesView,
 };
 use super::notices::{
-    Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack, Severity,
-    ToastHandlers, render_notice_stack,
+    Lifetime, NoticeColumn, NoticeContent, NoticeId, NoticeSource, NoticeStack,
+    Severity, StackFit, ToastHandlers,
 };
 use super::overlay::{
     OverlayColors, Swatch, overlay_colors, theme_is_dark, tokens,
@@ -88,6 +88,7 @@ use huterm_ui::components::menu::{
     Menu as MenuView, MenuEvent, min_width as menu_min_width,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::listbox::{Model as MenuModel, Row as MenuRow};
 use huterm_ui::typography::Typography;
 use std::borrow::Cow;
@@ -2762,6 +2763,7 @@ fn open_window_with_profile(
                 .ok()
             });
             let frame_clock = refresh::FrameClock::new(window);
+            let notice_scroll = gpui::ScrollHandle::new();
             #[cfg(target_os = "macos")]
             let native_fullscreen =
                 if std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some()
@@ -2916,6 +2918,11 @@ fn open_window_with_profile(
                 notice_focus: cx.focus_handle(),
                 focused_notice: None,
                 hovered_notices: HashSet::new(),
+                notice_scroll: notice_scroll.clone(),
+                notice_scrollbar: crate::ui::list_scrollbar::ListScrollbar::new(
+                    notice_scroll,
+                ),
+                notice_followed: (None, None),
                 palette: None,
                 palette_refresh_state: None,
                 retained_query: None,
@@ -3170,6 +3177,7 @@ impl refresh::Animated for WorkspaceView {
             .tab_scrollbars
             .schedule(now)
             .merge(self.panel_scrollbar.schedule(now))
+            .merge(self.notice_scrollbar.schedule(now))
             .merge(self.reveal.schedule(now))
             .merge(self.pane_bars.schedule(now))
             .merge(self.pane_grab.schedule());
@@ -3252,7 +3260,9 @@ impl refresh::Animated for WorkspaceView {
         if self.pane_grab.tick(now) {
             cx.notify();
         }
-        if self.panel_scrollbar.advance(now) {
+        if self.panel_scrollbar.advance(now)
+            | self.notice_scrollbar.advance(now)
+        {
             cx.notify();
         }
         self.advance_spring(now, window, cx);
@@ -3524,8 +3534,9 @@ impl WorkspaceView {
     }
 
     fn render_notices(
-        &self,
+        &mut self,
         terminal: Bounds<Pixels>,
+        window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<gpui::Div> {
         if self.notices.is_empty() {
@@ -3572,6 +3583,29 @@ impl WorkspaceView {
                 });
             }),
         };
+        self.follow_notices();
+        let swatch = tokens(&self.config.theme);
+        let column = NoticeColumn {
+            stack: &self.notices,
+            now: Instant::now(),
+            focused: self.focused_notice,
+            hovered: &self.hovered_notices,
+            fit: StackFit::new(terminal.size, bottom, window.rem_size()),
+            swatch,
+            handlers: &handlers,
+        };
+        let view = cx.entity();
+        let region = ScrollArea::new("notices", &self.notice_scroll)
+            .fill()
+            .padding(StackFit::region_padding())
+            .children(column.slots())
+            .render(
+                &mut self.notice_scrollbar,
+                swatch.scrollbar,
+                &view,
+                |view| &mut view.notice_scrollbar,
+                cx,
+            );
         Some(
             div()
                 .absolute()
@@ -3579,16 +3613,33 @@ impl WorkspaceView {
                 .top(terminal.origin.y)
                 .w(terminal.size.width)
                 .h(terminal.size.height)
-                .child(render_notice_stack(
-                    &self.notices,
-                    Instant::now(),
-                    self.focused_notice,
-                    &self.notice_focus,
-                    bottom,
-                    tokens(&self.config.theme),
-                    &handlers,
-                )),
+                .child(column.frame(&self.notice_focus, region)),
         )
+    }
+
+    /// Scrolls the toast column to a newly focused toast, or to the newest
+    /// toast when one arrives, so neither opens out of view. The scroll
+    /// applies after the next layout, so a toast that expands as it takes
+    /// focus shows whole, and one taller than the column shows its top,
+    /// where Dismiss is.
+    fn follow_notices(&mut self) {
+        let newest = self.notices.newest();
+        let focused = self.focused_notice;
+        let (followed_newest, followed_focus) = self.notice_followed;
+        if let Some(slot) = focused
+            .filter(|id| Some(*id) != followed_focus)
+            .and_then(|id| self.notices.slot(id))
+        {
+            self.notice_scroll.scroll_to_item(slot);
+        } else if newest != followed_newest
+            && let Some(slot) = newest.and_then(|id| self.notices.slot(id))
+        {
+            self.notice_scroll.scroll_to_item(slot);
+            // A column that overflows shows its indicator for a moment, so
+            // toasts scrolled out above are not missed.
+            self.notice_scrollbar.show();
+        }
+        self.notice_followed = (newest, focused);
     }
 }
 
@@ -4230,6 +4281,12 @@ struct WorkspaceView {
     focused_notice: Option<NoticeId>,
     /// Toasts under the pointer; ids of dismissed toasts are ignored.
     hovered_notices: HashSet<NoticeId>,
+    /// The toast column's scroll region.
+    notice_scroll: gpui::ScrollHandle,
+    notice_scrollbar: crate::ui::list_scrollbar::ListScrollbar,
+    /// The newest and the focused notice when the column last followed
+    /// them, so it scrolls only when either changes.
+    notice_followed: (Option<NoticeId>, Option<NoticeId>),
     palette: Option<Entity<CommandPalette>>,
     palette_refresh_state: Option<PaletteRefreshState>,
     /// A cancelled search query and when it was cancelled.
@@ -14080,7 +14137,8 @@ impl Render for WorkspaceView {
             window,
             cx,
         ));
-        if let Some(notices) = self.render_notices(layout.terminal, cx) {
+        if let Some(notices) = self.render_notices(layout.terminal, window, cx)
+        {
             root = root.child(notices);
         }
         if let Some(panel) = self.render_panel(&layout, window, cx) {

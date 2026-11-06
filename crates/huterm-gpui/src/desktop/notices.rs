@@ -3,18 +3,20 @@
 //! [`NoticeStack`] is the per-window model. It takes every `Instant` from
 //! its caller so expiry is testable, and it reports its frames and earliest
 //! deadline through [`NoticeStack::schedule`] for the window's frame clock;
-//! it schedules nothing itself. [`render_notice_stack`] draws the visible
-//! toasts under the `notices` key context. The owner routes the `notice_*`
-//! catalog commands, hover pause, and action invocations through
-//! [`ToastHandlers`].
+//! it schedules nothing itself. [`NoticeColumn`] draws the visible toasts
+//! under the `notices` key context, fitted to the terminal area by
+//! [`StackFit`]. The owner routes the `notice_*` catalog commands, hover
+//! pause, and action invocations through [`ToastHandlers`].
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Div, FocusHandle, MouseButton, MouseDownEvent, Pixels, SharedString,
-    Window, div, prelude::*, px, relative, svg,
+    AnyElement, App, Div, Edges, FocusHandle, MouseButton, MouseDownEvent,
+    Pixels, Rems, SharedString, Size, Window, div, prelude::*, px, relative,
+    svg,
 };
 use huterm_protocol::{CommandInvocation, TabId};
 use huterm_ui::components::button::{Button, Variant};
@@ -450,6 +452,14 @@ impl NoticeStack {
         self.notices.len().saturating_sub(VISIBLE_NOTICES)
     }
 
+    /// The scroll region child that shows `id`: after the overflow chip,
+    /// visible toasts run oldest first, so the newest is last.
+    pub(crate) fn slot(&self, id: NoticeId) -> Option<usize> {
+        let visible = self.visible();
+        let index = visible.iter().position(|notice| notice.id == id)?;
+        Some(usize::from(self.overflow() > 0) + visible.len() - 1 - index)
+    }
+
     /// The newest notice, where "Focus Notices" lands.
     pub(crate) fn newest(&self) -> Option<NoticeId> {
         self.notices.first().map(|notice| notice.id)
@@ -498,64 +508,185 @@ pub(crate) struct ToastHandlers {
     pub(crate) hover: HoverHandler,
 }
 
-/// Width of the toast column.
+/// Width of each toast when the terminal area leaves room for it.
 const TOAST_WIDTH: f32 = 340.0;
 /// Corner radius of each toast.
 const TOAST_RADIUS: f32 = 9.0;
+/// The space between a toast and the terminal area's left and right edges.
+const EDGE: f32 = 12.0;
+/// Space around each toast in its scroll slot for the focus ring, so a
+/// toast scrolled to the column's edge keeps its ring in view. Two of these
+/// make the gap between toasts.
+const RING_ROOM: f32 = 4.0;
+/// How far the scroll region reaches past the toasts' left edge and above
+/// the top one, so their shadows fade before the region clips them.
+const SHADOW_ROOM: f32 = 12.0;
+/// The scroll region's distance from the terminal area's right edge, where
+/// its scrollbar draws.
+const SCROLLBAR_INSET: f32 = 2.0;
+/// Below this terminal-area height, every toast but the newest collapses to
+/// one line unless it is focused or hovered. It is about what three toasts
+/// with a two-line message and an action need at the design size, and it
+/// scales with the interface font, as the toasts do.
+pub(crate) const COMPACT_BELOW: Rems = ui(320.0);
 
-/// The toast column in the bottom-right corner of its parent, `bottom`
-/// points above the edge. Newest toasts sit nearest the corner beneath the
-/// overflow chip. `focused` carries the focus ring; `focus` is the handle the
-/// `notices` context tracks.
-pub(crate) fn render_notice_stack(
-    stack: &NoticeStack,
-    now: Instant,
-    focused: Option<NoticeId>,
-    focus: &FocusHandle,
-    bottom: Pixels,
-    swatch: Swatch,
-    handlers: &ToastHandlers,
-) -> Div {
-    let mut column = div()
-        .absolute()
-        .right(px(12.0))
-        .bottom(bottom)
-        .w(px(TOAST_WIDTH))
-        .max_w_full()
-        .flex()
-        .flex_col()
-        .items_end()
-        .gap(px(8.0))
-        .key_context("notices")
-        .track_focus(focus)
-        .text_color(swatch.fg);
-    let overflow = stack.overflow();
-    if overflow > 0 {
-        column = column.child(
-            div()
-                .flex_none()
-                .px(px(8.0))
-                .py(px(2.0))
-                .rounded(px(10.0))
-                .bg(swatch.surface)
-                .border_1()
-                .border_color(swatch.line)
-                .text_size(ui(11.5))
-                .text_color(swatch.muted)
-                .child(format!("+{overflow} more")),
-        );
+/// How the toast column fits the terminal area it is drawn over.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StackFit {
+    /// Each toast's width: [`TOAST_WIDTH`], or the area's width less its
+    /// margins when that is narrower.
+    toast_width: Pixels,
+    /// The scroll region's height limit: the area's height above
+    /// `region_bottom`. Taller content scrolls.
+    max_height: Pixels,
+    /// The scroll region's bottom, above the area's bottom edge.
+    region_bottom: Pixels,
+    /// Whether older toasts collapse, because the area is short.
+    compact: bool,
+}
+
+impl StackFit {
+    /// The fit over a terminal area of `area`, with the newest toast's
+    /// bottom `bottom` above the area's bottom edge, at `rem_size`.
+    pub(crate) fn new(
+        area: Size<Pixels>,
+        bottom: Pixels,
+        rem_size: Pixels,
+    ) -> Self {
+        let region_bottom = (bottom - px(RING_ROOM)).max(Pixels::ZERO);
+        Self {
+            toast_width: px(TOAST_WIDTH)
+                .min(area.width - px(EDGE) * 2.0)
+                .max(Pixels::ZERO),
+            max_height: (area.height - region_bottom).max(Pixels::ZERO),
+            region_bottom,
+            compact: area.height < COMPACT_BELOW.to_pixels(rem_size),
+        }
     }
-    for notice in stack.visible().iter().rev() {
-        let progress = stack.progress(notice.id, now);
-        column = column.child(render_toast(
-            notice,
-            progress,
-            focused == Some(notice.id),
-            swatch,
-            handlers,
-        ));
+
+    /// Space inside the scroll region around its slots: room for shadows
+    /// on the left and top, and for the scrollbar between the toasts and
+    /// the area's right edge.
+    pub(crate) fn region_padding() -> Edges<Pixels> {
+        Edges {
+            top: px(SHADOW_ROOM),
+            right: px(EDGE - SCROLLBAR_INSET - RING_ROOM),
+            bottom: Pixels::ZERO,
+            left: px(SHADOW_ROOM),
+        }
     }
-    column
+
+    fn region_width(&self) -> Pixels {
+        let padding = Self::region_padding();
+        self.toast_width + px(RING_ROOM) * 2.0 + padding.left + padding.right
+    }
+}
+
+/// The toast column: the visible toasts, newest nearest the bottom-right
+/// corner beneath the overflow chip, in a scroll region the owner builds
+/// from [`Self::slots`] and passes to [`Self::frame`].
+pub(crate) struct NoticeColumn<'a> {
+    pub(crate) stack: &'a NoticeStack,
+    pub(crate) now: Instant,
+    /// The toast that carries the focus ring and stays expanded.
+    pub(crate) focused: Option<NoticeId>,
+    /// Toasts under the pointer, which stay expanded.
+    pub(crate) hovered: &'a HashSet<NoticeId>,
+    pub(crate) fit: StackFit,
+    pub(crate) swatch: Swatch,
+    pub(crate) handlers: &'a ToastHandlers,
+}
+
+impl NoticeColumn<'_> {
+    /// The scroll region's children in [`NoticeStack::slot`] order: the
+    /// overflow chip, then each visible toast, oldest first.
+    pub(crate) fn slots(&self) -> Vec<AnyElement> {
+        let mut slots = Vec::new();
+        let overflow = self.stack.overflow();
+        if overflow > 0 {
+            slots.push(
+                div()
+                    .flex()
+                    .justify_end()
+                    .p(px(RING_ROOM))
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded(px(10.0))
+                            .bg(self.swatch.surface)
+                            .border_1()
+                            .border_color(self.swatch.line)
+                            .text_size(ui(11.5))
+                            .text_color(self.swatch.muted)
+                            .child(format!("+{overflow} more")),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let visible = self.stack.visible();
+        for (index, notice) in visible.iter().enumerate().rev() {
+            let id = notice.id;
+            let expanded = index == 0
+                || !self.fit.compact
+                || self.focused == Some(id)
+                || self.hovered.contains(&id);
+            slots.push(
+                div()
+                    .flex_none()
+                    .p(px(RING_ROOM))
+                    .child(render_toast(
+                        notice,
+                        self.stack.progress(id, self.now),
+                        self.focused == Some(id),
+                        expanded,
+                        self.swatch,
+                        self.handlers,
+                    ))
+                    .into_any_element(),
+            );
+        }
+        slots
+    }
+
+    /// The column in the bottom-right corner of the terminal area, holding
+    /// `region`, under the `notices` key context that `focus` tracks.
+    pub(crate) fn frame(
+        &self,
+        focus: &FocusHandle,
+        region: impl IntoElement,
+    ) -> Div {
+        div()
+            .absolute()
+            .right(px(SCROLLBAR_INSET))
+            .bottom(self.fit.region_bottom)
+            .w(self.fit.region_width())
+            .max_h(self.fit.max_height)
+            .flex()
+            .flex_col()
+            .key_context("notices")
+            .track_focus(focus)
+            .text_color(self.swatch.fg)
+            .child(region)
+    }
+}
+
+/// A collapsed toast's one line: its title, or its message when it has
+/// none, cut short with an ellipsis.
+fn collapsed_body(content: &NoticeContent) -> Div {
+    let line = if content.title.is_empty() {
+        content.message.lines().next().unwrap_or_default()
+    } else {
+        content.title.as_str()
+    };
+    div()
+        .flex_basis(px(0.0))
+        .flex_grow_1()
+        .min_w_0()
+        .text_size(ui(12.5))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .truncate()
+        .child(line.to_owned())
 }
 
 fn toast_body(
@@ -613,10 +744,13 @@ fn toast_body(
     body.child(actions)
 }
 
+/// One toast: in full when `expanded`, otherwise collapsed to its mark,
+/// title, and Dismiss button on one line.
 fn render_toast(
     notice: &Notice,
     progress: Option<f32>,
     focused: bool,
+    expanded: bool,
     swatch: Swatch,
     handlers: &ToastHandlers,
 ) -> gpui::Stateful<Div> {
@@ -644,19 +778,26 @@ fn render_toast(
     };
     let dismiss_selector = dismiss_name.clone();
     let progress_selector = content.title.clone();
+    let toast_selector = content.title.clone();
     let mut toast = raised_panel(swatch, TOAST_RADIUS)
         .id(("toast", id.0))
+        .debug_selector(|| format!("notice-{toast_selector}"))
         // Over a terminal, whose text cursor would otherwise show.
         .cursor(gpui::CursorStyle::Arrow)
         .w_full()
         .relative()
         .flex()
         .flex_none()
-        .items_start()
         .gap(px(10.0))
         .pl(px(16.0))
         .pr(px(8.0))
-        .py(px(10.0))
+        .map(|toast| {
+            if expanded {
+                toast.items_start().py(px(10.0))
+            } else {
+                toast.items_center().py(px(6.0))
+            }
+        })
         .shadow(shadow)
         .on_mouse_down(MouseButton::Left, stop)
         .on_mouse_down(MouseButton::Right, stop)
@@ -670,9 +811,17 @@ fn render_toast(
                 hover(id, false, window, cx);
             }
         })
-        .child(accent_bar(stripe, px(6.0), px(10.0)))
+        .child(accent_bar(
+            stripe,
+            px(6.0),
+            px(if expanded { 10.0 } else { 6.0 }),
+        ))
         .child(severity_mark(content.severity.glyph(), stripe, swatch))
-        .child(toast_body(id, content, swatch, handlers))
+        .child(if expanded {
+            toast_body(id, content, swatch, handlers)
+        } else {
+            collapsed_body(content)
+        })
         .child(
             Button::new(("toast-dismiss", id.0), dismiss_name, swatch)
                 .variant(Variant::Ghost)
@@ -932,6 +1081,50 @@ mod tests {
             ),
             "hidden expiring notices wake only to expire"
         );
+    }
+
+    #[test]
+    fn the_fit_narrows_to_the_area_and_collapses_below_a_scaled_height() {
+        let design = px(16.0);
+        let fit =
+            StackFit::new(Size::new(px(800.0), px(600.0)), px(12.0), design);
+        assert_eq!(fit.toast_width, px(TOAST_WIDTH));
+        assert_eq!(fit.max_height, px(592.0), "down to the region's bottom");
+        assert!(!fit.compact);
+        let narrow =
+            StackFit::new(Size::new(px(300.0), px(600.0)), px(12.0), design);
+        assert_eq!(narrow.toast_width, px(276.0), "12px either side");
+        // The threshold is 320 design points: 320px at the design size and
+        // 1.25 times that at a 1.25 interface scale.
+        let at = |height: f32, rem: Pixels| {
+            StackFit::new(Size::new(px(800.0), px(height)), px(12.0), rem)
+                .compact
+        };
+        assert!(!at(320.0, design));
+        assert!(at(319.0, design));
+        assert!(at(399.0, px(20.0)), "larger interface text");
+        assert!(!at(400.0, px(20.0)));
+    }
+
+    #[test]
+    fn slots_put_the_overflow_chip_first_and_the_newest_toast_last() {
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        let ids: Vec<NoticeId> = (0..4)
+            .map(|index| {
+                stack.push(
+                    content(terminal(index), "n", Lifetime::Persistent),
+                    now,
+                )
+            })
+            .collect();
+        // Visible, newest first: ids 3, 2, 1, under a chip for id 0.
+        assert_eq!(stack.slot(ids[3]), Some(3), "the newest is last");
+        assert_eq!(stack.slot(ids[1]), Some(1), "the oldest after the chip");
+        assert_eq!(stack.slot(ids[0]), None, "hidden in the overflow");
+        assert!(stack.dismiss(ids[0]));
+        assert_eq!(stack.slot(ids[1]), Some(0), "no chip");
+        assert_eq!(stack.slot(ids[3]), Some(2));
     }
 
     #[test]

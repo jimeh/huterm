@@ -633,6 +633,13 @@ These bind only while a notice has focus (`notices`), which `focus_notices`
 gives to the newest notice. Dismissing the last focused notice returns focus to
 the terminal.
 
+Notices stack in the terminal's bottom-right corner, no taller than the
+terminal, and scroll when they do not fit. When the terminal is shorter than
+320 points at the default interface size (scaled by `[font] ui_size`), every
+notice but the newest shows only its title and Dismiss button. A notice expands
+while it has focus or the pointer is over it, and the focused notice scrolls
+into view.
+
 | Command | macOS | Linux |
 | --- | --- | --- |
 | `notice_next` | `down` | `down` |
