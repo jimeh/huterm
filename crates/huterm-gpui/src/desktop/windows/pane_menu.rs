@@ -22,6 +22,9 @@ pub(super) struct PaneMenuInput {
     /// How many panes the tab has; a lone pane cannot zoom or move to a
     /// new tab of its own.
     pub(super) panes: usize,
+    /// How many tabs the window has; the lone pane of its only tab cannot
+    /// move to a new window.
+    pub(super) tabs: usize,
     /// The configured bar mode, which checks the auto-hide row.
     pub(super) title_bar: PaneTitleBarMode,
     /// The pane shows across its whole tab, so the zoom row unzooms.
@@ -81,6 +84,18 @@ pub(super) fn pane_menu(
     }
     rows.extend([
         MenuRow::Item(available(catalog(ids::MOVE_PANE_TO_NEW_TAB))),
+        MenuRow::Item({
+            let item = catalog(ids::MOVE_PANE_TO_NEW_WINDOW);
+            match super::cross_window::pane_tear_off_availability(
+                input.tabs,
+                input.panes,
+            ) {
+                Err(huterm_protocol::CommandError::Unavailable(reason)) => {
+                    item.disabled(Some(reason))
+                }
+                _ => item,
+            }
+        }),
         MenuRow::Item(item(
             ids::MOVE_PANE_TO_PANE,
             "Move Pane to Another Pane…".to_owned(),
@@ -146,6 +161,7 @@ mod tests {
         PaneMenuInput {
             platform: Platform::MacOs,
             panes: 2,
+            tabs: 1,
             title_bar: PaneTitleBarMode::Visible,
             zoomed: false,
             input_sync: false,
@@ -214,6 +230,40 @@ mod tests {
     }
 
     #[test]
+    fn move_to_new_window_is_disabled_only_for_the_windows_lone_pane() {
+        let row = |panes, tabs| {
+            model(
+                PaneMenuInput {
+                    panes,
+                    tabs,
+                    ..input()
+                },
+                &[],
+            )
+            .rows
+            .into_iter()
+            .find_map(|row| match row {
+                MenuRow::Item(item)
+                    if item.id == ids::MOVE_PANE_TO_NEW_WINDOW.as_str() =>
+                {
+                    Some((item.enabled, item.disabled_hint))
+                }
+                _ => None,
+            })
+            .unwrap()
+        };
+        assert_eq!(row(2, 1), (true, None), "a split one-tab window");
+        assert_eq!(row(1, 2), (true, None), "a lone pane beside other tabs");
+        assert_eq!(
+            row(1, 1),
+            (
+                false,
+                Some("The pane is already alone in its window.".to_owned())
+            )
+        );
+    }
+
+    #[test]
     fn auto_hide_row_is_checked_only_for_hover() {
         for mode in [
             PaneTitleBarMode::Visible,
@@ -258,6 +308,7 @@ mod tests {
                 "toggle_pane_zoom=Zoom Pane",
                 "toggle_pane_input_sync=Sync Pane Input",
                 "move_pane_to_new_tab=Move Pane to New Tab",
+                "move_pane_to_new_window=Move Pane to New Window",
                 "move_pane_to_pane=Move Pane to Another Pane…",
                 "-",
                 "auto_hide_title_bars=Auto-hide Title Bars",

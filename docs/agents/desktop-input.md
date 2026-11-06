@@ -425,10 +425,41 @@ emptied source closes without stopping its terminals.
 Tear-off creates a shell-less regular destination first and rolls back only its
 empty session on failure. A lone tab never tears off; Move Tab to New Window is
 unavailable in its palette, tab menu, and command invocation with the same reason.
+A pane tears off unless it is the only pane of the window's only tab
+(`pane_tear_off_availability`, shared by the release, the cues, Move Pane to New
+Window, and the pane menu), moving through `move_pane` to `NewTab` in the new
+window's workspace. Release drops the `PaneDrag` before the window opens, so
+`tear_off` captures its spring-back and bar scroll in `transfer_back` and
+`transfer_scroll`; every failure, including a failed move in
+`dispatch_transfer`, restores them. While a release would tear a pane off, the
+source pane draws S1 (`pane_tear_off_cue`): the terminal colour at 55% over its
+drawn frame, a full-contrast dashed outline, and the centred pill, compact in a
+pane too narrow for the label. Modifier-grab drags get it too.
 The tear-off pill follows the labels and add button in the bar's free trailing
 space. A horizontal bar too short for its label, such as a narrow title strip,
 gets the icon-only pill there. Only when neither fits does it cover the strip's
 trailing end with an opaque fill.
+`tear_off_cue` is the release's outcome, which drop labels publish;
+`tear_off_pill` gates the drawn bar pill and S1, which give way while the
+macOS drag preview is visible.
+
+The macOS drag preview (`drag_preview.rs`) is a `PopUp` window per drag, opened
+when the drag first needs it, ordered out while the pointer is back inside the
+source, and closed when the drag record ends. Every record change calls
+`drag_preview::sync`, which defers and coalesces; its mode is a pure function
+of where the pointer is, the source's `macos_drag_preview`, and the platform.
+The chip mode (over another eligible terminal window) keeps the in-window
+chip's 12-point offset and flips; the miniature and the dimmed chip centre on
+the event's screen point, which the drag record samples through
+`window_locator::screen_point` at each event. Only a natively visible chip
+preview stops the destination drawing its own chip, so a failed or still
+queued show keeps every in-window cue. The locator searches below the
+preview's window number. On macOS 27.0 `windowNumberAtPoint:` already skips
+the preview, which ignores mouse events, even from the top of the stack;
+starting below it keeps that from depending on the flag. Code that indexes
+or counts windows during a drag (`smoke_state`, drop labels) enumerates
+terminal windows only, through `terminal_windows`.
+
 Keep the source slot's dashed state border at full contrast while dimming its
 contents. Every drag title chip measures its size, flips across each overflowing
 pointer axis, and clamps inside the window. The chip floats over terminal

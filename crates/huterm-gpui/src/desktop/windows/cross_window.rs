@@ -20,6 +20,7 @@ pub(super) struct CrossWindows {
     /// Windows that reserved a cross-window transfer still in flight; a
     /// checkpoint waits until none is left.
     pub(super) reserved: HashSet<gpui::WindowId>,
+    pub(super) preview: drag_preview::DragPreview,
     #[cfg(test)]
     pub(super) fail_window: bool,
 }
@@ -33,6 +34,7 @@ impl Default for CrossWindows {
             opening: None,
             drag: None,
             reserved: HashSet::new(),
+            preview: drag_preview::DragPreview::default(),
             #[cfg(test)]
             fail_window: false,
         }
@@ -67,6 +69,13 @@ pub(super) struct Drag {
     sample: u64,
     pub(super) payload: Payload,
     pub(super) located: Located,
+    /// The event's pointer in screen coordinates, where the preview goes.
+    pub(super) screen: Option<gpui::Point<f64>>,
+}
+impl Drag {
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 pub(super) struct Incoming {
@@ -158,7 +167,7 @@ impl DesktopRuntime {
     }
 }
 
-fn handle(cx: &App, id: gpui::WindowId) -> Option<AnyWindowHandle> {
+pub(super) fn handle(cx: &App, id: gpui::WindowId) -> Option<AnyWindowHandle> {
     cx.windows()
         .into_iter()
         .find(|handle| handle.window_id() == id)
@@ -227,7 +236,9 @@ impl WorkspaceView {
             window,
             pointer,
             &desktop.cross.windows,
+            desktop.cross.preview.below(),
         );
+        let screen = window_locator::screen_point(window, pointer);
         let desktop = cx.global_mut::<Desktop>();
         if desktop
             .cross
@@ -241,6 +252,7 @@ impl WorkspaceView {
                 sample: 0,
                 payload: payload.clone(),
                 located,
+                screen,
             });
         }
         let Some(drag) = desktop.cross.drag.as_mut() else {
@@ -252,6 +264,7 @@ impl WorkspaceView {
         let previous = drag.located;
         drag.sample = drag.sample.wrapping_add(1);
         drag.located = located;
+        drag.screen = screen;
         let snapshot = drag.clone();
         if let Located::Window(id, _) = previous
             && id != self.window
@@ -276,6 +289,7 @@ impl WorkspaceView {
                 }
             });
         }
+        drag_preview::sync(cx);
         !matches!(located, Located::Window(id, _) if id == self.window)
     }
 
@@ -283,18 +297,44 @@ impl WorkspaceView {
         cx.global::<Desktop>().cross.drag.as_ref().is_some_and(|drag| drag.payload.source == self.window && !matches!(drag.located, Located::Window(id, _) if id == self.window))
     }
 
+    /// A release now would tear the payload off into a new window.
     pub(super) fn tear_off_cue(&self, cx: &App) -> bool {
-        self.tabs.len() > 1
-            && cx
-                .global::<Desktop>()
-                .cross
-                .drag
-                .as_ref()
-                .is_some_and(|drag| {
-                    drag.payload.source == self.window
-                        && drag.payload.pane.is_none()
-                        && drag.located == Located::Outside
-                })
+        cx.global::<Desktop>()
+            .cross
+            .drag
+            .as_ref()
+            .is_some_and(|drag| {
+                drag.payload.source == self.window
+                    && drag.located == Located::Outside
+                    && self.tears_off(&drag.payload)
+            })
+    }
+
+    /// The in-window tear-off cues draw: a release would tear off and no
+    /// floating preview shows.
+    pub(super) fn tear_off_pill(&self, cx: &App) -> bool {
+        self.tear_off_cue(cx) && !drag_preview::visible(cx)
+    }
+
+    /// Whether `payload` can leave this window for a new one: a tab when
+    /// the window has others, a pane unless it is alone in the only tab.
+    pub(super) fn tears_off(&self, payload: &Payload) -> bool {
+        if payload.pane.is_none() {
+            tab_tear_off_availability(self.tabs.len()).is_ok()
+        } else {
+            pane_tear_off_availability(
+                self.tabs.len(),
+                self.pane_count(payload.tab),
+            )
+            .is_ok()
+        }
+    }
+
+    fn pane_count(&self, tab: TabId) -> usize {
+        self.tabs
+            .iter()
+            .find(|view| view.id == tab)
+            .map_or(0, |view| view.panes.len())
     }
 
     pub(super) fn end_cross_drag(
@@ -315,11 +355,12 @@ impl WorkspaceView {
             {
                 clear_incoming_later(id, drag.generation, back, cx);
             }
+            drag_preview::sync(cx);
             cx.notify();
         }
     }
 
-    fn cross_eligible(&self, cx: &App) -> bool {
+    pub(super) fn cross_eligible(&self, cx: &App) -> bool {
         !self.busy
             && self.arrangements == 0
             && !self.overlay_holds_focus()
@@ -716,9 +757,7 @@ impl WorkspaceView {
                 }
                 true
             }
-            Located::Outside
-                if drag.payload.pane.is_none() && self.tabs.len() > 1 =>
-            {
+            Located::Outside if self.tears_off(&drag.payload) => {
                 self.end_cross_drag(true, cx);
                 self.tear_off(drag.payload, window, cx);
                 true
@@ -763,7 +802,11 @@ impl WorkspaceView {
             .as_ref()
             .map(|drag| drag.original_scroll)
             .or(self.transfer_scroll.take());
-        let back = self.pane_drag.as_ref().and_then(PaneDrag::back);
+        let back = self
+            .pane_drag
+            .as_ref()
+            .and_then(PaneDrag::back)
+            .or(self.transfer_back.take());
         self.busy = true;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx.background_executor().spawn(async move {
@@ -1050,14 +1093,22 @@ impl WorkspaceView {
             return;
         }
         self.busy = true;
-        self.transfer_scroll =
-            self.reorder.as_ref().map(|drag| drag.original_scroll);
+        // Release drops the drag before the window opens, so its
+        // restoration is captured now for a failure to put back.
+        self.transfer_scroll = self
+            .reorder
+            .as_ref()
+            .map(|drag| drag.original_scroll)
+            .or_else(|| self.pane_drag.as_ref().map(PaneDrag::original_scroll));
+        self.transfer_back = self.pane_drag.as_ref().and_then(PaneDrag::back);
+        let noun = if payload.pane.is_some() {
+            "Move pane"
+        } else {
+            "Move tab"
+        };
         let content_size = window.viewport_size();
         #[cfg(target_os = "macos")]
-        let placement = self.reorder.as_ref().and_then(|drag| {
-            window_locator::screen_point(window, drag.pointer)
-                .map(|pointer| (pointer, drag.origin))
-        });
+        let placement = self.tear_off_placement(window);
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let cleanup_runtime = Arc::clone(&runtime);
         let task = cx.background_executor().spawn(async move {
@@ -1091,12 +1142,10 @@ impl WorkspaceView {
             let Ok((session, workspace, attachment)) = result else {
                 let _ = source.update_in(cx, |view, window, cx| {
                     view.busy = false;
-                    if let Some(scroll) = view.transfer_scroll.take() {
-                        view.tab_scroll = scroll;
-                    }
+                    view.restore_tear_off(window, cx);
                     if !terminating(cx) {
                         view.report_failure(
-                            "Move tab",
+                            noun,
                             "Cannot create a destination session",
                             cx,
                         );
@@ -1176,15 +1225,29 @@ impl WorkspaceView {
                         if terminating(cx) || cx.global::<Desktop>().quitting {
                             return false;
                         }
-                        view.dispatch_transfer(
-                            payload.source,
-                            destination.window_id(),
-                            Transfer::Tab {
+                        let change = match payload.pane {
+                            Some(pane) => Transfer::Pane(PaneMove::Move {
+                                from: PaneRef {
+                                    workspace: payload.workspace,
+                                    tab: payload.tab,
+                                    pane,
+                                },
+                                to: MoveDestination::NewTab {
+                                    workspace,
+                                    before: None,
+                                },
+                            }),
+                            None => Transfer::Tab {
                                 workspace: payload.workspace,
                                 tab: payload.tab,
                                 to: workspace,
                                 before: None,
                             },
+                        };
+                        view.dispatch_transfer(
+                            payload.source,
+                            destination.window_id(),
+                            change,
                             window,
                             cx,
                         );
@@ -1218,12 +1281,10 @@ impl WorkspaceView {
                 .await;
             let _ = source.update_in(cx, |view, window, cx| {
                 view.busy = false;
-                if let Some(scroll) = view.transfer_scroll.take() {
-                    view.tab_scroll = scroll;
-                }
+                view.restore_tear_off(window, cx);
                 if !terminating(cx) {
                     view.report_failure(
-                        "Move tab",
+                        noun,
                         "Cannot open the destination window",
                         cx,
                     );
@@ -1234,6 +1295,62 @@ impl WorkspaceView {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Puts back the bar scroll and spring-loaded tab a failed tear-off's
+    /// drag left behind.
+    fn restore_tear_off(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Some(scroll) = self.transfer_scroll.take() {
+            self.tab_scroll = scroll;
+        }
+        if let Some(back) = self.transfer_back.take() {
+            self.switch_back(back, window, cx);
+        }
+    }
+
+    /// Where a torn-off window goes on macOS: the screen pointer and the
+    /// content point that should sit under it. A tab keeps its grab offset;
+    /// a pane puts the pointer over the new window's tab bar near its start,
+    /// at its press offset into the title bar, clamped to the bar.
+    #[cfg(target_os = "macos")]
+    fn tear_off_placement(
+        &self,
+        window: &Window,
+    ) -> Option<(gpui::Point<f64>, gpui::Point<Pixels>)> {
+        if let Some(drag) = self.reorder.as_ref() {
+            return window_locator::screen_point(window, drag.pointer)
+                .map(|pointer| (pointer, drag.origin));
+        }
+        let drag = self.pane_drag.as_ref()?;
+        let pointer = window_locator::screen_point(window, drag.pointer)?;
+        let grabbed = self
+            .drawn_panes
+            .borrow()
+            .as_ref()
+            .and_then(|(_, rects)| {
+                rects.iter().find(|rect| rect.pane == drag.pane).copied()
+            })
+            .map_or(drag.origin(), |rect| {
+                let bar = rect.title_bar.unwrap_or(rect.frame);
+                point(
+                    drag.origin().x - bar.origin.x,
+                    drag.origin().y - bar.origin.y,
+                )
+            });
+        let bar = self.chrome_layout(window).strip_bounds(self.layout_tabs());
+        let grab = if self.bar_drawn() && bar.size.width > px(0.0) {
+            point(
+                bar.left() + grabbed.x.clamp(px(0.0), bar.size.width),
+                bar.top() + grabbed.y.clamp(px(0.0), bar.size.height),
+            )
+        } else {
+            grabbed
+        };
+        Some((pointer, grab))
     }
 
     /// The free bar after the labels and add control belongs to the pill.
@@ -1291,6 +1408,33 @@ impl WorkspaceView {
         tab_tear_off_availability(self.tabs.len())
     }
 
+    pub(super) fn check_pane_tear_off_available(
+        &self,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        self.check_new_tab_available(cx)?;
+        self.check_runtime_available(cx)?;
+        let (tab, _) = self.active_pane(cx).ok_or_else(|| {
+            CommandError::Unavailable("window has no active pane".to_owned())
+        })?;
+        pane_tear_off_availability(self.tabs.len(), self.pane_count(tab))
+    }
+
+    pub(super) fn move_pane_to_new_window(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        self.check_pane_tear_off_available(cx)?;
+        let (tab, pane) =
+            self.active_pane(cx).ok_or(CommandError::StaleTarget)?;
+        let payload = self
+            .payload(tab, Some(pane), cx)
+            .ok_or(CommandError::StaleTarget)?;
+        self.tear_off(payload, window, cx);
+        Ok(CommandOutcome::Accepted)
+    }
+
     pub(super) fn move_tab_to_new_window(
         &mut self,
         invocation: &CommandInvocation,
@@ -1334,14 +1478,38 @@ pub(super) fn tab_tear_off_availability(
     }
 }
 
+/// A pane tears off unless it is the only pane of its window's only tab.
+pub(super) fn pane_tear_off_availability(
+    tabs: usize,
+    panes: usize,
+) -> Result<(), CommandError> {
+    if tabs < 2 && panes < 2 {
+        Err(CommandError::Unavailable(
+            "The pane is already alone in its window.".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// The terminal windows in `cx.windows()` order, which smoke indices and
+/// drop labels count. The drag preview and Settings are not among them.
+fn terminal_windows(cx: &App) -> Vec<AnyWindowHandle> {
+    cx.windows()
+        .into_iter()
+        .filter(|handle| handle.downcast::<WorkspaceView>().is_some())
+        .collect()
+}
+
 /// Per-window identities and geometry, shared by the native input fixtures.
 /// Called in application context with no window borrowed.
 pub(super) fn smoke_state(cx: &mut App) -> String {
     use std::fmt::Write as _;
-    let handles = cx.windows();
+    let handles = terminal_windows(cx);
     let mut output = format!(
-        "windows={}\n",
-        cx.global::<Desktop>().windows.records().count()
+        "windows={}\n{}",
+        cx.global::<Desktop>().windows.records().count(),
+        drag_preview::smoke_state(cx),
     );
     for (index, handle) in handles.into_iter().enumerate() {
         let _ = handle.update(cx, |root, window, cx| {
@@ -1356,6 +1524,8 @@ pub(super) fn smoke_state(cx: &mut App) -> String {
             let _ = writeln!(output, "w{index}.native={native} w{index}.active={} w{index}.origin={},{} w{index}.size={},{} w{index}.tabs={} w{index}.tab_ids={ids} w{index}.drawn_tab_ids={drawn} w{index}.terminals={terminals} w{index}.busy={} w{index}.tabs_rects={} {}",
                 window.is_window_active(), origin.x, origin.y, f32::from(window.viewport_size().width), f32::from(window.viewport_size().height), view.tabs.len(), view.busy,
                 view.tab_smoke_rects(window), view.pane_smoke_state(&format!("w{index}."), window, cx));
+            let rect = |bounds: Option<Bounds<Pixels>>| bounds.map_or_else(|| "none".to_owned(), |bounds| format!("{},{},{},{}", f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height)));
+            let _ = writeln!(output, "w{index}.tear_off_pill={} w{index}.pane_tear_off={}", rect(*view.drawn_tear_off.borrow()), rect(*view.drawn_pane_tear_off.borrow()));
         });
     }
     output
@@ -1388,12 +1558,14 @@ pub(super) fn start_smoke_publisher(cx: &mut App) {
 }
 
 pub(super) fn closed(id: gpui::WindowId, cx: &mut App) {
+    drag_preview::closed(id, cx);
     let drag = cx.global::<Desktop>().cross.drag.clone();
     if let Some(drag) = drag
         && (drag.payload.source == id
             || previous_window(drag.located) == Some(id))
     {
         cx.global_mut::<Desktop>().cross.drag = None;
+        drag_preview::sync(cx);
         if let Located::Window(destination, _) = drag.located
             && destination != id
         {
@@ -1440,8 +1612,7 @@ impl WorkspaceView {
                 *generation == drag.generation && *sample == drag.sample
             })
             .map_or("none", |(_, _, label)| label.as_str());
-        let index = cx
-            .windows()
+        let index = terminal_windows(cx)
             .iter()
             .position(|handle| handle.window_id() == destination)?;
         Some(format!("window:{index}:{label}"))

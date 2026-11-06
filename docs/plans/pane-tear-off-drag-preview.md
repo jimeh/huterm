@@ -1,6 +1,6 @@
 # Pane tear-off and the floating drag preview
 
-Status: approved. Delivers
+Status: implemented. Delivers
 [#401](https://github.com/jimeh/huterm/issues/401), a follow-up to
 [cross-window drags](cross-window-drags.md). Jim settled the decisions below
 on 2026-11-04 and picked the mockups on 2026-11-05.
