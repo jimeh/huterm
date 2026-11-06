@@ -27,8 +27,8 @@
 //! Accessibility: a `ScrollView` node; the content reports its own nodes.
 
 use gpui::{
-    AnyElement, Bounds, Context, Div, ElementId, Entity, ParentElement, Pixels,
-    ScrollEvent, ScrollHandle, Styled, div, point, prelude::*,
+    AnyElement, Bounds, Context, Div, Edges, ElementId, Entity, ParentElement,
+    Pixels, ScrollEvent, ScrollHandle, Styled, div, point, prelude::*,
 };
 
 use crate::list_scrollbar::ListScrollbar;
@@ -41,6 +41,7 @@ pub struct ScrollArea {
     scroll: ScrollHandle,
     max_height: Option<Pixels>,
     fill: bool,
+    padding: Edges<Pixels>,
     children: Vec<AnyElement>,
 }
 
@@ -53,6 +54,7 @@ impl ScrollArea {
             scroll: scroll.clone(),
             max_height: None,
             fill: false,
+            padding: Edges::default(),
             children: Vec::new(),
         }
     }
@@ -72,6 +74,15 @@ impl ScrollArea {
     #[must_use]
     pub fn fill(mut self) -> Self {
         self.fill = true;
+        self
+    }
+
+    /// Space inside the scrolled region around the content, which scrolls
+    /// with it. Children stay the region's direct children, so
+    /// `ScrollHandle::scroll_to_item` still indexes them.
+    #[must_use]
+    pub fn padding(mut self, padding: Edges<Pixels>) -> Self {
+        self.padding = padding;
         self
     }
 
@@ -147,6 +158,10 @@ impl ScrollArea {
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .when_some(self.max_height, Styled::max_h)
+                    .pt(self.padding.top)
+                    .pr(self.padding.right)
+                    .pb(self.padding.bottom)
+                    .pl(self.padding.left)
                     .on_scroll(move |_: &ScrollEvent, _, cx| {
                         wheel.update(cx, |view, cx| {
                             get(view).show();

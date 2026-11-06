@@ -42,8 +42,8 @@ use super::licenses::{
     Done as LicensesDone, LicensesFocus, LicensesState, LicensesView,
 };
 use super::notices::{
-    Lifetime, NoticeContent, NoticeId, NoticeSource, NoticeStack, Severity,
-    ToastHandlers, render_notice_stack,
+    Lifetime, NoticeColumn, NoticeContent, NoticeId, NoticeSource, NoticeStack,
+    Severity, StackFit, ToastHandlers,
 };
 use super::overlay::{
     OverlayColors, Swatch, overlay_colors, theme_is_dark, tokens,
@@ -88,6 +88,7 @@ use huterm_ui::components::menu::{
     Menu as MenuView, MenuEvent, min_width as menu_min_width,
 };
 use huterm_ui::components::popover::{Anchor, Popover, place};
+use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::listbox::{Model as MenuModel, Row as MenuRow};
 use huterm_ui::typography::Typography;
 use std::borrow::Cow;
@@ -97,6 +98,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
+/// How far an arrow key scrolls a focused toast taller than the column.
+const NOTICE_KEY_STEP: Pixels = px(64.0);
 /// The smallest pane a split or resize leaves, in cells.
 const MIN_PANE_COLUMNS: u16 = 4;
 const MIN_PANE_ROWS: u16 = 2;
@@ -2762,6 +2765,7 @@ fn open_window_with_profile(
                 .ok()
             });
             let frame_clock = refresh::FrameClock::new(window);
+            let notice_scroll = gpui::ScrollHandle::new();
             #[cfg(target_os = "macos")]
             let native_fullscreen =
                 if std::env::var_os("HUTERM_FULLSCREEN_SMOKE").is_some()
@@ -2916,6 +2920,12 @@ fn open_window_with_profile(
                 notice_focus: cx.focus_handle(),
                 focused_notice: None,
                 hovered_notices: HashSet::new(),
+                notice_scroll: notice_scroll.clone(),
+                notice_scrollbar: crate::ui::list_scrollbar::ListScrollbar::new(
+                    notice_scroll,
+                ),
+                notice_followed: (None, None),
+                notice_button: None,
                 palette: None,
                 palette_refresh_state: None,
                 retained_query: None,
@@ -3170,6 +3180,7 @@ impl refresh::Animated for WorkspaceView {
             .tab_scrollbars
             .schedule(now)
             .merge(self.panel_scrollbar.schedule(now))
+            .merge(self.notice_scrollbar.schedule(now))
             .merge(self.reveal.schedule(now))
             .merge(self.pane_bars.schedule(now))
             .merge(self.pane_grab.schedule());
@@ -3231,6 +3242,9 @@ impl refresh::Animated for WorkspaceView {
         }
         if self.notices.expire(now) {
             self.reconcile_notices(window, cx);
+        } else if frame && self.notices.animating() {
+            // Each frame moves the progress line.
+            cx.notify();
         }
         if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
             self.refresh_tab_visibility(window, cx);
@@ -3249,7 +3263,9 @@ impl refresh::Animated for WorkspaceView {
         if self.pane_grab.tick(now) {
             cx.notify();
         }
-        if self.panel_scrollbar.advance(now) {
+        if self.panel_scrollbar.advance(now)
+            | self.notice_scrollbar.advance(now)
+        {
             cx.notify();
         }
         self.advance_spring(now, window, cx);
@@ -3349,8 +3365,9 @@ impl WorkspaceView {
         self.reconcile_notices(window, cx);
     }
 
-    /// Drops focus and hover state for notices that no longer exist, returns
-    /// focus to the terminal when the focused toast went away, and repaints.
+    /// Drops focus state for notices that no longer exist and hover state
+    /// for toasts no longer drawn, returns focus to the terminal when the
+    /// focused toast went away, and repaints.
     /// Every change to the stack or to focus and hover state ends here.
     fn reconcile_notices(
         &mut self,
@@ -3382,6 +3399,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.focused_notice != Some(id) {
+            self.notice_button = None;
+        }
         self.focused_notice = Some(id);
         self.notice_focus.focus(window, cx);
         self.reconcile_notices(window, cx);
@@ -3436,13 +3456,62 @@ impl WorkspaceView {
             ids::NOTICE_NEXT | ids::NOTICE_PREVIOUS => {
                 let id = self.focused_notice()?;
                 let forward = command == ids::NOTICE_NEXT;
-                if let Some(neighbour) = self.notices.neighbour(id, forward) {
+                // A toast taller than the column reads through first.
+                if self.scroll_focused_notice(forward, Some(NOTICE_KEY_STEP)) {
+                    cx.notify();
+                } else if let Some(neighbour) =
+                    self.notices.neighbour(id, forward)
+                {
                     self.focus_notice(neighbour, window, cx);
                 }
             }
+            ids::NOTICE_FOCUS_NEXT | ids::NOTICE_FOCUS_PREVIOUS => {
+                let id = self.focused_notice()?;
+                let forward = command == ids::NOTICE_FOCUS_NEXT;
+                let buttons = self
+                    .notices
+                    .get(id)
+                    .map_or(1, |notice| notice.content.actions.len() + 1);
+                let current = self
+                    .notice_button
+                    .filter(|(button_id, _)| *button_id == id)
+                    .map(|(_, index)| index);
+                let next = match (current, forward) {
+                    (None, true) => 0,
+                    (None, false) => buttons - 1,
+                    (Some(index), true) => (index + 1) % buttons,
+                    (Some(index), false) => (index + buttons - 1) % buttons,
+                };
+                self.notice_button = Some((id, next));
+                // Actions sit at the toast's bottom, Dismiss at its top.
+                self.scroll_focused_notice(next + 1 < buttons, None);
+                cx.notify();
+            }
             ids::NOTICE_RUN_ACTION => {
                 let id = self.focused_notice()?;
-                self.run_notice_action(id, None, window, cx)?;
+                let button = self
+                    .notice_button
+                    .filter(|(button_id, _)| *button_id == id)
+                    .map(|(_, index)| index);
+                let action = button.map(|index| {
+                    self.notices.get(id).and_then(|notice| {
+                        notice
+                            .content
+                            .actions
+                            .get(index)
+                            .map(|action| action.command.clone())
+                    })
+                });
+                match action {
+                    // Past the actions: the Dismiss button.
+                    Some(None) => self.dismiss_notice(id, window, cx),
+                    Some(Some(command)) => {
+                        self.run_notice_action(id, Some(command), window, cx)?;
+                    }
+                    None => {
+                        self.run_notice_action(id, None, window, cx)?;
+                    }
+                }
             }
             ids::NOTICE_DISMISS => {
                 let id = self.focused_notice()?;
@@ -3521,8 +3590,9 @@ impl WorkspaceView {
     }
 
     fn render_notices(
-        &self,
+        &mut self,
         terminal: Bounds<Pixels>,
+        window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<gpui::Div> {
         if self.notices.is_empty() {
@@ -3557,15 +3627,45 @@ impl WorkspaceView {
             }),
             hover: Rc::new(move |id, hovering, window, cx| {
                 let _ = hover.update(cx, |view, cx| {
-                    if hovering {
-                        view.hovered_notices.insert(id);
+                    // Entering repeats on every pointer move.
+                    let changed = if hovering {
+                        view.hovered_notices.insert(id)
                     } else {
-                        view.hovered_notices.remove(&id);
+                        view.hovered_notices.remove(&id)
+                    };
+                    if changed {
+                        view.reconcile_notices(window, cx);
                     }
-                    view.reconcile_notices(window, cx);
                 });
             }),
         };
+        self.follow_notices();
+        let swatch = tokens(&self.config.theme);
+        let column = NoticeColumn {
+            stack: &self.notices,
+            now: Instant::now(),
+            focused: self.focused_notice,
+            button: self
+                .notice_button
+                .filter(|(id, _)| Some(*id) == self.focused_notice)
+                .map(|(_, index)| index),
+            hovered: &self.hovered_notices,
+            fit: StackFit::new(terminal.size, bottom, window.rem_size()),
+            swatch,
+            handlers: &handlers,
+        };
+        let view = cx.entity();
+        let region = ScrollArea::new("notices", &self.notice_scroll)
+            .fill()
+            .padding(column.fit.region_padding())
+            .children(column.slots())
+            .render(
+                &mut self.notice_scrollbar,
+                swatch.scrollbar,
+                &view,
+                |view| &mut view.notice_scrollbar,
+                cx,
+            );
         Some(
             div()
                 .absolute()
@@ -3573,16 +3673,89 @@ impl WorkspaceView {
                 .top(terminal.origin.y)
                 .w(terminal.size.width)
                 .h(terminal.size.height)
-                .child(render_notice_stack(
-                    &self.notices,
-                    Instant::now(),
-                    self.focused_notice,
-                    &self.notice_focus,
-                    bottom,
-                    tokens(&self.config.theme),
-                    &handlers,
-                )),
+                .child(column.frame(&self.notice_focus, region).on_scroll({
+                    let scroll = self.notice_scroll.clone();
+                    // A stack that scrolls takes the wheel, so the terminal
+                    // beneath does not scroll or report it too. One that
+                    // fits lets it through.
+                    move |_, _, cx| {
+                        if scroll.max_offset().y > Pixels::ZERO {
+                            cx.stop_propagation();
+                        }
+                    }
+                })),
         )
+    }
+
+    /// Scrolls the toast column toward the focused toast's bottom edge
+    /// (`forward`) or its top while that edge is out of view, by at most
+    /// `step`, from the last layout. Returns whether it scrolled.
+    fn scroll_focused_notice(
+        &mut self,
+        forward: bool,
+        step: Option<Pixels>,
+    ) -> bool {
+        let Some(slot) =
+            self.focused_notice.and_then(|id| self.notices.slot(id))
+        else {
+            return false;
+        };
+        let Some(item) = self.notice_scroll.bounds_for_item(slot) else {
+            return false;
+        };
+        let viewport = self.notice_scroll.bounds();
+        let offset = self.notice_scroll.offset();
+        // Item bounds are unscrolled; the offset is zero or negative.
+        let hidden = if forward {
+            item.bottom() + offset.y - viewport.bottom()
+        } else {
+            viewport.top() - (item.top() + offset.y)
+        };
+        if hidden <= px(0.5) {
+            return false;
+        }
+        let distance = step.map_or(hidden, |step| hidden.min(step));
+        let y = if forward {
+            offset.y - distance
+        } else {
+            offset.y + distance
+        }
+        .clamp(-self.notice_scroll.max_offset().y, px(0.0));
+        if y == offset.y {
+            return false;
+        }
+        self.notice_scroll.set_offset(gpui::point(offset.x, y));
+        self.notice_scrollbar.show();
+        true
+    }
+
+    /// Scrolls the toast column to a newly focused toast, or to the newest
+    /// toast when one arrives, so neither opens out of view; a toast that
+    /// arrives while another has keyboard focus keeps the focused one in
+    /// view instead. The scroll applies after the next layout, so a toast
+    /// that expands as it takes focus shows whole, and one taller than the
+    /// column shows its top, where Dismiss is.
+    fn follow_notices(&mut self) {
+        let newest = self.notices.newest();
+        let focused = self.focused_notice;
+        let (followed_newest, followed_focus) = self.notice_followed;
+        let arrived = newest != followed_newest;
+        if (focused.is_some() && focused != followed_focus) || arrived {
+            // A focused toast pushed into the overflow has no slot; show
+            // the newest instead.
+            if let Some(slot) = focused
+                .and_then(|id| self.notices.slot(id))
+                .or_else(|| newest.and_then(|id| self.notices.slot(id)))
+            {
+                self.notice_scroll.scroll_to_item(slot);
+            }
+            if arrived {
+                // A column that overflows shows its indicator for a
+                // moment, so toasts scrolled out of view are not missed.
+                self.notice_scrollbar.show();
+            }
+        }
+        self.notice_followed = (newest, focused);
     }
 }
 
@@ -4224,6 +4397,16 @@ struct WorkspaceView {
     focused_notice: Option<NoticeId>,
     /// Toasts under the pointer; ids of dismissed toasts are ignored.
     hovered_notices: HashSet<NoticeId>,
+    /// The toast column's scroll region.
+    notice_scroll: gpui::ScrollHandle,
+    notice_scrollbar: crate::ui::list_scrollbar::ListScrollbar,
+    /// The newest and the focused notice when the column last followed
+    /// them, so it scrolls only when either changes.
+    notice_followed: (Option<NoticeId>, Option<NoticeId>),
+    /// The focused toast's button that `notice_focus_next` moved to, by
+    /// index among its actions and then Dismiss; Enter presses it. It
+    /// applies only while that toast keeps focus.
+    notice_button: Option<(NoticeId, usize)>,
     palette: Option<Entity<CommandPalette>>,
     palette_refresh_state: Option<PaletteRefreshState>,
     /// A cancelled search query and when it was cancelled.
@@ -4502,10 +4685,13 @@ impl CloseTarget {
     }
 }
 
-/// The owner-side bookkeeping after the notice stack changed: focus and
-/// hover state for notices that no longer exist are dropped, and expiry
-/// pauses only while a live toast is hovered or focused. Returns whether the
-/// focused toast went away, so the caller returns focus to the terminal.
+/// The owner-side bookkeeping after the notice stack changed: focus state
+/// for notices that no longer exist and hover state for toasts no longer
+/// drawn are dropped, and expiry pauses only while a live toast is hovered
+/// or focused. A toast pushed into the overflow never reports the pointer
+/// leaving, so its hover would otherwise pause the stack until dismissed.
+/// Returns whether the focused toast went away, so the caller returns focus
+/// to the terminal.
 fn reconcile_notice_state(
     notices: &mut NoticeStack,
     focused: &mut Option<NoticeId>,
@@ -4513,7 +4699,7 @@ fn reconcile_notice_state(
     now: Instant,
 ) -> bool {
     let focus_lost = focused.take_if(|id| notices.get(*id).is_none()).is_some();
-    hovered.retain(|id| notices.get(*id).is_some());
+    hovered.retain(|id| notices.slot(*id).is_some());
     if focused.is_some() || !hovered.is_empty() {
         notices.pause(now);
     } else {
@@ -9229,7 +9415,11 @@ impl WorkspaceView {
                 | ids::NOTICE_NEXT
                 | ids::NOTICE_PREVIOUS
                 | ids::NOTICE_RUN_ACTION
-                | ids::NOTICE_DISMISS => self.notice_availability(command),
+                | ids::NOTICE_DISMISS
+                | ids::NOTICE_FOCUS_NEXT
+                | ids::NOTICE_FOCUS_PREVIOUS => {
+                    self.notice_availability(command)
+                }
                 ids::OPEN_MENU => self.check_available(false),
                 ids::WINDOW_TRANSPARENCY => {
                     if self.panel.is_some() {
@@ -9967,7 +10157,9 @@ impl WorkspaceView {
             | ids::NOTICE_NEXT
             | ids::NOTICE_PREVIOUS
             | ids::NOTICE_RUN_ACTION
-            | ids::NOTICE_DISMISS => {
+            | ids::NOTICE_DISMISS
+            | ids::NOTICE_FOCUS_NEXT
+            | ids::NOTICE_FOCUS_PREVIOUS => {
                 self.run_notice_command(invocation.id, window, cx)
             }
             ids::CLOSE_WINDOW => {
@@ -14074,7 +14266,8 @@ impl Render for WorkspaceView {
             window,
             cx,
         ));
-        if let Some(notices) = self.render_notices(layout.terminal, cx) {
+        if let Some(notices) = self.render_notices(layout.terminal, window, cx)
+        {
             root = root.child(notices);
         }
         if let Some(panel) = self.render_panel(&layout, window, cx) {

@@ -1245,6 +1245,10 @@ fn notice_defaults_match_only_while_a_toast_has_focus() {
             ("enter", ids::NOTICE_RUN_ACTION),
             ("escape", ids::NOTICE_DISMISS),
             ("delete", ids::NOTICE_DISMISS),
+            ("tab", ids::NOTICE_FOCUS_NEXT),
+            ("right", ids::NOTICE_FOCUS_NEXT),
+            ("shift-tab", ids::NOTICE_FOCUS_PREVIOUS),
+            ("left", ids::NOTICE_FOCUS_PREVIOUS),
         ] {
             assert_eq!(
                 matched(key, &notices),

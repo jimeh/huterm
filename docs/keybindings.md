@@ -339,10 +339,12 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `panel_last` | Window | Bound only while `Panel`. Moves the focused slider to its maximum. |
 | `panel_press` | Window | Bound only while `Panel`. Presses the focused button. |
 | `panel_reset` | Window | Bound only while `Panel`. Clears the focused slider's override, so the window uses the default or its Quake profile's value again. |
-| `notice_next` | Window | Bound only while `notices`. |
-| `notice_previous` | Window | Bound only while `notices`. |
-| `notice_run_action` | Window | Bound only while `notices`. |
+| `notice_next` | Window | Bound only while `notices`. Scrolls a notice taller than the stack down first, then moves to the next notice. |
+| `notice_previous` | Window | Bound only while `notices`. Scrolls a notice taller than the stack up first, then moves to the previous notice. |
+| `notice_run_action` | Window | Bound only while `notices`. Presses the button `notice_focus_next` moved to, or runs the first action. |
 | `notice_dismiss` | Window | Bound only while `notices`. |
+| `notice_focus_next` | Window | Bound only while `notices`. Moves through the selected notice's actions and Dismiss button, wrapping around. |
+| `notice_focus_previous` | Window | Bound only while `notices`. Moves back through the selected notice's actions and Dismiss button, wrapping around. |
 | `settings_search` | Window | Bound only while `Settings`. |
 | `settings_focus_next` | Window | Bound only while `Settings`. |
 | `settings_focus_previous` | Window | Bound only while `Settings`. |
@@ -633,12 +635,21 @@ These bind only while a notice has focus (`notices`), which `focus_notices`
 gives to the newest notice. Dismissing the last focused notice returns focus to
 the terminal.
 
+Notices stack in the terminal's bottom-right corner, no taller than the
+terminal, and scroll when they do not fit. When the terminal is shorter than
+320 points at the default interface size (scaled by `[font] ui_size`), every
+notice but the newest shows only its title and Dismiss button. A notice expands
+while it has focus or the pointer is over it, and the focused notice scrolls
+into view.
+
 | Command | macOS | Linux |
 | --- | --- | --- |
 | `notice_next` | `down` | `down` |
 | `notice_previous` | `up` | `up` |
 | `notice_run_action` | `enter` | `enter` |
 | `notice_dismiss` | `escape`, `delete` | `escape`, `delete` |
+| `notice_focus_next` | `tab`, `right` | `tab`, `right` |
+| `notice_focus_previous` | `shift-tab`, `left` | `shift-tab`, `left` |
 
 ### Settings
 
