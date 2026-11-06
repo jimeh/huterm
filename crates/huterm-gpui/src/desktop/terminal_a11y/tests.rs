@@ -489,6 +489,71 @@ fn a_cursor_past_the_trimmed_text_sits_at_the_line_end() {
     assert_eq!(selected(&model), Some((5, 5, String::new())));
 }
 
+/// What AT-SPI's `getCharacterExtents(caretOffset)` answers, as
+/// `accesskit_atspi_common` computes it: the box of the character at the
+/// caret's focus, or the empty range at the document's end.
+fn caret_extents(model: &Model) -> Rect {
+    let tree = tree(model);
+    let node = terminal(&tree);
+    let offset = node.text_selection_focus().unwrap().to_global_usv_index();
+    let start = node.text_position_from_global_usv_index(offset).unwrap();
+    let mut range = start.to_degenerate_range();
+    if !start.is_document_end() {
+        range.set_end(start.forward_to_character_end());
+    }
+    range.bounding_boxes()[0]
+}
+
+#[test]
+fn the_character_at_a_caret_past_the_trimmed_text_is_drawn_at_the_cursor() {
+    // A bare prompt's trailing space is trimmed, so the caret is the
+    // row's line break, which sits in the cursor's cell.
+    let prompt = with_cursor(
+        snapshot(20, &["user@host:~$ ", "below"]),
+        13,
+        0,
+        CursorShape::Block,
+    );
+    let model = build(&prompt);
+    assert_eq!(text(&model), "user@host:~$\nbelow", "the text is Copy's");
+    assert_eq!(selected(&model), Some((12, 12, String::new())));
+    assert_eq!(caret_extents(&model), cell_rect(13, 0, 1.0));
+    assert_eq!(bounds_of(&model, 11, 12), cell_rect(11, 0, 1.0));
+    // With nothing below, the prompt ends the document: the caret is its
+    // end, which AccessKit draws with no width at the last character's
+    // right edge, so that character reaches the cursor's cell.
+    let last = with_cursor(
+        snapshot(20, &["output", "user@host:~$ ", ""]),
+        13,
+        1,
+        CursorShape::Block,
+    );
+    let model = build(&last);
+    assert_eq!(text(&model), "output\nuser@host:~$");
+    assert_eq!(selected(&model), Some((19, 19, String::new())));
+    let cursor = cell_rect(13, 1, 1.0);
+    assert_eq!(
+        caret_extents(&model),
+        Rect {
+            x1: cursor.x0,
+            ..cursor
+        }
+    );
+    assert_eq!(bounds_of(&model, 18, 19), cell_rect(11, 1, 2.0));
+    // Other rows, and a cursor within the text, keep the line break after
+    // the text.
+    assert_eq!(bounds_of(&model, 6, 7), cell_rect(6, 0, 1.0));
+    let within = with_cursor(
+        snapshot(20, &["user@host:~$ ", "below"]),
+        4,
+        0,
+        CursorShape::Block,
+    );
+    let model = build(&within);
+    assert_eq!(caret_extents(&model), cell_rect(4, 0, 1.0));
+    assert_eq!(bounds_of(&model, 12, 13), cell_rect(12, 0, 1.0));
+}
+
 #[test]
 fn a_soft_wrapped_row_continues_without_a_newline() {
     let model = build(&snapshot(4, &["abcd\\", "ef", "gh"]));

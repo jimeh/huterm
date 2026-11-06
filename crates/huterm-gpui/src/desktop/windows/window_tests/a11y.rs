@@ -191,3 +191,62 @@ fn each_split_pane_has_one_node_whose_runs_move_with_the_pane(
     assert!(moved.0 < right.0, "{right:?} -> {moved:?}");
     assert_eq!(placed(&mut harness, first), left);
 }
+
+#[gpui::test]
+fn a_terminal_shown_again_is_a_new_node_and_keeps_its_node_while_shown(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness
+        .open_tab("printf FIRST; while read line; do echo \"[$line]\"; done");
+    let window = harness.attach_window();
+    harness.wait_text(window, first, "FIRST");
+    harness.activate(window, first);
+    let second = harness.open_tab("printf SECOND; read line");
+    harness.wait_for("the second tab to install", |cx| {
+        terminal(cx, window, second).is_some()
+    });
+    // The window's one terminal node, once its text holds `text`.
+    let shown = |harness: &mut DesktopHarness, text: &str| {
+        harness.wait_for(&format!("the terminal node to read {text}"), |cx| {
+            window
+                .update(cx, |_, window, _| window.debug_a11y_tree_json())
+                .ok()
+                .flatten()
+                .is_some_and(|json| json.contains(text))
+        });
+        let (_, terminals) = terminal_nodes(harness, window);
+        let [(node, read)] = terminals.as_slice() else {
+            panic!("one terminal node: {terminals:#?}");
+        };
+        assert!(read.contains(text), "{read:?}");
+        node["accesskit_id"].clone()
+    };
+    let before = shown(&mut harness, "FIRST");
+    // Output redraws the terminal over several frames, and its node stays.
+    harness.type_line(window, "one");
+    assert_eq!(
+        shown(&mut harness, "[one]"),
+        before,
+        "output keeps the node"
+    );
+    harness.type_line(window, "two");
+    assert_eq!(
+        shown(&mut harness, "[two]"),
+        before,
+        "output keeps the node"
+    );
+    // Hidden, the node leaves the tree, and AT-SPI reports its object
+    // defunct for good, so the terminal shown again is a new object.
+    harness.update_view(window, |view, window, cx| {
+        view.select(second, window, cx);
+    });
+    shown(&mut harness, "SECOND");
+    harness.update_view(window, |view, window, cx| {
+        view.select(first, window, cx);
+    });
+    let after = shown(&mut harness, "[two]");
+    assert_ne!(after, before, "a terminal shown again is a new node");
+    harness.type_line(window, "three");
+    assert_eq!(shown(&mut harness, "[three]"), after, "and keeps it");
+}

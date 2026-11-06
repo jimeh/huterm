@@ -11,9 +11,13 @@
 //! line break is written only once text follows it; a row part with no text
 //! at all is a line break of its own. Each character sits on the displayed
 //! row it is drawn on: a grapheme cell is one character, spacers add none,
-//! and a row's line break follows its text. A row with no characters has no
-//! run, because AccessKit's position and line lookups misbehave next to an
-//! empty one (AccessKit #836 and #837). Runs longer than [`RUN_LIMIT`]
+//! and a row's line break follows its text. A cursor past its row's text
+//! moves that row's line break to the cursor's cell, or stretches the
+//! document's last character to it, in geometry only, so the caret's
+//! character extents are the cursor's (see [`reach_cursor`]). A row with
+//! no characters has no run, because
+//! AccessKit's position and line lookups misbehave next to an empty one
+//! (AccessKit #836 and #837). Runs longer than [`RUN_LIMIT`]
 //! characters continue in another run on the same line, since word starts
 //! are `u8` indices.
 //!
@@ -21,6 +25,7 @@
 //! Building reads only the snapshot the frame paints and the view's own
 //! state; it never calls the runtime.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::ops::Range;
@@ -213,6 +218,8 @@ pub(super) struct Publisher {
     /// same inputs is skipped.
     basis: Option<(Layout, Arc<TerminalSnapshot>)>,
     published_at: Option<Instant>,
+    /// Read only by tests and the macOS accessibility smoke.
+    #[cfg(any(test, target_os = "macos"))]
     publications: u64,
 }
 
@@ -257,7 +264,10 @@ impl Publisher {
         }
         self.published = Rc::new(model);
         self.published_at = Some(now);
-        self.publications += 1;
+        #[cfg(any(test, target_os = "macos"))]
+        {
+            self.publications += 1;
+        }
         Publication::Published
     }
 
@@ -267,6 +277,7 @@ impl Publisher {
     }
 
     /// How many distinct models this view has published.
+    #[cfg(any(test, target_os = "macos"))]
     pub(super) fn publications(&self) -> u64 {
         self.publications
     }
@@ -380,6 +391,8 @@ struct RowText {
     segments: Vec<Segment>,
     /// Characters in all segments.
     len: usize,
+    /// Whether the last character is the row's line break.
+    newline: bool,
 }
 
 impl RowText {
@@ -518,16 +531,27 @@ impl ModelBuilder {
             "the runs hold the document"
         );
 
+        let cursor = snapshot
+            .cursor
+            .filter(|cursor| cursor.row < rows && cursor.column < columns);
+        let cursor_cell = cursor.map(|cursor| {
+            let x = cell_width * f32::from(cursor.column);
+            CursorCell {
+                row: usize::from(cursor.row),
+                x,
+                width: cell_width.min(area_width - x).max(0.0),
+                document_end: texts.iter().rposition(|text| text.len > 0)
+                    == Some(usize::from(cursor.row)),
+            }
+        });
         let runs = runs(
             &texts,
             (origin_x, origin_y),
             cell_height,
             origin_y + area_height,
+            cursor_cell,
         );
 
-        let cursor = snapshot
-            .cursor
-            .filter(|cursor| cursor.row < rows && cursor.column < columns);
         let caret =
             cursor.and_then(|cursor| caret_bounds(cursor, inputs, area));
         let position = |index| model_position(&texts, index);
@@ -552,6 +576,17 @@ impl ModelBuilder {
     }
 }
 
+/// The cursor's displayed cell, relative to its row's left edge.
+#[derive(Clone, Copy, Debug)]
+struct CursorCell {
+    row: usize,
+    x: f32,
+    /// One cell, clipped to the displayed grid.
+    width: f32,
+    /// Whether the cursor's row holds the document's last character.
+    document_end: bool,
+}
+
 /// The rows' runs as nodes, placed from the grid's `origin` down to
 /// `bottom`.
 #[expect(
@@ -564,6 +599,7 @@ fn runs(
     (origin_x, origin_y): (f32, f32),
     cell_height: f32,
     bottom: f32,
+    cursor: Option<CursorCell>,
 ) -> Vec<ModelRun> {
     let mut runs = Vec::new();
     for (index, text) in texts.iter().enumerate() {
@@ -572,17 +608,32 @@ fn runs(
         let count = text.segments.len();
         for (segment_index, segment) in text.segments.iter().enumerate() {
             let mut node = Node::new(Role::TextRun);
+            let mut positions = Cow::Borrowed(&*segment.positions);
+            let mut widths = Cow::Borrowed(&*segment.widths);
+            let mut width = segment.width;
+            if let Some(cursor) = cursor
+                && cursor.row == index
+                && segment_index + 1 == count
+            {
+                width = width.max(reach_cursor(
+                    text.newline,
+                    cursor,
+                    segment.x,
+                    positions.to_mut(),
+                    widths.to_mut(),
+                ));
+            }
             let left = f64::from(origin_x + segment.x);
             node.set_bounds(Rect {
                 x0: left,
                 y0: f64::from(top),
-                x1: left + f64::from(segment.width),
+                x1: left + f64::from(width),
                 y1: f64::from(row_bottom),
             });
             node.set_value(&*segment.value);
             node.set_character_lengths(&*segment.lengths);
-            node.set_character_positions(&*segment.positions);
-            node.set_character_widths(&*segment.widths);
+            node.set_character_positions(&*positions);
+            node.set_character_widths(&*widths);
             node.set_word_starts(&*segment.word_starts);
             node.set_text_direction(TextDirection::LeftToRight);
             runs.push(ModelRun {
@@ -597,6 +648,36 @@ fn runs(
         }
     }
     runs
+}
+
+/// Moves the cursor row's last character to a cursor past the row's text,
+/// so the character at the caret is drawn where the cursor is: AT-SPI
+/// clients read the caret's place from that character's extents, not from
+/// the caret node. Text is unchanged, since it must match Copy.
+///
+/// A line break takes the cursor's cell. A row that ends the document has
+/// no line break, and the caret is the document's end, which AccessKit
+/// places at the right edge of the last character, with no width, so that
+/// character stretches to the cursor's cell. Returns the run's new width,
+/// relative to the segment's left edge `x`.
+fn reach_cursor(
+    newline: bool,
+    cursor: CursorCell,
+    x: f32,
+    positions: &mut [f32],
+    widths: &mut [f32],
+) -> f32 {
+    let last = positions.len() - 1;
+    let at = cursor.x - x;
+    if newline {
+        if positions[last] < at {
+            positions[last] = at;
+            widths[last] = cursor.width;
+        }
+    } else if cursor.document_end && positions[last] + widths[last] < at {
+        widths[last] = at - positions[last];
+    }
+    positions[last] + widths[last]
 }
 
 /// The painted cursor rectangle, clipped to the displayed grid. A hidden
@@ -986,6 +1067,7 @@ fn row_text(
         row: Arc::clone(&cells.row),
         len: characters.len(),
         segments: segments(&characters),
+        newline: plan.newline,
     }
 }
 

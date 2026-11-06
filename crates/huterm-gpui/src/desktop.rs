@@ -525,6 +525,11 @@ struct TerminalView {
     /// The pane title the workspace shows for this view, which names its
     /// accessibility node; empty for a view no workspace hosts.
     a11y_label: String,
+    /// How many times the view has come back into its window after a frame
+    /// without it, which is part of its accessibility node's identity. The
+    /// AT-SPI adapter marks a removed node's object defunct for good, so a
+    /// view shown again must be a new object; see [`Self::a11y_shown`].
+    a11y_shows: u64,
 }
 
 /// Snapshot replies per terminal, counted only while a smoke installs this
@@ -872,6 +877,7 @@ impl TerminalView {
             a11y: terminal_a11y::Publisher::default(),
             a11y_deferred: None,
             a11y_label: String::new(),
+            a11y_shows: 0,
         };
         if let Some(error) = presentation_failure.or(scrollback_failure) {
             view.report_viewer_failure(&error);
@@ -2775,6 +2781,16 @@ impl TerminalView {
         self.a11y.model()
     }
 
+    /// Gives the view's accessibility node a new identity, because the view
+    /// is drawn again after a frame that did not draw it. Its node left the
+    /// tree then, and AccessKit's AT-SPI adapter reported that object
+    /// defunct, which Orca never revisits; a node returning with the same
+    /// ID keeps that path. Never call this for a view that stays shown:
+    /// every new identity removes the old node and adds a new one.
+    fn a11y_shown(&mut self) {
+        self.a11y_shows = self.a11y_shows.wrapping_add(1);
+    }
+
     /// The name of the view's accessibility node: its pane's title.
     fn a11y_label(&self) -> String {
         if !self.a11y_label.is_empty() {
@@ -3751,7 +3767,7 @@ impl Render for TerminalView {
             .is_a11y_active()
             .then(|| self.publish_a11y(window, cx));
         let mut root = div()
-            .id("terminal")
+            .id(("terminal", self.a11y_shows))
             .role(gpui::Role::Terminal)
             .on_hover(cx.listener(|view, hovering, _, cx| {
                 if !hovering && view.scrollbars.pointer_left(Instant::now()) {

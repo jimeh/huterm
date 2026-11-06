@@ -1,0 +1,23 @@
+diff --git a/src/window.rs b/src/window.rs
+index aee1c4dbb0c6a22f9701f5d9b6c8671a787a6346..abcf743db2108dd062d76239856e2ef2901aece2 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1717,6 +1717,10 @@ impl Window {
+                     })
+                 },
+             });
++            // The adapter keeps the bounds until assistive technology
++            // activates it; `bounds_changed` sends every later move and
++            // resize.
++            platform_window.a11y_update_window_bounds();
+ 
+             // A11y can be activated at any time, and so we cannot compute a
+             // correct `TreeUpdate` on-demand. When this happens, we return a
+@@ -2812,6 +2816,7 @@ impl Window {
+         self.scale_factor = self.platform_window.scale_factor();
+         self.viewport_size = self.platform_window.content_size();
+         self.mouse_position = self.platform_window.mouse_position();
++        self.platform_window.a11y_update_window_bounds();
+ 
+         self.refresh();
+ 

@@ -1400,6 +1400,17 @@ closure writes the states through `States::write` and pushes the published
 the text. A synthetic child carries its creator's element id in
 `debug_a11y_tree_json`, so tests skip `synthetic` nodes to find the element.
 
+A hidden tab's terminals leave the tree, and AccessKit's AT-SPI adapter
+reports each removed node's object `defunct`, which Orca then ignores for
+good. GPUI derives a node's ID from its element id path, so a terminal shown
+again would come back as that defunct object. The element id is therefore
+`("terminal", a11y_shows)`: `WorkspaceView::pane_elements` keeps the views
+the last frame drew and calls `TerminalView::a11y_shown` for a view drawn
+after a frame without it. Bump it only then, never per frame, since each new
+identity removes the node and adds another; synthetic children's IDs derive
+from the parent's, so they follow it. On macOS a re-shown terminal is a new
+element too.
+
 The model reads only the snapshot the frame paints, `GridGeometry` (the
 displayed grid clipped to the painted bounds), `Selection::range()`, the
 metrics, and the scale; it never calls the runtime or takes the Mux lock.
@@ -1419,7 +1430,15 @@ characters has no run, because AccessKit misbehaves next to an empty one
 (AccessKit #836 and #837), so an empty grid has no runs and no selection. A
 run holds at most 255 characters, because word starts are `u8`, and continues
 through `next_on_line`. The caret is the painter's `cursor_bounds`, clipped to
-the grid, with a hidden cursor's cell. With no selection, a word or line still
+the grid, with a hidden cursor's cell. macOS reads the caret's frame from that
+node, but AT-SPI clients read `getCharacterExtents(caretOffset)`, the
+character at the caret. So a cursor past its row's trimmed text moves that
+row's line break, or the document's last character, in geometry only: the
+line break takes the cursor's cell, and the last character, after which
+AccessKit draws the document's end with no width, stretches to the cursor's
+cell. The text never changes for it, since it must stay Copy's. A cursor on a
+row with no characters has no character there, so AT-SPI still places the
+caret on the row its offset falls on. With no selection, a word or line still
 expanding, or a selection Copy would copy nothing from, the caret is a
 collapsed selection where a selection starting at the cursor would start.
 Accessibility writes are ignored.

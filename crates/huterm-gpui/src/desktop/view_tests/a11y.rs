@@ -547,7 +547,13 @@ fn the_accessible_text_matches_copy_for_random_selections(
     let mut random = Xorshift(0x5eed_0a11_u64);
     let mut parity = Parity::default();
     for (name, fixture) in parity_fixtures() {
-        let mut harness = ViewHarness::new(cx, &text_fixture(&fixture, ""));
+        // The view starts the terminal unsized. Printed before its geometry
+        // applies, the fixture's rows move when the grid resizes.
+        let script = format!(
+            "until [ \"$(stty size)\" = '14 49' ]; do sleep 0.01; done; {}",
+            text_fixture(&fixture, "")
+        );
+        let mut harness = ViewHarness::new(cx, &script);
         harness.wait_ready(MouseTracking::Disabled);
         harness.wait_for("READY on row 12", |view, _| {
             view.snapshot.as_ref().is_some_and(|snapshot| {

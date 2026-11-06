@@ -6,9 +6,10 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI's core crate has hidden-window creation,
-file-drop pointer-modality, test-window accessibility, keystroke held-flag, and
-App-free keybinding loader patches, its Linux crate has X11 file-drop,
-fullscreen-state, and key-repeat patches, and its macOS crate has
+file-drop pointer-modality, test-window accessibility, keystroke held-flag,
+App-free keybinding loader, and accessibility window-bounds patches, its Linux
+crate has X11 file-drop, fullscreen-state, key-repeat, and accessibility
+window-bounds patches, and its macOS crate has
 offscreen-screen, per-window frame-constraint, and accessibility view adapter
 patches. AccessKit's macOS
 adapter has the terminal text patches described below.
@@ -277,6 +278,39 @@ Both patches are candidates to upstream to Zed's GPUI, which is the owner's
 call. Drop each once a reviewed `gpui-pre` snapshot reports the flag to
 interceptors, and marks X11 repeats, equivalently; the key recorder tests in
 `huterm-ui` and the Settings recorder tests fail without the first.
+
+## GPUI accessibility window bounds on Linux
+
+AccessKit's AT-SPI adapter turns node coordinates, which GPUI gives relative
+to the window, into screen coordinates by adding the root window bounds it was
+last given, and reports those bounds as the window frame's extents. GPUI's
+Linux windows implement `a11y_update_window_bounds`, but core GPUI never
+called it, so screen coordinates equaled window coordinates and the frame had
+no extents. The core `a11y-window-bounds` patch calls it once after
+`a11y_init` (the adapter keeps the bounds until assistive technology
+activates it) and in `Window::bounds_changed`, which every platform move and
+resize reaches. macOS's implementation is empty; AppKit converts there.
+
+The Linux `a11y-window-bounds` patch makes the bounds right. On X11 it asks
+the server for the window's root origin, because GPUI's stored origin keeps
+raw ConfigureNotify coordinates, which can be relative to the window
+manager's frame (see
+[window presentation](../../docs/agents/window-presentation.md#fullscreen)).
+GPUI's own origin tracking is left unchanged, since fullscreen, Quake, and
+restore code is written against it. X11 also reported the window's rectangle
+minus its `_GTK_FRAME_EXTENTS` insets as the inner bounds, but GPUI's
+coordinates start at the X window's origin with client-side decoration insets
+inside it, so a window with a decoration shadow had every screen point off by
+the inset; both bounds are now the X window's rectangle. Wayland has no global
+position, so it reports the window's size at the origin: screen coordinates
+stay the window's own, and the frame gets extents.
+
+None of this runs on the test platform, whose window has no adapter. The
+Linux GNOME VM's AT-SPI probe is the check: the terminal's screen extents
+must be its window extents plus the window's screen origin, and the frame
+must report extents, after moving and after resizing from the top-left
+corner. Drop the core patch when a GPUI snapshot calls the hook itself, and
+the Linux patch when upstream reports equivalent bounds.
 
 ## macOS exclusive global shortcuts
 
