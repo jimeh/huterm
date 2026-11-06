@@ -11,7 +11,15 @@ use super::*;
 
 use crate::test_support::{
     HELD, TestClient, foreground_job, held_pid, job_name, snapshot_text,
+    wait_for_exit, wait_for_text,
 };
+
+/// An upper bound on a shutdown that signals its child instead of waiting
+/// for it. Its own waits total at most 2.2 s (0.1 s each after SIGHUP and
+/// SIGTERM, 1 s after SIGKILL, and 1 s for the final reap); the rest is
+/// room for a loaded host. The children these tests stop live for 30
+/// seconds or forever, so waiting for one exceeds the bound.
+const SHUTDOWN_BOUND: Duration = Duration::from_secs(5);
 
 fn test_client(runtime: &TerminalRuntime) -> TestClient {
     TestClient::new(runtime)
@@ -972,7 +980,10 @@ fn ghostty_runtime_round_trips_and_closes_a_live_child() {
     wait_for_text(&client, "GHOSTTY:hello");
     let started = Instant::now();
     runtime.shutdown().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(
+        started.elapsed() < SHUTDOWN_BOUND,
+        "shutdown waited for the live child"
+    );
 }
 
 #[test]
@@ -1619,37 +1630,6 @@ fn command(script: &str) -> TerminalCommand {
     }
 }
 
-fn wait_for_text(client: &TestClient, needle: &str) -> Arc<TerminalSnapshot> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let snapshot = client.read_snapshot().expect("snapshot should work");
-        let text: String =
-            snapshot.cells().map(|cell| cell.text.displayed()).collect();
-        if text.contains(needle) {
-            return snapshot;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "terminal output did not contain {needle:?}"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn wait_for_exit(client: &TestClient) -> ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let TerminalLifecycle::Exited(status) = client.status().lifecycle {
-            return status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "terminal child did not report exit"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 #[test]
 fn a_queued_request_needs_its_capability_and_an_unrevoked_viewer() {
     let registry = Registry::new(
@@ -1867,13 +1847,21 @@ fn pty_runtime_applies_explicit_terminal_environment() {
 #[cfg(unix)]
 #[test]
 fn pty_runtime_should_process_bursty_output_without_poll_delay() {
-    let started = Instant::now();
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(17),
-        &command("dd if=/dev/zero bs=1048576 count=1 2>/dev/null; printf DONE"),
+        &command(
+            "printf READY; read line; dd if=/dev/zero bs=1048576 count=1 2>/dev/null; printf DONE",
+        ),
     )
     .expect("runtime should start");
-    wait_for_text(&test_client(&runtime), "DONE");
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    // Time the burst alone, not the runtime's spawn or the shell's startup.
+    let started = Instant::now();
+    client
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    wait_for_text(&client, "DONE");
     let elapsed = started.elapsed();
     runtime.shutdown().expect("runtime should stop cleanly");
 
@@ -1981,7 +1969,7 @@ fn shutdown_should_escalate_for_a_hup_resistant_child() {
     runtime.shutdown().expect("runtime should stop cleanly");
 
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < SHUTDOWN_BOUND,
         "shutdown should not wait for the live child"
     );
 }
@@ -2112,7 +2100,8 @@ fn saturated_input_should_not_block_client_or_priority_close() {
         Err(RuntimeError::Busy)
     ));
 
-    let enqueue_started = Instant::now();
+    // The child never reads, so an enqueue that waited for room would never
+    // return; reaching `Busy` proves the client does not block.
     let mut accepted = 0;
     for _ in 0..2_048 {
         match client.send_input(TerminalInput::Text("x".repeat(1_024))) {
@@ -2125,15 +2114,11 @@ fn saturated_input_should_not_block_client_or_priority_close() {
     }
     assert!(accepted > 0, "runtime should accept initial input");
     assert!(accepted < 2_048, "bounded ingress should report saturation");
-    assert!(
-        enqueue_started.elapsed() < Duration::from_secs(1),
-        "client enqueue should not inherit bounded queue backpressure"
-    );
 
     let shutdown_started = Instant::now();
     runtime.shutdown().expect("runtime should stop cleanly");
     assert!(
-        shutdown_started.elapsed() < Duration::from_secs(3),
+        shutdown_started.elapsed() < SHUTDOWN_BOUND,
         "priority close should bypass saturated data traffic"
     );
 }

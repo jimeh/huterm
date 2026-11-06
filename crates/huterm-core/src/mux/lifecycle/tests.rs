@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::wait_for_text;
 use huterm_protocol::{CellSize, GridSize, TerminalCommand, TerminalInput};
 
 fn command(script: &str) -> TerminalCommand {
@@ -16,19 +17,6 @@ fn command(script: &str) -> TerminalCommand {
         scrollback: huterm_protocol::ScrollbackLimit::DEFAULT,
         shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
-    }
-}
-fn ready(client: &crate::test_support::TestClient, text: &str) {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let snapshot = client.read_snapshot().unwrap();
-        let output: String =
-            snapshot.cells().map(|cell| cell.text.displayed()).collect();
-        if output.contains(text) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "missing {text}: {output}");
-        std::thread::sleep(Duration::from_millis(10));
     }
 }
 /// Waits until the root shell holds the terminal's foreground again.
@@ -113,7 +101,7 @@ fn rejected_wrong_workspace_close_preserves_an_unrelated_assessment() {
     let opened = mux
         .open_test_tab(source_workspace, &command("printf READY; read value"))
         .unwrap();
-    ready(&opened.client, "READY");
+    wait_for_text(&opened.client, "READY");
     let target = mux.create_session(None).unwrap();
     let wrong_workspace = mux.create_workspace(target, None).unwrap();
     let attachment = mux.attach_session(target).unwrap();
@@ -169,7 +157,7 @@ fn structural_changes_invalidate_consent_without_consuming_attachment() {
     let opened = mux
         .open_test_tab(source, &command("printf READY; read value"))
         .unwrap();
-    ready(&opened.client, "READY");
+    wait_for_text(&opened.client, "READY");
     let ticket = mux
         .prepare_close(CloseRequest::Window(attachment))
         .unwrap()
@@ -197,7 +185,7 @@ fn answers(client: &crate::test_support::TestClient, marker: &str) {
     client
         .send_input(TerminalInput::Text("next\n".into()))
         .expect("the child no longer accepts input");
-    ready(client, marker);
+    wait_for_text(client, marker);
 }
 #[test]
 fn retarget_keeps_the_old_sessions_child_and_closing_the_new_one_spares_it() {
@@ -212,8 +200,8 @@ fn retarget_keeps_the_old_sessions_child_and_closing_the_new_one_spares_it() {
     let closed = mux
         .open_test_tab(second_workspace, &command(steps))
         .unwrap();
-    ready(&kept.client, "READY");
-    ready(&closed.client, "READY");
+    wait_for_text(&kept.client, "READY");
+    wait_for_text(&closed.client, "READY");
     let attachment = mux.attach_session(first).unwrap();
     mux.retarget_attachment(attachment, second).unwrap();
     answers(&kept.client, "ALIVE");
@@ -249,7 +237,7 @@ fn emptied_window_closes_stop_no_terminal_and_never_need_consent() {
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let held = mux.open_test_tab(workspace, &command(steps)).unwrap();
-    ready(&held.client, "READY");
+    wait_for_text(&held.client, "READY");
     let attachment = mux.attach_session(session).unwrap();
     let before = mux.structure();
     assert!(matches!(
@@ -300,7 +288,7 @@ fn emptied_window_closes_stop_no_terminal_and_never_need_consent() {
     let opened = mux
         .open_test_tab(arriving_workspace, &command(steps))
         .unwrap();
-    ready(&opened.client, "READY");
+    wait_for_text(&opened.client, "READY");
     assert!(matches!(
         commit(&mut mux, ticket),
         Err(MuxError::StaleClose)
@@ -335,7 +323,7 @@ fn detach_keeps_real_child_alive_and_last_window_close_reaps_it() {
             &command("printf READY; read value; printf ALIVE; read value"),
         )
         .unwrap();
-    ready(&opened.client, "READY");
+    wait_for_text(&opened.client, "READY");
     let pid = opened.client.job_context().unwrap().shell.unwrap();
     let attachment = mux.attach_session(session).unwrap();
     mux.detach_session(attachment).unwrap();
@@ -343,7 +331,7 @@ fn detach_keeps_real_child_alive_and_last_window_close_reaps_it() {
         .client
         .send_input(TerminalInput::Text("continue\n".into()))
         .unwrap();
-    ready(&opened.client, "ALIVE");
+    wait_for_text(&opened.client, "ALIVE");
     assert_eq!(mux.sessions().len(), 1);
     assert!(!mux.session_attached(session));
     let attachment = mux.attach_session(session).unwrap();
@@ -370,7 +358,7 @@ fn new_background_job_requires_renewed_consent_and_quit_includes_zero_views() {
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let opened = mux.open_test_tab(workspace, &command("printf IDLE; read value; set -m; sleep 30 & printf BUSY; read value")).unwrap();
-    ready(&opened.client, "IDLE");
+    wait_for_text(&opened.client, "IDLE");
     let idle = mux
         .prepare_close(CloseRequest::Application)
         .unwrap()
@@ -380,7 +368,7 @@ fn new_background_job_requires_renewed_consent_and_quit_includes_zero_views() {
         .client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
-    ready(&opened.client, "BUSY");
+    wait_for_text(&opened.client, "BUSY");
     let busy = idle.recheck();
     assert!(busy.needs_confirmation(), "{:?}", busy.jobs());
     assert!(matches!(
@@ -428,12 +416,12 @@ fn orphans_holding_the_terminal_need_consent_and_are_cleaned_up() {
             )),
         )
         .unwrap();
-    ready(&opened.client, "IDLE");
+    wait_for_text(&opened.client, "IDLE");
     opened
         .client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
-    ready(&opened.client, "BUSY");
+    wait_for_text(&opened.client, "BUSY");
     shell_foreground(&opened.client);
     let busy = mux
         .prepare_close(CloseRequest::Application)
@@ -478,7 +466,7 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
             )),
         )
         .unwrap();
-    ready(&opened.client, "READY");
+    wait_for_text(&opened.client, "READY");
     let shell_group =
         i32::try_from(opened.client.job_context().unwrap().shell.unwrap())
             .unwrap();
@@ -486,7 +474,7 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
         .client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
-    ready(&opened.client, crate::test_support::HELD);
+    wait_for_text(&opened.client, crate::test_support::HELD);
     let deadline = Instant::now() + Duration::from_secs(3);
     let foreground = loop {
         let assessment = mux
@@ -519,7 +507,7 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
     let exited = mux
         .open_test_tab(workspace, &command("printf DONE"))
         .unwrap();
-    ready(&exited.client, "DONE");
+    wait_for_text(&exited.client, "DONE");
     while !exited
         .client
         .job_context()
@@ -578,8 +566,8 @@ fn a_panicked_tab_closes_without_consent_or_failure_and_spares_its_sibling() {
     let workspace = mux.create_workspace(session, None).unwrap();
     let panicked = mux.open_test_tab(workspace, &command(steps)).unwrap();
     let sibling = mux.open_test_tab(workspace, &command(steps)).unwrap();
-    ready(&panicked.client, "READY");
-    ready(&sibling.client, "READY");
+    wait_for_text(&panicked.client, "READY");
+    wait_for_text(&sibling.client, "READY");
     let pid = pid_of(&panicked.client);
     panic_runtime(&panicked.client);
     let assessment = mux
@@ -649,7 +637,7 @@ fn a_stopped_terminal_keeps_job_evidence_aligned_with_a_busy_sibling() {
             &command("set -m; sleep 30 & printf BUSY; read value"),
         )
         .unwrap();
-    ready(&busy.client, "BUSY");
+    wait_for_text(&busy.client, "BUSY");
     panic_runtime(&stopped.client);
     let assessment = mux
         .prepare_close(CloseRequest::Session(session))
@@ -759,7 +747,7 @@ fn consent_survives_child_replacement_inside_the_same_live_job_group() {
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let opened = mux.open_test_tab(workspace, &command("sleep 30 & first=$!; printf FIRST; read step; kill $first; wait $first 2>/dev/null; sleep 30 & printf SECOND; read step")).unwrap();
-    ready(&opened.client, "FIRST");
+    wait_for_text(&opened.client, "FIRST");
     let consent = mux
         .prepare_close(CloseRequest::Application)
         .unwrap()
@@ -769,7 +757,7 @@ fn consent_survives_child_replacement_inside_the_same_live_job_group() {
         .client
         .send_input(TerminalInput::Text("next\n".into()))
         .unwrap();
-    ready(&opened.client, "SECOND");
+    wait_for_text(&opened.client, "SECOND");
     let current = consent.recheck();
     assert_ne!(
         consent.jobs(),
@@ -842,7 +830,7 @@ fn open_idle_tabs(
         })
         .collect();
     for opened in &tabs {
-        ready(&opened.client, "READY");
+        wait_for_text(&opened.client, "READY");
     }
     tabs
 }
@@ -978,7 +966,7 @@ fn split_tab(
             &command(script),
         )
         .unwrap();
-    ready(&second.client, marker);
+    wait_for_text(&second.client, marker);
     (first, second)
 }
 
@@ -1132,7 +1120,7 @@ fn splits_make_pane_and_tab_closes_stale_but_resizes_and_zoom_do_not() {
             &command("printf ADDED; read value"),
         )
         .unwrap();
-    ready(&added.client, "ADDED");
+    wait_for_text(&added.client, "ADDED");
     assert!(matches!(
         mux.commit_close(&assessment, &assessment.recheck(), false),
         Err(MuxError::StaleClose)

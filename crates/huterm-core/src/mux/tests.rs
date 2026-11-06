@@ -569,22 +569,7 @@ pub(super) fn command(script: &str) -> TerminalCommand {
         scrollback_compression: false,
     }
 }
-pub(super) fn wait_for_text(
-    client: &crate::test_support::TestClient,
-    needle: &str,
-) {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let snapshot = client.read_snapshot().unwrap();
-        let text: String =
-            snapshot.cells().map(|cell| cell.text.displayed()).collect();
-        if text.contains(needle) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "missing {needle}: {text}");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
+pub(super) use crate::test_support::wait_for_text;
 
 #[test]
 fn allocation_preserves_reserved_identity_and_rejects_exhaustion() {

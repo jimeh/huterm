@@ -1,10 +1,13 @@
 //! Test-only clients that pair a full-capability viewer with the runtime's
 //! control client.
 
+use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    CellSize, GridSize, TerminalSnapshot, TerminalStatus, ViewerCapabilities,
+    CellSize, ExitStatus, GridSize, TerminalLifecycle, TerminalSnapshot,
+    TerminalStatus, ViewerCapabilities,
 };
 
 use crate::terminal::RuntimeClient;
@@ -59,7 +62,56 @@ impl TestClient {
 
 /// The text of every cell in `snapshot`, row by row, without line breaks.
 pub(crate) fn snapshot_text(snapshot: &TerminalSnapshot) -> String {
-    snapshot.cells().map(|cell| cell.text.as_str()).collect()
+    snapshot.cells().map(|cell| cell.text.displayed()).collect()
+}
+
+/// How long a test waits for a condition. A loaded host can stall a shell
+/// or a runtime thread for seconds, and a passing test never waits it out.
+pub(crate) const WAIT: Duration = Duration::from_secs(10);
+
+/// Polls `probe` until it returns `Ok`, and returns that value. While the
+/// condition does not hold, the probe returns what it observed; after
+/// [`WAIT`] the test fails naming `what` and the last observation.
+pub(crate) fn wait_until<T, Observed: Debug>(
+    what: &str,
+    mut probe: impl FnMut() -> Result<T, Observed>,
+) -> T {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let observed = match probe() {
+            Ok(value) => return value,
+            Err(observed) => observed,
+        };
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}; last observed {observed:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Waits until `viewer`'s screen contains `needle`.
+pub(crate) fn wait_for_text(
+    viewer: &TerminalViewer,
+    needle: &str,
+) -> Arc<TerminalSnapshot> {
+    wait_until(&format!("{needle:?} on screen"), || {
+        let snapshot = viewer.read_snapshot().expect("snapshot should work");
+        let text = snapshot_text(&snapshot);
+        if text.contains(needle) {
+            Ok(snapshot)
+        } else {
+            Err(text)
+        }
+    })
+}
+
+/// Waits until the terminal's child has exited, and returns its status.
+pub(crate) fn wait_for_exit(client: &TestClient) -> ExitStatus {
+    wait_until("the child's exit", || match client.status().lifecycle {
+        TerminalLifecycle::Exited(status) => Ok(status),
+        lifecycle @ TerminalLifecycle::Running => Err(lifecycle),
+    })
 }
 
 /// A spawning viewer with every capability and no initial state.
