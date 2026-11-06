@@ -1,5 +1,5 @@
 diff --git a/src/display_link.rs b/src/display_link.rs
-index 90a25979a1e6a56f07cde1974d97c9e40600372f..cb845227c0734c1461633ed5ec52a74e8d4201a9 100644
+index 90a25979a1e6a56f07cde1974d97c9e40600372f..6e24f8e500b39a5ce97f4f8191279499ace22b9c 100644
 --- a/src/display_link.rs
 +++ b/src/display_link.rs
 @@ -306,10 +306,65 @@ pub struct MetalFrames {
@@ -112,9 +112,14 @@ index 90a25979a1e6a56f07cde1974d97c9e40600372f..cb845227c0734c1461633ed5ec52a74e
          }
      }
  
-@@ -336,6 +420,14 @@ impl MetalFrames {
+@@ -334,8 +418,18 @@ impl MetalFrames {
+     /// Ends an update, pausing the link if GPUI neither used its drawable nor
+     /// asked for another frame while it ran. Returns whether it paused.
      pub fn end_frame(&self, used_drawable: bool) -> bool {
-         let pause = !used_drawable && !self.woken.get();
+-        let pause = !used_drawable && !self.woken.get();
++        // HUTERM_METAL_DIAG probe: never pause, to test whether resuming a
++        // paused link is what stalls frame delivery on the CI runner.
++        let pause = false && !used_drawable && !self.woken.get();
          if pause && let Some(source) = self.source.borrow().as_ref() {
 +            // HUTERM_METAL_DIAG
 +            if !self.diag.paused.replace(true) {

@@ -418,7 +418,9 @@ impl MetalFrames {
     /// Ends an update, pausing the link if GPUI neither used its drawable nor
     /// asked for another frame while it ran. Returns whether it paused.
     pub fn end_frame(&self, used_drawable: bool) -> bool {
-        let pause = !used_drawable && !self.woken.get();
+        // HUTERM_METAL_DIAG probe: never pause, to test whether resuming a
+        // paused link is what stalls frame delivery on the CI runner.
+        let pause = false && !used_drawable && !self.woken.get();
         if pause && let Some(source) = self.source.borrow().as_ref() {
             // HUTERM_METAL_DIAG
             if !self.diag.paused.replace(true) {
