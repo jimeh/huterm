@@ -223,6 +223,17 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
   async function hover(value: string) {
     await waitForState((current) => current.hover === value, `hover ${value}`);
   }
+  /**
+   * Hold the link modifier and wait for the lookup to hover `value`. On X11
+   * the modifier goes to the focused window, and a press or modifier that
+   * lands during a focus change starts no lookup, so wait for an active
+   * window first; a timeout then shows whether focus or the lookup failed.
+   */
+  async function linkIntent(value: string) {
+    if (!macos) await waitForState((current) => current.window_active === "true", `window active before hovering ${value}`);
+    await modifiers(command);
+    await hover(value);
+  }
   async function modifiers(value: number) {
     flags = value;
     if (macos) await commandFile(`native\t56\t${value}\t\t`);
@@ -318,8 +329,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       console.log(`DESKTOP_INTEGRATION ${engine} ${label} retry=${attempt} owned_link=${JSON.stringify(held.owned_link)} window_active=${held.window_active} focused=${held.focused}`);
       await mouse(2, column, row);
       await waitForState((current) => current.owned === "false", `${label} retry release`);
-      await modifiers(command);
-      await hover(link);
+      await linkIntent(link);
     }
   }
   try {
@@ -455,8 +465,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       Number((await state()).requests) === idle,
       "inactive modifiers started lookup",
     );
-    await modifiers(command);
-    await hover(url);
+    await linkIntent(url);
     const cached = Number((await state()).requests);
     for (let i = 0; i < 12; i++) await mouse(5, 2 + (i % 2) * 0.1, 0);
     assert(
@@ -503,8 +512,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await mouse(2, 2, 0);
     await opened(1);
     await raw("plain-link-click-is-not-PTY-input");
-    await modifiers(command);
-    await hover(url);
+    await linkIntent(url);
     await pressLink(2, 0, "link press owned before unrelated output", url);
     for (let i = 0; i < 3; i++) {
       await display(`\x1b[10;1Hunrelated ${i}`);
@@ -517,8 +525,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await opened(2);
     await raw("held-link-survives-unrelated-output");
     if (macos) {
-      await modifiers(command);
-      await hover(url);
+      await linkIntent(url);
       await mouse(1, 2, 0);
       await waitForState(
         (current) => current.owned === "true", "Cmd-left link press ownership",
@@ -552,8 +559,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       await raw("Control-remapped-link-release-cancels-and-next-selection-finishes");
       await opened(2);
     }
-    await modifiers(command);
-    await hover(url);
+    await linkIntent(url);
     await waitForState(
       (current) => current.owned === "false", "previous link press released",
     );
@@ -594,8 +600,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     // the visible rows, and the old screen pointer no longer names row zero.
     await display(`\x1b[2J\x1b[H${url}`);
     await mouse(5, 2, 0);
-    await modifiers(command);
-    await hover(url);
+    await linkIntent(url);
 
     await writeFile(
       config,
@@ -608,21 +613,18 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
       `[terminal]\nclose_on_exit=false\nlinks=true\n`,
     );
     await commandFile("reload_config");
-    await modifiers(command);
-    await hover(url);
+    await linkIntent(url);
     await display(
       "\x1b[2J\x1b[H\x1b]8;;https://first.test/\x1b\\label\x1b]8;;\x1b\\",
     );
-    await modifiers(command);
-    await hover("https://first.test/");
+    await linkIntent("https://first.test/");
     // A press handled after the replacement would own the new link and open it.
     await pressLink(2, 0, "first OSC 8 link press owned before replacement", "https://first.test/");
     await display("\x1b[H\x1b]8;;https://other.test/\x1b\\label\x1b]8;;\x1b\\");
     await mouse(2, 2, 0);
     await raw("OSC8-replacement-cancels-click");
     await opened(2);
-    await modifiers(command);
-    await hover("https://other.test/");
+    await linkIntent("https://other.test/");
     await mouse(1, 2, 0);
     await key(53, "\x1b");
     await mouse(2, 2, 0);
@@ -630,8 +632,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await opened(2);
     await key(53, "\x1b");
     await raw("ordinary-Escape-reaches-PTY", "\x1b");
-    await modifiers(command);
-    await hover("https://other.test/");
+    await linkIntent("https://other.test/");
     // Padding is outside the terminal grid and must clear feedback without output.
     const current = await state();
     if (macos)
@@ -651,8 +652,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     await modifiers(0);
     await display(`\x1b[?1000h\x1b[?1006h\x1b[2J\x1b[H${url}`);
     await mouse(5, 2, 0);
-    await modifiers(command);
-    await hover("");
+    await linkIntent("");
     await mouse(1, 2, 0);
     await mouse(2, 2, 0);
     const applicationCode = macos ? 0 : 16;
@@ -774,8 +774,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     }
     await display(`\x1b[2J\x1b[H${url}`);
     await mouse(5, 2, 0);
-    await modifiers(command);
-    await hover(url);
+    await linkIntent(url);
     await mouse(1, 2, 0);
     await drop("enter");
     await drop("exit");
@@ -901,8 +900,7 @@ clearInterval(timer); clearInterval(stream); clearTimeout(deadline);
     );
     assert((await state()).mouse === "AllMotion", "retained history did not preserve active application mouse mode");
     await mouse(5, 2, 0);
-    await modifiers(command);
-    await hover("https://history.test/");
+    await linkIntent("https://history.test/");
     await mouse(1, 2, 0);
     await mouse(2, 2, 0);
     await opened(4);

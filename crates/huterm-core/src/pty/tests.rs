@@ -570,9 +570,9 @@ fn event(events: &Receiver<&'static str>, expected: &str) {
 #[test]
 fn timed_out_child_is_retained_until_exit_without_blocking_sibling_reap() {
     let (child, exit, events) = child(VecDeque::new());
-    let started = Instant::now();
+    // The child exits only once `exit` sends below, so returning at all
+    // proves the call did not wait for it.
     assert!(!reap_child_with(child, Duration::ZERO, spawn_reaper));
-    assert!(started.elapsed() < Duration::from_secs(1));
     event(&events, "waiting");
     assert!(events.try_recv().is_err(), "child dropped before exit");
 

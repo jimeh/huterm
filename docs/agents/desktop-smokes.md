@@ -236,7 +236,13 @@ Smoke state is sampled from the model, which can run ahead of the drawn frame.
 Before a smoke presses on a newly opened overlay or tab, wait for a field set
 during render or paint, such as `dialog_drawn_groups`, `menu_rect`, or the
 cross-window state's `drawn_tab_ids`, not only for the model flag. A tab's
-press listener exists only once a frame has drawn it.
+press listener exists only once a frame has drawn it. The same holds for
+pointer moves: GPUI routes a wheel or press through the last drawn frame's
+hitboxes, so the palette smoke waits for `drawn_pointer_row`, which the
+results list sets when it renders, before it sends one. Keys typed right
+after an overlay's shortcut reach whatever held focus before the overlay's
+first frame; wait for the overlay's focus field, such as
+`w0.palette_focused=true`, first.
 
 Smoke state can also lag the app. The palette smoke fixture publishes `state`
 every 10ms, before it runs the next file command, so the state read right
@@ -434,6 +440,9 @@ launching integration fixtures.
 Openbox publishes _NET_SUPPORTING_WM_CHECK before completing startup.
 Poll visible windows without xdotool --sync, with a bounded deadline and app/WM
 liveness checks; an empty search is pending, but process or X11 errors must fail.
+Each harness's `run()` kills a command after 5 seconds, so any `--sync` wait
+that outlasts it fails with empty stderr: activate without `--sync` and wait
+for the focus change in the app's own state, as `check-quake.ts` does.
 Keep stderr and bounded PID-window/map/parent diagnostics on discovery failure.
 Finish fixture pointer positioning with a PTY ACK before enabling AllMotion;
 keep reporting enabled through the entire native drag assertion.

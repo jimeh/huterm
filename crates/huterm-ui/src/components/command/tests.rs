@@ -278,6 +278,16 @@ impl Probe {
         })
     }
 
+    fn drawn_hovered(&self, cx: &mut VisualTestContext) -> Option<String> {
+        let command = self.command(cx);
+        cx.read(|cx| {
+            command
+                .read(cx)
+                .drawn_hovered()
+                .map(|option| option.label.to_string())
+        })
+    }
+
     fn text(&self, cx: &mut VisualTestContext) -> String {
         cx.update(|_, cx| self.owner.read(cx).input.read(cx).text().to_owned())
     }
@@ -493,6 +503,40 @@ fn the_item_under_the_pointer_is_reported_until_it_leaves_the_items(
         cx.run_until_parked();
         assert_eq!(
             probe.hovered(cx),
+            None,
+            "pointer highlights: {pointer_highlights}"
+        );
+    }
+}
+
+/// Hitboxes come from the drawn frame, so a wheel or press aimed at the
+/// hovered row is safe only once a frame has drawn the pointer there.
+#[gpui::test]
+fn a_hover_change_draws_a_frame_that_records_it(cx: &mut TestAppContext) {
+    for pointer_highlights in [true, false] {
+        let (probe, cx) = setup(
+            cx,
+            Setup {
+                pointer_highlights,
+                ..Setup::default()
+            },
+        );
+        deliver_frames(cx);
+        hover_fourth(cx);
+        deliver_frames(cx);
+        assert_eq!(
+            probe.drawn_hovered(cx).as_deref(),
+            Some("Fira Code"),
+            "pointer highlights: {pointer_highlights}"
+        );
+        cx.simulate_mouse_move(
+            point(px(40.0), px(12.0)),
+            None,
+            Modifiers::none(),
+        );
+        deliver_frames(cx);
+        assert_eq!(
+            probe.drawn_hovered(cx),
             None,
             "pointer highlights: {pointer_highlights}"
         );

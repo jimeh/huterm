@@ -36,7 +36,8 @@ ENV HOME=/home/huterm \
 USER huterm
 WORKDIR /opt/huterm-tools
 COPY --chown=huterm:huterm mise.toml mise.lock rust-toolchain.toml ./
-RUN mise install rust bun zig \
+# test:rust runs cargo-nextest, a prebuilt GitHub release archive.
+RUN mise install rust bun zig github:nextest-rs/nextest \
     && ln -s /cache/cargo-registry "$HOME/.cargo/registry" \
     && ln -s /cache/cargo-git "$HOME/.cargo/git"
 

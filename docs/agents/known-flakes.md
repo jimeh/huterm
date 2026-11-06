@@ -1,720 +1,115 @@
 # Known flakes
 
-Intermittent failures whose cause is unconfirmed or whose fix is deferred. Check
-this list before treating a red check as a regression, and compare against
-main's recent runs for the same job. Add an entry when a failure recurs without
-a code cause. Update it when evidence changes, and delete it once a fix lands
-and the failure stops.
+Intermittent failures whose cause is unconfirmed or whose fix is deferred.
+Check this list before treating a red check as a regression, and compare
+against main's recent runs for the same job.
 
-Each entry names the failing label, the evidence so far, and how to triage it.
+## The registry
 
-## `smoke:macos-quake` departed-witness activation
+Each flake is one file under [`flakes/`](flakes/): TOML front matter between
+`+++` lines, then the evidence and triage in Markdown. The front matter holds
+what tools read:
 
-- **Label:** the departed-witness block in `scripts/check-quake.ts` (about lines
-  470 to 480), usually "default visible endpoint" or "external target
-  termination moved focus before hide".
-- **Rate:** about 1 in 5 hosted macOS smoke jobs since 2026-09-26. Failures and
-  passes interleave on the same code, and two consecutive failures on one head
-  have occurred without a regression (PR #194, 2026-09-30). It has also failed
-  once in the local Tart VM.
-- **Evidence:** the final state shows `activation_seen=true`, `active=false`,
-  and `current_focus_id` set to the departed witness. SettleVisible reaches
-  Idle only after activation is seen, so the quake was active and the newly
-  launched witness took activation back. `trace.jsonl` records animation
-  samples but not focus, so the reactivation mechanism is unconfirmed.
-- **Hypothesis and mitigation (2026-10-02):** the departed witness requested
-  activation at launch and again on the `focus` command. Under cooperative
-  activation a queued second request may apply after Huterm has seen its own
-  activation, and Huterm deliberately does not re-arm activation retries after
-  that. The departed witness now launches with `--no-launch-activation`, so the
-  awaited `focus` command is its only request. Every witness also logs
-  activation requests and active/resign notifications with uptime to
-  `witness-events`, and departed-block failures print that log.
-- **Other block:** on 2026-10-30 a local host run on a busy shared desktop
-  failed the same way inside the animation matrix (`show_quake` then
-  `settled(true)`, about line 667), with `activation_seen=true` and
-  `active=false`, after "focus restoration failed after hiding: previous
-  application disappeared". The immediate rerun on the same head passed.
-- **Triage:** if the label recurs, read the "departed witness activation
-  events" in the failure. A `became_active` after Huterm summoned the quake
-  confirms a late activation; its absence refutes the hypothesis. Remove this
-  entry after about ten clean macOS smoke runs, the rate at which it used to
-  fail at least once. Otherwise a failure at these labels is this flake; rerun.
-  Investigate failures at other quake labels. The hosted runner's work area is 1024x686,
-  so the quarter-height quake grid has only 8 rows: a new step that prints
-  rows before the geometry section scrolls `READY:` out of view and fails
-  "resize replaced retained window or shell" only in CI.
+- `status`: `open`, `fixing` (name the PR or thread in `owner`), or `fixed`.
+- `kind` and `selector`: a Rust test (`binary`, nextest's binary ID, and
+  `tests`), a smoke step (`steps`, the `HUTERM_CI_SMOKE_STEP` names), a Bun
+  test (`file` and `tests`), or an infrastructure step (`step_names`).
+- `platforms`: where it fails: `linux-x86_64`, `linux-aarch64`,
+  `macos-arm64`, or `macos-x86_64`.
+- `signature`: regular expressions. Every `match` pattern must fit the
+  failure, and no `reject` pattern may. The failure text is the test's
+  output for Rust tests, and the step's error, standard output, and standard
+  error for smokes. One `match` pattern needs a literal run of at least 12
+  characters, so a signature cannot match everything.
+- `retries`: reruns per failure: at most 2 for Rust tests and 1 for smokes,
+  and 0 for Bun, infrastructure, and fixed entries.
+- `review_by`: at most 90 days ahead. Past it, `flakes:check` warns, and
+  every retried pass says "review overdue".
+- `occurrences`: one `[[occurrences]]` table per failure, with `date`, `url`,
+  `pr`, `sha`, `platform`, `retried`, `local`, and `note` as known.
 
-## `smoke:linux-quake` external witness search timeout
+`mise run flakes:check` validates the entries and their links, and fails when
+the index below is stale; `mise run check` and the Policy job run it.
+`mise run flakes:index` rewrites the index.
 
-- **Label:** `Smoke Linux quake windows` in `Rust smoke (Linux x86_64)` fails
-  with `error: xdotool search --sync --name ^Quake external focus witness$:`
-  and no stderr after the colon, thrown by `run()` from the Linux branch of
-  the witness setup in `scripts/check-quake.ts` (about line 257).
-- **Occurrences:** once, on 2026-11-03 (PR #384 at `229a4974`, run
-  41738420581, attempt 1, job 126274168984). The PR does not touch quake code.
-  The same step passed on aarch64 in that run and on both architectures in the
-  PR's earlier runs, and the rerun of the same job passed.
-- **Evidence:** `run()` gives every command a 5-second `spawnSync` timeout.
-  `xdotool search --sync` waits until a matching window exists, so a witness
-  that is slow to map is killed at the deadline, which leaves stderr empty and
-  matches the log. The failure came about 5.4 seconds after the step started,
-  and the retained state shows Huterm's own window ready (`READY:` text,
-  focused, `command_sequence=0`), so Huterm had started and the harness was
-  still waiting for the `xmessage` witness. Whether `xmessage` was slow to map
-  or exited early is unconfirmed: the harness pipes its stderr but does not
-  print it or its exit status on failure.
-- **Triage:** a failure at this label with empty stderr is this flake; rerun.
-  If it recurs, make the failure print the witness's exit status and stderr
-  before changing the timeout, so the next occurrence shows which cause it is.
+## Retries in CI
 
-## Linux renderer smoke startup hang
+The Rust test runner (`scripts/test-rust.ts`) and the smoke step supervisor
+(`scripts/run-smoke-step.ts`) classify every failure against the registry.
+They rerun a failure only when:
 
-- **Label:** `Smoke renderer` in `Rust smoke (Linux x86_64)` or
-  `Rust smoke (Linux aarch64)` times out at 15 seconds with empty stderr and
-  no `RENDERER_SMOKE prepared` line.
-- **Occurrences:** 2026-09-27 (PR #175) and 2026-09-30 (PR #196) on x86_64,
-  then on main: 2026-10-25 on x86_64 (run 40211388780) and 2026-10-26 on
-  aarch64 (run 40346320545), then 2026-10-27 on x86_64 (PR #270, run
-  40495981661, job 122161417130), and again on x86_64 the same day (PR
-  #279, run 40576556557, job 122444431856), and 2026-10-28 on x86_64 (PR
-  #311 at `465f1dbc`, run 40693317698, job 122833434701), and again
-  that day (PR #320 at `667367e6`, run 40783118712, job 123149517765),
-  and 2026-11-04 on aarch64 (PR #388 at `f52c8334`, run 41788505093, job
-  126436114743). Every other Linux smoke in those jobs passed, and reruns
-  passed.
-- **Evidence:** the smoke prints its first `RENDERER_SMOKE prepared` line
-  during the first prepare, and Rust line-buffers stdout even into a pipe,
-  so an empty stdout means the process hung before its first prepare. It
-  did not reproduce in 460 local runs under Xvfb in Docker on arm64,
-  including 400 pinned to four cores with eight running at once. Since
-  2026-10-26 the smoke prints `RENDERER_SMOKE launching` before creating
-  the application and `application started` inside it; `prepared` lines
-  come from the first draw inside `open_window`, and `window opened` after
-  it returns. At its deadline the smoke supervisor also records a `threads`
-  event in `events.jsonl` with each thread's name, state, kernel wait
-  channel, and current syscall.
-- **First thread dump:** the 2026-10-27 run stopped after
-  `application started` at 2.7 seconds, so it hung between application
-  startup and the first draw. At the deadline the main thread was in state
-  `D` in `folio_wait_bit_common`, the kernel's wait on a page-cache folio's
-  lock or writeback bit, with syscall `-1`, meaning it was not in a system
-  call. That combination suggests a page fault waiting on page I/O, but the
-  dump does not show the caller. The other 21 threads, including GPUI's
-  workers, four `llvmpipe` threads, and Mesa's `rendere:disk$0` shader-cache
-  thread, were idle in futex, epoll, or poll waits.
-- **Second thread dump:** the PR #279 run got further. By the job log's
-  timestamps, measured from `RENDERER_SMOKE launching`, which the smoke
-  prints as the supervised process starts: `application started` came at
-  0.2 seconds, the three `prepared` lines at 14.3, and `window opened` at
-  14.3. The supervisor's SIGTERM came at 15.03 seconds (`elapsedMs` 15027 in
-  `outcome.json`), before any paint was reported.
-  This time the main thread was idle in a futex wait. The thread in state `D`
-  in `folio_wait_bit_common`, with syscall `-1`, was an unnamed
-  `renderer_smoke` thread started after the GPUI workers and before the
-  `llvmpipe` threads. Both dumps point at a page-fault stall on page I/O
-  while Mesa starts, not at a deadlock in Huterm code.
-- **Third thread dump:** the PR #311 run matched the first: stdout stopped
-  after `application started`, stderr was empty, and the supervisor's
-  SIGTERM came at 15.02 seconds. At the 15.01-second `threads` event the
-  main thread (its thread ID equal to the process ID) was in state `D` in
-  `folio_wait_bit_common` with syscall `-1`, and the other 20 threads were
-  sleeping (state `S`).
-- **Fourth thread dump:** the PR #320 run also stopped after
-  `application started`, with empty stderr and SIGTERM at 15.02 seconds.
-  At the 15.01-second `threads` event the main thread was running (state
-  `R`, syscall `running`), not waiting on page I/O. Mesa's
-  `WSI swapchain` threads existed, so the window's surface was up, and the
-  other 23 threads were sleeping. Mesa's llvmpipe compiles shaders on the
-  calling thread, so this fits a first draw still compiling at the
-  deadline, not a deadlock.
-- **Fifth thread dump:** the PR #388 run matched the first and third:
-  stdout stopped after `application started`, stderr was empty, and the
-  supervisor's SIGTERM came at 15.02 seconds. At the 15.01-second `threads`
-  event the main `renderer_smoke` thread (its thread ID equal to the process
-  ID) was in state `D` in `folio_wait_bit_common` with syscall `-1`. The
-  rerun passed. This is the first occurrence on aarch64 since 2026-10-26.
-- **Sixth thread dump:** on 2026-11-05 on x86_64 (PR #412 at `766d4bd9`,
-  run 42099318070, job 127498303513), which changes terminal selection and
-  not the renderer, stdout again stopped after `application started`, with
-  empty stderr and SIGTERM at 15.02 seconds. At the 15.01-second `threads`
-  event the main thread (the lowest thread ID) was in state `D` in
-  `folio_wait_bit_common` with syscall `-1`, and the other 11 threads were
-  sleeping.
-- **Triage:** download the `smoke-evidence-Linux-*` artifact and read
-  `renderer-process/stdout.log` for the last marker and
-  `renderer-process/events.jsonl` for the `threads` event. Record both here,
-  then rerun once.
+- an `open` or `fixing` entry matches its selector, platform, and signature;
+- the entry has retries left for this failure; and
+- the job has retried at most one other entry. A third distinct flake in one
+  job fails it, since that many at once points at a regression or a broken
+  runner.
 
-## Linux input smoke tear-off cue timeout
+Any unmatched failure in the same run fails the step without reruns, and a
+rerun that fails with a different signature fails it at once. A failure that
+exhausts its retries fails CI: a repeated failure may be a real regression.
+A failure that matches a `fixed` entry fails as a regression.
 
-- **Label:** `Smoke Linux input` in `Rust smoke (Linux aarch64)`, at
-  `scripts/check-cross-window-input.ts`: "timed out: tear-off cue" while
-  waiting for `w0.drop=tear_off`.
-- **Occurrences:** two consecutive aarch64 runs on 2026-11-04: `main` at
-  `07678e49` (run 41795373417, job 126458105787) and PR #398 at `8799e94f`
-  (run 41884931970, job 126766733997). Linux x86_64 passed in both runs, and
-  the aarch64 job passed on `7d0abfa0` and `4ebf8dd0`.
-- **Evidence:** both last states are identical: `windows=2`, `w0.tabs=2`,
-  `w0.busy=false`, `w0.drop=none`, `w0.window_drag=false`. The tab-slot,
-  pane-edge, and Escape steps before it passed, and the whole cross-window
-  sequence took under two seconds. The step pressed on tab 1 as soon as the
-  model reported the new tab. `tabs_rects` comes from the model, and a tab's
-  press listener exists only from the frame that draws it. With titles fitted
-  to 125 points, a press at tab 1's centre on the old one-tab frame lands past
-  the only label and the add button, which starts no reorder, so no drag record
-  exists and `drop` stays `none`. `drop=none` alone would also fit a drag
-  whose locator sample came back `Blocked`, but `window_drag` reports any
-  pending reorder from its press on, and the button was still held at the
-  timeout, so `window_drag=false` means no reorder existed. This cause is
-  inferred from the state; no run captured the frame.
-- **Fix:** the smoke publishes `drawn_tab_ids`, the tabs the last frame drew,
-  and waits for them to match `tab_ids` before each tab press.
-- **Triage:** a recurrence with `drawn_tab_ids` equal to `tab_ids` rules this
-  cause out; record the last state here. A timeout at "window N active and
-  drawn" or "tear-off source ready" with stale `drawn_tab_ids` means frames
-  stopped; compare it with the Linux renderer smoke startup hang above. Remove
-  this entry after about 20 clean aarch64 runs with the fix.
+Every retried pass gets a warning annotation that names the entry, a row in
+the step summary, and a line in the job's `flake-report-*` artifact. Local
+runs never retry; they print the matching entry and fail.
+`HUTERM_FLAKE_RETRY=1` opts in, and CI sets it.
 
-## `smoke:linux-integration` held-link hover timeout
+## Recording a failure
 
-- **Label:** a timeout at `hover https://example.test/a_(b)?x=1&y=2` inside the
-  held-link loop.
-- **Occurrences:** 2026-09-23 (main) and 2026-09-29 (Dependabot).
-- **Evidence:** an owned link press without a target never triggers another
-  lookup, so hover stays empty. PR #203 added `owned_link` and `window_active`
-  to the smoke state, a bounded press retry that logs
-  `DESKTOP_INTEGRATION ... retry=N`, and a state dump on hover timeouts. The
-  retry may only reduce the rate.
-- **Triage:** read the failure dump. A `retry=` line means the press had no
-  target at press time. No retry line with an emptied `owned_link` means the
-  target was lost during the hold, which the retry cannot cover. Check
-  `window_active` for the X11 focus-flicker theory.
+Run `mise run flakes:record -- <run-or-job-url>` and commit the result. It
+reads the run's flake reports, and the logs of its failed jobs, and appends an
+occurrence to each matching entry; recording the same job twice adds nothing.
+Job logs do not say which step printed a line, so it only names infrastructure
+matches: check the failed step and add those occurrences by hand.
+A failure that matches no entry is reported, so you can add one: copy an
+entry's front matter, write a signature from the failure text, and run
+`mise run flakes:index`. Edit an entry's prose only when the evidence itself
+is new. Set `status = "fixed"` with a new `review_by` when a fix lands, and
+delete the entry once the review date passes without a recurrence.
 
-## Linux client-frame smoke: first key lost after a title-bar drag
+## Index
 
-- **Label:** `Smoke Linux client-side frame` (part of `Smoke Linux command
-  palette` before 2026-10-02) timed out waiting for `ACK:ackdragx`, and the
-  terminal showed `ckdragx`.
-- **Occurrences:** once, 2026-10-01 (Release Please PR #202).
-- **Evidence:** the smoke already waits until Openbox releases its move grab.
-  The first key after the grab still reached the window before GPUI drew the
-  refocused frame and was dropped, as documented for other input smokes.
-- **Mitigation:** the post-drag acknowledgment now resends its token within a
-  bound and logs `CLIENT_FRAME_SMOKE ... ackdragx retry=N` when it had to.
-- **Triage:** a `retry=` line shows the drop recurred and the mitigation
-  absorbed it. A failure after ten attempts means input stopped reaching the
-  window, which is a real regression.
+<!-- flakes:index:start -->
 
-## `smoke:macos-refresh` resize indicator
+### Open
 
-- **Label:** "one-pixel resize activates the indicator without resizing the
-  grid", with opacity 0 in the last observed state.
-- **Occurrences:** once, 2026-09-26 (PR #174); the rerun passed.
-- **Candidates:** after `check_animations`, `resize_visibility` keeps a 100 ms
-  hold, which leaves `check_render_resize` about 500 ms to see nonzero
-  opacity; a runner stall would miss it. Alternatively, no frame rendered after
-  `window.resize`. Restoring the default hold at the start of
-  `check_render_resize` would only help the stall case. Since the size
-  indicator reads `[window] size_indicator_linger_ms` at each resize, the
-  100 ms hold no longer carries into `check_render_resize`, which removes the
-  first candidate.
-- **Triage:** read the step's panic output first; this smoke has caught real
-  bugs. On a second occurrence, look for frame evidence before changing the
-  check.
-- **Not this flake:** "missing pending_work_cancellation success" failed twice
-  on feature branches (2026-10-01 alongside a `projection.rs` panic, and
-  2026-10-02 on in-progress shared-viewer work). Treat that signature as a
-  regression on the branch, not as this flake. Read the `REFRESH_SMOKE
-  failed:` line above it. "this terminal viewer was revoked" failed three
-  times on one branch (2026-10-25, before PR #238 merged) and not since.
-  "detached pending worker retained its receiver" failed once on main
-  (2026-10-26, run 40320456365): the smoke checked the receiver once, but
-  the executor drops a canceled task's future, and the receiver it holds,
-  only when it next runs that task. The smoke now waits for the receiver
-  to close, so its timeout, "detached pending worker to release its
-  receiver: last observed receiver_closed=false", is a real leak.
+| Flake | Kind | Platforms | Seen | Last | Retries | Review by |
+| --- | --- | --- | --- | --- | --- | --- |
+| [GitHub API 403 during CI tool installation](flakes/ci-mise-github-api-403.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
+| [Zig mirror rate limit during CI tool installation](flakes/ci-zig-mirror-rate-limit.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
+| [huterm-core command markers queued behind the exit](flakes/core-record-markers-after-exit.md) | rust | macos-arm64 | 1 local | 2026-11-06 | 0 | 2026-12-06 |
+| [huterm-gpui inactive tab close button](flakes/gpui-inactive-tab-close-button.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 4 CI | 2026-11-06 | 2 | 2026-12-06 |
+| [Linux renderer smoke startup hang](flakes/linux-renderer-startup-hang.md) | smoke | linux-x86_64, linux-aarch64 | 10 CI | 2026-11-05 | 1 | 2026-12-06 |
+| [macOS quake smoke departed-witness activation](flakes/macos-quake-departed-witness-activation.md) | smoke | macos-arm64 | 1 CI, 1 local | 2026-10-30 | 1 | 2026-12-06 |
+| [Install Zig hang](flakes/ci-zig-install-hang.md) | infra | macos-arm64, linux-x86_64, linux-aarch64 | 1 CI | 2026-10-28 | 0 | 2027-01-15 |
+| [Release stapler CloudKit ticket lookup](flakes/release-stapler-cloudkit-lookup.md) | infra | macos-arm64 | 3 CI | 2026-10-27 | 0 | 2027-01-15 |
+| [Linux client-frame smoke first key lost after a title-bar drag](flakes/linux-client-frame-first-key-after-drag.md) | smoke | linux-x86_64, linux-aarch64 | 1 CI | 2026-10-01 | 0 | 2026-12-06 |
+| [Linux integration smoke held-link hover timeout](flakes/linux-integration-held-link-hover.md) | smoke | linux-x86_64, linux-aarch64 | 2 CI | 2026-09-29 | 1 | 2026-12-06 |
 
-## huterm-core foreground-job tests under full local runs
+### Fixed, under observation
 
-- **Label:**
-  `terminal::tests::close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`,
-  `mux::lifecycle::tests::orphans_holding_the_terminal_need_consent_and_are_cleaned_up`
-  ("orphan missing" or `!orphan.foreground`), and
-  `mux::lifecycle::tests::foreground_exit_and_unavailable_runtime_are_assessed_conservatively`
-  ("foreground job not observed"). Under heavier load other job-control
-  tests in `terminal::tests` fail the same way, among them
-  `foreground_jobs_are_named_while_running_and_cleared_on_return`,
-  `osc7_reports_apply_only_while_their_reporter_holds_the_foreground`,
-  `job_titles_apply_only_while_the_job_holds_the_foreground`, and
-  `shutdown_should_terminate_a_distinct_foreground_process_group`.
-- **Rate:** about 1 in 3 full `cargo test -p huterm-core --lib` runs on a
-  developer Mac, at the 3-second "foreground job not detected" deadline. All
-  three pass alone and in CI. On 2026-10-20, during the dependency refresh, 4
-  of 7 full runs on a loaded developer Mac failed one of them (3 were the
-  orphan test). On 2026-10-26, during the split-pane runtime work (PR #245),
-  one full local `mise run test` run failed the
-  `foreground_exit_and_unavailable_runtime_are_assessed_conservatively` test:
-  its last assessment still showed `sleep 30` in a background group, not yet
-  the foreground one `fg` moves it to. It passed in 5 isolated reruns and 3
-  full reruns of the `mux::` suite, and PR #245 did not change the code it
-  exercises. Later that day one `mise run verify` run for the pushed terminal
-  geometry work, which changes no `huterm-core` code, failed both that test
-  and `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
-  in the same run; the rerun passed. A `mise run verify` run on the
-  scrollback branch (PR #243) also failed that test once that day. Also on
-  2026-10-26, one `mise run test:ghostty-releasesafe` run on the pane moves
-  runtime branch (#29 PR 1), which changes no job or close-assessment code,
-  failed the orphan test with a new signature: the `sleep 30` job was found
-  but reported as foreground (`assert!(!orphan.foreground)`). The cause is
-  unconfirmed. The rerun passed all 391 tests. On 2026-10-27, during the
-  pane drag work (#29 PR 3), which changes no `huterm-core` code, one full
-  local `mise run test` failed three at once:
-  `foreground_exit_and_unavailable_runtime_are_assessed_conservatively`,
-  `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`, and
-  `job_titles_apply_only_while_the_job_holds_the_foreground`. The rerun
-  passed, at a load average near 9. On 2026-10-30, during the modifier pane
-  drag work, which changes no `huterm-core` code, one local `mise run
-  verify` failed `close_confirmation_distinguishes_idle_shell_foreground_job_and_exit`
-  ("terminal child did not report exit"); the rerun passed at a load
-  average near 22. On 2026-11-04, during the per-window transparency work
-  (#399), which changes no `huterm-core` code, two consecutive local `mise
-  run test` runs failed
-  `foreground_exit_and_unavailable_runtime_are_assessed_conservatively`
-  at a load average near 6, and a `mux::` filtered run then failed the
-  orphan test. It passed in 3 isolated reruns, the whole `huterm-core`
-  suite passed with `--test-threads=4`, and a third full workspace run
-  passed it. On 2026-11-05, during the word and line selection work, one
-  `mise run test:ghostty-releasesafe` run failed it with the same message,
-  although the change touches no job or close-assessment code; it passed in
-  3 isolated ReleaseSafe reruns. On 2026-11-06, during the pane tear-off
-  work (#401), which changes no `huterm-core` code, one local `mise run test`
-  failed it with the same message (`sleep 30` still in a background group);
-  it passed in 3 isolated reruns. The same day, during the gpui-pre 0.3.11
-  upgrade, which also changes no `huterm-core` code, one full local `mise run
-  test` failed both mux tests (`!orphan.foreground` and "foreground job not
-  observed") at a load average near 20; three `mux::lifecycle` reruns passed.
-- **Cause:** the system shell's job control, not Huterm. These tests already
-  poll their conditions. With the load average around 90 on a 16-core Mac
-  (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.
-  With every deadline in `terminal/tests.rs` and `mux/lifecycle/tests.rs`
-  raised to 60 seconds, 8 of 24 still failed, so the jobs were stuck, not
-  slow. The failing screens showed macOS `/bin/sh` (bash 3.2) printing
-  `child setpgid (N to N): Operation not permitted`, or `fg` running
-  `sleep 30` to completion while the terminal never named a separate
-  foreground group. The `foreground_reporter` comment in `terminal/tests.rs`
-  describes the same shell behavior. Longer deadlines would not help; a fix
-  would give these fixtures a process group that they create and hand the
-  terminal to themselves, rather than relying on `/bin/sh` job control.
-- **Triage:** rerun once, and check `uptime` before suspecting the change.
-  CI has not failed these.
+A failure that matches one of these fails CI as a regression. Remove an
+entry once its review date passes without a recurrence.
 
-## huterm-procinfo live group leader arguments on Linux
+| Flake | Kind | Platforms | Seen | Last | Retries | Review by |
+| --- | --- | --- | --- | --- | --- | --- |
+| [huterm-core foreground-job tests under full local runs](flakes/core-foreground-job-tests.md) | rust | macos-arm64 | 1 CI, 11 local | 2026-11-06 | 0 | 2026-12-06 |
+| [idle-sample.test.ts native sampler compile timeout](flakes/idle-sample-compile-timeout.md) | bun | macos-arm64 | 1 CI, 1 local | 2026-11-06 | 0 | 2026-12-06 |
+| [Linux palette smoke busy step](flakes/linux-palette-busy-step.md) | smoke | linux-x86_64, linux-aarch64 | 15 CI | 2026-11-05 | 0 | 2026-12-06 |
+| [huterm-gpui pane rename title on hosted macOS](flakes/gpui-pane-rename-title.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 2 CI | 2026-11-04 | 0 | 2026-12-06 |
+| [Linux input smoke tear-off cue timeout](flakes/linux-input-tear-off-cue.md) | smoke | linux-x86_64, linux-aarch64 | 2 CI | 2026-11-04 | 0 | 2026-12-06 |
+| [Linux palette smoke wheel does not scroll the results](flakes/linux-palette-wheel-scroll.md) | smoke | linux-x86_64, linux-aarch64 | 3 CI | 2026-11-04 | 0 | 2026-12-06 |
+| [Linux quake smoke external witness search timeout](flakes/linux-quake-witness-search-timeout.md) | smoke | linux-x86_64, linux-aarch64 | 1 CI | 2026-11-03 | 0 | 2026-12-06 |
+| [huterm-gpui Edit menu Select All](flakes/gpui-edit-menu-select-all.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 6 CI, 1 local | 2026-10-31 | 0 | 2026-12-06 |
+| [Linux overlays smoke Enter on "Close 2 tabs?" closes no tabs](flakes/linux-overlays-close-tabs-enter.md) | smoke | linux-x86_64, linux-aarch64 | 7 CI | 2026-10-31 | 0 | 2026-12-06 |
+| [macOS input smoke empty state read](flakes/macos-input-empty-state-read.md) | smoke | macos-arm64 | 2 CI, 1 local | 2026-10-30 | 0 | 2026-12-06 |
+| [smoke-process.test.ts deadlines under parallel builds](flakes/smoke-process-test-deadlines.md) | bun | macos-arm64 | 4 local | 2026-10-30 | 0 | 2026-12-06 |
+| [huterm-gpui replaced view's clipboard write on Linux](flakes/gpui-replaced-view-clipboard-write.md) | rust | linux-x86_64, linux-aarch64 | 5 CI | 2026-10-28 | 0 | 2026-12-06 |
+| [macOS palette smoke stray DEL at an early step](flakes/macos-palette-stray-del.md) | smoke | macos-arm64 | 2 local | 2026-10-26 | 0 | 2026-12-06 |
+| [huterm-procinfo live group leader arguments on Linux](flakes/procinfo-live-group-leader-arguments.md) | rust | linux-x86_64, linux-aarch64 | 4 CI | 2026-10-26 | 0 | 2026-12-06 |
+| [macOS refresh smoke resize indicator](flakes/macos-refresh-resize-indicator.md) | smoke | macos-arm64 | 1 CI | 2026-09-26 | 0 | 2026-12-06 |
 
-- **Label:**
-  `tests::reads_a_live_process_group_leader_and_its_arguments` in
-  `Checks (Linux x86_64)` or `Checks (Linux aarch64)`, panicking at
-  `arguments(pid).unwrap()` with "called `Option::unwrap()` on a `None`
-  value". After the fix, a failure there times out with "condition never
-  held; last observed" and the process facts and arguments it last read.
-- **Occurrences:** four, each at `lib.rs:262:35`: 2026-10-21 on x86_64
-  (PR #226, run 39695920472), then on aarch64 on 2026-10-25 (Release Please,
-  run 40219352235) and 2026-10-26 (Dependabot run 40266500383, and main run
-  40320456365). Reruns passed.
-- **Cause:** Linux renames the process `sleep` before the exec records where
-  its arguments are, and `cmdline` reads as empty until then. The public
-  `arguments` turns an empty list into `None`. Reading `cmdline` the moment
-  `stat` first named `sleep` returned nothing in 494 of 500 tries in Docker
-  on arm64. The test now waits for the name and the arguments in one poll.
-  With that poll running without a pause, the old test failed 174 of 200
-  runs and the new one passed 200 of 200.
-- **Triage:** a failure at this test after the fix landed is new; read the
-  last observed facts and arguments in its panic before rerunning. Remove
-  this entry once the fixed test has passed in about 20 Linux check jobs.
-
-## huterm-gpui replaced view's clipboard write on Linux
-
-- **Label:**
-  `desktop::windows::window_tests::a_replaced_view_receives_output_status_exit_and_clipboard_without_frames`
-  in `Checks (Linux aarch64)` or `Checks (Linux x86_64)`, "timed out
-  waiting for the clipboard write".
-- **Occurrences:** five. Four on aarch64: on `main` (run 40211388780,
-  2026-10-25), on PR #243 (run 40264983260, head `0ddb1fa4`), on `main`
-  again (run 40308946971, 2026-10-26), and on PR #294 (run 40633635594,
-  head `fa3fe8f8`, 2026-10-28). The fifth, the first on x86_64, was on
-  PR #304 (run 40647544648, head `4aa96be9`, 2026-10-28). It passed 20 of
-  20 isolated runs on a macOS host.
-- **Triaged state:** the PR #294 and PR #304 runs both show the triage
-  state below: `epoch=1 revoked=false exited=false title="two"
-  clipboard_writes=0 text_tail="READYout OUTtitle clip CLIPPED"`. That is
-  the case where the terminal parsed the write and it never reached the
-  view, with no second replacement. On PR #294 the next head passed.
-- **Evidence:** the output and title steps before it passed, so the
-  replacement viewer was live. It did not reproduce in Docker on arm64:
-  700 isolated runs, including 300 pinned to one CPU, and about 100 full
-  `huterm-gpui` suite runs under load. Temporary logging in the engine's
-  clipboard callback saw only accepted admissions. Admission is
-  nonblocking: a contended lock answers `Busy`, and Ghostty drops the write,
-  so a lost race would also lose a real OSC 52 write. That remains a
-  candidate, not a finding.
-- **Triage:** since 2026-10-26 the window-test failure state lists each
-  tab's focused view with its `epoch`, `revoked`, `title`,
-  `clipboard_writes`, and `text_tail`, and the fixture prints `CLIPPED`
-  right after its OSC 52 write. The PTY echoes the typed `clip` before the
-  shell reads it, so `clip` alone shows only that the input arrived.
-  `CLIPPED` with `clipboard_writes=0` at `epoch=1` means the terminal
-  parsed the write and it never reached the view. `clip` without `CLIPPED`
-  means the shell had not printed it, or that output had not reached the
-  view either. A higher epoch means a second replacement. Record which,
-  then rerun once.
-
-## `smoke:macos-input` empty state read
-
-- **Label:** `Smoke macOS input` in `Rust smoke (macOS arm64)`, "no
-  pane_rects in" followed by nothing, from `field(panes, "pane_rects")` at
-  `scripts/check-native-input.ts` right after the `pane-keys-consumed`
-  marker.
-- **Occurrences:** 2026-10-27, on PR #281 (run 40587040829, job
-  122481163722, head `5e1c3c66`). The PR does not change the input smoke or
-  the code it drives; the same job passed on its earlier head `60c82966`.
-  Again on 2026-10-28, on PR #318 (run 40768430893, job 123099018222, head
-  `86322b08`), which also left the input smoke alone; the next head passed.
-- **Evidence:** `currentState()` returned an empty string, yet the state
-  read for the error message moments later held `pane_rects`. The smoke
-  writes `state` every 10ms with `std::fs::write`
-  (`desktop/input_smoke.rs`), which truncates the file before writing it,
-  so a read that lands in between sees it empty. `currentState()` turns a
-  failed read into an empty string as well.
-  Seen locally on 2026-10-30 as "no pane_grids in" at the divider step,
-  while adding the modifier drag step.
-- **Fix:** `currentState()` now retries an empty read until the file holds
-  the state. If the error returns, the read is failing in another way.
-
-## Linux overlays smoke: Enter on "Close 2 tabs?" closes no tabs
-
-- **Label:** `Smoke palette` or `Smoke Linux overlays` in the Linux Rust
-  smoke jobs, at the `close_other_tabs` step of `scripts/check-overlays.ts`:
-  timed out waiting for `w0.confirming=false`, `w0.tabs=1`,
-  `w0.active_index=0`, and `w0.terminal_focused=true`.
-- **Occurrences:** six runs between 2026-10-28 and 2026-10-31, on PRs
-  that changed neither the close dialog nor tab closing:
-  - PR #318, run 40768430893, jobs [123099017973][overlays-318-x86] and
-    [123099018193][overlays-318-arm], head `86322b08`, both architectures.
-  - PR #333, run 41002162507, job [123888961905][overlays-333], head
-    `9a732f70`, aarch64 only.
-  - PR #330, run 41000212950, job [123882888482][overlays-330], head
-    `4b7be1f5`, aarch64 only; the rerun passed.
-  - PR #353, run 41161296347, job [124419228976][overlays-353], head
-    `d4347ab4`, x86_64 only.
-  - PR #358, run 41176975476, job [124466434006][overlays-358], head
-    `b7aae6e9`, aarch64 only.
-  - PR #363, run 41214596936, job [124576473001][overlays-363], head
-    `9cb9ad94`, aarch64 only.
-- **Evidence correction:** all seven original job logs show the same actual
-  state: `w0.confirming=true`, `w0.dialog_focus=primary`, `w0.busy=false`,
-  `w0.tabs=3`, `w0.active_index=2`, and `w0.terminal_focused=false`. Earlier
-  versions of this entry misread the timeout's expected
-  `w0.confirming=false` as the observed state in four runs. The logs do not
-  show a dialog closing without closing its tabs.
-- **Cause:** the step waited for the confirmation model and title, but not
-  for the primary button's focus, unlike the neighboring steps. Since
-  migration 7b, focus enters on the dialog's first frame. Enter before that
-  focus change presses no button; the dialog later draws with primary focus
-  and stays open. `confirming` reports the close model, `dialog_focus`
-  reports the button's GPUI focus, and `terminal_focused` reports the active
-  terminal's GPUI focus. Missing terminal focus is expected while the dialog
-  remains open. No close-dialog product defect was found.
-- **Fix:** wait for `w0.dialog_focus=primary` alongside the model and title
-  before sending Enter. Keep the final assertion of one tab and restored
-  terminal focus.
-- **Triage:** record any recurrence with the actual state after `state=`,
-  rather than the expected fields in the timeout label. Remove this entry
-  after about 20 clean Linux overlays CI runs with the fix.
-
-[overlays-318-x86]: https://github.com/jimeh/huterm/actions/runs/40768430893/job/123099017973
-[overlays-318-arm]: https://github.com/jimeh/huterm/actions/runs/40768430893/job/123099018193
-[overlays-333]: https://github.com/jimeh/huterm/actions/runs/41002162507/job/123888961905
-[overlays-330]: https://github.com/jimeh/huterm/actions/runs/41000212950/job/123882888482
-[overlays-353]: https://github.com/jimeh/huterm/actions/runs/41161296347/job/124419228976
-[overlays-358]: https://github.com/jimeh/huterm/actions/runs/41176975476/job/124466434006
-[overlays-363]: https://github.com/jimeh/huterm/actions/runs/41214596936/job/124576473001
-
-## `smoke:macos-palette` stray DEL at an early step
-
-- **Label:** an early terminal-bytes check in `scripts/check-palette.ts`
-  received an unexpected DEL (`\x7f`).
-- **Occurrences:** local runs only, 2026-09-16 and 2026-10-26; reruns
-  passed, and 3 of 3 host runs passed later on 2026-10-26. The 2026-09-16
-  report put it down to other Huterm instances running on the host. Neither
-  failure's output was kept.
-- **Evidence:** the smoke sends Backspace as DEL. If the failing check was
-  step 1's `terminalBytes("e")`, the Backspace sent just before it does not
-  explain the DEL: the `query="tfs"` check between them passes only if that
-  Backspace reached the palette. Real HID events from another process on
-  the host, such as the quake witness's global shortcuts, go to whichever
-  window is frontmost. It is not the race fixed in the Linux palette
-  smoke busy step below: posted events stay in order with each other, and
-  no file command sits between that Backspace and the `query="tfs"` check.
-- **Triage:** keep the failing step, its expected and received bytes, and a
-  list of what else was running on the host; record them here, then rerun.
-
-## Linux palette smoke wheel does not scroll the results
-
-- **Label:** `Smoke Linux command palette` in `Rust smoke (Linux aarch64)`,
-  at the wheel step of `scripts/check-palette.ts`: timed out waiting for
-  `palette wheel scroll` after `xdotool click 5`.
-- **Occurrences:** once, 2026-10-29, on PR #322 (run 40799335675, job
-  123203389902, head `0f2298e4`), the PR that moved the palette's results
-  onto `huterm-ui`'s `Command`. The x86_64 job passed the same step, and
-  both Linux jobs passed it on the next head, `11797d9e`, which did not
-  change the wheel path.
-- **Evidence:** the last state had `results=82`, `highlighted_row=Some(0)`,
-  `hover=Some(0)`, `wheel_events=1`, and `scroll_offset=0.0`: the wheel
-  reached the palette, and the pointer was over the first row, but the
-  list did not scroll. GPUI scrolls the element whose hitbox was under the
-  pointer in the last drawn frame, and `Command`'s rows record hover
-  without asking for a frame, so a wheel that arrives before a frame drawn
-  with the pointer there may miss the list. The palette's own list before
-  #322 redrew on hover. This is unconfirmed.
-- **Second occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
-  124475722569, head `5199386c`), x86_64 this time, with the same last state
-  (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
-  `scroll_offset=0.0`). The PR changes neither the palette nor
-  `option_list`.
-- **Third occurrence:** 2026-11-04 on PR #383 (run 41761415801, job
-  126349739460, head `0ea47d2a`), aarch64, with the same last state
-  (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
-  `wheel_events=1`, `scroll_offset=0.0`). The PR bundles a terminal font and
-  does not touch the palette or `option_list`.
-- **Triage:** rerun and record the run here. If it recurs, have the smoke
-  wait for a frame drawn after `movePointerToRow` before the wheel, or make
-  a hover change in `option_list` request a frame.
-
-## Linux palette smoke busy step
-
-- **Label:** `Smoke Linux command palette` in either Linux Rust smoke job,
-  from the `busy-on` step of `scripts/check-palette.ts`, with one of two
-  signatures:
-  - "ghostty: expected 3 core tabs, got 4" from the `coreState(3)` call
-    just before `delete-target`, with an extra main-window tab active at
-    `w0.active_index=2`; where recorded, its ID, 16, was below
-    `fixture-session` 19.
-  - A timeout waiting for `selected=new_tab` and "structural operation in
-    progress", with `w0.busy=true`, `w0.palette=false`, and last terminal
-    bytes `1f 43 44`.
-- **Occurrences:** 15 between 2026-10-27 and 2026-11-05, on x86_64 and
-  aarch64, on PRs that did not change the palette or its smoke, across
-  about 620 CI runs. Reruns and later heads passed where recorded. The extra
-  tab: PRs #269 (run 40515770496), #331 (41006554547), #343 (41108259656),
-  #362 (41209548791), #363 (41212003791), #383 (41731482596), and #397
-  (41792849682). The closed palette: PRs #279 (40578248073), #318
-  (40767320033), #331 (41007277899), #354 (41161794041), #355
-  (41167918791), #363 (41213983677), #383 (41731482596), and #412
-  (42097959036).
-- **Cause:** on Linux the smoke sends keys through `xdotool` and commands
-  through files, and nothing orders the two. Opening the palette checks
-  the window's availability, so a `busy-on` handled before the palette
-  shortcut left the palette closed, and the busy window also kept the
-  typed `new tab` from the terminal. After Enter, the step waited for a
-  state that already held before Enter, then sent `busy-off`, so an Enter
-  handled after `busy-off` ran `new_tab`.
-- **Reproduction:** in the Linux container, probe copies of the smoke that
-  queued each `xdotool` key 150ms late, in order, reproduced both CI states
-  6 of 6 times: late keys from the palette shortcut on gave the closed
-  palette, and a late Enter and Escape gave the extra tab. The fixed step
-  passed both 6 of 6 times. Under heavy CPU load the unmodified smoke hit
-  the extra tab once in 240 runs, with no ESC in the terminal bytes as in
-  CI. Where the Escape after `busy-off` went in those failures is still
-  unexplained; the fix does not depend on it. The fixed smoke had no
-  busy-step failure in 240 runs. Its two failures there were the wheel
-  flake above and a `show_quake` timeout, which the unmodified smoke also
-  hit under heavier load.
-- **Fix (PR #427):** the step waits for the palette to open and take
-  focus before `busy-on`. After Enter it waits for the palette's
-  `diagnostic=Some("Unavailable: structural operation in progress")`,
-  which only the refused Enter sets, before `busy-off`. The macOS smoke
-  runs the same step. Its `native` keys are queued, not dispatched, when
-  the command returns, so it had the same gap, although no macOS failure
-  in this step is recorded.
-- **Triage:** a failure in this step after the fix is new. Remove this
-  entry after about 20 clean Linux palette CI runs with the fix.
-
-## huterm-gpui inactive tab close button on hosted macOS
-
-- **Label:** `desktop::windows::window_tests::buttons::a_press_on_an_inactive_tabs_close_button_neither_selects_nor_drags_it`
-  in `Checks (macOS arm64)` fails at `window_tests.rs:427` with "timed out
-  waiting for the click to close the inactive tab".
-- **Occurrences:** 2026-10-28 (PR #319 at `2a5e7882`, run 40766561133, job
-  123092154740). The rerun passed, the test passed locally, and it passed
-  on the PR's previous head.
-- **Evidence:** the failed run's `huterm-gpui` suite took 99.58 seconds
-  against about 13 locally, and the PR touched no tab code. The last state
-  still held both tabs with the active one unchanged, so the click had not
-  closed the inactive tab before the harness deadline.
-- **Second occurrence:** 2026-10-31 on PR #358 (run 41180152337, job
-  124475722453, head `5199386c`), in `Checks (Linux aarch64)`, so not
-  macOS only. The `huterm-gpui` suite took 77.22 seconds there. The PR
-  changes Settings and the terminal window's title row, not menus or
-  selection.
-- **Third occurrence:** 2026-11-05 on PR #412 (run 42100951208, attempt 1,
-  job 127504182683, head `606f1b21`), hosted macOS, now failing at
-  `window_tests.rs:510` with the same message and both tabs still open.
-  The `huterm-gpui` suite took 199.48 seconds against about 23 locally.
-  The rerun passed, although its suite took 197.29 seconds, so a slow
-  suite alone does not make the test fail.
-- **Triage:** compare the suite's wall time with a passing run. If it
-  recurs on a normal-speed run, the harness wait or the close path needs a
-  closer look; otherwise record the run here and rerun.
-- **Sixth occurrence:** 2026-11-06 on PR #415 (run 42188279420, job
-  127793745152, head `5c6c808b`), in `Checks (macOS arm64)` at
-  `window_tests.rs:510`. The `huterm-gpui` suite took 203.84 seconds. The
-  PR adds terminal accessibility and touches no tab or button code; the
-  previous head's macOS checks passed this test.
-
-## huterm-gpui Edit menu Select All
-
-- **Label:** `desktop::windows::window_tests::menus::the_edit_menus_cut_needs_a_field_and_copy_follows_focus`
-  in `Checks (macOS arm64)` or `Checks (Linux x86_64)` fails at
-  `menus.rs:407` with "Select All selected the terminal".
-- **Occurrences:** five times in hosted macOS jobs from 2026-10-30 to
-  2026-10-31 (PRs #343, #353, #356, and #364, and run 41171440439), in
-  `huterm-gpui` suites that took 116 to 150 seconds. Then on Linux x86_64
-  on release PR #332 (run 41222001449, job 124598321383, head `65e3c8cd`).
-  It also failed locally on a macOS arm64 dev machine at normal speed: 12
-  of 360 runs of `cargo test -p huterm-gpui --features test-support
-  window_tests::menus` on `0052a20a`.
-- **Cause:** `open_tab` starts the tab unsized, and the child can print
-  `READY` before the window's first geometry applies. `menu_window`
-  returned as soon as the view showed `READY`, so Select All could select
-  on that snapshot, at content generation 1 and geometry revision 0, while
-  the runtime had already applied the window's geometry, which keeps the
-  100x32 grid. Every resize advances the content generation, so the next
-  snapshot, at generation 2 and geometry revision 1, cleared the selection.
-  Temporary logging caught this sequence in all 8 failures of 150 module
-  runs. In each, `select_all` reached the terminal view with a snapshot,
-  and the only clear was the generation check in `apply_snapshot`. A
-  passing run's view had already seen generation 2 before `READY`
-  matched. The selection-extraction reply, viewer invalidation, and
-  foreground probe cleared nothing.
-- **Fix:** `menu_window` now also waits for its view's snapshot to carry a
-  geometry revision above 0. With it the module passed 360 of 360 runs on
-  the same machine.
-- **Triage:** a failure at this label after the fix is new, since the
-  selection is made on a snapshot of the window's own geometry. Check
-  whether something else advanced the generation, such as output or a
-  second resize. Remove this entry once the fixed test has passed in about
-  20 macOS and Linux check jobs.
-
-## huterm-gpui pane rename title on hosted macOS
-
-- **Label:** `desktop::windows::window_tests::pane_names::renaming_an_unfocused_pane_republishes_its_title`
-  in `Checks (macOS arm64)` timed out "waiting for the cleared name to
-  leave the published title".
-- **Occurrences:** 2026-10-31 on PR #353 (run 41163015658, job
-  124424493459, head `65daebae`), in the same slow 127.96-second suite as
-  the Edit menu flake above. It passed eight times in a row locally on
-  the same head. It recurred on 2026-11-04 on PR #383 (run 41757767367,
-  job 126337838217, head `42b6f5d9`) in a 161.72-second suite. Since the
-  head's last fully passing run, only a plan document and a documentation
-  rename from main had changed.
-- **Evidence:** the test captures the right pane's default label before
-  any rename and waits for the published title to return to it. That label
-  resolves the terminal's title and directory, and the first foreground
-  probe publishes the shell's directory about 50 ms after its first output
-  (see the core runtime guide), so on a slow runner the label the test
-  captured may have changed by the time the name clears. Unconfirmed.
-- **Triage:** record the run here and rerun. A hardening is to wait for the
-  pane's directory before capturing the default label.
-
-## `smoke-process.test.ts` retained-pipe deadline
-
-- **Label:** `smoke deadline closes pipes retained by a descendant after
-  parent exit` in `scripts/smoke-process.test.ts`, with `timedOut` false
-  where the test expects true, after 179.50ms.
-- **Occurrences:** once in a local `mise run test` on macOS, 2026-10-26,
-  while Cargo compiled the workspace in the same run; the same file passed
-  alone right after, and the run before passed it too.
-- **Evidence:** the fixture spawns `sh -c "sleep 30"` with inherited stdio
-  and exits at once. Ending well before the 1,500ms deadline means both
-  pipes closed early, as if the descendant never held them; no output from
-  the descendant was kept.
-- **Second signature:** a local `mise run test` on macOS, 2026-10-27, while
-  Cargo built in parallel, failed the same test at its 1,500ms deadline:
-  `process.kill(-child.pid, "SIGTERM")` in `smoke-process.ts` threw `EPERM`
-  instead of signalling the group. EPERM there suggests the group's leader
-  had already exited and its ID belonged to a group the user cannot signal.
-  The file passed alone right after.
-- **Third signature:** a local `mise run check` on macOS, 2026-10-28, run
-  right after `cargo clean` while Clippy compiled the workspace in
-  parallel, timed out `smoke process drains both pipes and records the real
-  exit` at Bun's 5,000ms test timeout. That fixture only prints and exits.
-  The file passed three times alone, and the next `mise run check` passed.
-- **Fourth signature:** a local `mise run check` on macOS, 2026-10-30, while
-  Clippy compiled the workspace in parallel, failed `success output does not
-  forgive a stuck exit or ignored TERM` at its `stdout` assertion after
-  978.75ms, before the fixture's 1,500ms deadline. The next
-  `mise run check` passed it.
-- **Triage:** rerun the file alone. If it recurs, record whether the
-  descendant started, for example by having it write a marker file.
-
-## `idle-sample.test.ts` native sampler compile timeout
-
-- **Label:** `native idle sampler rejects missing windows in either
-  visibility state` in `scripts/idle-sample.test.ts`, timing out after
-  5000ms with `exitCode` null where the test expects 0 (line 30).
-- **Occurrences:** once in the hosted `Checks (macOS arm64)` job on
-  2026-10-27, for PR #283, which changes no script or idle code; the
-  rerun passed. Once locally on 2026-11-06 during `mise run verify`, with
-  `test:rust` compiling in parallel, on a dependency-bump branch that
-  changes no script or idle code; the file alone passed in about 1 second.
-- **Evidence:** the test runs `xcrun clang` through `Bun.spawnSync` with no
-  timeout option, and neither `bunfig.toml` nor the test overrides Bun's
-  default 5,000ms test timeout. The null exit code at line 30 is the
-  compiler's, so it ended by a signal. The synchronous spawn blocks the
-  event loop, so the test timer cannot have interrupted it, and the signal's
-  source is unknown; the log shows no compiler output. A slow first `xcrun`
-  or SDK lookup on a cold runner is a hypothesis, not a confirmed cause.
-- **Triage:** rerun the job. If it recurs, time the compile step in the
-  test or give it a longer timeout.
-
-## Release stapler CloudKit ticket lookup
-
-- **Label:** `Build signed macOS package`, step "Build, sign, notarize, and
-  inventory universal app", ending in `xcrun exited with status 68` after
-  `Error Domain=NSURLErrorDomain Code=-1005 "The network connection was
-  lost."` against the
-  `com.apple.gk.ticket-delivery/production/public/records/lookup` CloudKit URL.
-- **Occurrences:** the first attempt of three of five releases, each passing on
-  rerun: v0.18.0 (run 40034372242) and v0.19.0 (run 40218061074), where
-  `stapler staple` reported "The staple and validate action failed! Error 68.",
-  and v0.21.0 (run 40487164468), where `stapler staple` worked and the
-  following `stapler validate` reported "The validate action failed! Error 68."
-  Notarization had been accepted each time.
-- **Mitigation (2026-10-27):** `scripts/release-macos.ts` retries
-  `stapler staple`, `stapler validate`, and `spctl --assess` on any failure, up
-  to five attempts with 15, 30, 45, and 60 second waits. Each failed attempt
-  logs `<step> failed on attempt N of 5: <exit status>: <reason>`, where the
-  reason is the NSError domain and code or the tool's last line.
-- **Triage:** a `retrying in` line before a successful step shows the retry
-  absorbed the drop. A `giving up` line means five attempts over about two and
-  a half minutes failed. Read the reasons: the same network error each time
-  points at an Apple outage, so check Apple's developer system status and
-  rerun the job. Stapler's Error 65 means it found no ticket; right after an
-  accepted notarization that is usually propagation lag, so rerun once before
-  investigating the notarization or signature. Remove this entry once about
-  ten releases pass without a `giving up` line.
-
-## CI tool installation
-
-`Install job tools with Mise` and Zig installation steps can fail on Zig
-community-mirror rate limits (HTTP 429) or a GitHub API 403. The current
-bootstrap and its limits are in [the CI guide](ci.md#toolchain-bootstrap).
-Treat a single 429 or 403 there as an infrastructure failure and rerun it.
-Repeated failures usually follow Actions cache eviction: the repository has
-exceeded GitHub's 10 GB cache limit before, which forced cold installs.
-The step can also hang: in run 40636655413 (2026-10-28), `Package macOS
-arm64`'s `Install Zig` ran from 05:19 until the job stopped at 06:04, about
-45 minutes, and no later step started. Rerunning the failed jobs passed.
+<!-- flakes:index:end -->
 
 ## Local environment hazards
 

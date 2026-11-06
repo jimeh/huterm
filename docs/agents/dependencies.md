@@ -21,6 +21,13 @@ elvish's `os()`-selected archive extension does. CI never regenerates the lock:
 the Mise action adds `--locked` whenever `mise.lock` exists, and every other CI
 install passes it explicitly. Keep `--locked` on any new CI install.
 
+cargo-nextest comes from its GitHub release archives through Mise's
+`github:nextest-rs/nextest` backend, whose release tags carry a
+`cargo-nextest-` prefix that `version_prefix` strips. It is not a `cargo:`
+tool, so the Checks and ReleaseSafe jobs install it from their Mise action
+step without compiling it. Bump it like any other Mise tool, after the
+release-age cooldown.
+
 The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.11 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
 pins Rust 1.99.

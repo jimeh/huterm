@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, GridSize, HostEffect, Modifiers,
@@ -18,6 +18,7 @@ use huterm_protocol::{
 
 use super::{HostEffectViewerOptions, TerminalViewer, ViewerOptions};
 use crate::terminal::RuntimeControl;
+use crate::test_support::wait_for_text;
 use crate::{
     DesktopHostEffectClient, HostEffectRecipientOptions, RuntimeError,
     TerminalRuntime,
@@ -85,32 +86,11 @@ fn text(snapshot: &TerminalSnapshot) -> String {
     snapshot.cells().map(|cell| cell.text.displayed()).collect()
 }
 
-fn wait_for_text(
-    viewer: &TerminalViewer,
-    needle: &str,
-) -> Arc<TerminalSnapshot> {
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        let snapshot = viewer.read_snapshot().unwrap();
-        if text(&snapshot).contains(needle) {
-            return snapshot;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "missing {needle:?}: {:?}",
-            text(&snapshot)
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 /// Polls `condition` until it holds, reporting `what` on timeout.
 fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + DEADLINE;
-    while !condition() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        thread::sleep(Duration::from_millis(5));
-    }
+    crate::test_support::wait_until(what, || {
+        if condition() { Ok(()) } else { Err("not yet") }
+    });
 }
 
 /// Echoes `name=rows columns.` for each line it reads, so tests read the

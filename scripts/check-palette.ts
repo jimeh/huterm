@@ -159,6 +159,16 @@ command = "select_tab"
     await command(`native\t${code}\t${flags}\t${text}\t${plain}`);
   }
 
+  /**
+   * Open the main window's palette and wait until its field has focus. Focus
+   * moves on the palette's first frame, so keys typed before it reach the
+   * terminal instead, as the overlays smoke's dialog once showed.
+   */
+  async function openPalette(): Promise<void> {
+    await shortcut("palette");
+    await state("w0.palette=true", "w0.palette_focused=true");
+  }
+
   async function shortcut(
     name: "palette" | "new-tab" | "select-tab",
   ): Promise<void> {
@@ -475,7 +485,9 @@ command = "select_tab"
         String(y),
       ]);
     }
-    await state(`hover=Some(${row})`);
+    // Hitboxes come from the drawn frame, so a wheel or press must wait for
+    // the frame that drew the pointer over this row, not only the model.
+    await state(`hover=Some(${row})`, `drawn_pointer_row=Some(${row})`);
   }
 
   async function clickRow(row: number): Promise<void> {
@@ -625,7 +637,7 @@ command = "select_tab"
 
     // The palette lists Window Transparency…, which opens the panel on its
     // first enabled control; Escape closes it and returns focus.
-    await shortcut("palette");
+    await openPalette();
     await typeText("window transp");
     await state("selected=window_transparency");
     await key("enter");
@@ -638,7 +650,7 @@ command = "select_tab"
     await state("w0.transparency_panel=closed", "w0.terminal_focused=true");
 
     // 2. Enter accepts the default optional quake profile; Tab exposes both.
-    await shortcut("palette");
+    await openPalette();
     await typeText("toggle q");
     await state("selected=toggle_quake", 'query="toggle q"');
     await key("enter");
@@ -675,7 +687,7 @@ command = "select_tab"
     await waitForCoreTabCount(2);
     await command("activate-first");
     await state("w0.terminal_focused=true");
-    await shortcut("palette");
+    await openPalette();
     await typeText("toggle q");
     await state("selected=toggle_quake");
     await key("tab");
@@ -702,7 +714,7 @@ command = "select_tab"
     await state("w0.palette=false", "w0.terminal_focused=true");
 
     // 3. The prefilled tab target lets one Enter commit the typed name and run.
-    await shortcut("palette");
+    await openPalette();
     await typeText("rename tab");
     await state("selected=rename_tab");
     await key("enter");
@@ -729,7 +741,7 @@ command = "select_tab"
       "w0.terminal_focused=true",
     );
     await waitForCoreTabCount(3);
-    await shortcut("palette");
+    await openPalette();
     await typeText("rename tab");
     await key("enter");
     await state("active=name", "tab:prefilled");
@@ -811,7 +823,7 @@ command = "select_tab"
     // 6. The name slot prefills the active tab's custom name, selected, so
     // one Backspace blanks it; Backspace on the empty slot then returns to
     // the retained search.
-    await shortcut("palette");
+    await openPalette();
     await typeText("ren");
     await state("selected=rename_tab", 'query="ren"');
     await key("enter");
@@ -830,7 +842,7 @@ command = "select_tab"
     await state("w0.palette=false", "w0.terminal_focused=true");
 
     // 7. Hover does not move keyboard selection; clicking the third row runs it.
-    await shortcut("palette");
+    await openPalette();
     await typeText("scroll");
     // Fuzzy search matches more than the three scroll commands; those
     // three rank first because they match in the title.
@@ -902,7 +914,7 @@ command = "select_tab"
     await terminalBytes("C");
 
     // 8. Copy stays visible but unavailable without a selection.
-    await shortcut("palette");
+    await openPalette();
     await typeText("copy");
     await state("selected=copy", 'unavailable=Some("no selection")');
     await key("escape");
@@ -910,7 +922,7 @@ command = "select_tab"
 
     // 9. Blanking the prefilled name and pressing Enter clears the custom
     // name; a tab without one prefills nothing.
-    await shortcut("palette");
+    await openPalette();
     await typeText("rename tab");
     await state("selected=rename_tab");
     await key("enter");
@@ -920,7 +932,7 @@ command = "select_tab"
     await key("enter");
     await state("w0.palette=false", "w0.terminal_focused=true");
     await coreState(3, [], ["name=Some("]);
-    await shortcut("palette");
+    await openPalette();
     await typeText("rename tab");
     await key("enter");
     await state("slots command=rename_tab", "active=name", 'input=""');
@@ -930,7 +942,7 @@ command = "select_tab"
     await state("w0.palette=false", "w0.terminal_focused=true");
 
     // 10. Switch to Last Tab toggles between the two main-window tabs.
-    await shortcut("palette");
+    await openPalette();
     await typeText("last tab");
     await state("selected=select_recent_tab");
     await key("enter");
@@ -940,7 +952,7 @@ command = "select_tab"
       "w0.terminal_focused=true",
     );
     await coreState(3, [], ["name=Some("]);
-    await shortcut("palette");
+    await openPalette();
     await typeText("last tab");
     await state("selected=select_recent_tab");
     await key("enter");
@@ -968,7 +980,7 @@ command = "select_tab"
     await state("w0.palette=false", "w0.terminal_focused=true");
     await coreState(3, ['name=Some("explicit")']);
 
-    await shortcut("palette");
+    await openPalette();
     await typeText("rename tab");
     await key("enter");
     await state("active=name");
@@ -1006,7 +1018,7 @@ command = "select_tab"
     // executor refuses it. The fixture workspace has no window, so the
     // palette's live domain is the only evidence its removal arrived.
     await command("fixture-create");
-    await shortcut("palette");
+    await openPalette();
     await typeText("rename workspace");
     await state("selected=rename_workspace");
     await key("enter");
@@ -1076,7 +1088,7 @@ command = "select_tab"
     );
 
     // An open tab picker follows a rename made elsewhere without reopening.
-    await shortcut("palette");
+    await openPalette();
     await typeText("rename tab");
     await state("selected=rename_tab");
     await key("enter");
@@ -1134,7 +1146,7 @@ command = "select_tab"
     await state("w0.terminal_focused=true", "w0.palette=false");
 
     await command("dismiss-notices");
-    await shortcut("palette");
+    await openPalette();
     await typeText("show quake");
     await state("w0.palette_state=commands selected=show_quake");
     await key("tab");

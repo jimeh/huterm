@@ -408,7 +408,7 @@ the public ZIP. Re-signing after stapling invalidates the notarized artifact.
 `stapler staple`, `stapler validate`, and `spctl --assess` retry any failure up
 to five attempts, 15 to 60 seconds apart, because they fetch the ticket from
 Apple's CloudKit and never re-sign; see
-[known flakes](known-flakes.md#release-stapler-cloudkit-ticket-lookup).
+[known flakes](flakes/release-stapler-cloudkit-lookup.md).
 `notarytool submit --wait` is not retried, since resubmitting would create a
 duplicate submission.
 Release checks must cover every Mach-O plus the app's exact Developer ID team,
