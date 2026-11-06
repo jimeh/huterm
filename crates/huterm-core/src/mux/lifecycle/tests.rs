@@ -413,16 +413,19 @@ fn new_background_job_requires_renewed_consent_and_quit_includes_zero_views() {
 }
 #[test]
 fn orphans_holding_the_terminal_need_consent_and_are_cleaned_up() {
-    // Job control puts the inner shell in its own group. It exits,
-    // leaving `sleep` outside the shell's tree and the foreground group;
-    // only its controlling terminal ties it to this tab.
+    // The job starts `sleep` in a group of its own and exits, leaving it
+    // outside the shell's tree and the foreground group; only its
+    // controlling terminal ties it to this tab.
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();
     let workspace = mux.create_workspace(session, None).unwrap();
     let opened = mux
         .open_test_tab(
             workspace,
-            &command("set -m; printf IDLE; read value; sh -c 'sleep 30 &'; printf BUSY; read value"),
+            &command(&format!(
+                "printf IDLE; read value; {}; printf BUSY; read value",
+                crate::test_support::orphaned_sleep()
+            )),
         )
         .unwrap();
     ready(&opened.client, "IDLE");
@@ -469,7 +472,10 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
     let opened = mux
         .open_test_tab(
             workspace,
-            &command("printf READY; read value; set -m; sleep 30 & fg"),
+            &command(&format!(
+                "printf READY; read value; {}; printf DONE",
+                crate::test_support::foreground_job(None)
+            )),
         )
         .unwrap();
     ready(&opened.client, "READY");
@@ -480,14 +486,15 @@ fn foreground_exit_and_unavailable_runtime_are_assessed_conservatively() {
         .client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
+    ready(&opened.client, crate::test_support::HELD);
     let deadline = Instant::now() + Duration::from_secs(3);
     let foreground = loop {
         let assessment = mux
             .prepare_close(CloseRequest::Session(session))
             .unwrap()
             .check_jobs();
-        // A just-forked child can still be in the shell's foreground group.
-        // Wait until job control has moved it into its own foreground group.
+        // The job held the foreground before it printed; the runtime
+        // observes it through its own probe.
         if assessment.jobs().iter().any(|state| {
             matches!(state, JobState::Running(jobs) if jobs.iter().any(|job| job.foreground && job.group != shell_group))
         }) {
