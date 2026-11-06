@@ -64,6 +64,10 @@ jobs:
         if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         run: mise run lint:agents
 
+      - name: Check known-flake registry
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
+        run: mise run flakes:check
+
       - name: Check workflows and action pins
         if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         env:

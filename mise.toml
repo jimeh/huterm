@@ -115,6 +115,18 @@ run = "markdownlint-cli2 'README.md' 'AGENTS.md' 'docs/**/*.md'"
 description = "Check the AGENTS.md line budget and agent-guide routing and links"
 run = "bun scripts/agent-guides.ts"
 
+[tasks."flakes:check"]
+description = "Validate the known-flake registry, its links, and its generated index"
+run = "bun scripts/flakes.ts check"
+
+[tasks."flakes:index"]
+description = "Regenerate the known-flake index in docs/agents/known-flakes.md"
+run = "bun scripts/flakes.ts index"
+
+[tasks."flakes:record"]
+description = "Record the known flakes a CI run hit; pass the run or job URL after --"
+run = "bun scripts/flakes.ts record"
+
 [tasks."lint:docs:files"]
 description = "Lint selected Markdown files"
 run = "markdownlint-cli2 --no-globs --"
@@ -191,7 +203,7 @@ run = "cargo run --quiet --locked --release -p huterm-ipc-sim --"
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:test-order", "lint:docs", "lint:agents", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
+depends = ["format:check", "lint", "lint:test-order", "lint:docs", "lint:agents", "flakes:check", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
 
 [tasks."check:rust"]
 description = "Run Rust formatting, Clippy compilation, test-order, and architecture checks"
