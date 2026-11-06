@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { crossWindowPoint, previewCentred, screenPoint, smokeField, smokeRect, tabsDrawn, dragPath } from "./check-cross-window-input";
+import { crossWindowPoint, previewCentred, screenPoint, smokeField, smokeRect, tabsDrawn, dragPath, visibleLabelCenter } from "./check-cross-window-input";
 
 test("AppKit translates destination points into source coordinates with an inverted screen Y axis", () => {
   expect(crossWindowPoint({ x: 20, y: 650 }, { x: 480, y: 600 }, { x: 3, y: 25 }, true)).toEqual({ x: 463, y: 75 });
@@ -36,4 +36,9 @@ test("the preview counts as centred only while visible and within a point of the
 test("a sampled drag path moves in even steps and ends exactly on the target", () => {
   expect(dragPath({ x: 0, y: 0 }, { x: 100, y: -40 }, 4)).toEqual([{ x: 25, y: -10 }, { x: 50, y: -20 }, { x: 75, y: -30 }, { x: 100, y: -40 }]);
   expect(dragPath({ x: 10, y: 10 }, { x: 13, y: 10 }, 2)).toEqual([{ x: 12, y: 10 }, { x: 13, y: 10 }]);
+});
+test("a scrolled tab label is grabbed at the centre of its visible part", () => {
+  expect(visibleLabelCenter("-74,32,121,34;47,32,121,34", 0, 296)).toEqual({ x: 23.5, y: 49 });
+  expect(visibleLabelCenter("-74,32,121,34;47,32,121,34", 1, 296)).toEqual({ x: 107.5, y: 49 });
+  expect(visibleLabelCenter("200,0,125,34", 0, 296)).toEqual({ x: 248, y: 17 });
 });
