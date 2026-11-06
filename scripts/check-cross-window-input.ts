@@ -315,6 +315,13 @@ export async function checkCrossWindowInput(executable: string): Promise<void> {
   });
 }
 
+/** The centre of the part of tab label `index` inside a window `width`
+ * wide: a narrow window's strip can scroll a label partly out of view. */
+export function visibleLabelCenter(rects: string, index: number, width: number): Point {
+  const [x, y, w, h] = rects.split(";")[index]!.split(",").map(Number);
+  return { x: (Math.max(x!, 0) + Math.min(x! + w!, width)) / 2, y: y! + h! / 2 };
+}
+
 /** The points a drag samples from `from` to `to`, `steps` moves in all. */
 export function dragPath(from: Point, to: Point, steps: number): Point[] {
   return Array.from({ length: steps }, (_, index) => {
@@ -351,7 +358,8 @@ export async function checkCrossWindowTargets(executable: string): Promise<void>
     await activate(0);
     let current = await state(); let ids = terminals(current); let before = counts(current);
     if (smokeField(current, "w1.active_tab") !== "1") throw new Error("fixture: the destination's second tab must be active");
-    const springAt = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), rectCenter(smokeField(current, "w1.tabs_rects"), 0), macos);
+    const springLocal = visibleLabelCenter(smokeField(current, "w1.tabs_rects"), 0, point(smokeField(current, "w1.size")).x);
+    const springAt = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), springLocal, macos);
     await drag(f, 0, rectCenter(smokeField(current, "w0.tabs_rects"), 1), springAt);
     // The armed cue lasts only SPRING_LOAD_DELAY; a late poll may first see
     // the tab it already switched to.
@@ -386,13 +394,15 @@ export async function checkCrossWindowTargets(executable: string): Promise<void>
 
     // A lone pane drops into another window's bar as a new tab at that slot.
     const destinationTabs = smokeField(current, "w1.tab_ids").split(",");
-    const [sx, sy, , sh] = smokeField(current, "w1.tabs_rects").split(";")[0]!.split(",").map(Number);
+    // Slot 1, before the second tab: a narrow window's strip can scroll its
+    // first tab partly out of view, putting slot 0 outside the window.
+    const [sx, sy, , sh] = smokeField(current, "w1.tabs_rects").split(";")[1]!.split(",").map(Number);
     const slotAt = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), { x: sx! + 2, y: sy! + sh! / 2 }, macos);
     await drag(f, 0, paneGrab, slotAt);
-    await until("lone pane slot target", next => smokeField(next, "w1.drop") === "window:1:slot:0");
+    await until("lone pane slot target", next => smokeField(next, "w1.drop") === "window:1:slot:1");
     await mouse(0, "up", slotAt);
     await until("lone pane opens a tab in the destination", next => smokeField(next, "w0.tabs") === "1" && smokeField(next, "w1.tabs") === "3" && idle(next) && smokeField(next, "w1.active") === "true"
-      && !destinationTabs.includes(smokeField(next, "w1.tab_ids").split(",")[0]!));
+      && !destinationTabs.includes(smokeField(next, "w1.tab_ids").split(",")[1]!));
     if (terminals(await state()) !== ids) throw new Error("lone pane move changed terminal IDs");
 
     if (macos) {
@@ -402,7 +412,9 @@ export async function checkCrossWindowTargets(executable: string): Promise<void>
       await until("one-tab source hides its bar", next => smokeField(next, "w0.drawn_tab_ids") === "none" && smokeField(next, "w1.drawn_tab_ids") !== "none");
       await activate(1); current = await state(); ids = terminals(current);
       const rowAt = crossWindowPoint(rootOrigin(current, 1), rootOrigin(current, 0), { x: point(smokeField(current, "w0.size")).x / 2, y: 12 }, true);
-      await drag(f, 1, rectCenter(smokeField(current, "w1.tabs_rects"), 0), rowAt);
+      // The active tab: the strip keeps it in view when it scrolls.
+      const sourceTab = visibleLabelCenter(smokeField(current, "w1.tabs_rects"), Number(smokeField(current, "w1.active_tab")), point(smokeField(current, "w1.size")).x);
+      await drag(f, 1, sourceTab, rowAt);
       await until("destination title row", next => smokeField(next, "w0.drop") === "window:0:title_row");
       await mouse(1, "up", rowAt);
       await until("title-row drop opens a tab", next => smokeField(next, "w0.tabs") === "2" && smokeField(next, "w1.tabs") === "2" && idle(next));
