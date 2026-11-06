@@ -441,7 +441,9 @@ gets the icon-only pill there. Only when neither fits does it cover the strip's
 trailing end with an opaque fill.
 `tear_off_cue` is the release's outcome, which drop labels publish;
 `tear_off_pill` gates the drawn bar pill and S1, which give way while the
-macOS drag preview is visible.
+macOS drag preview is visible. The bar pill marks a tab tear-off; a pane drag
+gets S1 instead, and the bar pill only while its pane is not drawn, as after
+spring-loading another tab (`bar_tear_off_pill`).
 
 The macOS drag preview (`drag_preview.rs`) is a `PopUp` window per drag, opened
 when the drag first needs it, ordered out while the pointer is back inside the
