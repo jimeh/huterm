@@ -1,8 +1,9 @@
 # Session switching
 
-Status: approved. Plans [issue #26][issue-26] (parent [#11][issue-11]).
+Status: implemented. Plans [issue #26][issue-26] (parent [#11][issue-11]).
 The maintainer picked the mockups and settled the open questions on
-2026-11-06; see [Settled decisions](#settled-decisions).
+2026-11-06; see [Settled decisions](#settled-decisions) and
+[Deviations](#deviations).
 
 A window can switch to another session, come back to it with its own
 navigation intact, and choose a session that another window already shows.
@@ -448,6 +449,38 @@ Picked by the maintainer on 2026-11-06 from the
 9. `[window] session_button`, default true, with schema, Settings row, and
    docs.
 10. The session menu honours `macos_native_menus`.
+
+## Deviations
+
+Recorded during implementation:
+
+- Closing the window's own session closes it first and then attaches the
+  window to its most recently viewed other session. Retargeting first, as
+  settled decision 5 said, moves the Mux revision and invalidates the
+  consent, which would prompt a second time.
+- Every switch counts in `pending_spawns`, not only one that opens a
+  shell: the worker learns under the lock whether it needs one, and the
+  cost is a Quit that waits slightly longer.
+- Open in New Window's Cmd/Ctrl-Enter is a menu command,
+  `menu_confirm_alternate`, bound only inside menus. Settled decision 8's
+  "no default key bindings" covers the session commands. In the native
+  macOS menu, holding Command turns each session row into its Open in New
+  Window alternate, since a native menu has no inline buttons.
+- The native menu shows the row detail as a subtitle only on macOS 14.4
+  and later; the deployment floor is 14.0, so older systems drop it.
+- The control collapses to its icon below about 345 points of host
+  width, and a name may take at most 35 % of the host.
+- On Linux, a last window that takes an emptied close while unviewed
+  sessions remain runs Quit instead, as its Close Window does, so the
+  process never stays alive without a window. A cancelled Quit leaves the
+  window open.
+- The macOS smoke opens the fullscreen hosts' menu by command: a
+  synthetic click at the screen's top-right corner can reach the
+  auto-hidden menu bar or the notification corner. A window test clicks
+  the fullscreen top bar's control in-process.
+- Test harnesses and the smoke fixture's `attach-window` adopt an
+  attachment only once the projection holds it, as production attaches
+  do; adopting earlier owes a spurious emptied close.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-20]: https://github.com/jimeh/huterm/issues/20
