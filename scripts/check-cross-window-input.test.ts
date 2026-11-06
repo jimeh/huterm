@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { crossWindowPoint, previewCentred, screenPoint, smokeField, smokeRect, tabsDrawn } from "./check-cross-window-input";
+import { crossWindowPoint, previewCentred, screenPoint, smokeField, smokeRect, tabsDrawn, dragPath } from "./check-cross-window-input";
 
 test("AppKit translates destination points into source coordinates with an inverted screen Y axis", () => {
   expect(crossWindowPoint({ x: 20, y: 650 }, { x: 480, y: 600 }, { x: 3, y: 25 }, true)).toEqual({ x: 463, y: 75 });
@@ -32,4 +32,8 @@ test("the preview counts as centred only while visible and within a point of the
   expect(previewCentred(state(true, "-51,178,208,144"), { x: 50, y: 250 })).toBe(false);
   expect(previewCentred(state(false, "-54,178,208,144"), { x: 50, y: 250 })).toBe(false);
   expect(previewCentred(state(true, "none"), { x: 50, y: 250 })).toBe(false);
+});
+test("a sampled drag path moves in even steps and ends exactly on the target", () => {
+  expect(dragPath({ x: 0, y: 0 }, { x: 100, y: -40 }, 4)).toEqual([{ x: 25, y: -10 }, { x: 50, y: -20 }, { x: 75, y: -30 }, { x: 100, y: -40 }]);
+  expect(dragPath({ x: 10, y: 10 }, { x: 13, y: 10 }, 2)).toEqual([{ x: 12, y: 10 }, { x: 13, y: 10 }]);
 });

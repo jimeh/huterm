@@ -1542,7 +1542,8 @@ pub(super) fn smoke_state(cx: &mut App) -> String {
                 window.is_window_active(), origin.x, origin.y, f32::from(window.viewport_size().width), f32::from(window.viewport_size().height), view.tabs.len(), view.busy,
                 view.tab_smoke_rects(window), view.pane_smoke_state(&format!("w{index}."), window, cx));
             let rect = |bounds: Option<Bounds<Pixels>>| bounds.map_or_else(|| "none".to_owned(), |bounds| format!("{},{},{},{}", f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height)));
-            let _ = writeln!(output, "w{index}.tear_off_pill={} w{index}.pane_tear_off={}", rect(*view.drawn_tear_off.borrow()), rect(*view.drawn_pane_tear_off.borrow()));
+            let active_tab = view.tabs.iter().position(|tab| Some(tab.id) == view.active_tab(cx)).map_or_else(|| "none".to_owned(), |index| index.to_string());
+            let _ = writeln!(output, "w{index}.tear_off_pill={} w{index}.pane_tear_off={} w{index}.active_tab={active_tab}", rect(*view.drawn_tear_off.borrow()), rect(*view.drawn_pane_tear_off.borrow()));
         });
     }
     output
