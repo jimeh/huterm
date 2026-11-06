@@ -241,7 +241,15 @@ read the focus that followed the rebound shortcut to its new row as its
 Tab's move, sent a second Tab, and left focus on the row's switch. On X11,
 keys go through `xdotool` rather than file commands, so `command_sequence`
 does not order them; wait first for anything else that moves focus, as the
-rebind step waits for the rebound row.
+rebind step waits for the rebound row. A file command can also overtake an
+`xdotool` key, or a macOS `native` key that is queued but not yet
+dispatched, sent before it. Before a command whose outcome depends on that
+key, wait for state that only the key's handling produces, not for state
+that already held. In the palette smoke's busy step, `busy-on` overtook the
+palette shortcut and the busy window refused to open the palette. An Enter
+handled after `busy-off` opened a tab, because the check before `busy-off`
+already held before Enter. The step now waits for the open palette, and for
+the refused Enter's `diagnostic`.
 
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
