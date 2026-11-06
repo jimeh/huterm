@@ -269,6 +269,39 @@ description only as a complete, intentional block of valid conventional commit
 messages. In prose, call it something else, such as "a commit-override block".
 To recover, reword the description and rerun Release Please.
 
+The squash commit body is the pull request description, and Release Please
+drops the commit, with the same passing workflow, when that body does not parse.
+Release Please 17.6.0, bundled by release-please-action 5.0.0, uses
+`@conventional-commits/parser` 0.4.1. That parser reads the start of every body
+line as a possible footer token such as `fix(scope):`, and it throws when a
+line starts with a word directly followed by `(` and reaches another `(` or the
+line's end before `)`. ``Err(Runtime(`` and ``columns(rows(*), …`` dropped #410
+and #354 this way. GitHub composes the body before the parser sees it: a line
+of up to 72 characters stays as written, but a longer line outside a code fence
+loses its indentation, has whitespace runs collapsed, and is wrapped greedily at
+72 columns. Indentation therefore does not protect a line, and wrapping can move
+a word from mid-sentence to a line start; both failing lines started mid-line in
+the description. Reword nested or unclosed call syntax such as `foo(bar(`, even
+in backticks. Upstream fixed this in
+[release-please#2936](https://github.com/googleapis/release-please/pull/2936),
+unreleased as of release-please 17.11.2 and release-please-action 5.0.0. A
+commit that already shipped without its note stays missing from that release;
+recover an unreleased one with a commit-override block, as #410 did.
+
+The `PR description` workflow runs `mise run release:check-pr-description` on
+every pull request when it opens, reopens, gets a push, or has its title or
+description edited. `scripts/pr-description.ts` rebuilds the squash commit as
+GitHub composes it, applies a commit-override block, and splits the message the
+way Release Please 17.6.0 does, then parses each part with the same pinned
+parser. It also rejects a title that does not parse and any
+`BEGIN_COMMIT_OVERRIDE` outside one complete block with an end marker. GitHub
+documents none of the squash composition; the script reproduces every squash
+commit in this repository whose description was not edited after merging, and
+its rules need revisiting if that changes. Check a draft before filing with
+`mise run release:check-pr-description -- --title <title> --body-file <path>`.
+When the release-please-action bundles a release with #2936, the body rules
+become redundant but the title and override rules stay useful.
+
 Preview the notes with `mise run release-notes:preview`. It writes
 `target/release-notes-preview.html` by default and accepts `--output <path>`,
 `--version <version>`, and `--installed <version>`, which applies Sparkle's

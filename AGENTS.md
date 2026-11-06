@@ -159,6 +159,11 @@ update notes; see [release notes](docs/agents/releases.md#release-notes).
 Outside an intentional override block, never write `BEGIN_COMMIT_OVERRIDE` in a
 pull request description, even in backticks. Release Please treats any
 occurrence as a commit override and silently drops a commit it cannot parse.
+It also drops a commit whose description contains nested or unclosed call
+syntax such as `foo(bar(`, because squash wrapping can move it to a line
+start; see [release notes](docs/agents/releases.md#release-notes). The
+`PR description` check catches both; run `mise run release:check-pr-description`
+on a draft before filing.
 
 ## Dependency changes
 
