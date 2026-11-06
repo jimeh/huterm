@@ -938,6 +938,18 @@ pub struct WindowConfig {
         "x-huterm-platform" = "macos",
     )))]
     pub macos_native_menus: bool,
+    /// Show a preview window under the pointer while a tab or pane is
+    /// dragged outside its window. Off uses the in-window cues.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "windows",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Floating drag preview",
+        "x-huterm-order" = 28,
+        "x-huterm-apply" = "live",
+        "x-huterm-platform" = "macos",
+        "x-huterm-advanced" = true,
+    )))]
+    pub macos_drag_preview: bool,
     /// The `columns × rows` indicator while a window or pane resizes: the
     /// `full` panel, the `compact` badge, or `off`.
     #[cfg_attr(feature = "schema", schemars(extend(
@@ -1181,6 +1193,7 @@ impl Default for WindowConfig {
             menu_button: true,
             shortcut_hints: false,
             macos_native_menus: true,
+            macos_drag_preview: true,
             size_indicator: SizeIndicator::Full,
             size_indicator_linger_ms: 100,
         }
@@ -3595,6 +3608,20 @@ mod tests {
                 assert!(error.contains(&format!("window.{key}")), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn the_macos_drag_preview_defaults_on_and_parses_off() {
+        let default: RawConfig = toml::from_str("").unwrap();
+        assert!(default.window.macos_drag_preview);
+        let off: RawConfig =
+            toml::from_str("[window]\nmacos_drag_preview = false").unwrap();
+        assert!(!off.window.macos_drag_preview);
+        assert!(off.validate_values().is_ok());
+        assert!(
+            toml::from_str::<RawConfig>("[window]\nmacos_drag_preview = 1")
+                .is_err()
+        );
     }
 
     #[test]

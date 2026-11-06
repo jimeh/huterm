@@ -692,6 +692,28 @@ size_indicator = "full" # full, compact, or off
 size_indicator_linger_ms = 100 # 0 to 10000
 ```
 
+## Dragging between windows
+
+A tab or pane dragged onto another Huterm window drops into its tab bar, its
+title bar while the tab bar is hidden, or an edge of one of its panes.
+Released outside every Huterm window, it opens in a new window as that
+window's only tab. A window's only tab, and the only pane of a window's only
+tab, stay where they are.
+
+On macOS a small preview follows the pointer once the drag leaves its window:
+the dragged title over another Huterm window, a miniature window where a
+release opens a new one, and the title dimmed where a release does nothing.
+`macos_drag_preview = false` turns it off. Without it, and on Linux, the source
+window shows the outcome itself: a `↗ New window` pill after its tabs for a tab,
+and the dragged pane dimmed with the pill in its middle. The setting applies on
+reload, including to a drag under way. In Settings it is **Floating drag
+preview** under Windows, among the advanced settings.
+
+```toml
+[window]
+macos_drag_preview = true # ignored on Linux
+```
+
 ## Initial window size
 
 ```toml
@@ -731,6 +753,7 @@ macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
 macos_native_menus = true # native macOS menus; ignored on Linux
+macos_drag_preview = true # floating drag preview; ignored on Linux
 size_indicator = "full" # full, compact, or off; see Size indicator
 size_indicator_linger_ms = 100
 
@@ -1005,7 +1028,8 @@ menu:
 - **Zoom Pane**, or **Unzoom Pane** while the pane is zoomed.
 - **Sync Pane Input**, or **Stop Syncing Pane Input** while the tab syncs.
   With one pane, this row appears only while syncing.
-- **Move Pane to New Tab** and **Move Pane to Another Pane…**.
+- **Move Pane to New Tab**, **Move Pane to New Window**, and **Move Pane to
+  Another Pane…**.
 - **Auto-hide Title Bars**, checked in hover mode. Picking it saves `title_bar`
   as `hover` or `visible` in your configuration file and reloads every window,
   even with `watch_config = false`. A failed save shows a notice and keeps the
@@ -1013,9 +1037,11 @@ menu:
 - **Close Pane**.
 
 With one pane, **Zoom Pane** and **Move Pane to New Tab** are disabled with
-"Tab has one pane". Dragging a lone pane's bar onto another tab's label
-switches to that tab after a moment, and dropping it on a pane's edge there
-joins that tab as a split. The drag does not reorder tabs.
+"Tab has one pane". **Move Pane to New Window** is disabled only for the pane
+of a window's only tab, with "The pane is already alone in its window."
+Dragging a lone pane's bar onto another tab's label switches to that tab after
+a moment, and dropping it on a pane's edge there joins that tab as a split.
+The drag does not reorder tabs.
 
 While the tab bar is hidden, drop a dragged pane on empty space in the window's
 title bar to move it into a new tab. The source tab must have more than one

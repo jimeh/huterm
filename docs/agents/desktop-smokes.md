@@ -298,6 +298,26 @@ Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
 does not exercise the server's XKB modifier state. The smoke explicitly unbinds
 Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.
 
+## Drag preview and tear-off state
+
+The cross-window state publishes `preview` (`none`, `chip`, `window`, or
+`dimmed`) on every platform; Linux always reports `none`. On macOS it adds the
+native readback: `preview_visible` (`isVisible`), `preview_frame` (the screen
+frame as `x,y,w,h` in `AppKit` coordinates, `none` without a window), and
+`key_window` (the key window's number). Per window, `w<i>.tear_off_pill` and
+`w<i>.pane_tear_off` give the drawn bar pill and S1 pill bounds, or `none`.
+`w<i>.origin` is the content's top-left in screen coordinates, so a
+source-local point's screen point is `origin.x + x` and `origin.y - y` on
+macOS. Window indices count terminal windows only, never the preview.
+
+A torn-off window opens under the release point on macOS, so a later step
+that needs that empty space moves it aside with `place-window` first.
+`smoke:macos-input` cannot prove that the locator searches below the preview:
+on macOS 27.0 `windowNumberAtPoint:` skips the mouse-ignoring preview anyway,
+and the step passed with the search starting at the top. Window tests drive
+the preview through `DragPreview::hooks`, since test windows have no `AppKit`
+window.
+
 ## AppKit fixtures
 
 `smoke:macos-palette` drives the title strip with real HID events from

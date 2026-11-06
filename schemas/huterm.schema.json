@@ -1431,6 +1431,7 @@
                 "move_pane_down",
                 "move_pane_to_pane",
                 "move_pane_to_new_tab",
+                "move_pane_to_new_window",
                 "move_tab_to_new_window",
                 "move_tab_to_pane",
                 "arrange_panes",
@@ -5156,6 +5157,57 @@
               "command": {
                 "const": "move_pane_to_new_tab",
                 "description": "Move the focused pane into a new tab, in this workspace or another.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "move_pane_to_new_window"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move the focused pane into a new window, keeping its terminal running.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "move_pane_to_new_window",
+                "description": "Move the focused pane into a new window, keeping its terminal running.",
                 "type": "string"
               },
               "description": {
@@ -10901,6 +10953,18 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Initial rows",
           "x-huterm-order": 32,
+          "x-huterm-section": "windows"
+        },
+        "macos_drag_preview": {
+          "default": true,
+          "description": "Show a preview window under the pointer while a tab or pane is\ndragged outside its window. Off uses the in-window cues.",
+          "type": "boolean",
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Floating drag preview",
+          "x-huterm-order": 28,
+          "x-huterm-platform": "macos",
           "x-huterm-section": "windows"
         },
         "macos_fullscreen_mode": {

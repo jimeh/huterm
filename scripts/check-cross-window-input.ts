@@ -17,6 +17,23 @@ function point(value: string): Point { const [x, y] = value.split(",").map(Numbe
 export function tabsDrawn(state: string, index: number): boolean {
   return smokeField(state, `w${index}.drawn_tab_ids`) === smokeField(state, `w${index}.tab_ids`);
 }
+/** A published `x,y,w,h` rectangle, or `undefined` for `none`. */
+export function smokeRect(value: string): { x: number; y: number; width: number; height: number } | undefined {
+  if (value === "none") return undefined;
+  const [x, y, width, height] = value.split(",").map(Number);
+  if ([x, y, width, height].some(part => part === undefined || Number.isNaN(part))) throw new Error(`bad rectangle ${value}`);
+  return { x: x!, y: y!, width: width!, height: height! };
+}
+/** The screen point of a source-local point: AppKit's screen Y grows upward. */
+export function screenPoint(origin: Point, local: Point, macos: boolean): Point {
+  return { x: origin.x + local.x, y: macos ? origin.y - local.y : origin.y + local.y };
+}
+/** The floating preview is on screen, centred on `pointer` within a point. */
+export function previewCentred(state: string, pointer: Point): boolean {
+  const frame = smokeRect(smokeField(state, "preview_frame"));
+  return smokeField(state, "preview_visible") === "true" && frame !== undefined
+    && Math.abs(frame.x + frame.width / 2 - pointer.x) <= 1 && Math.abs(frame.y + frame.height / 2 - pointer.y) <= 1;
+}
 function rectCenter(value: string, index = 0): Point { const [x, y, w, h] = value.split(";")[index]!.split(",").map(Number); return { x: x! + w! / 2, y: y! + h! / 2 }; }
 function run(args: string[]): string {
   const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe", timeout: 5000 });
@@ -97,7 +114,8 @@ clearInterval(stop); clearTimeout(timer);
     const shell = join(directory, "shell");
     await writeFile(shell, `#!/bin/sh\nstty -echo\nexec ${quote(process.execPath)} ${quote(recorder)}\n`, { mode: 0o700 });
     const config = join(directory, "config.toml");
-    await writeFile(config, `[window]\ninitial_columns=36\ninitial_rows=12\n[tabs]\nposition="top"\nalways_show=true\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`);
+    const configText = (preview: boolean) => `[window]\ninitial_columns=36\ninitial_rows=12\nmacos_drag_preview=${preview}\n[tabs]\nposition="top"\nalways_show=true\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`;
+    await writeFile(config, configText(true));
     const launched = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_INPUT_STATE: directory, HUTERM_INPUT_SMOKE: directory, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell }, stdout: "pipe", stderr: "pipe" });
     app = launched;
     diagnostic = Promise.all([new Response(launched.stdout).text(), new Response(launched.stderr).text()]);
@@ -117,9 +135,24 @@ clearInterval(stop); clearTimeout(timer);
     const slotRect = smokeField(current, "w1.tabs_rects").split(";")[0]!.split(",").map(Number);
     const slot = { x: slotRect[0]! + 2, y: slotRect[1]! + slotRect[3]! / 2 };
     const at = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), slot, macos);
-    await mouse(0, "down", grab); await mouse(0, "move", at);
-    await until("cross-window tab slot cue", state => smokeField(state, "w1.drop") === "window:1:slot:0");
+    const sourceKey = smokeField(current, "w0.native");
+    const beyond = { x: 30, y: point(smokeField(current, "w0.size")).y + 100 };
+    await mouse(0, "down", grab); await mouse(0, "move", beyond);
+    await until("outside cue", state => smokeField(state, "w0.drop") === "tear_off" && (!macos || previewCentred(state, screenPoint(rootOrigin(state, 0), beyond, true))));
+    if (macos) {
+      // A second sample at the same point: the miniature is now under the
+      // pointer, and the locator must still search below it.
+      await mouse(0, "move", beyond);
+      await until("miniature under the pointer stays a tear-off", state => smokeField(state, "preview") === "window" && smokeField(state, "w0.drop") === "tear_off"
+        && previewCentred(state, screenPoint(rootOrigin(state, 0), beyond, true)) && smokeField(state, "w0.tear_off_pill") === "none" && smokeField(state, "key_window") === sourceKey);
+    } else {
+      await until("Linux shows the in-window pill", state => smokeField(state, "preview") === "none" && smokeField(state, "w0.tear_off_pill") !== "none");
+    }
+    await mouse(0, "move", at);
+    await until("cross-window tab slot cue", state => smokeField(state, "w1.drop") === "window:1:slot:0" && smokeField(state, "preview") === (macos ? "chip" : "none")
+      && (!macos || (smokeField(state, "preview_visible") === "true" && smokeField(state, "key_window") === sourceKey)));
     await mouse(0, "up", at);
+    await until("preview closed after release", state => smokeField(state, "preview") === "none" && (!macos || smokeField(state, "preview_frame") === "none"));
     await until("tab installed in destination", state => smokeField(state, "w0.tabs") === "2" && smokeField(state, "w1.tabs") === "2" && smokeField(state, "w0.busy") === "false" && smokeField(state, "w1.busy") === "false" && smokeField(state, "w1.active") === "true");
     if (terminals(await state()) !== ids) throw new Error("tab move changed terminal IDs");
     await activate(0); current = await state(); ids = terminals(current);
@@ -139,7 +172,7 @@ clearInterval(stop); clearTimeout(timer);
     await until("cancel gesture started", state => smokeField(state, "w1.drop").startsWith("window:1:"));
     if (macos) await send("53\t0\t\\u001b\t\\u001b".replaceAll("\\u001b", "\u001b")); else run(["xdotool", "key", "Escape"]);
     await mouse(0, "up", cancelAt);
-    await until("Escape cleared destination cue", state => smokeField(state, "w1.drop") === "none");
+    await until("Escape cleared destination cue", state => smokeField(state, "w1.drop") === "none" && smokeField(state, "preview") === "none" && (!macos || smokeField(state, "preview_frame") === "none"));
     const cancelled = await state();
     if (terminals(cancelled) !== ids) throw new Error("cancel changed terminal IDs");
     for (const index of [0, 1]) {
@@ -154,8 +187,52 @@ clearInterval(stop); clearTimeout(timer);
     await mouse(0, "up", outside);
     await until("tear-off installed", state => smokeField(state, "windows") === "3" && smokeField(state, "w2.tabs") === "1" && smokeField(state, "w0.busy") === "false" && smokeField(state, "w2.busy") === "false" && smokeField(state, "w2.active") === "true");
     if (terminals(await state()) !== ids) throw new Error("tear-off changed terminal IDs");
+    // Pane tear-off: window 1's active tab holds two panes. The new window
+    // moves over window 0 so the space below window 1 stays empty.
+    current = await state();
+    const torn = smokeField(current, "w2.native");
+    if (macos) await send(`place-window\t${torn}\t20\t650`); else run(["xdotool", "windowmove", torn, "20", "100"]);
+    await until("torn-off window moved aside", state => Math.abs(rootOrigin(state, 2).x - rootOrigin(state, 0).x) < 40);
+    await activate(1); current = await state(); ids = terminals(current);
+    if (smokeField(current, "w1.panes") !== "2") throw new Error("pane tear-off fixture needs a split tab");
+    const paneKey = smokeField(current, "w1.native");
+    const paneBelow = { x: 30, y: point(smokeField(current, "w1.size")).y + 100 };
+    await mouse(1, "down", point(smokeField(current, "w1.pane_grab").split(";")[1]!));
+    await mouse(1, "move", paneBelow);
+    await until("pane tear-off cue", state => {
+      if (smokeField(state, "w1.drop") !== "tear_off" || smokeField(state, "w1.active") !== "true") return false;
+      if (!macos) return smokeField(state, "preview") === "none" && smokeRect(smokeField(state, "w1.pane_tear_off")) !== undefined;
+      return smokeField(state, "preview") === "window" && smokeField(state, "w1.pane_tear_off") === "none" && smokeField(state, "key_window") === paneKey
+        && previewCentred(state, screenPoint(rootOrigin(state, 1), paneBelow, true));
+    });
+    await mouse(1, "up", paneBelow);
+    await until("pane tear-off installed", state => smokeField(state, "windows") === "4" && smokeField(state, "w3.tabs") === "1" && smokeField(state, "w3.panes") === "1" && smokeField(state, "w1.panes") === "1"
+      && smokeField(state, "w1.busy") === "false" && smokeField(state, "w3.busy") === "false" && smokeField(state, "w3.active") === "true" && smokeField(state, "preview") === "none");
+    if (terminals(await state()) !== ids) throw new Error("pane tear-off changed terminal IDs");
+    if (macos) {
+      // Turning the preview off applies to a drag under way. The pane's new
+      // window opened under the release point, so it moves aside too.
+      await send(`place-window\t${smokeField(await state(), "w3.native")}\t20\t650`);
+      await until("pane window moved aside", state => Math.abs(rootOrigin(state, 3).x - rootOrigin(state, 0).x) < 40);
+      await activate(1); current = await state();
+      const temporary = `${config}.tmp`;
+      await writeFile(temporary, configText(false)); await rename(temporary, config);
+      await mouse(1, "down", rectCenter(smokeField(current, "w1.tabs_rects"), 1));
+      await mouse(1, "move", paneBelow);
+      await until("preview off shows the tab bar pill", state => smokeField(state, "w1.drop") === "tear_off" && smokeField(state, "preview") === "none" && smokeRect(smokeField(state, "w1.tear_off_pill")) !== undefined);
+      await send("53\t0\t\u001b\t\u001b");
+      await mouse(1, "up", paneBelow);
+      await until("Escape cancelled the tab tear-off", state => smokeField(state, "w1.drop") === "none" && smokeField(state, "w1.tear_off_pill") === "none" && smokeField(state, "windows") === "4");
+      current = await state();
+      await mouse(1, "down", point(smokeField(current, "w1.pane_grab").split(";")[0]!));
+      await mouse(1, "move", paneBelow);
+      await until("preview off shows S1", state => smokeField(state, "w1.drop") === "tear_off" && smokeField(state, "preview") === "none" && smokeRect(smokeField(state, "w1.pane_tear_off")) !== undefined);
+      await send("53\t0\t\u001b\t\u001b");
+      await mouse(1, "up", paneBelow);
+      await until("Escape cancelled the pane tear-off", state => smokeField(state, "w1.drop") === "none" && smokeField(state, "w1.pane_tear_off") === "none" && smokeField(state, "windows") === "4");
+    }
     passed = true;
-    console.log("CROSS_WINDOW_INPUT_SMOKE tab-slot=ok pane-edge=ok escape=ok tear-off=ok terminal-ids=stable");
+    console.log(`CROSS_WINDOW_INPUT_SMOKE tab-slot=ok pane-edge=ok escape=ok tear-off=ok pane-tear-off=ok preview=${macos ? "ok" : "none"} terminal-ids=stable`);
   } catch (error) {
     throw new Error(`${error}\nlast cross-window state:\n${last}`);
   } finally {
