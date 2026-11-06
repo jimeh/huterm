@@ -353,10 +353,16 @@ export async function checkCrossWindowTargets(executable: string): Promise<void>
     if (smokeField(current, "w1.active_tab") !== "1") throw new Error("fixture: the destination's second tab must be active");
     const springAt = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), rectCenter(smokeField(current, "w1.tabs_rects"), 0), macos);
     await drag(f, 0, rectCenter(smokeField(current, "w0.tabs_rects"), 1), springAt);
-    await until("destination spring target", next => smokeField(next, "w1.drop") === "window:1:spring:0");
+    // The armed cue lasts only SPRING_LOAD_DELAY; a late poll may first see
+    // the tab it already switched to.
+    await until("destination spring target", next => smokeField(next, "w1.drop") === "window:1:spring:0" || smokeField(next, "w1.active_tab") === "0");
     await until("destination spring-loads without focus", next => smokeField(next, "w1.active_tab") === "0" && smokeField(next, "w1.active") === "false" && smokeField(next, "w0.active") === "true");
-    await escape(); await mouse(0, "up", springAt);
-    await until("Escape springs the destination back", next => smokeField(next, "w1.active_tab") === "1" && smokeField(next, "w1.drop") === "none" && smokeField(next, "preview") === "none" && idle(next));
+    // Escape springs back while the button is still held, so the check cannot
+    // pass on a release that found no target and sprang back by itself.
+    await escape();
+    await until("Escape springs the destination back mid-drag", next => smokeField(next, "w1.active_tab") === "1" && smokeField(next, "w1.drop") === "none");
+    await mouse(0, "up", springAt);
+    await until("released after Escape", next => smokeField(next, "w1.active_tab") === "1" && smokeField(next, "preview") === "none" && idle(next));
     current = await state();
     if (counts(current) !== before || terminals(current) !== ids) throw new Error(`spring-back moved something: ${before} -> ${counts(current)}`);
 
@@ -370,19 +376,23 @@ export async function checkCrossWindowTargets(executable: string): Promise<void>
     await drag(f, 0, paneGrab, edgeAt);
     await until("pane edge targets first", next => smokeField(next, "w1.drop").includes("pane:0:left"));
     await mouse(0, "move", centreAt);
+    // A stale sample also reads `none`, so this label only sequences the
+    // step; the unchanged counts and terminals after release are the check.
     await until("pane centre refused", next => smokeField(next, "w1.drop") === "window:1:none");
     await mouse(0, "up", centreAt);
     await until("refused release settles", next => smokeField(next, "w1.drop") === "none" && idle(next));
     current = await state();
     if (counts(current) !== before || terminals(current) !== ids) throw new Error(`refused centre moved something: ${before} -> ${counts(current)}`);
 
-    // A lone pane drops into another window's bar as a new tab there.
+    // A lone pane drops into another window's bar as a new tab at that slot.
+    const destinationTabs = smokeField(current, "w1.tab_ids").split(",");
     const [sx, sy, , sh] = smokeField(current, "w1.tabs_rects").split(";")[0]!.split(",").map(Number);
     const slotAt = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), { x: sx! + 2, y: sy! + sh! / 2 }, macos);
     await drag(f, 0, paneGrab, slotAt);
     await until("lone pane slot target", next => smokeField(next, "w1.drop") === "window:1:slot:0");
     await mouse(0, "up", slotAt);
-    await until("lone pane opens a tab in the destination", next => smokeField(next, "w0.tabs") === "1" && smokeField(next, "w1.tabs") === "3" && idle(next) && smokeField(next, "w1.active") === "true");
+    await until("lone pane opens a tab in the destination", next => smokeField(next, "w0.tabs") === "1" && smokeField(next, "w1.tabs") === "3" && idle(next) && smokeField(next, "w1.active") === "true"
+      && !destinationTabs.includes(smokeField(next, "w1.tab_ids").split(",")[0]!));
     if (terminals(await state()) !== ids) throw new Error("lone pane move changed terminal IDs");
 
     if (macos) {
