@@ -746,6 +746,12 @@ On macOS, Low Power Mode engages the first cap and the system's thermal state
 the second. On Linux, power-profiles-daemon's `power-saver` profile engages the
 first cap; Linux reports no thermal state, so the second never engages there.
 Set `power_frame_limits = false` to turn both caps off.
+
+In Low Power Mode on a 60 Hz display, sustained output drew 30 frames per
+second with the caps on and 60 with them off, and typing a key could take up
+to one 30 fps frame, about 33 ms, to show its echo. macOS did not throttle the
+window itself with the caps off.
+
 Settings lists it under Windows with the advanced settings. Changes apply to
 windows opened afterwards, and to the drag preview from the next drag; open
 windows keep the limits they opened with.

@@ -82,7 +82,15 @@ paint. Compare the defaults and background 0.8 independently.
 power_frame_limits` into their generated config; unset keeps the default, on.
 Each logs the effective value. The caps engage only in Low Power Mode, the
 `power-saver` profile, or under thermal pressure, so at nominal power both
-values measure the same path. The renderer benchmarks do not read it:
+values measure the same path. In Low Power Mode on a 60 Hz display
+(2026-11-06, Apple M3 Max on AC power), `-- flood` drew 30 snapshots per second
+with the caps on and 60 with them off, and the echo and keys maxima rose to
+about 33 ms. `bench:scroll`'s p95 input-to-paint budget assumes uncapped frames
+and fails with the caps on (47 ms against 33.4 ms), so run it with
+`HUTERM_BENCH_POWER_FRAME_LIMITS=false` while Low Power Mode is on. Record
+`ProcessInfo.isLowPowerModeEnabled` with the run; on AC power, Low Power Mode
+engages only when System Settings sets it to Always. The renderer benchmarks do
+not read it:
 `bench:renderer-scenarios` opens fixture windows with GPUI's defaults, and
 `bench:renderer` keeps the setting's default.
 

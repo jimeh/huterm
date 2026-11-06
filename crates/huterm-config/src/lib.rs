@@ -978,7 +978,8 @@ pub struct WindowConfig {
     pub size_indicator_linger_ms: u16,
     /// Cap terminal windows and the macOS drag preview at about 30 frames
     /// per second in Low Power Mode or a power-saver profile, and about 60
-    /// under serious or critical thermal pressure.
+    /// under serious or critical thermal pressure. Off draws at the display's
+    /// rate.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",
