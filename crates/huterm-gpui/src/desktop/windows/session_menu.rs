@@ -132,6 +132,7 @@ pub(super) fn parse_pick(id: &str) -> Option<SessionPick> {
     }
     [
         ids::NEW_SESSION,
+        ids::OPEN_SESSION_IN_NEW_WINDOW,
         ids::RENAME_SESSION,
         ids::CLEAR_SESSION_NAME,
         ids::CLOSE_SESSION,
@@ -169,9 +170,10 @@ fn windows_text(count: usize) -> String {
 /// The session menu: one row per session in runtime order, a check on the
 /// window's own, the name muted when automatic, the tab count, a window
 /// tag for sessions other windows show, and an "exited" tag; a hint while
-/// the window's session is the only one; then New Session, Rename
-/// Session…, Clear Name while the window's session has a custom name, and
-/// Close Session…. The selected row offers Open in New Window.
+/// the window's session is the only one; then New Session, in native menus
+/// Open Session in New Window…, Rename Session…, Clear Name while the
+/// window's session has a custom name, and Close Session…. The selected
+/// row offers Open in New Window.
 pub(super) fn session_menu(input: &SessionMenuInput) -> MenuSpec {
     let mut rows: Vec<MenuRow> = input
         .rows
@@ -228,6 +230,17 @@ pub(super) fn session_menu(input: &SessionMenuInput) -> MenuSpec {
     };
     rows.push(MenuRow::Separator);
     rows.push(action(ids::NEW_SESSION, "New Session", Icon::Plus));
+    // A native menu has no inline buttons and hides each row's Open in New
+    // Window behind Command, so it also lists the command, which asks for
+    // the session.
+    rows.push(MenuRow::Item(
+        MenuItem::new(
+            ids::OPEN_SESSION_IN_NEW_WINDOW.as_str(),
+            "Open Session in New Window…",
+        )
+        .icon(Icon::ExternalLink.asset_path())
+        .native_only(),
+    ));
     rows.push(action(ids::RENAME_SESSION, "Rename Session…", Icon::Pencil));
     if custom {
         rows.push(action(ids::CLEAR_SESSION_NAME, "Clear Name", Icon::Eraser));

@@ -253,13 +253,20 @@ fn a_restore_reopens_saved_windows_with_fresh_shells_and_saved_focus(
     let work = SessionId::in_runtime(runtime, 1);
     let unviewed = SessionId::in_runtime(runtime, 12);
     let window = harness.window_of(work);
-    // The session no saved window showed opens in a window of its own.
-    let other = harness.window_of(unviewed);
-    assert_ne!(window, other);
     harness.wait_text(window, scoped_tab(3), "READY");
-    harness.wait_text(other, scoped_tab(14), "READY");
     harness.cx.update(|cx| {
         let desktop = cx.global::<Desktop>();
+        // The session no saved window showed comes back unviewed, with no
+        // window of its own, as it was before Quit.
+        assert!(desktop.hierarchy.state().session(unviewed).is_some());
+        assert!(
+            desktop
+                .windows
+                .records()
+                .all(|record| record.session != Some(unviewed)),
+            "no window shows the unviewed session"
+        );
+        assert_eq!(cx.windows().len(), 1);
         let record = desktop.windows.record(window.window_id()).unwrap();
         assert_eq!(
             record.tabs.iter().map(|entry| entry.id).collect::<Vec<_>>(),
@@ -319,13 +326,12 @@ fn a_restore_reopens_saved_windows_with_fresh_shells_and_saved_focus(
                 && message.ends_with("because its folder no longer exists.")),
         "{shown:?}"
     );
-    assert_eq!(notices(&mut harness, other), Vec::<String>::new());
     // Settling writes one checkpoint of what was restored.
     let recorder = harness.recorder.clone();
     harness.wait_for("the settle checkpoint", |_| !recorder.saved().is_empty());
     let (saved, layout) = harness.recorder.saved().remove(0);
     assert_eq!(saved.sessions.len(), 2);
-    assert_eq!(layout.windows.len(), 2);
+    assert_eq!(layout.windows.len(), 1);
     assert_eq!(harness.recorder.recorded().marked, 1);
     assert_eq!(harness.recorder.recorded().cleared, 1);
     harness.runtime.terminate().unwrap();
@@ -373,7 +379,6 @@ fn panes_that_start_in_an_earlier_saved_folder_are_reported(
     harness.wait_settled();
     let runtime = harness.runtime_id();
     let work = harness.window_of(SessionId::in_runtime(runtime, 1));
-    let other = harness.window_of(SessionId::in_runtime(runtime, 12));
     harness.wait_for("every shell to report", |_| scratch.reports().len() == 4);
     let project = project.canonicalize().unwrap();
     let started_in_project = scratch
@@ -382,16 +387,13 @@ fn panes_that_start_in_an_earlier_saved_folder_are_reported(
         .filter(|(_, directory)| *directory == project)
         .count();
     assert_eq!(started_in_project, 3);
+    // Session 12 comes back unviewed, so its notice joins the first
+    // window's, named after it; the newest notice lists first.
     assert_eq!(
         restore_notices(&mut harness, work),
         [
-            "2 panes started in a different folder because their last folders no longer exist."
-        ]
-    );
-    assert_eq!(
-        restore_notices(&mut harness, other),
-        [
-            "1 pane started in an earlier folder because its last folder no longer exists."
+            "In \"Session 2\": 1 pane started in an earlier folder because its last folder no longer exists.",
+            "2 panes started in a different folder because their last folders no longer exist.",
         ]
     );
     harness.runtime.terminate().unwrap();
@@ -1383,4 +1385,24 @@ fn a_stash_whose_session_closes_is_dropped(cx: &mut TestAppContext) {
     harness.wait_projection();
     assert_eq!(harness.stashed(), Vec::<String>::new());
     harness.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn without_a_saved_window_each_restored_session_opens_its_own(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::restoring(
+        cx,
+        |_| {},
+        capture(&scratch),
+        None,
+        &scratch.reporting(),
+    );
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let work = harness.window_of(SessionId::in_runtime(runtime, 1));
+    let other = harness.window_of(SessionId::in_runtime(runtime, 12));
+    assert_ne!(work, other);
+    harness.wait_text(other, TabId::in_runtime(runtime, 14), "READY");
 }

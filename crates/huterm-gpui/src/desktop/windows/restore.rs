@@ -998,10 +998,35 @@ fn plan(
         });
     }
     let mut unused = Vec::new();
+    // A session no saved window showed stays unviewed, reachable from the
+    // session menu, as it was before Quit. Only when no saved window came
+    // back, as after a lost or empty layout, does each session open in a
+    // window of its own, so the launch never ends with none.
+    let open_unshown = !planned
+        .iter()
+        .any(|planned| matches!(planned, Planned::Open(_)));
+    // An unviewed session's restore notices go to the first window, named
+    // after the session, since no window of its own shows them.
+    let mut unviewed_notices = Vec::new();
     for (session, attachment) in free {
         let workspace = first_workspace(state, session)
-            .filter(|_| !shown.contains(&session));
+            .filter(|_| open_unshown && !shown.contains(&session));
         let Some(workspace) = workspace else {
+            if !shown.contains(&session)
+                && let Some(info) = state.session(session)
+            {
+                let name = info.display_name().to_owned();
+                unviewed_notices.extend(
+                    window_notices(&saved.capture, report, fallbacks, session)
+                        .into_iter()
+                        .map(|mut notice| {
+                            notice.message =
+                                format!("In \"{name}\": {}", notice.message);
+                            notice
+                        }),
+                );
+                shown.insert(session);
+            }
             unused.push(attachment);
             continue;
         };
@@ -1022,6 +1047,12 @@ fn plan(
         let reopen = planned.reopen_mut();
         reopen.notices =
             window_notices(&saved.capture, report, fallbacks, reopen.session);
+    }
+    if let Some(first) = planned
+        .iter_mut()
+        .find(|planned| matches!(planned, Planned::Open(_)))
+    {
+        first.reopen_mut().notices.extend(unviewed_notices);
     }
     (planned, unused)
 }

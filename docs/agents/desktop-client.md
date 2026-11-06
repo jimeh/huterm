@@ -450,7 +450,11 @@ live shells. Each restored window opens attached to its session
 its installs are idle (`apply_reopen`); the bootstrap settles when every
 window did or went away. The worker takes one attachment per saved window
 and Quake stash of a session, so two windows on one session come back
-independent; `plan` hands them out per window, activates the saved active
+independent. A session no saved window showed comes back unviewed, with
+its attachment detached and its restore notices prefixed with its name in
+the first window; only when no saved window opens does each session get a
+window, so a launch never ends with none. `plan` hands attachments out per
+window, activates the saved active
 window by its index in the layout, scopes each window's `remembered`
 navigation into the runtime (dropping sessions that did not come back and
 filtering tabs and panes), and returns unused attachments to detach. A
@@ -794,7 +798,10 @@ its place. Its "exited" tags come from `Mux::exited_sessions`, read on a
 worker each time it opens; the menu opens first and a generation drops a
 superseded answer. Its native lowering puts each session's Open in New
 Window in an alternate item (`setAlternate:` with the Command mask and no
-key), which AppKit swaps in while Command is held, and the detail in
+key), which AppKit swaps in while Command is held, and lists the
+`open_session_in_new_window` command as a visible item too
+(`menu_spec::Item::native_only`, which Huterm's popover leaves out), since
+a held-modifier alternate is hard to discover; it shows the detail in
 `subtitle` only when the item responds to `setSubtitle:`, which arrived in
 macOS 14.4 while the floor is 14.0. A terminal
 menu's kind names the terminal it opened over, and a pane menu's its pane,

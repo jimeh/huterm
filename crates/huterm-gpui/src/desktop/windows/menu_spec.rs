@@ -39,6 +39,9 @@ pub(super) struct Item {
     /// The row's alternate action: Huterm's inline button on the selected
     /// row, or a native item that replaces this one while Command is held.
     pub(super) action: Option<Action>,
+    /// Shown only in native menus, for an action Huterm's own menu offers
+    /// another way, such as through rows' inline buttons.
+    pub(super) native_only: bool,
 }
 
 /// A tag after an item's label.
@@ -83,7 +86,14 @@ impl Item {
             icon: None,
             tags: Vec::new(),
             action: None,
+            native_only: false,
         }
+    }
+
+    /// Shows this item only in native menus.
+    pub(super) fn native_only(mut self) -> Self {
+        self.native_only = true;
+        self
     }
 
     pub(super) fn detail(mut self, detail: impl Into<String>) -> Self {
@@ -250,6 +260,7 @@ fn listbox_item(item: &Item, platform: Platform) -> listbox::Item {
 
 fn listbox_rows(rows: &[Row], platform: Platform) -> Vec<listbox::Row> {
     rows.iter()
+        .filter(|row| !matches!(row, Row::Item(item) if item.native_only))
         .map(|row| match row {
             Row::Item(item) => listbox::Row::Item(listbox_item(item, platform)),
             Row::Submenu { item, rows } => listbox::Row::Submenu {

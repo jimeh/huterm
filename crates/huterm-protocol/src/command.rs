@@ -1144,6 +1144,15 @@ const OWN_SESSION: &[ArgumentSpec] = &[ArgumentSpec {
     prompt: false,
 }];
 
+/// Close Session's target: the window's session by default, prompted so
+/// the palette can pick a session no window shows.
+const PICKED_SESSION: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "session",
+    kind: ArgumentKind::Session,
+    required: Requirement::Optional,
+    prompt: true,
+}];
+
 const CATALOG: &[CommandSpec] = &[
     spec(
         ids::SHOW_QUAKE,
@@ -1494,7 +1503,7 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Runtime,
         "Close Session",
         "Close a session and every tab in it after assessing its terminals.",
-        OWN_SESSION,
+        PICKED_SESSION,
     ),
     spec(
         ids::RENAME_PANE,

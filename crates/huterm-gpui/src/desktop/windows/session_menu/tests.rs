@@ -170,6 +170,7 @@ fn picks_name_a_session_by_its_raw_identity_or_a_session_command() {
     );
     for command in [
         ids::NEW_SESSION,
+        ids::OPEN_SESSION_IN_NEW_WINDOW,
         ids::RENAME_SESSION,
         ids::CLEAR_SESSION_NAME,
         ids::CLOSE_SESSION,
@@ -225,11 +226,19 @@ fn the_native_menu_keeps_check_and_name_with_the_detail_as_a_subtitle() {
             "~session-window:4=Open \"Session 4\" in New Window",
             "-",
             "new_session=New Session",
+            "open_session_in_new_window=Open Session in New Window…",
             "rename_session=Rename Session…",
             "clear_session_name=Clear Name",
             "-",
             "close_session=Close Session…",
         ]
+    );
+    // Only the native menu lists the command: Huterm's menu offers it as
+    // each row's inline button.
+    assert!(
+        !drawn(&session_menu(&input(four(), 1)))
+            .iter()
+            .any(|row| row.contains("open_session_in_new_window"))
     );
     // An alternate is picked by its own tag.
     assert_eq!(native.id_at(1).as_deref(), Some("session-window:1"));

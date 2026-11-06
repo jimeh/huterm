@@ -347,6 +347,7 @@ fn the_native_session_menu_switches_or_opens_a_window_from_its_picks(
                 format!("session-window:{theirs}"),
                 "-".to_owned(),
                 "new_session".to_owned(),
+                "open_session_in_new_window".to_owned(),
                 "rename_session".to_owned(),
                 "-".to_owned(),
                 "close_session".to_owned(),

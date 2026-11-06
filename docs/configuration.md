@@ -141,7 +141,9 @@ panes, window positions, and per-window transparency. Each pane starts a
 fresh shell in the folder it last reported; nothing that ran before is
 started again. A pane whose last folder no longer exists starts in an
 earlier folder it used, or failing that in your home folder on macOS or
-Huterm's working directory on Linux, and its window says so. Closing the
+Huterm's working directory on Linux, and its window says so. A session no
+window showed at Quit comes back the same way, running but in no window;
+switch to it from the session menu. Closing the
 last window is not a Quit: it ends that session, so the next launch opens
 one fresh window.
 

@@ -535,7 +535,7 @@ fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
 }
 
 #[test]
-fn session_commands_prompt_only_for_a_session_they_switch_to() {
+fn session_commands_prompt_for_the_session_they_switch_to_or_close() {
     let session = SessionId::new(3);
     let bare = |id| CommandInvocation::new(id, Vec::new());
     let picked = |id| {
@@ -572,11 +572,20 @@ fn session_commands_prompt_only_for_a_session_they_switch_to() {
         );
         assert!(validate(&picked(id)).is_ok(), "{id}");
     }
-    // These default to the window's session and run at once.
-    for id in [ids::CLEAR_SESSION_NAME, ids::CLOSE_SESSION] {
+    // These default to the window's session. Clear Name runs at once;
+    // Close Session offers a session slot, so the palette can end a session
+    // no window shows.
+    for (id, prompted) in
+        [(ids::CLEAR_SESSION_NAME, false), (ids::CLOSE_SESSION, true)]
+    {
         let spec = validate(&bare(id)).unwrap();
         assert_eq!(spec.scope, CommandScope::Runtime, "{id}");
         assert!(spec.missing_prompted(&bare(id)).is_empty(), "{id}");
+        assert_eq!(
+            spec.args.iter().map(|arg| arg.prompt).collect::<Vec<_>>(),
+            [prompted],
+            "{id}"
+        );
         assert_eq!(picked(id).session("session"), Some(session));
         assert!(validate(&picked(id)).is_ok(), "{id}");
     }

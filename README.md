@@ -192,7 +192,11 @@ other windows show, and an "exited" tag on sessions whose shells all exited,
 then New Session, Rename Session…, Clear Name (while the session has a custom
 name), and Close Session…. Picking a session switches the window to it, and
 the selected row's Open in New Window button (or Cmd-Enter on macOS,
-Ctrl-Enter on Linux) shows it in a new window. Without a title bar, in
+Ctrl-Enter on Linux) shows it in a new window. The native macOS menu has no
+row buttons, so it lists Open Session in New Window… instead, and holding
+Command turns each row into its own Open in New Window. Close Session in the
+command palette asks which session to close, so one that no window shows
+can be ended without switching to it. Without a title bar, in
 fullscreen, Quake windows, and Linux without client-side decorations, the
 control ends a top or bottom tab bar, or sits icon-only beside `+` in a left
 or right column. A long name truncates, and a narrow window shows only the
