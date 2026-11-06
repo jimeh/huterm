@@ -12143,14 +12143,16 @@ impl WorkspaceView {
                 }
                 view.busy = false;
                 view.close.current = None;
-                if close_commit_retries(&result) {
-                    // The next commit attempt holds Quit again.
-                    view.release_close_hold(cx);
-                    view.reconcile_own(window, cx);
-                    view.request_close(target, window, cx);
+                let followed_stale =
+                    close_commit_retries(&result) && followed.is_some();
+                if !followed_stale
+                    && view.retry_refused_commit(&result, &target, window, cx)
+                {
                     return;
                 }
-                if let Err(error) = result {
+                if let Err(error) = result
+                    && !followed_stale
+                {
                     let message = format!("Close failed: {error}");
                     eprintln!("{message}");
                     view.report_close_failure(message, cx);
@@ -12163,36 +12165,73 @@ impl WorkspaceView {
                     cx.notify();
                     return;
                 }
-                match target {
-                    CloseTarget::Application => {
-                        settle_waiters(cx);
-                        approved_quit(cx);
-                    }
-                    CloseTarget::Window | CloseTarget::Emptied => {
-                        // The runtime detached the attachment or deleted its
-                        // session, even when terminal teardown then failed.
-                        view.remove_detached_window(window, cx);
-                    }
-                    CloseTarget::Tab(id) => {
-                        view.remove_closed_tabs(&[id], window, cx);
-                    }
-                    CloseTarget::Pane { tab, pane } => {
-                        view.remove_closed_pane(tab, pane, window, cx);
-                    }
-                    CloseTarget::Tabs(ids) => {
-                        view.remove_closed_tabs(&ids, window, cx);
-                    }
-                    CloseTarget::Session(_) => view.finish_session_close(
-                        own_session,
-                        followed.take(),
-                        window,
-                        cx,
-                    ),
-                }
+                view.finish_committed(
+                    target,
+                    own_session,
+                    followed.take(),
+                    window,
+                    cx,
+                );
+            });
+            // A window gone before its completion leaves no owner for the
+            // follow-up's attachment.
+            app.update(|cx| {
+                session_switch::drop_followed(followed.as_ref(), cx);
             });
         })
         .detach();
         cx.notify();
+    }
+
+    /// Applies a committed close's effect on this window.
+    fn finish_committed(
+        &mut self,
+        target: CloseTarget,
+        own_session: bool,
+        followed: Option<session_switch::FollowUp>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match target {
+            CloseTarget::Application => {
+                settle_waiters(cx);
+                approved_quit(cx);
+            }
+            CloseTarget::Window | CloseTarget::Emptied => {
+                // The runtime detached the attachment or deleted its
+                // session, even when terminal teardown then failed.
+                self.remove_detached_window(window, cx);
+            }
+            CloseTarget::Tab(id) => self.remove_closed_tabs(&[id], window, cx),
+            CloseTarget::Pane { tab, pane } => {
+                self.remove_closed_pane(tab, pane, window, cx);
+            }
+            CloseTarget::Tabs(ids) => self.remove_closed_tabs(&ids, window, cx),
+            CloseTarget::Session(_) => {
+                self.finish_session_close(own_session, followed, window, cx);
+            }
+        }
+    }
+
+    /// Retries a commit the runtime refused as stale or needing consent,
+    /// which assesses again; the next commit attempt holds Quit again.
+    /// A follow-up runs only once the closing session is gone, so a refused
+    /// commit that followed is not retried: another close removed the
+    /// session, and the window moves on as if its own commit had.
+    fn retry_refused_commit(
+        &mut self,
+        result: &Result<(), MuxError>,
+        target: &CloseTarget,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if !close_commit_retries(result) {
+            return false;
+        }
+        self.release_close_hold(cx);
+        self.reconcile_own(window, cx);
+        self.request_close(target.clone(), window, cx);
+        true
     }
 
     /// Drops the view of a committed pane close. When the pane was its

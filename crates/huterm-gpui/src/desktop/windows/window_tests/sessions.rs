@@ -2752,3 +2752,47 @@ fn quit_from_a_sibling_waits_for_a_new_window_held_on_the_projection(
     let (captured, _) = harness.recorder.saved().remove(0);
     assert_eq!(captured.sessions.len(), 2, "the new window's session");
 }
+
+#[gpui::test]
+fn an_own_session_close_whose_session_another_close_removed_still_follows(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(RUNS_JOB);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_text(window, tab, "READY");
+    let left = harness.other_session("left", 1);
+    harness.switch_to(window, left.session, &left.tabs);
+    harness.switch_to(window, harness.session, &[tab]);
+    // The window asks before closing its own session, which runs a job.
+    harness.invoke(window, ids::CLOSE_SESSION).unwrap();
+    harness.wait_for("the confirmation", |cx| confirming(cx, window));
+    // Another close removes the session first, so this window's commit is
+    // refused as stale while its follow-up still runs.
+    let closing = harness.session;
+    harness.runtime.lock().close_session(closing).unwrap();
+    harness.wait_projection();
+    harness.update_view(window, |view, window, cx| {
+        let target = view.close.confirmation.clone().unwrap();
+        let generation = view.close.generation;
+        view.confirm_confirmation(target, generation, window, cx);
+    });
+    harness.wait_switched(window, left.session, &left.tabs);
+    harness.answer(window, left.tabs[0], "followed");
+    harness.wait_projection();
+    harness.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        // The follow-up's attachment is the window's own, and no other is
+        // left behind on the session.
+        assert_eq!(
+            desktop
+                .hierarchy
+                .state()
+                .session_attachments(left.session)
+                .count(),
+            1
+        );
+        assert_eq!(desktop.pending_spawns, 0);
+        assert_eq!(notices(cx, window), [] as [String; 0]);
+    });
+}
