@@ -3231,6 +3231,9 @@ impl refresh::Animated for WorkspaceView {
         }
         if self.notices.expire(now) {
             self.reconcile_notices(window, cx);
+        } else if frame && self.notices.animating() {
+            // Each frame moves the progress line.
+            cx.notify();
         }
         if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
             self.refresh_tab_visibility(window, cx);
@@ -3557,12 +3560,15 @@ impl WorkspaceView {
             }),
             hover: Rc::new(move |id, hovering, window, cx| {
                 let _ = hover.update(cx, |view, cx| {
-                    if hovering {
-                        view.hovered_notices.insert(id);
+                    // Entering repeats on every pointer move.
+                    let changed = if hovering {
+                        view.hovered_notices.insert(id)
                     } else {
-                        view.hovered_notices.remove(&id);
+                        view.hovered_notices.remove(&id)
+                    };
+                    if changed {
+                        view.reconcile_notices(window, cx);
                     }
-                    view.reconcile_notices(window, cx);
                 });
             }),
         };

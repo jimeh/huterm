@@ -5364,6 +5364,7 @@ mod dialogs;
 mod layout_undo;
 mod menus;
 mod native_menus;
+mod notices;
 mod pane_bars;
 mod pane_drags;
 mod pane_grabs;

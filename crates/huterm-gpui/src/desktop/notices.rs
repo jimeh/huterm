@@ -1,8 +1,8 @@
 //! Dismissible notices that replace the window and terminal status strings.
 //!
 //! [`NoticeStack`] is the per-window model. It takes every `Instant` from
-//! its caller so expiry is testable, and it reports one earliest deadline
-//! through [`NoticeStack::next_deadline`] for the window's animation timer;
+//! its caller so expiry is testable, and it reports its frames and earliest
+//! deadline through [`NoticeStack::schedule`] for the window's frame clock;
 //! it schedules nothing itself. [`render_notice_stack`] draws the visible
 //! toasts under the `notices` key context. The owner routes the `notice_*`
 //! catalog commands, hover pause, and action invocations through
@@ -399,12 +399,30 @@ impl NoticeStack {
         self.get(id)?.remaining(now)
     }
 
-    /// The window's wake for expiry: no deadline while paused or while
-    /// every notice is persistent, the earliest expiry otherwise. Never a
-    /// frame: the progress line advances only when something else repaints.
+    /// Whether a visible toast's progress line is shrinking: an expiring
+    /// notice is shown and the stack is not paused.
+    pub(crate) fn animating(&self) -> bool {
+        self.paused_since.is_none()
+            && self
+                .visible()
+                .iter()
+                .any(|notice| notice.deadline.is_some())
+    }
+
+    /// The window's wake: frames while [`Self::animating`], so the progress
+    /// line moves without other repaints, and the earliest expiry as a
+    /// deadline, so a window that draws no frames, such as a covered one,
+    /// still expires on time. Idle while paused or when every notice is
+    /// persistent.
     pub(crate) fn schedule(&self) -> AnimationSchedule {
-        self.next_deadline()
-            .map_or(AnimationSchedule::IDLE, AnimationSchedule::at)
+        let deadline = self
+            .next_deadline()
+            .map_or(AnimationSchedule::IDLE, AnimationSchedule::at);
+        if self.animating() {
+            deadline.merge(AnimationSchedule::FRAME)
+        } else {
+            deadline
+        }
     }
 
     pub(crate) fn get(&self, id: NoticeId) -> Option<&Notice> {
@@ -463,8 +481,12 @@ pub(crate) type DismissHandler = Rc<dyn Fn(NoticeId, &mut Window, &mut App)>;
 pub(crate) type ActionHandler =
     Rc<dyn Fn(NoticeId, CommandInvocation, &mut Window, &mut App)>;
 /// Reports the pointer entering (`true`) or leaving (`false`) a toast, for
-/// pause and resume. A toast dismissed under the pointer never reports
-/// leaving, so owners key hover state by notice and drop gone ids.
+/// pause and resume. Entering needs a pointer move over the toast: GPUI
+/// re-tests hover at paint against the last pointer position it saw, which
+/// can be stale, so a toast raised under it would otherwise pause until the
+/// pointer moved. Entering repeats on every move. A toast dismissed under
+/// the pointer never reports leaving, so owners key hover state by notice
+/// and drop gone ids.
 pub(crate) type HoverHandler =
     Rc<dyn Fn(NoticeId, bool, &mut Window, &mut App)>;
 
@@ -478,6 +500,8 @@ pub(crate) struct ToastHandlers {
 
 /// Width of the toast column.
 const TOAST_WIDTH: f32 = 340.0;
+/// Corner radius of each toast.
+const TOAST_RADIUS: f32 = 9.0;
 
 /// The toast column in the bottom-right corner of its parent, `bottom`
 /// points above the edge. Newest toasts sit nearest the corner beneath the
@@ -619,7 +643,8 @@ fn render_toast(
         cx.stop_propagation();
     };
     let dismiss_selector = dismiss_name.clone();
-    let mut toast = raised_panel(swatch, 9.0)
+    let progress_selector = content.title.clone();
+    let mut toast = raised_panel(swatch, TOAST_RADIUS)
         .id(("toast", id.0))
         // Over a terminal, whose text cursor would otherwise show.
         .cursor(gpui::CursorStyle::Arrow)
@@ -636,8 +661,14 @@ fn render_toast(
         .on_mouse_down(MouseButton::Left, stop)
         .on_mouse_down(MouseButton::Right, stop)
         .on_mouse_down(MouseButton::Middle, stop)
+        .on_mouse_move({
+            let hover = Rc::clone(&hover);
+            move |_, window, cx| hover(id, true, window, cx)
+        })
         .on_hover(move |hovering: &bool, window, cx| {
-            hover(id, *hovering, window, cx);
+            if !*hovering {
+                hover(id, false, window, cx);
+            }
         })
         .child(accent_bar(stripe, px(6.0), px(10.0)))
         .child(severity_mark(content.severity.glyph(), stripe, swatch))
@@ -660,14 +691,25 @@ fn render_toast(
                 .on_click(move |window, cx| dismiss(id, window, cx)),
         );
     if let Some(progress) = progress {
+        // Inset by the corner radius and lifted off the border, so the line
+        // stays inside the rounded panel; the content mask is rectangular.
         toast = toast.child(
             div()
                 .absolute()
-                .left_0()
-                .bottom_0()
+                .left(px(TOAST_RADIUS))
+                .right(px(TOAST_RADIUS))
+                .bottom(px(3.0))
                 .h(px(2.0))
-                .w(relative(progress))
-                .bg(swatch.accent),
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(progress))
+                        .rounded_full()
+                        .bg(swatch.accent)
+                        .debug_selector(|| {
+                            format!("toast-progress-{progress_selector}")
+                        }),
+                ),
         );
     }
     toast
@@ -834,16 +876,12 @@ mod tests {
     }
 
     #[test]
-    fn the_window_schedule_wakes_only_for_the_earliest_unpaused_expiry() {
+    fn frames_run_only_while_a_visible_expiring_toast_is_unpaused() {
         let start = Instant::now();
         let mut stack = NoticeStack::default();
         assert_eq!(stack.schedule(), AnimationSchedule::IDLE);
         stack.push(
             content(NoticeSource::Config, "config", Lifetime::Persistent),
-            start,
-        );
-        stack.push(
-            content(NoticeSource::Keymap, "keymap", Lifetime::Persistent),
             start,
         );
         assert_eq!(
@@ -857,15 +895,42 @@ mod tests {
             content(NoticeSource::Command, "early", Lifetime::Expiring),
             start,
         );
-        let schedule = stack.schedule();
-        assert!(!schedule.frame, "no per-frame work for the progress line");
-        assert_eq!(schedule.deadline, Some(start + NOTICE_LIFETIME));
+        assert_eq!(
+            stack.schedule(),
+            AnimationSchedule {
+                frame: true,
+                deadline: Some(start + NOTICE_LIFETIME),
+            },
+            "the progress lines move every frame, and the earliest expiry \
+             still wakes a window that draws none"
+        );
         stack.pause(start + Duration::from_secs(1));
         assert_eq!(stack.schedule(), AnimationSchedule::IDLE, "paused");
         stack.resume(start + Duration::from_secs(2));
         assert_eq!(
-            stack.schedule().deadline,
-            Some(start + NOTICE_LIFETIME + Duration::from_secs(1))
+            stack.schedule(),
+            AnimationSchedule {
+                frame: true,
+                deadline: Some(
+                    start + NOTICE_LIFETIME + Duration::from_secs(1)
+                ),
+            }
+        );
+
+        // Three newer persistent notices push the expiring ones into the
+        // overflow, which draws no progress line.
+        for tab in 2..5 {
+            stack.push(
+                content(terminal(tab), "persistent", Lifetime::Persistent),
+                start,
+            );
+        }
+        assert_eq!(
+            stack.schedule(),
+            AnimationSchedule::at(
+                start + NOTICE_LIFETIME + Duration::from_secs(1)
+            ),
+            "hidden expiring notices wake only to expire"
         );
     }
 
