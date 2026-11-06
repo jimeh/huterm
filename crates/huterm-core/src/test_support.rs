@@ -3,6 +3,7 @@
 
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use huterm_protocol::{
@@ -63,6 +64,21 @@ impl TestClient {
 /// The text of every cell in `snapshot`, row by row, without line breaks.
 pub(crate) fn snapshot_text(snapshot: &TerminalSnapshot) -> String {
     snapshot.cells().map(|cell| cell.text.displayed()).collect()
+}
+
+/// Creates a new directory under the system temporary directory, named
+/// after `prefix`, this process, and a per-process sequence number.
+/// Concurrent tests can read the same wall-clock time, so a clock reading
+/// does not make a name unique.
+pub(crate) fn scratch_dir(prefix: &str) -> std::path::PathBuf {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    directory
 }
 
 /// How long a test waits for a condition. A loaded host can stall a shell

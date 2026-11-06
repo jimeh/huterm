@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use huterm_protocol::{CellSize, GridSize, TerminalCommand};
 use nix::sys::stat::Mode;
@@ -13,15 +13,7 @@ pub(super) struct HolderFixture {
 
 impl HolderFixture {
     pub(super) fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!(
-            "huterm-holder-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir(&directory).unwrap();
+        let directory = crate::test_support::scratch_dir("huterm-holder");
         mkfifo(&directory.join("release"), Mode::S_IRUSR | Mode::S_IWUSR)
             .unwrap();
         Self { directory }
