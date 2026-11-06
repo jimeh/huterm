@@ -521,8 +521,8 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   CI; the fixed smoke had no busy-step failure in 240 runs. Its two
   failures there, the wheel step above and a `show_quake` timeout, also
   appear without the fix under that load.
-- **Fix:** the step waits for the palette to open and take focus before
-  `busy-on`. After Enter it waits for the palette's
+- **Fix (PR #427):** the step waits for the palette to open and take
+  focus before `busy-on`. After Enter it waits for the palette's
   `diagnostic=Some("Unavailable: structural operation in progress")`,
   which only the refused Enter sets, before `busy-off`. The macOS smoke
   runs the same step. Its `native` keys are queued, not dispatched, when
