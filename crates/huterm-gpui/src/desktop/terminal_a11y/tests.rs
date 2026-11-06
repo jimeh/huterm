@@ -732,6 +732,119 @@ fn a_selection_is_clipped_to_the_displayed_rows() {
     );
 }
 
+/// The buffer point of displayed cell (`column`, `row`) in an unscrolled
+/// snapshot.
+fn at(snapshot: &TerminalSnapshot, column: u16, row: u16) -> BufferPoint {
+    point_at(usize::from(snapshot.size.rows - 1 - row), column)
+}
+
+/// The text selected from cell `start` through cell `end`, both
+/// (`column`, `row`).
+fn select_cells(
+    snapshot: &TerminalSnapshot,
+    start: (u16, u16),
+    end: (u16, u16),
+) -> Option<(usize, usize, String)> {
+    let range = BufferRange::ordered(
+        at(snapshot, start.0, start.1),
+        at(snapshot, end.0, end.1),
+    );
+    selected(&build_in(
+        &mut ModelBuilder::default(),
+        snapshot,
+        geometry(snapshot),
+        Some(range),
+    ))
+}
+
+#[test]
+fn a_view_that_displays_no_rows_has_no_selection() {
+    let snapshot =
+        with_cursor(snapshot(6, &["ab", "cd"]), 0, 0, CursorShape::Block);
+    // The pane has no height, so no row is displayed.
+    let geometry = clipped(&snapshot, 6.0, 0.0);
+    for range in [
+        // From history above the view to a row inside the grid.
+        BufferRange::ordered(point_at(5, 0), point_at(0, 1)),
+        BufferRange::ordered(point_at(5, 0), point_at(1, 1)),
+    ] {
+        let model = build_in(
+            &mut ModelBuilder::default(),
+            &snapshot,
+            geometry,
+            Some(range),
+        );
+        assert!(model.runs.is_empty(), "{model:?}");
+        assert_eq!(model.selection, None, "{range:?}");
+        assert_eq!(model.caret, None);
+    }
+}
+
+#[test]
+fn a_wrapped_row_keeps_the_blanks_its_line_continues_after() {
+    // Copy writes blanks as spaces once later text on the logical line
+    // follows them, across the wrap.
+    let model = build(&snapshot(4, &["a\\", "b"]));
+    assert_eq!(text(&model), "a   b");
+    assert_eq!(lines(&model), ["a   ", "b"]);
+    let model = build(&snapshot(6, &["hello\\", "world"]));
+    assert_eq!(text(&model), "hello world", "a space in the wrap column");
+    assert_eq!(model.runs[0].node.word_starts(), [0]);
+    // A wrapped row whose line continues with nothing still trims.
+    let model = build(&snapshot(4, &["ab\\", "", "c"]));
+    assert_eq!(text(&model), "ab\nc");
+    // A cached row follows its continuation: the same row keeps its blanks
+    // once text follows them.
+    let first = row("a", 4, true);
+    let last = row("z", 4, false);
+    let mut builder = ModelBuilder::default();
+    let blank =
+        snapshot_of(4, vec![first.clone(), row("", 4, false), last.clone()]);
+    let model = build_in(&mut builder, &blank, geometry(&blank), None);
+    assert_eq!(text(&model), "a\nz");
+    let continued = snapshot_of(4, vec![first, row("b", 4, false), last]);
+    let model = build_in(&mut builder, &continued, geometry(&continued), None);
+    assert_eq!(text(&model), "a   b\nz");
+}
+
+#[test]
+fn only_empty_cells_and_spaces_are_trimmed() {
+    // Copy keeps a trailing no-break or ideographic space.
+    let model = build(&snapshot(6, &["a\u{a0}", "b\u{3000}", "c"]));
+    assert_eq!(text(&model), "a\u{a0}\nb\u{3000}\nc");
+}
+
+#[test]
+fn a_selection_ends_where_copy_ends() {
+    let grid = snapshot(12, &["alpha beta", "a  b", "   x", ""]);
+    // Columns 0 through 5 end on the blank after "alpha", which Copy drops.
+    assert_eq!(
+        select_cells(&grid, (0, 0), (5, 0)),
+        Some((0, 5, "alpha".into()))
+    );
+    // So is an inner blank run at the end of a selection.
+    assert_eq!(select_cells(&grid, (0, 1), (2, 1)).unwrap().2, "a");
+    // An end in a row's leading blanks ends after the text before it, and
+    // drops the newline too.
+    assert_eq!(select_cells(&grid, (3, 1), (1, 2)).unwrap().2, "b");
+    assert_eq!(select_cells(&grid, (6, 0), (2, 2)).unwrap().2, "beta\na  b");
+    // Into the empty last row: its placeholder space is not text.
+    assert_eq!(select_cells(&grid, (0, 2), (11, 3)).unwrap().2, "   x");
+    // Copy copies nothing from the empty last row, or from blanks alone,
+    // so the caret stands in; with no cursor there is no selection.
+    assert_eq!(select_cells(&grid, (0, 3), (5, 3)), None);
+    assert_eq!(select_cells(&grid, (1, 1), (2, 1)), None);
+    let with_cursor = with_cursor(grid, 1, 0, CursorShape::Block);
+    assert_eq!(
+        select_cells(&with_cursor, (0, 3), (5, 3)),
+        Some((1, 1, String::new()))
+    );
+    // A selection end in a wrapped row's kept blanks still trims them.
+    let wrapped = snapshot(4, &["a\\", "b"]);
+    assert_eq!(select_cells(&wrapped, (0, 0), (2, 0)).unwrap().2, "a");
+    assert_eq!(select_cells(&wrapped, (0, 0), (0, 1)).unwrap().2, "a   b");
+}
+
 struct Ignore;
 
 impl accesskit_consumer::TreeChangeHandler for Ignore {

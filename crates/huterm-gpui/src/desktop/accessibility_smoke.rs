@@ -1,8 +1,8 @@
 //! File-driven probe for the terminal accessibility smoke. It publishes, in
-//! global screen points, where the active terminal paints its grid and its
-//! cursor, so an external Accessibility client can compare those with what
-//! `AppKit` reports, and it drives input, selection, scrolling, and
-//! resizing.
+//! global screen points, where the active terminal's renderer last painted
+//! its grid and its cursor, so an external Accessibility client can compare
+//! those with what `AppKit` reports, and it drives input, selection,
+//! scrolling, and resizing.
 #![allow(unsafe_code, unexpected_cfgs)]
 
 use std::fmt::Write as _;
@@ -18,7 +18,6 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use super::super::TerminalView;
 use super::super::selection::Selection;
 use super::WorkspaceView;
-use crate::renderer::cursor_bounds;
 
 pub(crate) fn run() -> anyhow::Result<()> {
     let directory =
@@ -202,6 +201,7 @@ fn write_view(output: &mut String, view: &TerminalView, window: &Window) {
     let geometry = view.grid_geometry(window);
     let area = geometry.visible_area();
     let cell = geometry.cell_size();
+    let painted = view.renderer.borrow().painted_geometry();
     let screen = |bounds: Bounds<gpui::Pixels>| {
         format!(
             "{},{},{},{}",
@@ -227,10 +227,9 @@ fn write_view(output: &mut String, view: &TerminalView, window: &Window) {
     .unwrap();
     writeln!(
         output,
-        "grid_screen={}\ncell={},{}\nvisible_grid={},{}\nscale={}",
-        screen(area),
-        f32::from(cell.width),
-        f32::from(cell.height),
+        "grid={},{}\nvisible_grid={},{}\nscale={}",
+        snapshot.size.columns,
+        snapshot.size.rows,
         visible(area.size.width, cell.width)
             .min(u32::from(snapshot.size.columns)),
         visible(area.size.height, cell.height)
@@ -238,32 +237,39 @@ fn write_view(output: &mut String, view: &TerminalView, window: &Window) {
         window.scale_factor(),
     )
     .unwrap();
+    // Cell and cursor rectangles come from the renderer's last paint, not
+    // from the geometry the accessibility model reads.
+    if let Some(painted) = painted {
+        writeln!(
+            output,
+            "paint_screen={},{}\npaint_cell={},{}",
+            left + f32::from(painted.origin.x) as f64,
+            top + f32::from(painted.origin.y) as f64,
+            f32::from(painted.cell.width),
+            f32::from(painted.cell.height),
+        )
+        .unwrap();
+        if let Some(cursor) = painted.cursor {
+            writeln!(output, "painted_cursor_screen={}", screen(cursor))
+                .unwrap();
+        }
+    }
     match snapshot.cursor {
         Some(cursor) => writeln!(
             output,
-            "cursor={:?}\ncursor_cell={},{}\ncursor_screen={}",
-            cursor.shape,
-            cursor.column,
-            cursor.row,
-            screen(
-                cursor_bounds(area.origin, cursor, view.metrics)
-                    .intersect(&area)
-            ),
+            "cursor={:?}\ncursor_cell={},{}",
+            cursor.shape, cursor.column, cursor.row,
         )
         .unwrap(),
         None => output.push_str("cursor=none\n"),
     }
-    write_text(output, view, window, &snapshot);
+    write_text(output, view, window);
 }
 
-/// The tree GPUI last sent, the published model's text, and the rows the
-/// view displays.
-fn write_text(
-    output: &mut String,
-    view: &TerminalView,
-    window: &Window,
-    snapshot: &huterm_protocol::TerminalSnapshot,
-) {
+/// The tree GPUI last sent and the published model's text, which tells the
+/// check when `AXValue` has caught up; expected text comes from what the
+/// check wrote, never from here.
+fn write_text(output: &mut String, view: &TerminalView, window: &Window) {
     let text: String = view
         .a11y
         .model()
@@ -293,28 +299,6 @@ fn write_text(
         view.selection.and_then(Selection::range).is_some(),
     )
     .unwrap();
-    // Each displayed row's cells as the painter draws them, one character
-    // per cell, so the check knows which character each cell holds.
-    for (index, row) in snapshot.rows.iter().enumerate() {
-        let cells: String = row
-            .cells
-            .iter()
-            .map(|cell| {
-                if cell.style.wide_spacer {
-                    ""
-                } else {
-                    cell.text.as_str()
-                }
-            })
-            .collect();
-        writeln!(
-            output,
-            "row{index}={}\nwrapped{index}={}",
-            serde_json::to_string(cells.trim_end()).unwrap(),
-            row.wrapped,
-        )
-        .unwrap();
-    }
 }
 
 /// The top-left corner of GPUI's view in global screen points with a

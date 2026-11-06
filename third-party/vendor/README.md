@@ -343,12 +343,13 @@ Three patches complete what assistive technology needs from it:
   document range of a node that supports text ranges, and the selector is
   allowed for it. The terminal's document is the displayed grid, so all of it
   is visible.
-- `caret-frame`: `accessibilityFrameForRange:` for a zero-length range at the
-  selection focus returns the bounds of the node's `Role::Caret` child, through
-  the usual `to_ns_rect` conversion, when it has one. Upstream answers a
-  zero-width rectangle that `NSIsEmptyRect` rejects, so clients that place UI
-  at the caret found nothing. Every other range, and every node without a
-  caret child, keeps AccessKit's answer.
+- `caret-frame`: while the selection is collapsed, `accessibilityFrameForRange:`
+  for a zero-length range at it returns the bounds of the node's `Role::Caret`
+  child, through the usual `to_ns_rect` conversion, when it has one. Upstream
+  answers a zero-width rectangle that `NSIsEmptyRect` rejects, so clients that
+  place UI at the caret found nothing. A selection with extent has no insertion
+  point, and the caret can be rows from its focus, so it keeps AccessKit's
+  answer, as does every other range and every node without a caret child.
 - `terminal-selection-with-text`: for a `Role::Terminal` node, a text change
   posts one `AXValueChanged`, whether its runs or its own value changed, then
   `AXSelectedTextChanged` when it has a selection, as Terminal.app and iTerm2

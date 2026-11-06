@@ -2,15 +2,17 @@
 // reads an application's focused element as assistive technology does,
 // through the same AX attributes VoiceOver and voice-control tools use.
 //
-//   ax-probe read <pid> [points] [lines]   prints one JSON object describing the focused element
+//   ax-probe read <pid> [points] [lines] [ranges]
+//                                          prints one JSON object describing the focused element
 //   ax-probe observe <pid>                 prints "ready", then one line per text notification
 //   ax-probe tree <pid>                    prints the application's elements, for diagnosing a failed read
 //
 // `points` is "x,y;x,y" in global display coordinates with a top-left
 // origin; for each point the probe reports AXRangeForPosition, the string
 // and AXBoundsForRange of that range. `lines` is "0,3" and reports
-// AXRangeForLine and its string for each line. The read also reports
-// AXRangeForLine for AXInsertionPointLineNumber.
+// AXRangeForLine and its string for each line. `ranges` is "location,length;
+// location,length" and reports AXStringForRange and AXBoundsForRange for
+// each. The read also reports AXRangeForLine for AXInsertionPointLineNumber.
 import AppKit
 import ApplicationServices
 
@@ -100,7 +102,7 @@ func focusedTextArea(_ pid: pid_t) -> AXUIElement? {
     return nil
 }
 
-func read(_ pid: pid_t, points: String?, lines: String?) {
+func read(_ pid: pid_t, points: String?, lines: String?, ranges: String?) {
     guard AXIsProcessTrusted() else { fail("macOS denied Accessibility access to the probe's host") }
     var result: [String: Any] = ["trusted": true]
     // The application's focused element is what clients such as voice
@@ -167,6 +169,14 @@ func read(_ pid: pid_t, points: String?, lines: String?) {
             return ["line": line, "range": json(found), "string": string(element, found)] as [String: Any]
         }
     }
+    if let ranges {
+        result["ranges"] = ranges.split(separator: ";").map { pair -> Any in
+            let values = pair.split(separator: ",").compactMap { Int($0) }
+            guard values.count == 2 else { fail("ranges take location,length pairs") }
+            let range = CFRange(location: values[0], length: values[1])
+            return ["range": json(range), "string": string(element, range), "bounds": json(bounds(element, range))] as [String: Any]
+        }
+    }
     emit(result)
 }
 
@@ -225,10 +235,15 @@ func tree(_ element: AXUIElement, depth: Int) {
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count >= 3 else { fail("usage: ax-probe read <pid> [points] [lines] | observe <pid>") }
+guard arguments.count >= 3 else { fail("usage: ax-probe read <pid> [points] [lines] [ranges] | observe <pid>") }
 switch arguments[1] {
 case "read":
-    read(pid(2), points: arguments.count > 3 ? arguments[3] : nil, lines: arguments.count > 4 ? arguments[4] : nil)
+    read(
+        pid(2),
+        points: arguments.count > 3 ? arguments[3] : nil,
+        lines: arguments.count > 4 ? arguments[4] : nil,
+        ranges: arguments.count > 5 ? arguments[5] : nil
+    )
 case "observe":
     observe(pid(2))
 case "tree":

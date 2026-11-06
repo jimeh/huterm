@@ -4,11 +4,13 @@
 //! The document is the displayed grid, clipped to the painted bounds as
 //! [`GridGeometry`] clips painting and hit testing; scrollback is not part of
 //! it. Each grapheme cell is one character, spacer cells add none, and empty
-//! cells are spaces. Rows lose their trailing blanks, as Copy trims them. A
-//! hard row end is a `\n` of its own; a soft-wrapped row has none, as Copy
-//! joins it with the next. No run is empty, because AccessKit's position and
-//! line lookups misbehave next to one (AccessKit #836 and #837): the last row
-//! has no `\n`, and an empty last row is one space. Runs longer than
+//! cells are spaces. Rows lose their trailing blanks (empty cells and
+//! spaces) where Copy trims them: at a hard row end, and on a soft-wrapped
+//! row unless its logical line continues with text on a later displayed
+//! row. A hard row end is a `\n` of its own; a soft-wrapped row has none, as
+//! Copy joins it with the next. No run is empty, because AccessKit's position
+//! and line lookups misbehave next to one (AccessKit #836 and #837): the last
+//! row has no `\n`, and an empty last row is one space. Runs longer than
 //! [`RUN_LIMIT`] characters continue in another run on the same line, since
 //! word starts are `u8` indices.
 //!
@@ -280,17 +282,22 @@ struct Segment {
     width: f32,
 }
 
-/// A displayed row's characters, built once per row identity and geometry.
+/// A displayed row's characters, built once per row identity, geometry,
+/// and whether its line continues.
 #[derive(Debug)]
 struct RowText {
     /// Keeps the row alive, so its address names it while cached.
     row: Arc<TerminalRow>,
     segments: Vec<Segment>,
     /// For each displayed column, the index of the character that starts
-    /// the column's selection and the one after the character that ends
-    /// it, both clamped to `text_len`.
+    /// the column's selection, clamped to `text_len`.
     starts: Box<[u16]>,
-    ends: Box<[u16]>,
+    /// For each displayed column, the index after the last character that
+    /// is not blank up to and including the column: where Copy's text of
+    /// a selection ending there ends on this row.
+    text_ends: Box<[u16]>,
+    /// The index after the row's last character that is not blank.
+    text_end: usize,
     /// Characters before the row's `\n`, if it has one.
     text_len: usize,
 }
@@ -311,6 +318,7 @@ struct RowKey {
     cell_width: u32,
     clip_width: u32,
     last: bool,
+    continues: bool,
 }
 
 /// Each displayed row's characters and run-relative geometry, kept while
@@ -351,6 +359,10 @@ impl ModelBuilder {
         let columns = visible(area_width, cell_width, snapshot.size.columns);
         let rows = visible(area_height, cell_height, snapshot.size.rows)
             .min(u16::try_from(snapshot.rows.len()).unwrap_or(u16::MAX));
+        let continues = continuing_rows(
+            &snapshot.rows[..usize::from(rows)],
+            usize::from(columns),
+        );
         self.rows.extend(self.used.drain());
         let mut texts = Vec::with_capacity(usize::from(rows));
         for index in 0..rows {
@@ -361,12 +373,13 @@ impl ModelBuilder {
                 cell_width: cell_width.to_bits(),
                 clip_width: area_width.to_bits(),
                 last: index + 1 == rows,
+                continues: continues[usize::from(index)],
             };
             let text = match self.rows.remove(&key) {
                 Some(text) if Arc::ptr_eq(&text.row, row) => text,
-                _ => Rc::new(row_text(
-                    row, columns, cell_width, area_width, key.last,
-                )),
+                _ => {
+                    Rc::new(row_text(row, columns, cell_width, area_width, key))
+                }
             };
             self.used.insert(key, Rc::clone(&text));
             texts.push(text);
@@ -465,7 +478,29 @@ fn model_position(row: u16, text: &RowText, character: usize) -> ModelPosition {
     }
 }
 
-/// The part of `range` on the displayed rows, as model positions.
+/// For each displayed row, whether it soft-wraps into a logical line that
+/// has text on a later displayed row, so Copy keeps its trailing blanks.
+/// Only a row after a wrapped one is scanned.
+fn continuing_rows(rows: &[Arc<TerminalRow>], columns: usize) -> Vec<bool> {
+    let mut continues = vec![false; rows.len()];
+    for index in (0..rows.len().saturating_sub(1)).rev() {
+        continues[index] = rows[index].wrapped
+            && (continues[index + 1] || has_text(&rows[index + 1], columns));
+    }
+    continues
+}
+
+fn has_text(row: &TerminalRow, columns: usize) -> bool {
+    row.cells
+        .iter()
+        .take(columns)
+        .any(|cell| !cell.style.wide_spacer && !is_blank(cell.text.as_str()))
+}
+
+/// The part of `range` on the displayed rows, as model positions. Its end
+/// moves back to where Copy's text of the range ends, after the last
+/// character that is not blank; a range Copy would copy nothing from is
+/// none, so the caret stands in for it.
 fn selection(
     range: BufferRange,
     snapshot: &TerminalSnapshot,
@@ -473,6 +508,9 @@ fn selection(
     columns: u16,
 ) -> Option<(ModelPosition, ModelPosition)> {
     let rows = texts.len();
+    if rows == 0 {
+        return None;
+    }
     // Snapshot row `r` is `bottom_offset + (rows - 1 - r)` rows above the
     // live bottom, so rows count down as offsets count up.
     let last_row = snapshot
@@ -484,21 +522,41 @@ fn selection(
     let start = match row_of(range.start) {
         Some(row) if row < rows => {
             let text = &texts[row];
-            let character =
-                column_character(&text.starts, range.start, columns, text);
+            let character = column_character(
+                &text.starts,
+                range.start,
+                columns,
+                text.text_len,
+            );
             (row, character)
         }
         Some(_) => return None,
         None => (0, 0),
     };
-    let end = match row_of(range.end) {
+    let (mut row, mut character) = match row_of(range.end) {
         None => return None,
         Some(row) if row < rows => {
             let text = &texts[row];
-            (row, column_character(&text.ends, range.end, columns, text))
+            let character = column_character(
+                &text.text_ends,
+                range.end,
+                columns,
+                text.text_end,
+            );
+            (row, character)
         }
-        Some(_) => (rows - 1, texts[rows - 1].text_len),
+        Some(_) => (rows - 1, texts[rows - 1].text_end),
     };
+    // Blank rows at the end add nothing to Copy's text, nor do the
+    // newlines before them.
+    while character == 0 && row > start.0 {
+        row -= 1;
+        character = texts[row].text_end;
+    }
+    let end = (row, character);
+    if end <= start {
+        return None;
+    }
     let position = |(row, character): (usize, usize)| {
         model_position(
             u16::try_from(row).unwrap_or(u16::MAX),
@@ -509,19 +567,28 @@ fn selection(
     Some((position(start), position(end)))
 }
 
+/// The character `point`'s column maps to in `characters`, or `past` for a
+/// column past the displayed ones.
 fn column_character(
     characters: &[u16],
     point: BufferPoint,
     columns: u16,
-    text: &RowText,
+    past: usize,
 ) -> usize {
     if point.column >= columns {
-        return text.text_len;
+        return past;
     }
     usize::from(characters[usize::from(point.column)])
 }
 
+/// A cell Copy trims: an empty cell or a space. Any other character,
+/// another space character included, is text.
 fn is_blank(text: &str) -> bool {
+    text.is_empty() || text == " "
+}
+
+/// A character that separates words.
+fn is_space(text: &str) -> bool {
     text.chars().all(char::is_whitespace)
 }
 
@@ -557,15 +624,15 @@ fn row_text(
     columns: u16,
     cell_width: f32,
     clip_width: f32,
-    last: bool,
+    key: RowKey,
 ) -> RowText {
     let clip = |x: f32, width: f32| width.min(clip_width - x).max(0.0);
     let mut characters: Vec<Character<'_>> = Vec::new();
     let columns = usize::from(columns).min(row.cells.len());
     let mut starts = Vec::with_capacity(columns);
-    let mut ends = Vec::with_capacity(columns);
+    let mut text_ends = Vec::with_capacity(columns);
     // Characters up to and including the last that is not blank.
-    let mut text_len = 0;
+    let mut text_end = 0;
     for (column, cell) in row.cells.iter().take(columns).enumerate() {
         let index = characters.len();
         if cell.style.wide_spacer {
@@ -579,7 +646,7 @@ fn row_text(
             } else {
                 starts.push(index);
             }
-            ends.push(index);
+            text_ends.push(text_end);
             continue;
         }
         let x = cell_width * column as f32;
@@ -591,16 +658,21 @@ fn row_text(
             width: clip(x, cell_width * cells),
         });
         if !is_blank(text) {
-            text_len = index + 1;
+            text_end = index + 1;
         }
         starts.push(index);
-        ends.push(index + 1);
+        text_ends.push(text_end);
     }
-    characters.truncate(text_len);
-    let text_end = characters
+    // A line that continues with text keeps its blanks, as Copy writes
+    // them as spaces once that text follows.
+    if !key.continues {
+        characters.truncate(text_end);
+    }
+    let mut text_len = characters.len();
+    let text_right = characters
         .last()
         .map_or(0.0, |character| character.x + character.width);
-    if last {
+    if key.last {
         if characters.is_empty() {
             characters.push(Character {
                 text: " ",
@@ -612,8 +684,8 @@ fn row_text(
     } else if !row.wrapped {
         characters.push(Character {
             text: "\n",
-            x: text_end.min(clip_width),
-            width: clip(text_end, cell_width),
+            x: text_right.min(clip_width),
+            width: clip(text_right, cell_width),
         });
     } else if characters.is_empty() {
         // A soft-wrapped row of blanks still needs a character.
@@ -630,7 +702,8 @@ fn row_text(
         row: Arc::clone(row),
         segments: segments(&characters),
         starts: starts.into_iter().map(clamp).collect(),
-        ends: ends.into_iter().map(clamp).collect(),
+        text_ends: text_ends.into_iter().map(clamp).collect(),
+        text_end,
         text_len,
     }
 }
@@ -653,7 +726,7 @@ fn segments(characters: &[Character<'_>]) -> Vec<Segment> {
             lengths.push(u8::try_from(character.text.len()).unwrap_or(u8::MAX));
             positions.push(character.x - x);
             widths.push(character.width);
-            let blank = is_blank(character.text);
+            let blank = is_space(character.text);
             if !blank && previous_blank {
                 word_starts.push(u8::try_from(index).unwrap_or(u8::MAX));
             }

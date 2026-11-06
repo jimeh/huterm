@@ -1403,17 +1403,28 @@ the text. A synthetic child carries its creator's element id in
 The model reads only the snapshot the frame paints, `GridGeometry` (the
 displayed grid clipped to the painted bounds), `Selection::range()`, the
 metrics, and the scale; it never calls the runtime or takes the Mux lock.
-Each grapheme cell is one character and spacers add none. Rows lose trailing
-blanks as Copy trims them, a hard row ends in its own `\n`, and a soft-wrapped
-row has none. No run may be empty (AccessKit #836 and #837), so the last row
-has no `\n` and an empty last row is one space. A run holds at most 255
-characters, because word starts are `u8`, and continues through
+Each grapheme cell is one character and spacers add none. Blank means an
+empty cell or a space, as Ghostty's formatter decides; a no-break or
+ideographic space is text. A row loses its trailing blanks where Copy trims
+them: at a hard row end, and on a soft-wrapped row unless its logical line
+continues with text on a later displayed row, since Copy writes those blanks as
+spaces once that text follows. A hard row ends in its own `\n`, and a
+soft-wrapped row has none. No run may be empty (AccessKit #836 and #837), so
+the last row has no `\n` and an empty last row is one space. A run holds at
+most 255 characters, because word starts are `u8`, and continues through
 `next_on_line`. Concealed text stays, because Copy keeps it;
 `view_tests::a11y::the_accessible_selection_reads_what_copy_copies` pins that
 agreement, so change Copy and the model together. The caret is the painter's
-`cursor_bounds`, clipped to the grid, with a hidden cursor's cell; the selection
-is the pointer selection clipped to the displayed rows, else the caret, and a
-word or line still expanding counts as none. Accessibility writes are ignored.
+`cursor_bounds`, clipped to the grid, with a hidden cursor's cell. The selection
+is the pointer selection clipped to the displayed rows, with its end moved back
+to where Copy's text ends, after the last character that is not blank, so
+trailing blanks, blank rows, and an empty last row's placeholder space stay
+out. A selection Copy would copy nothing from, a word or line still expanding,
+and no selection all leave the caret as a collapsed selection. The snapshot
+spells empty cells and written spaces alike, so two cases still differ from
+Copy: Ghostty copies a selected row part of nothing but empty cells as a line
+break, and a selection that starts in a wrapped row's kept blanks reads them
+as spaces. Accessibility writes are ignored.
 
 GPUI rebuilds and sends the whole tree every frame, and AccessKit diffs it into
 notifications, so the pushed model must stay identical between publications.
@@ -1423,10 +1434,12 @@ timer rather than the frame clock, whose `Instant::now()` deadlines test
 executors cannot advance. Selection, geometry, metrics, scale, viewport, and
 grid size publish at once, an equal model publishes nothing, and nothing
 requests a frame for accessibility otherwise. Rows are cached by their
-`Arc<TerminalRow>`, displayed columns, cell width, clip, and last-row flag;
+`Arc<TerminalRow>`, displayed columns, cell width, clip, last-row flag, and
+whether their line continues with text;
 placement, node IDs (keyed by displayed row and run), and the selection are
 rebuilt each time, since rows move between indices. The vendored
-`accesskit_macos` patches report the visible range, the caret's frame, and one
+`accesskit_macos` patches report the visible range, the caret's frame while the
+selection is collapsed (never at the focus of a selection with extent), and one
 `AXValueChanged` then `AXSelectedTextChanged` per terminal text change; see
 [the vendor README](../../third-party/vendor/README.md). The terminal must
 never post `AXLayoutChanged`.

@@ -3,7 +3,9 @@
  * as VoiceOver and voice-control tools read it: the focused text area, its
  * visible range and strings, the caret's screen rectangle against the
  * painted cursor, position and line queries at the grid's edges after
- * scrolling and resizing, and the notifications each change posts.
+ * scrolling and resizing, the selection, and the notifications each change
+ * posts. Expected text comes from the literal lines the check writes, and
+ * expected rectangles from where the renderer last painted.
  */
 import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,39 +36,52 @@ export function close(actual: unknown, expected: Rect, tolerance = 0.51): boolea
     && actual.every((value, index) => typeof value === "number" && Math.abs(value - expected[index]!) <= tolerance);
 }
 
-/** A displayed cell's rectangle in screen points. */
+/** A displayed cell's rectangle in screen points, where the renderer painted it. */
 export function cellRect(state: State, column: number, row: number): Rect {
-  const [left, top] = numbers(state.grid_screen, 4, "grid_screen");
-  const [width, height] = numbers(state.cell, 2, "cell");
+  const [left, top] = numbers(state.paint_screen, 2, "paint_screen");
+  const [width, height] = numbers(state.paint_cell, 2, "paint_cell");
   return [left! + column * width!, top! + row * height!, width!, height!];
 }
 
-export function rowText(state: State, row: number): string {
-  return JSON.parse(state[`row${row}`] ?? "null") ?? "";
+/** The cursor rectangle the renderer last painted, in screen points. */
+export function paintedCursor(state: State): Rect {
+  return numbers(state.painted_cursor_screen, 4, "painted_cursor_screen") as Rect;
 }
 
 /**
- * The text AXRangeForLine reports for a displayed row: its characters, then
- * a newline unless it soft-wraps or is the last row; an empty last row is
- * one space.
+ * A displayed row the check wrote: its literal text, one ASCII character
+ * per cell, with the blanks Copy keeps before text on the next row, and
+ * whether it soft-wraps into that row.
  */
-export function expectedLine(state: State, row: number): string {
-  const [, rows] = numbers(state.visible_grid, 2, "visible_grid");
-  const text = rowText(state, row);
-  if (row === rows! - 1) return text || " ";
-  return state[`wrapped${row}`] === "true" ? text : `${text}\n`;
+export type Row = { text: string; wraps?: boolean };
+
+/**
+ * The text AXRangeForLine reports for each displayed row: its text, then a
+ * newline unless it soft-wraps or is the last row; an empty last row is one
+ * space.
+ */
+export function documentLines(rows: Row[]): string[] {
+  return rows.map(({ text, wraps }, index) => {
+    if (index === rows.length - 1) return text || " ";
+    return wraps ? text : `${text}\n`;
+  });
 }
 
 /** The first and last cell holding text on the first and last rows. */
-export function edgeCells(state: State): { column: number; row: number; text: string }[] {
-  const [, rows] = numbers(state.visible_grid, 2, "visible_grid");
+export function edgeCells(rows: Row[]): { column: number; row: number; text: string }[] {
   const cells: { column: number; row: number; text: string }[] = [];
-  for (const row of new Set([0, rows! - 1])) {
-    const text = [...rowText(state, row)];
+  for (const row of new Set([0, rows.length - 1])) {
+    const text = [...rows[row]!.text.trimEnd()];
     if (!text.length) continue;
     for (const column of new Set([0, text.length - 1])) cells.push({ column, row, text: text[column]! });
   }
   return cells;
+}
+
+/** Whether AXValueChanged came first among a step's text notifications. */
+export function valueChangedFirst(events: string[]): boolean {
+  const first = events.find(name => name === "AXValueChanged" || name === "AXSelectedTextChanged");
+  return first === "AXValueChanged";
 }
 
 type Probe = Record<string, unknown> & {
@@ -74,6 +89,7 @@ type Probe = Record<string, unknown> & {
   value?: string | null;
   points?: { range: unknown; string: unknown; bounds: unknown }[];
   lines?: { line: number; string: unknown }[];
+  ranges?: { range: unknown; string: unknown; bounds: unknown }[];
 };
 
 async function waitFor<T>(read: () => Promise<T | undefined>, label: string, timeout = 15_000): Promise<T> {
@@ -157,11 +173,12 @@ async function main(executableArgument: string, probeArgument: string): Promise<
     }, `state after ${text}`);
   };
   const input = (text: string) => command(`input:${JSON.stringify(text)}`);
-  const probe = (pid: string, points?: [number, number][], lines?: number[]): Probe => {
+  const probe = (pid: string, points?: [number, number][], lines?: number[], ranges?: [number, number][]): Probe => {
     const args = [probePath, "read", pid];
-    if (points || lines) {
+    if (points || lines || ranges) {
       args.push((points ?? []).map(([x, y]) => `${x},${y}`).join(";"));
       args.push((lines ?? []).join(","));
+      args.push((ranges ?? []).map(([location, length]) => `${location},${length}`).join(";"));
     }
     const result = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
     if (result.exitCode !== 0) throw new Error(`ax-probe failed: ${result.stderr.toString()}`);
@@ -180,21 +197,36 @@ async function main(executableArgument: string, probeArgument: string): Promise<
       return read.value === JSON.parse(value.model_text!) ? value : undefined;
     }, `${label} to settle`);
   };
-  const surface = (pid: string, value: State, label: string) => {
-    const [, rows] = numbers(value.visible_grid, 2, "visible_grid");
-    const edges = edgeCells(value);
+  /** The displayed grid's size, which must be the snapshot's for literal rows to fill it. */
+  const grid = (value: State) => {
+    if (value.grid !== value.visible_grid) fail("the view must display the whole grid", value);
+    const [columns, rows] = numbers(value.grid, 2, "grid");
+    return { columns: columns!, rows: rows! };
+  };
+  /** `rows` written from the top, then empty rows to the bottom of the grid. */
+  const screen = (value: State, rows: Row[]): Row[] => {
+    const count = grid(value).rows;
+    if (rows.length > count) fail("more rows than the grid holds", { rows, count });
+    return [...rows, ...Array.from({ length: count - rows.length }, () => ({ text: "" }))];
+  };
+  const surface = (pid: string, value: State, label: string, rows: Row[]) => {
+    if (rows.length !== grid(value).rows) fail(`${label}: expected rows must cover the grid`, { rows, value });
+    const expectedLines = documentLines(rows);
+    const document = expectedLines.join("");
+    const edges = edgeCells(rows);
     const centers = edges.map(({ column, row }) => {
       const [x, y, width, height] = cellRect(value, column, row);
       return [x + width / 2, y + height / 2] as [number, number];
     });
-    const lines = [...new Set([0, rows! - 1])];
+    // The first and last rows, and every soft-wrapped row and the row it
+    // wraps into.
+    const lines = [...new Set([0, rows.length - 1, ...rows.flatMap(({ wraps }, index) => wraps ? [index, index + 1] : [])])];
     const read = probe(pid, centers, lines);
-    const text = JSON.parse(value.model_text!);
     if (read.role !== "AXTextArea") fail(`${label}: the focused element is not a text area`, read);
-    if (read.value !== text) fail(`${label}: AXValue differs from the displayed rows`, { read, text });
-    if (read.characters !== [...text].reduce((sum: number, character: string) => sum + character.length, 0)) fail(`${label}: AXNumberOfCharacters`, read);
+    if (read.value !== document) fail(`${label}: AXValue differs from the written rows`, { value: read.value, document });
+    if (read.characters !== document.length) fail(`${label}: AXNumberOfCharacters`, read);
     const visible = read.visible as number[];
-    if (visible?.[0] !== 0 || visible?.[1] !== read.characters || read.visibleString !== text) {
+    if (visible?.[0] !== 0 || visible?.[1] !== read.characters || read.visibleString !== document) {
       fail(`${label}: AXVisibleCharacterRange must cover the displayed text`, read);
     }
     edges.forEach((edge, index) => {
@@ -206,7 +238,7 @@ async function main(executableArgument: string, probeArgument: string): Promise<
     });
     lines.forEach((line, index) => {
       const found = read.lines?.[index];
-      if (found?.string !== expectedLine(value, line)) fail(`${label}: AXRangeForLine ${line}`, { found, expected: expectedLine(value, line) });
+      if (found?.string !== expectedLines[line]) fail(`${label}: AXRangeForLine ${line}`, { found, expected: expectedLines[line] });
     });
     return { read, edges: edges.length, lines: lines.length };
   };
@@ -214,7 +246,7 @@ async function main(executableArgument: string, probeArgument: string): Promise<
     const read = probe(pid);
     const selected = read.selected as number[];
     if (selected?.[1] !== 0) fail(`${label}: the insertion point is not a zero-length range`, read);
-    const expected = numbers(value.cursor_screen, 4, "cursor_screen") as Rect;
+    const expected = paintedCursor(value);
     if (expected[2] <= 0 || expected[3] <= 0) fail(`${label}: the painted cursor is empty`, value);
     if (!close(read.selectedBounds, expected)) fail(`${label}: AXBoundsForRange of the insertion point`, { bounds: read.selectedBounds, painted: expected });
     return read;
@@ -243,12 +275,14 @@ async function main(executableArgument: string, probeArgument: string): Promise<
     }
 
     // History, then a full-width row on every displayed row and the
-    // sentinel again on the last.
-    const [columns, rows] = numbers(ready.visible_grid, 2, "visible_grid");
-    const line = (index: number) => `${String(index).padStart(3, "0")}${"-".repeat(columns! - 4)}|`;
-    await input(`${Array.from({ length: rows! + 20 }, (_, index) => line(index)).join("\r\n")}\r\nAppModelExample`);
+    // sentinel again on the last. Line `index` is drawn on displayed row
+    // `index - 21`: the shell's sentinel and lines 0 to 20 are history.
+    const { columns, rows } = grid(ready);
+    const line = (index: number) => `${String(index).padStart(3, "0")}${"-".repeat(columns - 4)}|`;
+    await input(`${Array.from({ length: rows + 20 }, (_, index) => line(index)).join("\r\n")}\r\nAppModelExample`);
     let value = await settled(pid, "the drawn grid", current => Number(current.history) >= 20);
-    const initial = surface(pid, value, "initial");
+    const lines = (first: number, count: number): Row[] => Array.from({ length: count }, (_, index) => ({ text: line(first + index) }));
+    const initial = surface(pid, value, "initial", [...lines(21, rows - 1), { text: "AppModelExample" }]);
     report.push(`edges=${initial.edges} lines=${initial.lines}`);
 
     for (const [shape, sequenceText, label] of [
@@ -267,15 +301,33 @@ async function main(executableArgument: string, probeArgument: string): Promise<
     caret(pid, value, "ASCII character");
     report.push("caret=block,beam,wide,ascii");
 
+    // Five rows into history, displayed row `r` shows line `16 + r`.
     await command("scroll:5");
     value = await settled(pid, "the scrolled view", current => current.offset === "5");
-    surface(pid, value, "scrolled");
+    surface(pid, value, "scrolled", lines(16, rows));
     await command("scroll:-5");
     value = await settled(pid, "the live view", current => current.offset === "0");
     await command("resize:520,300");
     value = await settled(pid, "the resized view", current => current.visible_grid !== ready.visible_grid);
-    surface(pid, value, "resized");
+    // Known rows at the new width: a line that soft-wraps at the space in
+    // its last column, which Copy keeps, and the cursor after the sentinel
+    // on row 3.
+    const resized = grid(value).columns;
+    const wrapped = `${"y".repeat(resized - 1)} world`;
+    await input(`\x1b[H\x1b[2Jalpha beta\r\n${wrapped}\r\nAppModelExample`);
+    value = await settled(pid, "the rows written at the new width", current => current.cursor_cell === "15,3" && current.model_text!.includes("world"));
+    const known: Row[] = [
+      { text: "alpha beta" },
+      { text: `${"y".repeat(resized - 1)} `, wraps: true },
+      { text: "world" },
+      { text: "AppModelExample" },
+    ];
+    surface(pid, value, "resized", screen(value, known));
     report.push("scroll=ok resize=ok");
+    // UTF-16 offsets into those rows: the wrapped line starts after
+    // "alpha beta\n", and the cursor sits at column 15 of row 3.
+    const wrappedStart = "alpha beta\n".length;
+    const caretIndex = wrappedStart + wrapped.length + 1 + 15;
 
     // Notifications, from a separate observer process.
     const watching = Bun.spawn([probePath, "observe", pid], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -304,7 +356,7 @@ async function main(executableArgument: string, probeArgument: string): Promise<
         layout: slice.filter(name => name === "AXLayoutChanged").length,
       };
     };
-    type Expect = { value?: "some" | "none"; selected?: "some" | "none"; any?: true };
+    type Expect = { value?: "some" | "none"; selected?: "some" | "none"; any?: true; valueFirst?: true };
     const step = async (label: string, run: () => Promise<unknown>, done: (current: State, before: State) => boolean, expect: Expect) => {
       const before = (await state())!;
       const since = events.length;
@@ -323,14 +375,41 @@ async function main(executableArgument: string, probeArgument: string): Promise<
       if (expect.value === "none" && seen.value) fail(`${label}: unexpected AXValueChanged`, seen);
       if (expect.selected === "none" && seen.selected) fail(`${label}: unexpected AXSelectedTextChanged`, seen);
       if (seen.layout) fail(`${label}: AXLayoutChanged must never post`, seen);
+      if (expect.valueFirst && !valueChangedFirst(events.slice(since))) {
+        fail(`${label}: AXSelectedTextChanged must follow AXValueChanged`, events.slice(since));
+      }
       report.push(`${label}=${seen.value}v/${seen.selected}s`);
       return seen;
     };
     const published = (current: State, before: State) => Number(current.publications) > Number(before.publications);
-    await step("output", () => input("x"), published, { value: "some", selected: "some" });
+    await step("output", () => input("x"), published, { value: "some", selected: "some", valueFirst: true });
     await step("cursor", () => input("\x1b[D"), published, { value: "none", selected: "some" });
-    await step("selection", () => command("select:0,0,4,0"), current => current.selection === "true", { value: "none", selected: "some" });
+    // Select the wrapped line, from row 1's first cell to the end of
+    // "world" on row 2: Copy's text keeps the space in the wrap column.
+    await step("selection", () => command("select:0,1,4,2"), current => current.selection === "true", { value: "none", selected: "some" });
+    {
+      const focus = wrappedStart + wrapped.length;
+      const read = probe(pid, [], [], [[focus, 0]]);
+      if (read.selectedText !== wrapped) fail("selection: AXSelectedText", { read: read.selectedText, expected: wrapped });
+      const range = read.selected as number[];
+      if (range?.[0] !== wrappedStart || range?.[1] !== wrapped.length) {
+        fail("selection: AXSelectedTextRange", { range, expected: [wrappedStart, wrapped.length] });
+      }
+      // A selection with extent has no insertion point: a collapsed range
+      // at its focus is not the cursor's rectangle, rows away.
+      const cursor = paintedCursor((await state())!);
+      const bounds = read.ranges?.[0]?.bounds;
+      if (close(bounds, cursor)) fail("selection: AXBoundsForRange at the focus reports the cursor", { bounds, cursor });
+    }
     await step("clear", () => command("select:none"), current => current.selection === "false", { value: "none", selected: "some" });
+    {
+      const current = (await state())!;
+      const read = caret(pid, current, "cleared selection");
+      if ((read.selected as number[])[0] !== caretIndex || read.selectedText !== "") {
+        fail("clear: the caret must come back at the cursor", { selected: read.selected, text: read.selectedText, expected: [caretIndex, 0] });
+      }
+    }
+    report.push("selection=text,range,focus clear=caret");
     await step("scroll", () => command("scroll:3"), current => current.offset === "3", { value: "some" });
     await step("unscroll", () => command("scroll:-3"), current => current.offset === "0", { value: "some" });
     await step("resize", () => command("resize:600,340"), (current, before) => current.visible_grid !== before.visible_grid, { any: true });

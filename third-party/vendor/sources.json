@@ -168,7 +168,7 @@
         {
           "name": "caret-frame",
           "file": "patches/accesskit_macos/caret-frame.patch",
-          "description": "Answer accessibilityFrameForRange: for a zero-length range at the selection focus with the bounds of the node's Role::Caret child when it has one, so a collapsed caret reports a non-empty rectangle; every other range keeps AccessKit's answer."
+          "description": "While the selection is collapsed, answer accessibilityFrameForRange: for a zero-length range at it with the bounds of the node's Role::Caret child when it has one, so the caret reports a non-empty rectangle; a selection with extent, and every other range, keeps AccessKit's answer."
         },
         {
           "name": "terminal-selection-with-text",

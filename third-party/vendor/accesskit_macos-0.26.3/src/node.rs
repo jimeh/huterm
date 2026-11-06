@@ -1320,10 +1320,15 @@ declare_class!(
     }
 );
 
-/// The bounds of `node`'s caret child when `index` is the selection focus.
-/// A collapsed range has no width of its own, so the caret child, when
-/// the provider supplies one, says where the insertion point is drawn.
+/// The bounds of `node`'s caret child when the selection is collapsed at
+/// `index`. A collapsed range has no width of its own, so the caret child,
+/// when the provider supplies one, says where the insertion point is drawn.
+/// A selection with extent has no insertion point, and its focus may be
+/// far from the caret.
 fn caret_bounds(node: &Node, index: usize) -> Option<accesskit::Rect> {
+    if !node.text_selection()?.is_degenerate() {
+        return None;
+    }
     let focus = node.text_selection_focus()?;
     if focus.to_global_utf16_index() != index {
         return None;

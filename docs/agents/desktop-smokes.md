@@ -347,16 +347,19 @@ runs on the host only, under the host smoke lock, and stays out of CI, whose
 runners grant no Accessibility permission; the process running it, such as
 the agent's terminal host, needs Accessibility trust. `scripts/ax-probe.swift`
 (built by `build:swift`) is the client: `read` reports the focused element's
-role, `AXValue`, `AXVisibleCharacterRange` and its string, the zero-length
-`AXSelectedTextRange` and its `AXBoundsForRange`, and `AXRangeForPosition` and
-`AXRangeForLine` for given points and lines; `observe` prints each
-`AXValueChanged`, `AXSelectedTextChanged`, focus, and `AXLayoutChanged`
-notification; `tree` dumps the elements for diagnosis. The
-`accessibility_smoke` example publishes, in global screen points with a
-top-left origin, the grid and the painted cursor rectangle (from `AppKit`'s
-view-to-screen conversion, independent of AccessKit's), each displayed row's
-cells, and the published model's text, and takes `activate:`, `input:`,
-`select:`, `scroll:`, and `resize:` commands through the file protocol.
+role, `AXValue`, `AXVisibleCharacterRange` and its string, `AXSelectedText`,
+`AXSelectedTextRange` and its `AXBoundsForRange`, and `AXRangeForPosition`,
+`AXRangeForLine`, and `AXStringForRange` with `AXBoundsForRange` for given
+points, lines, and ranges; `observe` prints each `AXValueChanged`,
+`AXSelectedTextChanged`, focus, and `AXLayoutChanged` notification in order;
+`tree` dumps the elements for diagnosis. The `accessibility_smoke` example
+publishes, in global screen points with a top-left origin, where the
+renderer's last paint drew the grid's first cell, its cell size, and its
+cursor quad (recorded at the paint site and converted with `AppKit`'s
+view-to-screen conversion, independent of AccessKit's and of the model's
+geometry), and the published model's text, which only tells the check when
+`AXValue` caught up. It takes `activate:`, `input:`, `select:`, `scroll:`, and
+`resize:` commands through the file protocol.
 
 `scripts/check-accessibility.ts` activates the window first: the application's
 focused element, which wakes AccessKit, is answered only by its key window. Its
@@ -364,12 +367,20 @@ fixture shell runs `cat` in raw mode, so input draws text and moves the cursor,
 and it ends that child before quitting, since a live child makes Quit ask for
 confirmation. Steps that must post no notification wait 400 ms after the frame
 that would have posted one, because notifications cross processes without a
-completion signal. The check compares the caret's bounds with the painted
-cursor for block and beam cursors on ASCII and wide characters, checks edge
-queries before and after scrolling and resizing, counts notifications for
-output, cursor movement, selection, scrolling, resizing, and an equivalent
-snapshot (which must post none), and bounds a 20 ms output flood to one
-publication per 100 ms plus one. It fails while the application's
+completion signal. Expected text comes from the literal lines the check writes,
+never from the model or the app's rows: full-width numbered lines, the same
+lines scrolled into history, and, after a resize, a cleared screen with a line
+that soft-wraps at a space in its last column. The check compares the caret's
+bounds with the painted cursor for block and beam cursors on ASCII and wide
+characters, checks `AXValue`, lines, and edge queries before and after
+scrolling and resizing, and selects the wrapped line to compare
+`AXSelectedText` and `AXSelectedTextRange` with the written text. It asserts
+that a zero-length `AXBoundsForRange` at that selection's focus is not the
+cursor rectangle, and that clearing returns a zero-length range at the cursor.
+It counts notifications for output (which must post `AXValueChanged` before
+`AXSelectedTextChanged`), cursor movement, selection, scrolling, resizing, and
+an equivalent snapshot (which must post none), and bounds a 20 ms output flood
+to one publication per 100 ms plus one. It fails while the application's
 `AXFocusedUIElement` stops at the window; see the terminal accessibility rules
 in [the desktop client guide](desktop-client.md#terminal-accessibility).
 

@@ -1,39 +1,50 @@
 import { describe, expect, test } from "bun:test";
-import { cellRect, close, edgeCells, expectedLine, parseState } from "./check-accessibility";
+import { cellRect, close, documentLines, edgeCells, paintedCursor, parseState, valueChangedFirst } from "./check-accessibility";
 
 const state = parseState([
-  "grid_screen=100,200,480,64",
-  "cell=8,16",
-  "visible_grid=60,4",
-  'row0="AppModelExample"',
-  "wrapped0=false",
-  'row1="xxxx"',
-  "wrapped1=true",
-  'row2=""',
-  "wrapped2=false",
-  'row3=""',
-  "wrapped3=false",
+  "paint_screen=100,200",
+  "paint_cell=8,16",
+  "painted_cursor_screen=124,232,2,16",
 ].join("\n"));
 
+const rows = [
+  { text: "AppModelExample" },
+  { text: "xxx ", wraps: true },
+  { text: "yy" },
+  { text: "" },
+  { text: "" },
+];
+
 describe("accessibility smoke expectations", () => {
-  test("cells sit on the grid in screen points", () => {
+  test("cells sit where the renderer painted the grid", () => {
     expect(cellRect(state, 0, 0)).toEqual([100, 200, 8, 16]);
     expect(cellRect(state, 3, 2)).toEqual([124, 232, 8, 16]);
+    expect(paintedCursor(state)).toEqual([124, 232, 2, 16]);
   });
 
   test("lines end in a newline unless they wrap or are the last row", () => {
-    expect(expectedLine(state, 0)).toBe("AppModelExample\n");
-    expect(expectedLine(state, 1)).toBe("xxxx");
-    expect(expectedLine(state, 2)).toBe("\n");
-    // An empty last row still holds one character.
-    expect(expectedLine(state, 3)).toBe(" ");
+    expect(documentLines(rows)).toEqual(["AppModelExample\n", "xxx ", "yy\n", "\n", " "]);
+    // A last row with text has no newline.
+    expect(documentLines([{ text: "a" }, { text: "b" }])).toEqual(["a\n", "b"]);
   });
 
   test("edges are the outer text cells of the first and last rows", () => {
-    expect(edgeCells(state)).toEqual([
+    expect(edgeCells(rows)).toEqual([
       { column: 0, row: 0, text: "A" },
       { column: 14, row: 0, text: "e" },
     ]);
+    expect(edgeCells([{ text: "ab" }, { text: "cd " }])).toEqual([
+      { column: 0, row: 0, text: "a" },
+      { column: 1, row: 0, text: "b" },
+      { column: 0, row: 1, text: "c" },
+      { column: 1, row: 1, text: "d" },
+    ]);
+  });
+
+  test("a text change posts AXValueChanged before AXSelectedTextChanged", () => {
+    expect(valueChangedFirst(["AXFocusedUIElementChanged", "AXValueChanged", "AXSelectedTextChanged"])).toBe(true);
+    expect(valueChangedFirst(["AXSelectedTextChanged", "AXValueChanged"])).toBe(false);
+    expect(valueChangedFirst([])).toBe(false);
   });
 
   test("rectangles agree within half a point", () => {

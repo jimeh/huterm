@@ -211,11 +211,16 @@ fn output_republishes_at_most_once_per_interval_and_selection_at_once(
 }
 
 /// Lines whose Copy text tests the model: a multiline selection, trailing
-/// blanks, concealed text, and a line that soft-wraps at 49 columns.
+/// blanks, concealed text, and lines that soft-wrap at 49 columns, after a
+/// run of `x`, at a space, and inside blanks before more text; then a
+/// trailing no-break space. `READY` follows, and the last rows stay empty.
 const COPY_FIXTURE: &str = "alpha beta\\n\
     gamma delta   \\n\
     \\033[8mhidden\\033[0m shown\\n\
-    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n";
+    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n\
+    yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy world\\n\
+    c                                                  d\\n\
+    nbsp\\302\\240\\n";
 
 #[gpui::test]
 fn the_accessible_selection_reads_what_copy_copies(cx: &mut TestAppContext) {
@@ -227,6 +232,8 @@ fn the_accessible_selection_reads_what_copy_copies(cx: &mut TestAppContext) {
         column,
     };
     let wrapped = "x".repeat(60);
+    let at_space = format!("{} world", "y".repeat(48));
+    let blanks = format!("c{}d", " ".repeat(50));
     // Copy keeps concealed (SGR 8) text, so the accessible text does too.
     for (what, anchor, head, expected) in [
         ("a multiline selection", at(6, 0), at(4, 1), "beta\ngamma"),
@@ -244,6 +251,17 @@ fn the_accessible_selection_reads_what_copy_copies(cx: &mut TestAppContext) {
         ),
         ("concealed text", at(0, 2), at(11, 2), "hidden shown"),
         ("a soft-wrapped line", at(0, 3), at(10, 4), wrapped.as_str()),
+        ("a wrap at a space", at(0, 5), at(4, 6), at_space.as_str()),
+        ("a wrap inside blanks", at(0, 7), at(2, 8), blanks.as_str()),
+        (
+            "a trailing no-break space",
+            at(0, 9),
+            at(48, 9),
+            "nbsp\u{a0}",
+        ),
+        ("an end on an inner blank", at(0, 0), at(5, 0), "alpha"),
+        // Copy copies nothing, so the caret stands in for the selection.
+        ("the empty last row", at(0, rows - 1), at(10, rows - 1), ""),
     ] {
         harness.update(|view, _, cx| {
             let generation = view.snapshot.as_ref().unwrap().generation;
@@ -261,8 +279,9 @@ fn the_accessible_selection_reads_what_copy_copies(cx: &mut TestAppContext) {
         });
         harness.wait_for(&format!("Copy's text for {what}"), |view, _| {
             view.selected_text.is_some()
-                && selected(&view.a11y.model())
-                    .is_some_and(|(start, end, _)| start != end)
+                && selected(&view.a11y.model()).is_some_and(
+                    |(start, end, _)| expected.is_empty() || start != end,
+                )
         });
         let (copied, accessible) = harness.read(|view, _| {
             (
