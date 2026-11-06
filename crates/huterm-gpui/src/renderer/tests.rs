@@ -716,6 +716,7 @@ fn snapshot(columns: u16, rows: u16, contents: &[&str]) -> TerminalSnapshot {
                             style: CellStyle::default(),
                         })
                         .collect(),
+                    ..huterm_protocol::TerminalRow::default()
                 })
             })
             .collect(),

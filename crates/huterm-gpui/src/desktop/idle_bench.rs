@@ -97,7 +97,7 @@ fn terminal_progress(terminal: &super::TerminalView) -> String {
     let text = terminal.snapshot.as_ref().map(|snapshot| {
         snapshot
             .cells()
-            .map(|cell| cell.text.as_str())
+            .map(|cell| cell.text.displayed())
             .collect::<String>()
     });
     format!(
@@ -130,7 +130,7 @@ fn shows_ready(root: &gpui::Entity<WorkspaceView>, cx: &mut App) -> bool {
         terminal.read(cx).snapshot.as_ref().is_some_and(|snapshot| {
             snapshot
                 .cells()
-                .map(|cell| cell.text.as_str())
+                .map(|cell| cell.text.displayed())
                 .collect::<String>()
                 .contains("HUTERM_IDLE_READY")
         })

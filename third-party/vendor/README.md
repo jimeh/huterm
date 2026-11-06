@@ -6,10 +6,13 @@
 records its upstream VCS metadata, and lists its patches in application order.
 Each patch has a stable name, a description, and an upstream link when available.
 Keep each coherent fix together. GPUI's core crate has hidden-window creation,
-file-drop pointer-modality, test-window accessibility, keystroke held-flag, and
-App-free keybinding loader patches, its Linux crate has X11 file-drop,
-fullscreen-state, and key-repeat patches, and its macOS crate has
-offscreen-screen and per-window frame-constraint patches.
+file-drop pointer-modality, test-window accessibility, keystroke held-flag,
+App-free keybinding loader, and accessibility window-bounds patches, its Linux
+crate has X11 file-drop, fullscreen-state, key-repeat, and accessibility
+window-bounds patches, and its macOS crate has
+offscreen-screen, per-window frame-constraint, and accessibility view adapter
+patches. AccessKit's macOS
+adapter has the terminal text patches described below.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -276,6 +279,44 @@ call. Drop each once a reviewed `gpui-pre` snapshot reports the flag to
 interceptors, and marks X11 repeats, equivalently; the key recorder tests in
 `huterm-ui` and the Settings recorder tests fail without the first.
 
+## GPUI accessibility window bounds on Linux
+
+AccessKit's AT-SPI adapter turns node coordinates, which GPUI gives relative
+to the window, into screen coordinates by adding the root window bounds it was
+last given, and reports those bounds as the window frame's extents. GPUI's
+Linux windows implement `a11y_update_window_bounds`, but core GPUI never
+called it, so screen coordinates equaled window coordinates and the frame had
+no extents. The core `a11y-window-bounds` patch calls it when assistive
+technology activates the adapter, in the task that already refreshes the
+window then, and in `Window::bounds_changed`, which every platform move and
+resize reaches, while the adapter's active flag is set. It reads the flag
+itself rather than the frame's copy, so a move between activation and the
+next frame still reaches the adapter. X11 reads the bounds with a server
+round trip, which windows skip while no assistive technology is connected.
+macOS's implementation is empty; AppKit converts there.
+
+The Linux `a11y-window-bounds` patch makes the bounds right. On X11 it asks
+the server for the window's root origin through the existing
+`get_root_position` helper, because GPUI's stored origin keeps
+raw ConfigureNotify coordinates, which can be relative to the window
+manager's frame (see
+[window presentation](../../docs/agents/window-presentation.md#fullscreen)).
+GPUI's own origin tracking is left unchanged, since fullscreen, Quake, and
+restore code is written against it. X11 also reported the window's rectangle
+minus its `_GTK_FRAME_EXTENTS` insets as the inner bounds, but GPUI's
+coordinates start at the X window's origin with client-side decoration insets
+inside it, so a window with a decoration shadow had every screen point off by
+the inset; both bounds are now the X window's rectangle. Wayland has no global
+position, so it reports the window's size at the origin: screen coordinates
+stay the window's own, and the frame gets extents.
+
+None of this runs on the test platform, whose window has no adapter. The
+Linux GNOME VM's AT-SPI probe is the check: the terminal's screen extents
+must be its window extents plus the window's screen origin, and the frame
+must report extents, after moving and after resizing from the top-left
+corner. Drop the core patch when a GPUI snapshot calls the hook itself, and
+the Linux patch when upstream reports equivalent bounds.
+
 ## macOS exclusive global shortcuts
 
 `global-hotkey-0.9.0` is the published Apache-2.0 OR MIT crate, with one Carbon
@@ -324,3 +365,41 @@ both platforms' physical maps on either host; native input smokes exercise the
 real event paths. Drop each patch when a reviewed GPUI snapshot exposes and
 populates equivalent identity without changing binding equality. Rerun both
 platforms' input smokes when removing them.
+
+## AccessKit macOS terminal text
+
+`accesskit_macos-0.26.3` is the published MIT OR Apache-2.0 crate from
+AccessKit's `platforms/macos` directory, the version GPUI 0.3.10 resolves. The
+archive SHA-256 is
+`ce02dc63b43f0c9296af9ac946312a2dc8814427d7a64d2d600971dac55b6076`; its
+upstream revision is `c88605b96d04431f9c3c792464a0f2f253480e94`. All other
+published files are unchanged. Huterm's terminal node is a `Role::Terminal`
+whose text runs are the displayed rows (see the terminal accessibility rules
+in [the desktop client guide](../../docs/agents/desktop-client.md#terminal-accessibility)).
+Three patches complete what assistive technology needs from it:
+
+- `visible-character-range`: `accessibilityVisibleCharacterRange` returns the
+  document range of a node that supports text ranges, and the selector is
+  allowed for it. The terminal's document is the displayed grid, so all of it
+  is visible.
+- `caret-frame`: while the selection is collapsed, `accessibilityFrameForRange:`
+  for a zero-length range at it returns the bounds of the node's `Role::Caret`
+  child, through the usual `to_ns_rect` conversion, when it has one. Upstream
+  answers a zero-width rectangle that `NSIsEmptyRect` rejects, so clients that
+  place UI at the caret found nothing. A selection with extent has no insertion
+  point, and the caret can be rows from its focus, so it keeps AccessKit's
+  answer, as does every other range and every node without a caret child.
+- `terminal-selection-with-text`: for a `Role::Terminal` node, a text change
+  posts one `AXValueChanged`, whether its runs or its own value changed, then
+  `AXSelectedTextChanged` when it has a selection, as Terminal.app and iTerm2
+  do; a change to the caret child's bounds posts `AXSelectedTextChanged` too.
+  A collapsed caret keeps its raw run position while earlier rows change, so
+  its UTF-16 offset moves without a selection change. Upstream also posted a
+  second `AXValueChanged` from the node's own value. No path posts
+  `AXLayoutChanged`. Other roles keep upstream behavior.
+
+The crate's behavior needs AppKit, so `smoke:macos-accessibility` is its check
+(see [the smokes guide](../../docs/agents/desktop-smokes.md#accessibility-smoke)).
+Propose the patches upstream once confirmed, and drop each when a reviewed
+release, or a GPUI snapshot that moves to a newer AccessKit, supplies the
+behavior; a GPUI snapshot that bumps AccessKit needs this vendoring revisited.

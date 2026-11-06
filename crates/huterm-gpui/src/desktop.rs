@@ -116,6 +116,7 @@ mod refresh;
 mod selection;
 mod settings;
 mod size_indicator;
+mod terminal_a11y;
 pub(crate) use windows::{
     fullscreen_smoke, integration_smoke, palette_smoke,
     presentation_query_smoke, quake_smoke, refresh_smoke, restore_smoke,
@@ -126,7 +127,9 @@ mod windows;
 #[cfg(all(target_os = "macos", feature = "macos-updater"))]
 pub(crate) use windows::updater_smoke;
 #[cfg(target_os = "macos")]
-pub(crate) use windows::{clipboard_smoke, idle_bench, input_smoke};
+pub(crate) use windows::{
+    accessibility_smoke, clipboard_smoke, idle_bench, input_smoke,
+};
 
 pub(crate) fn run() -> anyhow::Result<()> {
     windows::run()
@@ -514,6 +517,19 @@ struct TerminalView {
     snapshot_pacer: refresh::SnapshotPacer,
     refresh_mode: huterm_config::RefreshMode,
     frame_clock: Rc<refresh::FrameClock>,
+    /// The accessibility model the view's node reports, built only while
+    /// assistive technology is active.
+    a11y: terminal_a11y::Publisher,
+    /// Wakes the view for content the last frame deferred publishing.
+    a11y_deferred: Option<Task<()>>,
+    /// The pane title the workspace shows for this view, which names its
+    /// accessibility node; empty for a view no workspace hosts.
+    a11y_label: String,
+    /// How many times the view has come back into its window after a frame
+    /// without it, which is part of its accessibility node's identity. The
+    /// AT-SPI adapter marks a removed node's object defunct for good, so a
+    /// view shown again must be a new object; see [`Self::a11y_shown`].
+    a11y_shows: u64,
 }
 
 /// Snapshot replies per terminal, counted only while a smoke installs this
@@ -858,6 +874,10 @@ impl TerminalView {
             snapshot_pacer: refresh::SnapshotPacer::default(),
             refresh_mode: config.terminal.refresh,
             frame_clock,
+            a11y: terminal_a11y::Publisher::default(),
+            a11y_deferred: None,
+            a11y_label: String::new(),
+            a11y_shows: 0,
         };
         if let Some(error) = presentation_failure.or(scrollback_failure) {
             view.report_viewer_failure(&error);
@@ -2721,6 +2741,67 @@ impl TerminalView {
         .detach();
     }
 
+    /// Brings the accessibility model up to date with the snapshot this
+    /// frame paints. Content that changes again within the publication
+    /// interval waits for one wake at its end, so output never requests a
+    /// frame for accessibility once it stops.
+    fn publish_a11y(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Rc<terminal_a11y::Model> {
+        let now = cx.background_executor().now();
+        let publication = match &self.snapshot {
+            Some(snapshot) => self.a11y.update(
+                &terminal_a11y::Inputs {
+                    snapshot,
+                    geometry: self.grid_geometry(window),
+                    selection: self.selection.and_then(Selection::range),
+                    metrics: self.metrics,
+                    scale: window.scale_factor(),
+                },
+                snapshot,
+                now,
+            ),
+            None => self.a11y.clear(now),
+        };
+        if let terminal_a11y::Publication::Deferred(wait) = publication {
+            if self.a11y_deferred.is_none() {
+                self.a11y_deferred = Some(cx.spawn(async move |view, cx| {
+                    cx.background_executor().timer(wait).await;
+                    let _ = view.update(cx, |view, cx| {
+                        view.a11y_deferred = None;
+                        cx.notify();
+                    });
+                }));
+            }
+        } else {
+            self.a11y_deferred = None;
+        }
+        self.a11y.model()
+    }
+
+    /// Gives the view's accessibility node a new identity, because the view
+    /// is drawn again after a frame that did not draw it. Its node left the
+    /// tree then, and AccessKit's AT-SPI adapter reported that object
+    /// defunct, which Orca never revisits; a node returning with the same
+    /// ID keeps that path. Never call this for a view that stays shown:
+    /// every new identity removes the old node and adds a new one.
+    fn a11y_shown(&mut self) {
+        self.a11y_shows = self.a11y_shows.wrapping_add(1);
+    }
+
+    /// The name of the view's accessibility node: its pane's title.
+    fn a11y_label(&self) -> String {
+        if !self.a11y_label.is_empty() {
+            self.a11y_label.clone()
+        } else if !self.title.is_empty() {
+            self.title.clone()
+        } else {
+            "Terminal".to_owned()
+        }
+    }
+
     fn scrollbar_seek(
         &mut self,
         thumb_start: Pixels,
@@ -3682,8 +3763,12 @@ impl Render for TerminalView {
             .borrow()
             .foreground(color(self.theme.foreground));
         let paint_link = hovered_link.clone();
+        let a11y_model = window
+            .is_a11y_active()
+            .then(|| self.publish_a11y(window, cx));
         let mut root = div()
-            .id("terminal")
+            .id(("terminal", self.a11y_shows))
+            .role(gpui::Role::Terminal)
             .on_hover(cx.listener(|view, hovering, _, cx| {
                 if !hovering && view.scrollbars.pointer_left(Instant::now()) {
                     view.activate_scrollbar();
@@ -3813,6 +3898,20 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             );
+        if let Some(model) = a11y_model {
+            // GPUI keeps one such closure per element, so the read-only
+            // state goes on the node here, beside the text.
+            root = root.aria_label(self.a11y_label()).a11y_synthetic_children(
+                move |builder| {
+                    huterm_ui::a11y::States {
+                        read_only: true,
+                        ..huterm_ui::a11y::States::default()
+                    }
+                    .write(builder.parent_node());
+                    model.push(builder);
+                },
+            );
+        }
         if bell_flash {
             root = root.child(
                 div()
@@ -4459,8 +4558,7 @@ mod tests {
 
     #[test]
     fn snapshot_comparison_ignores_generation_but_not_rows_or_viewport() {
-        let row =
-            || Arc::new(huterm_protocol::TerminalRow { cells: Vec::new() });
+        let row = || Arc::new(huterm_protocol::TerminalRow::default());
         let shown = TerminalSnapshot {
             terminal_id: huterm_protocol::TerminalId::new(1),
             generation: 1,

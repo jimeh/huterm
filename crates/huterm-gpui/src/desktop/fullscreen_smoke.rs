@@ -276,7 +276,7 @@ fn read_state(cx: &mut App) -> String {
             if let Some(terminal) = view.active_view(cx) {
                 let terminal = terminal.read(cx);
                 writeln!(output, "w{index}.resize_requests={}\nw{index}.resize_indicators={}\nw{index}.pointer_owned={}", terminal.resize_requests, terminal.resize_indicators, terminal.owns_pointer_gesture()).unwrap();
-                let text = terminal.snapshot.as_ref().map(|snapshot| snapshot.cells().map(|cell| cell.text.as_str()).collect::<String>()).unwrap_or_default();
+                let text = terminal.snapshot.as_ref().map(|snapshot| snapshot.cells().map(|cell| cell.text.displayed()).collect::<String>()).unwrap_or_default();
                 let displayed = terminal.displayed_grid_state();
                 writeln!(output, "w{index}.ready={}\nw{index}.focused={}\nw{index}.grid={},{}\nw{index}.displayed_grid={},{}\nw{index}.terminal={}\nw{index}.text={}", text.contains("READY"), terminal.focus.is_focused(window), terminal.requested_grid.columns, terminal.requested_grid.rows, displayed.0, displayed.1, rect(terminal.content_bounds(window)), text.replace('\n', " ")).unwrap();
             }

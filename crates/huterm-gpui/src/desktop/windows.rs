@@ -1,4 +1,7 @@
 #[cfg(target_os = "macos")]
+#[path = "accessibility_smoke.rs"]
+pub(crate) mod accessibility_smoke;
+#[cfg(target_os = "macos")]
 #[path = "clipboard_smoke.rs"]
 pub(crate) mod clipboard_smoke;
 #[path = "fullscreen_smoke.rs"]
@@ -2873,6 +2876,7 @@ fn open_window_with_profile(
                 arrangements: 0,
                 drawn_dividers: RefCell::new(Vec::new()),
                 drawn_panes: RefCell::new(None),
+                drawn_views: RefCell::new(HashSet::new()),
                 drawn_drop: RefCell::new(None),
                 drawn_tear_off: RefCell::new(None),
                 drawn_pane_tear_off: RefCell::new(None),
@@ -4145,6 +4149,9 @@ struct WorkspaceView {
     /// The active tab's pane rectangles as the last frame drew them, which
     /// pane and tab drags hit-test against.
     drawn_panes: RefCell<Option<(TabId, Vec<PaneRect>)>>,
+    /// The terminal views the last frame drew. A view drawn again after a
+    /// frame without it gets a new accessibility identity.
+    drawn_views: RefCell<HashSet<EntityId>>,
     /// The drop target the last frame drew, for smoke state.
     drawn_drop: RefCell<Option<String>>,
     /// The tear-off pill bounds drawn in the last frame.
@@ -5259,6 +5266,10 @@ impl WorkspaceView {
     /// The active tab's panes: each pane's terminal view at its rectangle
     /// inside `bounds`, the enabled pane title bars, and the dividers
     /// between panes. The marks over them, `pane_marks`, draw later.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each pane's terminal, title bar, and accessibility identity are placed together"
+    )]
     fn pane_elements(
         &self,
         bounds: Bounds<Pixels>,
@@ -5271,6 +5282,7 @@ impl WorkspaceView {
         let Some(tab) = self.active_tab_view(cx) else {
             self.drawn_dividers.borrow_mut().clear();
             *self.drawn_panes.borrow_mut() = None;
+            self.drawn_views.borrow_mut().clear();
             return Vec::new();
         };
         let tab_id = tab.id;
@@ -5294,6 +5306,8 @@ impl WorkspaceView {
         *self.drawn_panes.borrow_mut() =
             rects.as_ref().map(|rects| (tab_id, rects.panes.clone()));
         let mut elements = Vec::new();
+        let was_drawn = self.drawn_views.take();
+        let mut drawn_views = HashSet::with_capacity(tab.panes.len());
         for pane in &tab.panes {
             // A view the layout no longer holds, such as one still closing,
             // is not drawn. A tab without a layout to draw shows only its
@@ -5305,7 +5319,11 @@ impl WorkspaceView {
             };
             let terminal = rect.map_or(bounds, |rect| rect.terminal);
             let id = pane.pane;
-            self.configure_pane_paint(&pane.view, id == focused, shown, cx);
+            if !was_drawn.contains(&pane.view.entity_id()) {
+                pane.view.update(cx, |view, _| view.a11y_shown());
+            }
+            drawn_views.insert(pane.view.entity_id());
+            self.configure_pane(tab, pane, id == focused, shown, window, cx);
             let grab = grabs.then(|| self.grab_layer(tab, pane, terminal, cx));
             elements.push(
                 div()
@@ -5367,6 +5385,7 @@ impl WorkspaceView {
                 );
             }
         }
+        *self.drawn_views.borrow_mut() = drawn_views;
         if let Some(rects) = &rects {
             elements.extend(Self::divider_elements(
                 &rects.dividers,
@@ -5481,6 +5500,25 @@ impl WorkspaceView {
     /// any background opacity.
     fn floating_colors(&self) -> TabColors {
         TabColors::new(&self.config.theme)
+    }
+
+    /// Sets how `pane` paints, and, while assistive technology is active,
+    /// names its accessibility node like its title bar. The view renders
+    /// after this.
+    fn configure_pane(
+        &self,
+        tab: &TabView,
+        pane: &PaneView,
+        focused: bool,
+        shown: usize,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if window.is_a11y_active() {
+            let label = tab.pane_label(pane, self.config.tabs, cx);
+            pane.view.update(cx, |view, _| view.a11y_label = label);
+        }
+        self.configure_pane_paint(&pane.view, focused, shown, cx);
     }
 
     fn configure_pane_paint(

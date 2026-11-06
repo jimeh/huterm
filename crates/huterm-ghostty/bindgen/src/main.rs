@@ -126,6 +126,7 @@ const TYPES: &[&str] = &[
     "GhosttyRenderStateCursor",
     "GhosttyRenderStateCursorVisualStyle",
     "GhosttyRenderStateDirty",
+    "GhosttyRowSemanticPrompt",
     "GhosttySelection",
     "GhosttySemanticPromptKind",
     "GhosttySemanticPromptPromptKind",
@@ -357,7 +358,13 @@ const KEY_SETS: &[KeySet] = &[
             r#trait: "RowData",
             populate: None,
         },
-        keys: &["WRAP", "GRAPHEME", "STYLED"],
+        keys: &[
+            "WRAP",
+            "WRAP_CONTINUATION",
+            "GRAPHEME",
+            "STYLED",
+            "SEMANTIC_PROMPT",
+        ],
     },
     KeySet {
         header: "mouse/encoder.h",

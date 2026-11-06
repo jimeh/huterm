@@ -12,14 +12,16 @@ use huterm_ghostty::{
     self as ghostty, Boundaries, CellContent, CellWidth, ClipboardLocation,
     ClipboardWrite, ClipboardWriteResult, ColorOverrides, ColorScheme,
     CursorStyle, DeviceAttributes, Dirty, Fill, Host, Mode, MouseProbe, Point,
-    ProbedFormat, ProbedTracking, RenderState, Screen, Scroll, StyleColor,
+    ProbedFormat, ProbedTracking, RenderState, RowSemanticPrompt, Screen,
+    Scroll, StyleColor,
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
     CommandRecord, Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding,
-    MouseTracking, Rgb, ScrollCommand, ScrollbackLimit, SelectionUnit,
-    TerminalAppearance, TerminalId, TerminalModes, TerminalPresentation,
-    TerminalRow, TerminalSnapshot, Viewport, appearance_for_background,
+    MouseTracking, Rgb, RowPrompt, ScrollCommand, ScrollbackLimit,
+    SelectionUnit, TerminalAppearance, TerminalId, TerminalModes,
+    TerminalPresentation, TerminalRow, TerminalSnapshot, Viewport,
+    appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
@@ -255,7 +257,11 @@ pub(super) struct TerminalEngine {
     retained: Vec<Arc<TerminalRow>>,
     retained_viewport: (usize, usize),
     retained_colors: Option<Colors>,
-    scratch: Vec<Cell>,
+    /// An OSC 133 mark arrived since the last snapshot. Ghostty sets a
+    /// row's prompt mark without dirtying it, so the next snapshot checks
+    /// clean rows against the live grid.
+    prompt_marks_stale: bool,
+    scratch: TerminalRow,
     grapheme: Vec<u8>,
     effects: Vec<ghostty::Effect>,
     commands: CommandLog,
@@ -314,7 +320,8 @@ impl TerminalEngine {
             retained: Vec::new(),
             retained_viewport: (0, 0),
             retained_colors: None,
-            scratch: Vec::new(),
+            prompt_marks_stale: false,
+            scratch: TerminalRow::default(),
             grapheme: Vec::new(),
             effects: Vec::new(),
             commands: CommandLog::default(),
@@ -395,6 +402,7 @@ impl TerminalEngine {
             self.terminal.take_effects(&mut self.effects);
             for effect in &self.effects[start..] {
                 if let ghostty::Effect::SemanticPrompt(event) = effect {
+                    self.prompt_marks_stale = true;
                     self.commands.handle(&mut self.terminal, event)?;
                 }
             }
@@ -699,6 +707,7 @@ impl TerminalEngine {
         let built = self.build_rows(full, &previous, viewport, &colors)?;
         // Consume damage only once the retained rows are coherent.
         self.render.clean()?;
+        self.prompt_marks_stale = false;
         self.retained.clone_from(&built);
         self.retained_viewport = viewport;
         let default_background = colors
@@ -726,8 +735,9 @@ impl TerminalEngine {
     }
 
     /// Builds viewport rows from the updated render state. Clean rows keep
-    /// their retained `Arc`; extracted rows reuse any identical retained
-    /// row.
+    /// their retained `Arc` unless their live flags changed, which they
+    /// read after an OSC 133 mark and below a row this build extracted or
+    /// refreshed; extracted rows reuse any identical retained row.
     fn build_rows(
         &mut self,
         full: bool,
@@ -746,6 +756,10 @@ impl TerminalEngine {
         );
         let mut built = Vec::with_capacity(usize::from(self.size.rows));
         let (mut extracted, mut allocated, mut reused) = (0, 0, 0);
+        // Whether the row above was extracted or refreshed. Ghostty's
+        // `cursorResetWrap` clears the continuation of the row below the one
+        // it rewrites without dirtying it.
+        let mut above_changed = false;
         let mut rows = self.render.rows()?;
         while let Some(mut row) = rows.next() {
             let index = built.len();
@@ -753,10 +767,21 @@ impl TerminalEngine {
                 && !row.dirty()?
                 && let Some(retained) = previous.get(index)
             {
-                built.push(Arc::clone(retained));
-                reused += 1;
+                if (self.prompt_marks_stale || above_changed)
+                    && let Some(refreshed) =
+                        refresh_flags(&self.terminal, retained, index)?
+                {
+                    built.push(Arc::new(refreshed));
+                    allocated += 1;
+                    above_changed = true;
+                } else {
+                    built.push(Arc::clone(retained));
+                    reused += 1;
+                    above_changed = false;
+                }
                 continue;
             }
+            above_changed = true;
             extract_row(
                 &mut row,
                 &mut self.scratch,
@@ -769,9 +794,7 @@ impl TerminalEngine {
                 built.push(Arc::clone(found));
                 reused += 1;
             } else {
-                built.push(Arc::new(TerminalRow {
-                    cells: std::mem::take(&mut self.scratch),
-                }));
+                built.push(Arc::new(std::mem::take(&mut self.scratch)));
                 allocated += 1;
             }
         }
@@ -1156,19 +1179,56 @@ impl Resolver<'_> {
     }
 }
 
-/// Reads one row's cells into `out`, reusing its allocation.
+/// A copy of a clean row with the live grid's wrap and prompt flags, when
+/// they differ from the retained row's. The render state copies a row's
+/// flags only when it rebuilds a dirty row.
+fn refresh_flags(
+    terminal: &ghostty::Terminal<EngineHost>,
+    retained: &TerminalRow,
+    index: usize,
+) -> Result<Option<TerminalRow>, RuntimeError> {
+    let y = u32::try_from(index)
+        .map_err(|_| RuntimeError::Invariant("viewport row out of range"))?;
+    let live = terminal.grid_ref(Point::viewport(0, y))?.row()?;
+    let wrapped = live.wrapped()?;
+    let wrap_continuation = live.wrap_continuation()?;
+    let prompt = row_prompt(live.semantic_prompt()?);
+    Ok((wrapped != retained.wrapped
+        || wrap_continuation != retained.wrap_continuation
+        || prompt != retained.prompt)
+        .then(|| TerminalRow {
+            cells: retained.cells.clone(),
+            wrapped,
+            wrap_continuation,
+            prompt,
+        }))
+}
+
+fn row_prompt(mark: RowSemanticPrompt) -> RowPrompt {
+    match mark {
+        RowSemanticPrompt::Prompt => RowPrompt::Primary,
+        RowSemanticPrompt::Continuation => RowPrompt::Continuation,
+        _ => RowPrompt::None,
+    }
+}
+
+/// Reads one row's cells and flags into `out`, reusing its allocation.
 fn extract_row(
     row: &mut ghostty::RenderRow<'_>,
-    out: &mut Vec<Cell>,
+    out: &mut TerminalRow,
     grapheme: &mut Vec<u8>,
     resolver: &Resolver<'_>,
     columns: usize,
 ) -> Result<(), RuntimeError> {
+    let hints = row.row()?;
+    out.wrapped = hints.wrapped()?;
+    out.wrap_continuation = hints.wrap_continuation()?;
+    out.prompt = row_prompt(hints.semantic_prompt()?);
+    let out = &mut out.cells;
     out.clear();
     out.try_reserve_exact(columns).map_err(|error| {
         RuntimeError::Engine(format!("snapshot row allocation failed: {error}"))
     })?;
-    let hints = row.row()?;
     // Row flags may report false positives but never false negatives, so
     // unstyled and grapheme-free rows skip per-cell queries.
     let graphemes = hints.has_graphemes()?;
@@ -1200,23 +1260,25 @@ fn extract_row(
                 ),
                 style.background,
             ),
+            // Ghostty's formatter treats a cell as text when its codepoint
+            // is not zero, so a written space is text and these are not.
             CellContent::Grapheme => {
                 cells.graphemes_utf8(grapheme)?;
                 let text = if grapheme.is_empty() {
-                    CellText::BLANK
+                    CellText::EMPTY
                 } else {
                     CellText::new(&String::from_utf8_lossy(grapheme))
                 };
                 (text, style.background)
             }
             CellContent::BackgroundPalette => (
-                CellText::BLANK,
+                CellText::EMPTY,
                 StyleColor::Palette(cell.background_palette()?),
             ),
             CellContent::BackgroundRgb => {
-                (CellText::BLANK, StyleColor::Rgb(cell.background_rgb()?))
+                (CellText::EMPTY, StyleColor::Rgb(cell.background_rgb()?))
             }
-            _ => (CellText::BLANK, style.background),
+            _ => (CellText::EMPTY, style.background),
         };
         let mut foreground = resolver.foreground(style.foreground);
         let mut background = resolver.background(background);

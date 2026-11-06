@@ -577,7 +577,7 @@ pub(super) fn wait_for_text(
     loop {
         let snapshot = client.read_snapshot().unwrap();
         let text: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         if text.contains(needle) {
             return;
         }
@@ -689,7 +689,7 @@ fn deleting_a_session_reaps_its_child_process() {
     wait_for_text(&opened.client, "READY");
     let snapshot = opened.client.read_snapshot().unwrap();
     let text: String =
-        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        snapshot.cells().map(|cell| cell.text.displayed()).collect();
     let pid = text
         .split("PID:")
         .nth(1)
@@ -1097,7 +1097,7 @@ fn detaching_preserves_terminal_and_unobserved_output_and_exit() {
         .read_snapshot()
         .unwrap()
         .cells()
-        .map(|cell| cell.text.as_str())
+        .map(|cell| cell.text.displayed())
         .collect::<String>()
         .contains("BACKGROUND")
     {

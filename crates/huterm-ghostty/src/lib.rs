@@ -58,9 +58,9 @@ pub use types::{
     ClipboardContent, ClipboardLocation, ClipboardWrite, ClipboardWriteResult,
     ColorScheme, Compression, Cursor, CursorStyle, DeviceAttributes, Dirty,
     Effect, Fill, MemoryUsage, Mode, Optimize, Palette, Point, PointSpace,
-    PromptKind, RenderColors, Rgb, Row, Screen, ScreenMemory, Scroll,
-    Scrollbar, SemanticPrompt, SemanticPromptKind, Style, StyleColor,
-    WriteStop,
+    PromptKind, RenderColors, Rgb, Row, RowSemanticPrompt, Screen,
+    ScreenMemory, Scroll, Scrollbar, SemanticPrompt, SemanticPromptKind, Style,
+    StyleColor, WriteStop,
 };
 
 /// The optimization mode of the linked library.

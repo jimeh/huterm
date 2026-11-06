@@ -1,6 +1,7 @@
 use super::*;
 use huterm_protocol::{
-    BufferPoint, CellColor, CursorShape, MouseEncoding, MouseTracking, Rgb,
+    BufferPoint, CellColor, CellText, CursorShape, MouseEncoding,
+    MouseTracking, Rgb, RowPrompt,
 };
 use std::sync::Arc;
 
@@ -117,7 +118,7 @@ fn ghostty_preserves_shared_scrollback_and_generation_checked_selection() {
             .map(|row| {
                 row.cells
                     .iter()
-                    .map(|cell| cell.text.as_str())
+                    .map(|cell| cell.text.displayed())
                     .collect::<String>()
                     .trim_end()
                     .to_owned()
@@ -246,6 +247,177 @@ fn ghostty_resizes_reflows_and_preserves_soft_wrapped_selection() {
         assert_eq!(snapshot.rows.len(), 4);
         assert!(snapshot.rows.iter().all(|row| row.cells.len() == 12));
         assert_eq!(engine.extract_text(generation, range).unwrap(), None);
+    });
+}
+
+fn wrapped(snapshot: &TerminalSnapshot) -> Vec<bool> {
+    snapshot.rows.iter().map(|row| row.wrapped).collect()
+}
+
+fn prompts(snapshot: &TerminalSnapshot) -> Vec<RowPrompt> {
+    snapshot.rows.iter().map(|row| row.prompt).collect()
+}
+
+#[test]
+fn ghostty_snapshots_mark_soft_wrapped_rows_until_reflow_unwraps_them() {
+    with_engine(|engine| {
+        // A full row waits for the next character to wrap.
+        engine.process(b"abcdefgh").unwrap();
+        assert_eq!(wrapped(&engine.snapshot().unwrap()), [false; 3]);
+        engine.process(b"ij\r\nk").unwrap();
+        assert_eq!(wrapped(&engine.snapshot().unwrap()), [true, false, false]);
+        engine
+            .resize(
+                GridSize::clamped(12, 3),
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            )
+            .unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(snapshot.rows[0].cells[9].text, "j");
+        assert_eq!(snapshot.rows[1].cells[0].text, "k");
+        assert_eq!(wrapped(&snapshot), [false; 3]);
+    });
+}
+
+#[test]
+fn ghostty_snapshots_tell_empty_cells_from_written_spaces() {
+    with_engine(|engine| {
+        // A written space, cells skipped by CUF, cells erased with a
+        // background, and a wide character that wraps past a spacer head.
+        engine
+            .process(
+                "a b\x1b[2Cc\r\n\x1b[41m\x1b[3X\x1b[0m\x1b[7C界".as_bytes(),
+            )
+            .unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        let text = |row: usize, column: usize| {
+            snapshot.rows[row].cells[column].text.clone()
+        };
+        assert_eq!(text(0, 1), CellText::BLANK);
+        assert_eq!(text(0, 3), CellText::EMPTY);
+        assert_eq!(text(0, 7), CellText::EMPTY, "never written");
+        let erased = &snapshot.rows[1].cells[0];
+        assert_eq!(erased.text, CellText::EMPTY);
+        assert_eq!(erased.background, CellColor::Indexed(1));
+        let head = &snapshot.rows[1].cells[7];
+        assert!(head.style.wide_spacer && head.text.is_empty());
+        assert_eq!(text(2, 0), "界");
+        assert!(snapshot.rows[2].cells[1].style.wide_spacer);
+        assert_eq!(text(2, 1), CellText::EMPTY);
+    });
+}
+
+fn continuations(snapshot: &TerminalSnapshot) -> Vec<bool> {
+    snapshot
+        .rows
+        .iter()
+        .map(|row| row.wrap_continuation)
+        .collect()
+}
+
+#[test]
+fn ghostty_snapshots_report_wrap_continuations_apart_from_wraps() {
+    with_engine(|engine| {
+        engine.process(b"abcdefghij").unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&snapshot), [true, false, false]);
+        assert_eq!(continuations(&snapshot), [false, true, false]);
+        // Deleting the continuation row moves the row below up without
+        // its flag, while the row above still wraps.
+        engine.process(b"\x1b[2;1H\x1b[M").unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&snapshot), [true, false, false]);
+        assert_eq!(continuations(&snapshot), [false; 3]);
+    });
+}
+
+#[test]
+fn ghostty_snapshots_refresh_a_continuation_reset_below_a_rewritten_row() {
+    with_engine(|engine| {
+        engine.process(b"abcdefghij\r\n").unwrap();
+        let before = engine.snapshot().unwrap();
+        assert_eq!(continuations(&before), [false, true, false]);
+        // EL resets the cursor row's wrap and the next row's continuation,
+        // and dirties only the cursor row.
+        engine.process(b"\x1b[1;5H\x1b[K").unwrap();
+        let erased = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&erased), [false; 3]);
+        assert_eq!(continuations(&erased), [false; 3]);
+        assert_eq!(erased.rows[1].cells, before.rows[1].cells);
+        // The row below the refreshed one is read and kept.
+        assert!(Arc::ptr_eq(&erased.rows[2], &before.rows[2]));
+        assert_eq!(engine.last_snapshot_stats().allocated, 2);
+    });
+}
+
+#[test]
+fn ghostty_snapshots_report_a_continuation_the_row_above_no_longer_wraps() {
+    with_engine(|engine| {
+        // ED 1 resets the rows above the cursor, but the cursor row keeps
+        // its continuation, which Copy reads.
+        engine
+            .process(b"abcdefghij\x1b[2;1H\x1b[1J\x1b[1;1Hx")
+            .unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&snapshot), [false; 3]);
+        assert_eq!(continuations(&snapshot), [false, true, false]);
+        let generation = engine.generation();
+        let grid = BufferRange::ordered(
+            BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 0,
+            },
+            BufferPoint {
+                rows_from_live_bottom: 0,
+                column: 7,
+            },
+        );
+        assert_eq!(
+            engine.extract_text(generation, grid).unwrap().as_deref(),
+            Some("x\n        j")
+        );
+    });
+}
+
+#[test]
+fn ghostty_snapshots_report_osc_133_prompt_rows() {
+    with_engine(|engine| {
+        engine
+            .process(
+                b"\x1b]133;A\x07$ \x1b]133;B\x07ls\x1b]133;C\x07\r\nout\r\n\
+                  \x1b]133;A;k=c\x07> ",
+            )
+            .unwrap();
+        assert_eq!(
+            prompts(&engine.snapshot().unwrap()),
+            [RowPrompt::Primary, RowPrompt::None, RowPrompt::Continuation]
+        );
+    });
+}
+
+#[test]
+fn ghostty_snapshots_refresh_a_prompt_mark_on_an_otherwise_clean_row() {
+    with_engine(|engine| {
+        engine.process(b"x\r\n").unwrap();
+        let before = engine.snapshot().unwrap();
+        // Ghostty marks the cursor row without dirtying it.
+        engine.process(b"\x1b]133;A\x07").unwrap();
+        let marked = engine.snapshot().unwrap();
+        assert_eq!(
+            prompts(&marked),
+            [RowPrompt::None, RowPrompt::Primary, RowPrompt::None]
+        );
+        assert_eq!(marked.rows[1].cells, before.rows[1].cells);
+        assert!(Arc::ptr_eq(&marked.rows[0], &before.rows[0]));
+        assert_eq!(engine.last_snapshot_stats().allocated, 1);
+        engine.process(b"\x1b]133;A;k=c\x07").unwrap();
+        assert_eq!(
+            engine.snapshot().unwrap().rows[1].prompt,
+            RowPrompt::Continuation
+        );
     });
 }
 

@@ -2020,32 +2020,35 @@ impl PlatformWindow for X11Window {
     }
 
     fn a11y_update_window_bounds(&self) {
+        // The stored origin can be relative to the window manager's frame after a
+        // ConfigureNotify, so ask the server where the window sits on the root window.
+        let root_origin = self
+            .get_root_position(Point::new(Pixels::ZERO, Pixels::ZERO))
+            .log_err()
+            .map(|reply| (f64::from(reply.dst_x), f64::from(reply.dst_y)));
+
         let mut state = self.0.state.borrow_mut();
         let scale = state.scale_factor;
-        let bounds = state.bounds;
-        let [left, right, top, bottom] = state.last_insets;
+        let size = state.bounds.size;
+        let (x, y) = root_origin.unwrap_or_else(|| {
+            (
+                f64::from(f32::from(state.bounds.origin.x) * scale),
+                f64::from(f32::from(state.bounds.origin.y) * scale),
+            )
+        });
 
-        let x = f32::from(bounds.origin.x);
-        let y = f32::from(bounds.origin.y);
-        let width = f32::from(bounds.size.width);
-        let height = f32::from(bounds.size.height);
-
-        let outer = accesskit::Rect {
-            x0: (x * scale) as f64,
-            y0: (y * scale) as f64,
-            x1: ((x + width) * scale) as f64,
-            y1: ((y + height) * scale) as f64,
-        };
-
-        let inner = accesskit::Rect {
-            x0: (x * scale) as f64 + left as f64,
-            y0: (y * scale) as f64 + top as f64,
-            x1: ((x + width) * scale) as f64 - right as f64,
-            y1: ((y + height) * scale) as f64 - bottom as f64,
+        // AccessKit places nodes relative to the inner bounds' origin, and GPUI's
+        // coordinates start at the X window's origin, client-side decoration insets
+        // included, so both rects are the X window's own.
+        let bounds = accesskit::Rect {
+            x0: x,
+            y0: y,
+            x1: x + f64::from(f32::from(size.width) * scale),
+            y1: y + f64::from(f32::from(size.height) * scale),
         };
 
         if let Some(adapter) = state.accesskit_adapter.as_mut() {
-            adapter.set_root_window_bounds(outer, inner);
+            adapter.set_root_window_bounds(bounds, bounds);
         }
     }
 }

@@ -562,6 +562,11 @@ Each entry names the failing label, the evidence so far, and how to triage it.
 - **Triage:** compare the suite's wall time with a passing run. If it
   recurs on a normal-speed run, the harness wait or the close path needs a
   closer look; otherwise record the run here and rerun.
+- **Sixth occurrence:** 2026-11-06 on PR #415 (run 42188279420, job
+  127793745152, head `5c6c808b`), in `Checks (macOS arm64)` at
+  `window_tests.rs:510`. The `huterm-gpui` suite took 203.84 seconds. The
+  PR adds terminal accessibility and touches no tab or button code; the
+  previous head's macOS checks passed this test.
 
 ## huterm-gpui Edit menu Select All
 

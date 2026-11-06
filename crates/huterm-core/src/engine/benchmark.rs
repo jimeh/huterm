@@ -227,7 +227,7 @@ fn engine_benchmark() {
             reused += stats.reused;
             assert_eq!(snapshot.size, GridSize::clamped(120, 40));
             let text: String =
-                snapshot.cells().map(|cell| cell.text.as_str()).collect();
+                snapshot.cells().map(|cell| cell.text.displayed()).collect();
             assert!(text.contains(fixture.expected), "{name}: {text:?}");
             if name == "styled" {
                 let cell =
@@ -306,7 +306,7 @@ fn engine_benchmark_resize() {
         snapshots.push(started.elapsed().as_nanos());
         assert_eq!(snapshot.size, size);
         let text: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         assert!(text.contains("reflow-marker"));
         assert_eq!(text.matches('x').count(), 180);
         black_box(snapshot);

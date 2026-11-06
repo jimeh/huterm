@@ -7,8 +7,8 @@ use crate::{
     Boundaries, CellContent, CellWidth, ClipboardLocation, ClipboardWrite,
     ClipboardWriteResult, ColorScheme, DeviceAttributes, Dirty, Effect, Error,
     Fill, Host, Mode, MouseProbe, Options, Point, ProbedFormat, ProbedTracking,
-    PromptKind, RenderState, Rgb, Screen, Scroll, SemanticPrompt,
-    SemanticPromptKind, Terminal,
+    PromptKind, RenderState, Rgb, RowSemanticPrompt, Screen, Scroll,
+    SemanticPrompt, SemanticPromptKind, Terminal,
 };
 
 /// A recorded clipboard write: location, (MIME, data) pairs, and name.
@@ -1110,6 +1110,70 @@ fn render_cells_expose_codepoints_graphemes_width_and_background_cells() {
     assert_eq!(seen[4].0, CellContent::BackgroundPalette);
     assert_eq!(seen[4].2, 0);
     assert_eq!(seen[4].3, "");
+}
+
+/// Rebuilds the render state after writing `bytes`, and returns each
+/// viewport row's dirty flag, its render-state copy, and its live grid row.
+fn row_flags_after(
+    terminal: &mut Terminal<Recorder>,
+    render: &mut RenderState,
+    bytes: &[u8],
+) -> Vec<(bool, crate::Row, crate::Row)> {
+    render.update(terminal).unwrap();
+    render.clean().unwrap();
+    terminal.write(bytes).unwrap();
+    render.update(terminal).unwrap();
+    let mut seen = Vec::new();
+    let mut rows = render.rows().unwrap();
+    while let Some(row) = rows.next() {
+        let y = u32::try_from(seen.len()).unwrap();
+        let live = terminal.grid_ref(Point::viewport(0, y)).unwrap();
+        seen.push((
+            row.dirty().unwrap(),
+            row.row().unwrap(),
+            live.row().unwrap(),
+        ));
+    }
+    seen
+}
+
+#[test]
+fn soft_wrapping_dirties_the_row_it_marks() {
+    let mut terminal = terminal();
+    let mut render = RenderState::new().unwrap();
+    // The cursor waits at the last column, so the wrap flag is set only
+    // when the next character arrives, after the row was rendered clean.
+    row_flags_after(&mut terminal, &mut render, b"abcdefgh");
+    let rows = row_flags_after(&mut terminal, &mut render, b"i");
+    let (dirty, copy, live) = rows[0];
+    assert!(dirty);
+    assert!(copy.wrapped().unwrap());
+    assert!(live.wrapped().unwrap());
+    assert!(!rows[1].1.wrapped().unwrap());
+}
+
+#[test]
+fn osc_133_marks_leave_the_cursor_row_clean_with_a_stale_copy() {
+    let mut terminal = terminal();
+    let mut render = RenderState::new().unwrap();
+    for (bytes, mark) in [
+        (&b"\x1b]133;A\x07"[..], RowSemanticPrompt::Prompt),
+        (b"\x1b]133;A;k=c\x07", RowSemanticPrompt::Continuation),
+    ] {
+        let (dirty, copy, live) =
+            row_flags_after(&mut terminal, &mut render, bytes)[0];
+        assert!(!dirty);
+        assert_eq!(copy.semantic_prompt().unwrap(), RowSemanticPrompt::None);
+        assert_eq!(live.semantic_prompt().unwrap(), mark);
+    }
+    // The row the cursor leaves is dirty and its copy catches up.
+    let (dirty, copy, _) =
+        row_flags_after(&mut terminal, &mut render, b"\r\n")[0];
+    assert!(dirty);
+    assert_eq!(
+        copy.semantic_prompt().unwrap(),
+        RowSemanticPrompt::Continuation
+    );
 }
 
 #[test]

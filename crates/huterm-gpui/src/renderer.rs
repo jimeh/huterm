@@ -132,6 +132,22 @@ pub(super) struct TerminalRenderer {
     /// The grid origin and snapshot the last paint drew, for tests.
     #[cfg(all(test, feature = "test-support"))]
     painted: Option<(Point<Pixels>, Arc<TerminalSnapshot>)>,
+    /// Where the last paint drew the grid and the cursor, for the
+    /// accessibility smoke.
+    #[cfg(target_os = "macos")]
+    painted_geometry: Option<PaintedGeometry>,
+}
+
+/// Where a paint drew the grid's first cell and the cursor, in window
+/// coordinates.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaintedGeometry {
+    pub(crate) origin: Point<Pixels>,
+    pub(crate) cell: gpui::Size<Pixels>,
+    /// The cursor quad, clipped to the paint's content mask; `None` when
+    /// no cursor was drawn.
+    pub(crate) cursor: Option<Bounds<Pixels>>,
 }
 
 /// Work done by the most recent `prepare` call.
@@ -198,6 +214,8 @@ impl TerminalRenderer {
             last_prepare: PrepareOutcome::default(),
             #[cfg(all(test, feature = "test-support"))]
             painted: None,
+            #[cfg(target_os = "macos")]
+            painted_geometry: None,
         }
     }
 
@@ -391,6 +409,12 @@ impl TerminalRenderer {
         self.cursor_outline
     }
 
+    /// Where the last paint drew the grid and the cursor.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn painted_geometry(&self) -> Option<PaintedGeometry> {
+        self.painted_geometry
+    }
+
     /// The grid origin and snapshot the last paint drew.
     #[cfg(all(test, feature = "test-support"))]
     pub(super) fn painted(
@@ -463,6 +487,10 @@ impl TerminalRenderer {
         window: &mut Window,
     ) {
         let started = self.records_stats().then(Instant::now);
+        #[cfg(target_os = "macos")]
+        {
+            self.painted_geometry = None;
+        }
         let Some(snapshot) = &self.snapshot else {
             self.record_paint(started);
             return;
@@ -516,11 +544,22 @@ impl TerminalRenderer {
             }
         });
 
+        #[cfg(target_os = "macos")]
+        let mut painted = PaintedGeometry {
+            origin: bounds.origin,
+            cell: size(metrics.cell_width, metrics.cell_height),
+            cursor: None,
+        };
         if let Some(cursor) = snapshot
             .cursor
             .filter(|cursor| cursor.shape != CursorShape::Hidden)
         {
             let bounds = cursor_bounds(bounds.origin, cursor, metrics);
+            #[cfg(target_os = "macos")]
+            {
+                painted.cursor =
+                    Some(bounds.intersect(&window.content_mask().bounds));
+            }
             let color = snapshot.cursor_color.unwrap_or(self.theme.cursor);
             if self.cursor_outline && cursor.shape == CursorShape::Block {
                 window.paint_quad(outline(
@@ -534,6 +573,10 @@ impl TerminalRenderer {
                     self.solid_color(cursor_fill(color, cursor.shape)),
                 ));
             }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.painted_geometry = Some(painted);
         }
         self.record_paint(started);
     }
@@ -1269,7 +1312,7 @@ fn cursor_fill(color: Rgb, shape: CursorShape) -> Hsla {
     })
 }
 
-fn cursor_bounds(
+pub(super) fn cursor_bounds(
     grid_origin: Point<Pixels>,
     cursor: Cursor,
     metrics: GridMetrics,
