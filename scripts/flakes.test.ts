@@ -191,6 +191,7 @@ describe("recording", () => {
     });
     const log = "##[group]Run mise run audit:scripts\nerror: API rate limit exceeded\n##[error]Process completed with exit code 1.\n";
     expect(classifyLog([infra], log, "linux-x86_64", ["Audit scripting dependencies"])).toEqual([]);
+    // A candidate only: `record` asks for confirmation, since logs do not name the step that printed the message.
     expect(classifyLog([infra], log, "linux-x86_64", ["Install job tools with Mise"]).map((item) => item.id)).toEqual(["api-403"]);
   });
 

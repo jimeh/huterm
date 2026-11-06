@@ -59,6 +59,8 @@ runs never retry; they print the matching entry and fail.
 Run `mise run flakes:record -- <run-or-job-url>` and commit the result. It
 reads the run's flake reports, and the logs of its failed jobs, and appends an
 occurrence to each matching entry; recording the same job twice adds nothing.
+Job logs do not say which step printed a line, so it only names infrastructure
+matches: check the failed step and add those occurrences by hand.
 A failure that matches no entry is reported, so you can add one: copy an
 entry's front matter, write a signature from the failure text, and run
 `mise run flakes:index`. Edit an entry's prose only when the evidence itself

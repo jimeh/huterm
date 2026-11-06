@@ -167,14 +167,15 @@ export async function runWithRetries(options: {
     const next: TestCase[] = [];
     for (const item of failures) {
       const result = outcome.get(selector(item));
-      const passed = !!result && !result.failed;
+      // A failed rerun process is no pass, even if its report lists the test as passing.
+      const passed = !!result && !result.failed && rerun.exitCode === 0;
       const overdue = plans.find((plan) => plan.item === item)?.decision;
       reportRetry({ event: "retried", flake: retried.get(selector(item))!, kind: "rust", selector: selector(item), platform: platform!, attempt, passed, overdue: overdue?.retry ? overdue.overdue : false }, env);
       if (!result) {
         console.error(`test-rust: the rerun did not run ${item.binary} ${item.test}; failing`);
         return 1;
       }
-      if (!passed) next.push(result);
+      if (result.failed) next.push(result);
     }
     if (!next.length) {
       // Passing cases do not outweigh a failed process, such as an interrupted rerun.

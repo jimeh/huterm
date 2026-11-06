@@ -94,11 +94,12 @@ describe("nextest retries", () => {
   });
 
   test("a rerun whose process fails does not count as a pass", async () => {
-    const { status } = await run([
+    const { status, env } = await run([
       { exitCode: 100, cases: [closeTimeout] },
       { exitCode: 130, cases: [passed("window_tests::close")] },
     ]);
     expect(status).toBe(130);
+    expect(readReport(env)).toMatchObject([{ event: "retried", flake: "close-button", passed: false }]);
   });
 
   test("build failures, missing reports, and empty runs never rerun", async () => {

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSmokeProcess, processGroupMembers, processGroupThreads, runSmokeProcess, type ThreadState } from "./smoke-process.ts";
+import { checkSmokeProcess, groupFinished, processGroupMembers, processGroupThreads, runSmokeProcess, type ThreadState } from "./smoke-process.ts";
 
 // Each test starts Bun processes. With Cargo compiling in parallel, one start
 // took longer than Bun's default 5-second test timeout.
@@ -85,6 +85,13 @@ test.skipIf(process.platform === "win32")("process group members report unreaped
   } finally {
     process.kill(-group, "SIGKILL");
   }
+});
+
+test("an EPERM group counts as finished only when ps saw no live member", () => {
+  expect(groupFinished([{ state: "Z" }, { state: "Z+" }])).toBe(true);
+  expect(groupFinished([])).toBe(true);
+  expect(groupFinished([{ state: "Z" }, { state: "S" }])).toBe(false);
+  expect(groupFinished(undefined)).toBe(false);
 });
 
 test("a progress watchdog lets an advancing process run past its stall budget", async () => {

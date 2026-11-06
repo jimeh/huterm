@@ -73,7 +73,7 @@ export async function runSmokeProcess(command: string[], options: {
       if (code === "EPERM" && process.platform !== "win32") {
         const members = processGroupMembers(child.pid);
         event("signal-failed", { signal: value, code, members: members ?? "ps failed" });
-        if (members?.length && members.every((member) => member.state.startsWith("Z"))) return;
+        if (groupFinished(members)) return;
       }
       throw error;
     }
@@ -238,6 +238,15 @@ export function processGroupThreads(group: number): ThreadState[] {
       };
     });
   });
+}
+
+/**
+ * Whether a group that refused a signal with EPERM has finished: every member
+ * is an unreaped zombie, or none is left because they were reaped since. A
+ * failed `ps` (undefined) proves nothing, so the EPERM stands.
+ */
+export function groupFinished(members: { state: string }[] | undefined): boolean {
+  return !!members && members.every((member) => member.state.startsWith("Z"));
 }
 
 /**

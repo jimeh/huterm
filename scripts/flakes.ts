@@ -410,7 +410,6 @@ export function annotate(level: "warning" | "error" | "notice", title: string, m
   }
 }
 
-/** Add a row to this step's summary table of flake retries. */
 /** Step summary files that already have this process's table header. */
 const summaryHeaders = new Set<string>();
 
@@ -419,6 +418,7 @@ export function tableCell(text: string): string {
   return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
 }
 
+/** Add a row to this step's summary table of flake retries. */
 export function summarize(record: ReportRecord, env: NodeJS.ProcessEnv = process.env): void {
   const path = env.GITHUB_STEP_SUMMARY;
   if (!path) return;
@@ -742,12 +742,18 @@ export async function record(url: string, root = repositoryRoot): Promise<string
     }
     // Job logs carry the runner's color codes; failureBlocks strips them.
     const log = await gh(["api", "--allow-escape-sequences", `repos/${repository}/actions/jobs/${job.id}/logs`]);
-    const failedSteps = (job.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name);
+    // A job timeout cancels the running step rather than failing it.
+    const failedSteps = (job.steps ?? []).filter((step) => step.conclusion === "failure" || step.conclusion === "cancelled").map((step) => step.name);
     const matches = classifyLog(flakes, log, platform, failedSteps).filter((flake) => !reported.has(`${flake.id} ${job.html_url}`));
     if (!matches.length && ![...reported].some((key) => key.endsWith(` ${job.html_url}`))) {
       notes.push(`${job.name}: no registered flake matches; if it is a new flake, add an entry under ${flakeDirectory}`);
     }
-    for (const flake of matches) add(flake, { date, url: job.html_url, pr, sha, platform });
+    for (const flake of matches) {
+      // Logs do not say which step printed a line, so an infrastructure match
+      // may pair one step's failure with another's message: confirm it by hand.
+      if (flake.kind === "infra") notes.push(`${job.name}: may be ${flake.id}; check the failed step, then add an occurrence to ${flake.path} by hand`);
+      else add(flake, { date, url: job.html_url, pr, sha, platform });
+    }
   }
   return notes;
 }

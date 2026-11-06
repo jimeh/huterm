@@ -67,9 +67,9 @@ pub(crate) fn snapshot_text(snapshot: &TerminalSnapshot) -> String {
 }
 
 /// Creates a new directory under the system temporary directory, named
-/// after `prefix`, this process, and a per-process sequence number.
-/// Concurrent tests can read the same wall-clock time, so a clock reading
-/// does not make a name unique.
+/// after `prefix`, this process, a per-process sequence number, and the
+/// clock. Concurrent tests can read the same wall-clock time, so the
+/// sequence keeps names in one process unique.
 pub(crate) fn scratch_dir(prefix: &str) -> std::path::PathBuf {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     // Nextest runs each test in its own process, so the sequence alone
