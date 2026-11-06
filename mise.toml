@@ -7,7 +7,7 @@ actionlint = "1.7.12"
 bun = "1.4.4"
 "aqua:fish-shell/fish-shell" = "4.9.3"
 "aqua:nushell/nushell" = "0.116.1"
-"http:elvish" = { version = "0.21.0", url = 'https://dl.elv.sh/{{ os(macos="darwin") }}-{{ arch(x64="amd64") }}/elvish-v{{ version }}.tar.gz' }
+"http:elvish" = { version = "0.21.0", url = 'https://dl.elv.sh/{{ os(macos="darwin") }}-{{ arch(x64="amd64") }}/elvish-v{{ version }}.{{ os(windows="zip", macos="tar.gz", linux="tar.gz") }}' }
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-auditable" = "0.7.7"
 "cargo:cargo-packager" = "0.11.8"
@@ -16,10 +16,10 @@ markdownlint-cli2 = "0.24.0"
 pinact = "5.0.2"
 rust = { version = "1.99.1", components = ["clippy", "rustfmt"], profile = "minimal" }
 "pipx:spdx-tools" = "0.8.5"
-syft = "1.55.0"
+syft = "1.56.0"
 taplo = "0.10.0"
 zig = "0.17.0"
-zizmor = "1.31.1"
+zizmor = "1.32.0"
 
 [tasks.setup]
 description = "Install project tools and local Git hooks"

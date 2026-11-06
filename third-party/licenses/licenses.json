@@ -101,9 +101,9 @@
       ]
     },
     {
-      "id": "addr2line@0.25.1",
+      "id": "addr2line@0.27.1",
       "name": "addr2line",
-      "version": "0.25.1",
+      "version": "0.27.1",
       "kind": "Rust crate",
       "license": "Apache-2.0 OR MIT",
       "used": "MIT",
@@ -402,9 +402,9 @@
       ]
     },
     {
-      "id": "async-executor@1.14.0",
+      "id": "async-executor@1.14.1",
       "name": "async-executor",
-      "version": "1.14.0",
+      "version": "1.14.1",
       "kind": "Rust crate",
       "license": "Apache-2.0 OR MIT",
       "used": "MIT",
@@ -459,9 +459,9 @@
       ]
     },
     {
-      "id": "async-lock@3.4.2",
+      "id": "async-lock@3.5.0",
       "name": "async-lock",
-      "version": "3.4.2",
+      "version": "3.5.0",
       "kind": "Rust crate",
       "license": "Apache-2.0 OR MIT",
       "used": "MIT",
@@ -656,9 +656,9 @@
       ]
     },
     {
-      "id": "backtrace@0.3.76",
+      "id": "backtrace@0.3.77",
       "name": "backtrace",
-      "version": "0.3.76",
+      "version": "0.3.77",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -1354,9 +1354,9 @@
       ]
     },
     {
-      "id": "crc32fast@1.5.3",
+      "id": "crc32fast@1.5.4",
       "name": "crc32fast",
-      "version": "1.5.3",
+      "version": "1.5.4",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -1745,9 +1745,9 @@
       ]
     },
     {
-      "id": "encoding_rs@0.8.42",
+      "id": "encoding_rs@0.8.44",
       "name": "encoding_rs",
-      "version": "0.8.42",
+      "version": "0.8.44",
       "kind": "Rust crate",
       "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
       "used": "MIT AND BSD-3-Clause",
@@ -2697,9 +2697,9 @@
       ]
     },
     {
-      "id": "gimli@0.32.3",
+      "id": "gimli@0.34.0",
       "name": "gimli",
-      "version": "0.32.3",
+      "version": "0.34.0",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -4148,9 +4148,9 @@
       ]
     },
     {
-      "id": "log@0.4.34",
+      "id": "log@0.4.35",
       "name": "log",
-      "version": "0.4.34",
+      "version": "0.4.35",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -4171,7 +4171,7 @@
     {
       "id": "lucide",
       "name": "Lucide",
-      "version": "1.64.0",
+      "version": "1.66.0",
       "kind": "Icons",
       "license": "ISC AND MIT",
       "url": "https://lucide.dev",
@@ -4698,9 +4698,9 @@
       ]
     },
     {
-      "id": "notify-types@2.1.0",
+      "id": "notify-types@2.2.0",
       "name": "notify-types",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -5250,9 +5250,9 @@
       ]
     },
     {
-      "id": "object@0.37.3",
+      "id": "object@0.40.0",
       "name": "object",
-      "version": "0.37.3",
+      "version": "0.40.0",
       "kind": "Rust crate",
       "license": "Apache-2.0 OR MIT",
       "used": "MIT",
@@ -6562,9 +6562,9 @@
       ]
     },
     {
-      "id": "rustix@1.1.5",
+      "id": "rustix@1.1.6",
       "name": "rustix",
-      "version": "1.1.5",
+      "version": "1.1.6",
       "kind": "Rust crate",
       "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "used": "MIT",
@@ -6874,9 +6874,9 @@
       ]
     },
     {
-      "id": "serial2@0.2.38",
+      "id": "serial2@0.2.39",
       "name": "serial2",
-      "version": "0.2.38",
+      "version": "0.2.39",
       "kind": "Rust crate",
       "license": "BSD-2-Clause OR Apache-2.0",
       "used": "Apache-2.0",
@@ -8007,12 +8007,12 @@
       ]
     },
     {
-      "id": "unicode-properties@0.1.4",
+      "id": "unicode-properties@0.1.5",
       "name": "unicode-properties",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "kind": "Rust crate",
-      "license": "MIT/Apache-2.0",
-      "used": "MIT",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "used": "MIT AND Unicode-3.0",
       "url": "https://github.com/unicode-rs/unicode-properties",
       "targets": [
         "aarch64-apple-darwin",
@@ -8026,15 +8026,19 @@
           "text": "033a9383ff21d1e4"
         },
         {
+          "title": "LICENSE-UNICODE",
+          "text": "8fa201617d2c10c6"
+        },
+        {
           "title": "COPYRIGHT",
           "text": "20cec30ad7780437"
         }
       ]
     },
     {
-      "id": "unicode-script@0.5.8",
+      "id": "unicode-script@0.5.9",
       "name": "unicode-script",
-      "version": "0.5.8",
+      "version": "0.5.9",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -8099,9 +8103,9 @@
       ]
     },
     {
-      "id": "unicode-width@0.2.2",
+      "id": "unicode-width@0.2.3",
       "name": "unicode-width",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -8164,9 +8168,9 @@
       ]
     },
     {
-      "id": "utf8_iter@1.0.4",
+      "id": "utf8_iter@1.1.0",
       "name": "utf8_iter",
-      "version": "1.0.4",
+      "version": "1.1.0",
       "kind": "Rust crate",
       "license": "Apache-2.0 OR MIT",
       "used": "MIT",
@@ -8185,6 +8189,31 @@
         {
           "title": "COPYRIGHT",
           "text": "76c0e37c107dd35a"
+        }
+      ]
+    },
+    {
+      "id": "utf_types@1.0.0",
+      "name": "utf_types",
+      "version": "1.0.0",
+      "kind": "Rust crate",
+      "license": "Apache-2.0 OR MIT",
+      "used": "MIT",
+      "url": "https://github.com/hsivonen/utf_types",
+      "targets": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "texts": [
+        {
+          "title": "LICENSE-MIT",
+          "text": "7dc2f64024477c92"
+        },
+        {
+          "title": "COPYRIGHT",
+          "text": "48fb3f740d1502ea"
         }
       ]
     },
@@ -8705,9 +8734,9 @@
       ]
     },
     {
-      "id": "yazi@0.2.1",
+      "id": "yazi@0.2.2",
       "name": "yazi",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "kind": "Rust crate",
       "license": "Apache-2.0 OR MIT",
       "used": "MIT",
@@ -8834,9 +8863,9 @@
       ]
     },
     {
-      "id": "zcheapstr@1.1.0",
+      "id": "zcheapstr@1.2.0",
       "name": "zcheapstr",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "kind": "Rust crate",
       "license": "MIT",
       "url": "https://github.com/z-galaxy/zcheapstr/",
@@ -9262,6 +9291,7 @@
     "44a4d3778f2f792e": "MIT License\n\nCopyright (c) 2004-23 probonopd\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n\nThe AppImage runtime executable contains statically linked code from\nthe following third party libraries, which are licensed under\nthe following terms:\n\n* musl libc, licensed under the terms of\n  https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT\n* libfuse, licensed under the terms of\n  https://github.com/libfuse/libfuse/blob/master/LGPL2.txt\n* squashfuse, licensed under the terms of\n  https://github.com/vasi/squashfuse/blob/master/LICENSE\n* libzstd, licensed under the terms of\n  https://github.com/facebook/zstd/blob/dev/LICENSE\n* zlib, licensed under the terms of\n  https://zlib.net/zlib_license.html",
     "46404bc95dfc3527": "MIT License\n\nCopyright (c) 2017 Maiddog\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
     "48d36a6709db4f01": "The MIT License (MIT)\n\nCopyright (c) 2020 Yoshua Wuyts\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
+    "48fb3f740d1502ea": "Copyright Mozilla Foundation\n\nLicensed under the Apache License (Version 2.0), or the MIT license,\n(the \"Licenses\") at your option. You may not use this file except in\ncompliance with one of the Licenses. You may obtain copies of the\nLicenses at:\n\n   https://www.apache.org/licenses/LICENSE-2.0\n   https://opensource.org/licenses/MIT\n\nUnless required by applicable law or agreed to in writing, software\ndistributed under the Licenses is distributed on an \"AS IS\" BASIS,\nWITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\nSee the Licenses for the specific language governing permissions and\nlimitations under the Licenses.\n\n--\n\nTest code is dedicated to the Public Domain when so designated (see\nthe individual files for PD/CC0-dedicated sections).",
     "492f0262306836f6": "/* zlib.h -- interface of the 'zlib' general purpose compression library\n  version 1.2.13, October 13th, 2022\n\n  Copyright (C) 1995-2022 Jean-loup Gailly and Mark Adler\n\n  This software is provided 'as-is', without any express or implied\n  warranty.  In no event will the authors be held liable for any damages\n  arising from the use of this software.\n\n  Permission is granted to anyone to use this software for any purpose,\n  including commercial applications, and to alter it and redistribute it\n  freely, subject to the following restrictions:\n\n  1. The origin of this software must not be misrepresented; you must not\n     claim that you wrote the original software. If you use this software\n     in a product, an acknowledgment in the product documentation would be\n     appreciated but is not required.\n  2. Altered source versions must be plainly marked as such, and must not be\n     misrepresented as being the original software.\n  3. This notice may not be removed or altered from any source distribution.\n\n  Jean-loup Gailly        Mark Adler\n  jloup@gzip.org          madler@alumni.caltech.edu",
     "4a4d43f3f90d1d8b": "The MIT License (MIT)\n\nCopyright (c) 2016 Jelte Fennema\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
     "4ae441972cdd6fe4": "MIT License\n\nCopyright (c) zune-image developers\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
@@ -9336,6 +9366,7 @@
     "8adee6e9dc6ddf88": "Copyright (c) 2017 Jorge Aparicio\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
     "8af6c032c46d6f88": "MIT License\n\nCopyright (c) Konstantin Pschera <me@kons.ch> (kons.ch)\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
     "8d1f81ea4e87111d": "Copyright (c) 2016 The Rust Project Developers\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
+    "8fa201617d2c10c6": "UNICODE LICENSE V3\n\nCOPYRIGHT AND PERMISSION NOTICE\n\nCopyright © 1991-2026 Unicode, Inc.\n\nNOTICE TO USER: Carefully read the following legal agreement. BY\nDOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR\nSOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE\nTERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT\nDOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.\n\nPermission is hereby granted, free of charge, to any person obtaining a\ncopy of data files and any associated documentation (the \"Data Files\") or\nsoftware and any associated documentation (the \"Software\") to deal in the\nData Files or Software without restriction, including without limitation\nthe rights to use, copy, modify, merge, publish, distribute, and/or sell\ncopies of the Data Files or Software, and to permit persons to whom the\nData Files or Software are furnished to do so, provided that either (a)\nthis copyright and permission notice appear with all copies of the Data\nFiles or Software, or (b) this copyright and permission notice appear in\nassociated Documentation.\n\nTHE DATA FILES AND SOFTWARE ARE PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY\nKIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\nMERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF\nTHIRD PARTY RIGHTS.\n\nIN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE\nBE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,\nOR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,\nWHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,\nARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA\nFILES OR SOFTWARE.\n\nExcept as contained in this notice, the name of a copyright holder shall\nnot be used in advertising or otherwise to promote the sale, use or other\ndealings in these Data Files or Software without prior written\nauthorization of the copyright holder.",
     "901422c59e9be78c": "MIT License\n\nCopyright (c) 2021 Tommaso Laurenzi\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
     "917d5dc3470e527b": "Copyright (c) 2019 Nick Fitzgerald, 2021 Yuki Okushi\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
     "92c666480f818e05": "Copyright (c) Ulrik Sverdrup \"bluss\" 2015-2023\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
