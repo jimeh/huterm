@@ -3365,8 +3365,9 @@ impl WorkspaceView {
         self.reconcile_notices(window, cx);
     }
 
-    /// Drops focus and hover state for notices that no longer exist, returns
-    /// focus to the terminal when the focused toast went away, and repaints.
+    /// Drops focus state for notices that no longer exist and hover state
+    /// for toasts no longer drawn, returns focus to the terminal when the
+    /// focused toast went away, and repaints.
     /// Every change to the stack or to focus and hover state ends here.
     fn reconcile_notices(
         &mut self,
@@ -3740,8 +3741,11 @@ impl WorkspaceView {
         let (followed_newest, followed_focus) = self.notice_followed;
         let arrived = newest != followed_newest;
         if (focused.is_some() && focused != followed_focus) || arrived {
-            if let Some(slot) =
-                focused.or(newest).and_then(|id| self.notices.slot(id))
+            // A focused toast pushed into the overflow has no slot; show
+            // the newest instead.
+            if let Some(slot) = focused
+                .and_then(|id| self.notices.slot(id))
+                .or_else(|| newest.and_then(|id| self.notices.slot(id)))
             {
                 self.notice_scroll.scroll_to_item(slot);
             }
@@ -4685,8 +4689,9 @@ impl CloseTarget {
 /// for notices that no longer exist and hover state for toasts no longer
 /// drawn are dropped, and expiry pauses only while a live toast is hovered
 /// or focused. A toast pushed into the overflow never reports the pointer
-/// leaving, so its hover would otherwise pause the stack until dismissed. Returns whether the
-/// focused toast went away, so the caller returns focus to the terminal.
+/// leaving, so its hover would otherwise pause the stack until dismissed.
+/// Returns whether the focused toast went away, so the caller returns focus
+/// to the terminal.
 fn reconcile_notice_state(
     notices: &mut NoticeStack,
     focused: &mut Option<NoticeId>,
