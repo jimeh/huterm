@@ -2930,7 +2930,9 @@ fn hold_the_emptied_close_at(
 /// On Linux the last window's emptied close turns into Quit when such a
 /// session exists as the close begins (`emptied_close_target`), so the
 /// session comes after that decision; it also comes before the assessment,
-/// so a commit does not go stale on it.
+/// so a commit does not go stale on it. The rule applies again as the
+/// close commits (`close_becomes_quit`), so at a later stage on Linux the
+/// close has become Quit, unless a Quit was queued first.
 fn hold_an_emptied_close_then_leave_a_session(
     harness: &mut DesktopHarness,
     window: AnyWindowHandle,
@@ -3003,6 +3005,14 @@ fn a_quit_queued_behind_a_committing_emptied_close_still_quits(
         tab,
         Stage::Commit,
     );
+    if Platform::current() == Platform::Linux {
+        // The last window would strand the session, so the close became
+        // Quit as it began committing; that Quit's commit is what waits.
+        harness.runtime.worker_hooks.release(Stage::Commit);
+        harness.wait_quit(unviewed);
+        assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 1);
+        return;
+    }
     harness.queue_quit(window);
     harness.runtime.worker_hooks.release(Stage::Commit);
     harness.wait_closed(window);
@@ -3022,6 +3032,14 @@ fn a_quit_queued_behind_a_window_close_still_quits(cx: &mut TestAppContext) {
     harness.update_view(window, |view, window, cx| {
         view.request_close(CloseTarget::Window, window, cx);
     });
+    if Platform::current() == Platform::Linux {
+        // The last window would strand the unviewed session, so the close
+        // becomes Quit as it begins committing; only the Quit commits.
+        hooks.release(Stage::Commit);
+        harness.wait_quit(unviewed);
+        assert_eq!(hooks.entered(Stage::Commit), 1);
+        return;
+    }
     harness.wait_for("the window close to commit", |_| {
         hooks.held(Stage::Commit) == 1
     });

@@ -367,16 +367,23 @@ show: it passes over one that closed since the window chose it, and one
 that cannot be attached or needs a shell that fails. When a live candidate
 failed and none is left it attaches to a fresh session (`attach_fresh`,
 `Fresh::AfterFailure`); with no candidate at all nothing follows and the
-window closes by the last-window rule. A cancelled emptied Quit's
-`show_left_session` uses `Fresh::Always`, so its window always shows
-something. `FollowUp::skipped` names the first live candidate that
-failed when the fresh session replaced it, for the "Cannot show session"
-notice. The completion installs the result as a switch does
+window closes by the last-window rule. The worker follows when the commit
+succeeded or `CloseFollow::closing` is gone under the lock, since
+`Mux::close_session` removes the session before a terminal teardown error.
+A shell command that cannot be built (`CloseFollow::shell`) fails only the
+attempts that need a shell (`SwitchError::Shell`). A cancelled emptied
+Quit's `show_left_session` uses `Fresh::Always`, so its window always shows
+something it can attach. `FollowUp::skipped` names the first live candidate
+that failed when the fresh session replaced it, for the "Cannot show
+session" notice. The completion installs the result as a switch does
 (`install_session` with the new attachment). When the fresh session fails
 too, the window also closes by the last-window rule
-(`close_by_last_window_rule`): on Linux the last window runs Quit through
-`request_quit` when it would strand unviewed sessions
-(`window_close_target`), else the window goes and its notice waits in the
+(`close_by_last_window_rule`), and so does a `show_left_session` that could
+show nothing: on Linux the last window runs Quit through `request_quit`
+when it would strand unviewed sessions (`window_close_target`) and records
+itself in `emptied_quit`, so a cancelled Quit tries `show_left_session`
+again; else the window goes, removed when its session closed and through
+its emptied close while still attached, and its notice waits in the
 failure latch for the next window. A completion whose close generation
 moved detaches the follow-up attachment it no longer takes. Tier 2 tests
 hold the follow-up at `Stage::CloseFollow` and fail its attempts there
@@ -394,11 +401,19 @@ Window spawns, and own-session closes that are committing. While a Quit is
 requested or runs (`quit_underway`), an own-session Close Session is refused
 as a command, dropped by `admit_close` if it still reaches `request_close`,
 and aborted at `finish_close` (`refuse_own_session_close`), as a switch is
-refused. Close Window resolves through `close_window` and
-`window_close_target`: on Linux, the last open window with no Quake
-shortcut quits instead while a session no window shows remains, so restore
-keeps it, unless a Quit is already requested, queued, or running
-(`last_window_strands`), since that Quit covers every session. An emptied
+refused. An own-session close's commit holds `pending_spawns` and defers
+checkpoints (`hold_for_close_commit`) until its follow-up settles, since
+the window names the closed session until the follow-up installs. Close
+Window, from the command, the window manager, or the drawn Close button,
+resolves through `close_window` and `window_close_target`: on Linux, the
+last open window with no Quake shortcut quits instead while a session no
+window shows remains, so restore keeps it, unless a Quit is already
+requested, queued, or running (`last_window_strands`), since that Quit
+covers every session. `finish_close` applies the rule again as a Window or
+emptied close begins committing (`close_becomes_quit`), and a window whose
+such close is committing (`WindowRecord::close_committing`) counts as gone:
+closes requested in two windows each saw the other open, and a close
+queued behind a switch can become the last while it waits. An emptied
 close of that window turns into Quit by the same rule
 (`emptied_close_target`). Both conversions defer `request_quit` rather than
 run an `Application` close in place, so they cancel uncommitted closes and

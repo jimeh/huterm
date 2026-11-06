@@ -133,6 +133,10 @@ pub(super) struct WindowRecord {
     /// The window is being removed. Its own view can still read the record,
     /// but profile rows, Quit dialog titles, and Quit capture skip it.
     pub(super) closing: bool,
+    /// A Window or emptied close of this window started committing. The
+    /// last-window rule counts the window as going, though it becomes
+    /// `closing` only once the commit's completion removes it.
+    pub(super) close_committing: bool,
     /// The window's own transparency overrides, runtime state over the
     /// configured defaults and its Quake profile.
     pub(super) transparency: crate::transparency::Layer,
@@ -237,6 +241,7 @@ impl WindowModel {
             layout_history: LayoutHistory::default(),
             memory: Vec::new(),
             closing: false,
+            close_committing: false,
             transparency: crate::transparency::Layer::default(),
         });
     }
@@ -778,6 +783,17 @@ impl WindowModel {
         {
             record.layout.sidebar_width = width;
             self.revision += 1;
+        }
+    }
+
+    /// Notes whether a Window or emptied close of `id` is committing.
+    pub(super) fn set_close_committing(
+        &mut self,
+        id: WindowId,
+        committing: bool,
+    ) {
+        if let Some(record) = self.record_mut(id) {
+            record.close_committing = committing;
         }
     }
 

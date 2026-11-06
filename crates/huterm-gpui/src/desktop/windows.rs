@@ -2988,6 +2988,8 @@ fn open_window_with_profile(
                 frame_state: state,
                 #[cfg(test)]
                 decorations_override: None,
+                #[cfg(test)]
+                session_shell_fails: false,
                 native_radii,
                 applied_frame: None,
                 button_layout,
@@ -4415,6 +4417,9 @@ struct WorkspaceView {
     /// as on Linux, so the title row Huterm draws can be tested on macOS.
     #[cfg(test)]
     decorations_override: Option<gpui::Decorations>,
+    /// Makes `session_shell` fail, as when no shell command can be built.
+    #[cfg(test)]
+    session_shell_fails: bool,
     /// The corner radii `AppKit` reported when the window opened. Tests,
     /// whose windows have no `AppKit` handle, set them directly.
     native_radii: NativeRadii,
@@ -12084,6 +12089,9 @@ impl WorkspaceView {
             self.refuse_own_session_close(window, cx);
             return;
         }
+        if self.close_becomes_quit(&target, window, cx) {
+            return;
+        }
         let Some((assessment, confirmed)) = self.close.begin_commit(&target)
         else {
             self.request_close(target, window, cx);
@@ -12096,6 +12104,7 @@ impl WorkspaceView {
         // this window closes first.
         let exit = begin_exit_commit(cx, self.window);
         let id = self.window;
+        self.note_close_commit(&target, true, cx);
         self.publish_restorable_bounds(cx);
         let windows = if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
@@ -12126,6 +12135,7 @@ impl WorkspaceView {
                 app.update(|cx| finish_exit_commit(cx, id, pane, outcome));
             }
             let _ = view.update_in(cx, |view, window, cx| {
+                view.note_close_commit(&target, false, cx);
                 if view.close.generation != generation {
                     session_switch::drop_followed(followed.as_ref(), cx);
                     view.release_close_hold(cx);
@@ -16046,9 +16056,10 @@ impl WorkspaceView {
 
     /// One side's window buttons in the title row Huterm draws: round
     /// 22-point buttons with a subtle fill, in the desktop's order, padded
-    /// more at the window edge. Close takes the assessed window-close path,
-    /// like the `close_window` command, so live jobs still get their
-    /// confirmation.
+    /// more at the window edge. Close runs Close Window as the
+    /// `close_window` command does: the assessed window-close path, so live
+    /// jobs still get their confirmation, or Quit where the last window
+    /// would strand sessions.
     fn window_controls_element(
         &self,
         group: ButtonGroup,
@@ -16123,7 +16134,7 @@ impl WorkspaceView {
                 WindowButton::Close => element.on_click(Self::button_action(
                     cx,
                     |view, window, cx| {
-                        view.request_close(CloseTarget::Window, window, cx);
+                        view.close_window(Platform::current(), window, cx);
                         cx.stop_propagation();
                     },
                 )),
