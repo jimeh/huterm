@@ -558,6 +558,9 @@ notch = "off"
     // before the menu button, and the menu opens below it.
     await command("invoke\ttoggle_fullscreen");
     await waitFor(async () => !(await current()).includes("w0.fullscreen=Windowed"), "fullscreen entry");
+    // The state can report fullscreen before the frame grows; place the
+    // control against the screen-sized frame, not the 900-point window.
+    await frameWhere(() => frame().w > 900);
     const top = await settled("BarEnd", (text) => {
       const row = bar(text);
       return placementProblems(sessionControl(text), "BarEnd", { x: 0, y: row.y, w: frame().w, h: row.h }, parseRect(field(text, "menu_button")));
