@@ -2022,13 +2022,10 @@ impl PlatformWindow for X11Window {
     fn a11y_update_window_bounds(&self) {
         // The stored origin can be relative to the window manager's frame after a
         // ConfigureNotify, so ask the server where the window sits on the root window.
-        let root = self.0.state.borrow().x_root_window;
-        let root_origin = get_reply(
-            || "X11 TranslateCoordinates failed.",
-            self.0.xcb.translate_coordinates(self.0.x_window, root, 0, 0),
-        )
-        .log_err()
-        .map(|reply| (f64::from(reply.dst_x), f64::from(reply.dst_y)));
+        let root_origin = self
+            .get_root_position(Point::new(Pixels::ZERO, Pixels::ZERO))
+            .log_err()
+            .map(|reply| (f64::from(reply.dst_x), f64::from(reply.dst_y)));
 
         let mut state = self.0.state.borrow_mut();
         let scale = state.scale_factor;

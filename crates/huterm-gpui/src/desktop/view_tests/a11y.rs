@@ -313,9 +313,12 @@ impl Xorshift {
 /// (left by CUF, EL, ECH, and a background erase), soft wraps at a space,
 /// at spaces, and at empty cells, blank rows inside and at the end, wide
 /// characters wrapping at the last column, combining marks, NBSP, U+3000,
-/// and rows that line deletion and insertion leave after a soft-wrapped
-/// one. Each puts `READY` on row 12, so rows after it stay empty.
-fn parity_fixtures() -> [(&'static str, String); 5] {
+/// rows that line deletion and insertion leave after a soft-wrapped one,
+/// a row that ED 1 leaves continuing a row that no longer wraps, and a
+/// continuation EL resets below the row it erases. A fixture prints its
+/// parts with a pause between them, so the view takes a snapshot in
+/// between. Each puts `READY` on row 12, so rows after it stay empty.
+fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
     let run = |character: char, count: usize| {
         std::iter::repeat_n(character, count).collect::<String>()
     };
@@ -323,15 +326,15 @@ fn parity_fixtures() -> [(&'static str, String); 5] {
     [
         (
             "blanks",
-            format!(
+            vec![format!(
                 "a\\n    \\nb\\033[3Cc   \\n\\n\\n  d  e\\n\\033[5Cf\\n\
                  g\\302\\240\\nh\\343\\200\\200\\ne\\314\\201 \\314\\201x  \\n\
                  {ready}"
-            ),
+            )],
         ),
         (
             "wraps",
-            format!(
+            vec![format!(
                 "{} yy\\n{}    z\\n{}\\033[8Cvu\\n{}\\n{}{}q\\n{}\\033[1Cp{ready}",
                 run('x', 48),
                 run('x', 45),
@@ -340,19 +343,19 @@ fn parity_fixtures() -> [(&'static str, String); 5] {
                 run('s', 49),
                 run('r', 49),
                 run('o', 47),
-            ),
+            )],
         ),
         (
             "wide",
-            format!(
+            vec![format!(
                 "a\\033[47C漢\\n\\033[48C漢\\nb\\033[46C漢\\n字字 字\\n🙂c\\n\
                  c{}\\033[1C漢\\n\\033[47C字字{ready}",
                 run(' ', 46),
-            ),
+            )],
         ),
         (
             "erase",
-            format!(
+            vec![format!(
                 "abcdefgh\\033[3D\\033[K\\nijklmnop\\033[4D\\033[2X\\n\
                  \\033[41mqr\\033[3X\\033[0m\\033[3Cst\\n\
                  \\033[42m\\033[K\\033[0muv\\n{h} world\\n\
@@ -360,20 +363,36 @@ fn parity_fixtures() -> [(&'static str, String); 5] {
                  \\033[10;1H\\033[1;31m\\033[7mz\\033[0m  \\033[1C{ready}",
                 h = run('h', 48),
                 g = run('g', 48),
-            ),
+            )],
         ),
-        ("rows", format!("$ ls\\n\\nfile one  \\n\\n\\n$ \\n{ready}")),
+        (
+            "rows",
+            vec![format!("$ ls\\n\\nfile one  \\n\\n\\n$ \\n{ready}")],
+        ),
+        (
+            "flags",
+            vec![
+                format!(
+                    "{a}bc\\033[2;1H\\033[1J\\033[1;1Hx\\033[4;1H{d}ef\\r\\n",
+                    a = run('a', 49),
+                    d = run('d', 49),
+                ),
+                format!("\\033[4;5H\\033[K{ready}"),
+            ],
+        ),
     ]
 }
 
 /// Whether Copy's text of the selection from cell `start` through cell
-/// `end`, both (`column`, `row`), passes a row part with no text on a
-/// soft-wrapped row before its last row, after Ghostty moves a start on a
-/// spacer to its wide character, skips the row of a start on a spacer head,
-/// and moves an end on a spacer head to the next row. Ghostty writes such a
+/// `end`, both (`column`, `row`), passes a row part with no text before its
+/// last row, on a row that soft-wraps or whose blanks the next row keeps
+/// by its own continuation flag, after Ghostty moves a start on a spacer to
+/// its wide character, skips the row of a start on a spacer head, and
+/// moves an end on a spacer head to the next row. Ghostty writes such a
 /// part as a line break of its own, and blanks before it after that break,
 /// which no range of a document holding the grid's Copy text reads; see the
-/// terminal accessibility section of `docs/agents/desktop-client.md`.
+/// terminal accessibility section of `docs/agents/desktop-client.md`. The
+/// two flags agree unless ED 1 reset the row above a continuation.
 fn passes_a_wrapped_part_without_text(
     snapshot: &TerminalSnapshot,
     start: (usize, usize),
@@ -405,8 +424,12 @@ fn passes_a_wrapped_part_without_text(
         } else {
             0
         };
-        snapshot.rows[row].wrapped
-            && cells(row)[from..].iter().all(|cell| cell.text.is_empty())
+        let carries = snapshot.rows[row].wrapped
+            || snapshot
+                .rows
+                .get(row + 1)
+                .is_some_and(|next| next.wrap_continuation);
+        carries && cells(row)[from..].iter().all(|cell| cell.text.is_empty())
     })
 }
 
@@ -417,6 +440,9 @@ struct Parity {
     /// Selections that pass a soft-wrapped row part with no text.
     exempt: usize,
     exempt_differing: usize,
+    /// Grids whose Copy text is empty, which the document holds as one
+    /// line break.
+    empty_documents: usize,
     mismatches: Vec<String>,
 }
 
@@ -515,6 +541,15 @@ fn check_parity(
                 .unwrap_or_default()
         };
         parity.compared += 1;
+        // A grid with no Copy text is one line break, so it keeps a text
+        // run; see the terminal accessibility section of
+        // `docs/agents/desktop-client.md`.
+        let copied = if index == 0 && copied.is_empty() {
+            parity.empty_documents += 1;
+            "\n".to_owned()
+        } else {
+            copied
+        };
         if index > 0
             && passes_a_wrapped_part_without_text(
                 &snapshot,
@@ -539,20 +574,23 @@ fn check_parity(
 /// document reads what Copy copies from the whole displayed grid, and
 /// every selection inside it reads what Copy copies from that selection,
 /// except one that passes a soft-wrapped row part with no text, which the
-/// document cannot hold (see [`passes_a_wrapped_part_without_text`]).
+/// document cannot hold (see [`passes_a_wrapped_part_without_text`]). A
+/// grid Copy copies nothing from is a document of one line break.
 #[gpui::test]
 fn the_accessible_text_matches_copy_for_random_selections(
     cx: &mut TestAppContext,
 ) {
     let mut random = Xorshift(0x5eed_0a11_u64);
     let mut parity = Parity::default();
-    for (name, fixture) in parity_fixtures() {
-        // The view starts the terminal unsized. Printed before its geometry
-        // applies, the fixture's rows move when the grid resizes.
-        let script = format!(
-            "until [ \"$(stty size)\" = '14 49' ]; do sleep 0.01; done; {}",
-            text_fixture(&fixture, "")
-        );
+    // The view starts the terminal unsized. Printed before its geometry
+    // applies, a fixture's rows move when the grid resizes.
+    let sized = "until [ \"$(stty size)\" = '14 49' ]; do sleep 0.01; done";
+    for (name, parts) in parity_fixtures() {
+        let (last, earlier) = parts.split_last().unwrap();
+        let earlier = earlier.iter().fold(String::new(), |script, part| {
+            script + "printf '" + part + "'; sleep 0.2; "
+        });
+        let script = format!("{sized}; {earlier}{}", text_fixture(last, ""));
         let mut harness = ViewHarness::new(cx, &script);
         harness.wait_ready(MouseTracking::Disabled);
         harness.wait_for("READY on row 12", |view, _| {
@@ -565,12 +603,35 @@ fn the_accessible_text_matches_copy_for_random_selections(
         });
         check_parity(&mut harness, name, &mut random, &mut parity);
     }
+    // A cleared screen, with the cursor moved off the first cell.
+    let mut harness = ViewHarness::new(
+        cx,
+        &format!(
+            "{sized}; printf 'gone\\n\\033[2J\\033[5;7H'; stty -echo; \
+             cat >/dev/null"
+        ),
+    );
+    harness.wait_for("the cleared screen's model", |view, _| {
+        view.displayed_grid() == Some(view.requested_grid)
+            && view.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.rows.iter().all(|row| {
+                    row.cells.iter().all(|cell| cell.text.is_empty())
+                })
+            })
+            && view.a11y.model().runs.first().map(|run| run.key.row) == Some(4)
+    });
+    check_parity(&mut harness, "cleared", &mut random, &mut parity);
+    let cleared = model(&mut harness);
+    assert_eq!(text(&cleared), "\n");
+    assert_eq!(selected(&cleared), Some((0, 0, String::new())));
+    assert_eq!(parity.empty_documents, 1, "only the cleared screen");
     println!(
         "A11Y_PARITY compared={} exempt={} exempt_differing={} \
-         mismatches={}",
+         empty_documents={} mismatches={}",
         parity.compared,
         parity.exempt,
         parity.exempt_differing,
+        parity.empty_documents,
         parity.mismatches.len()
     );
     assert!(

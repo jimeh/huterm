@@ -1421,15 +1421,25 @@ Ghostty's plain formatter with `unwrap` and `trim`
 cells, step by step: an empty cell or a space is a blank, written only once
 text on its logical line follows; a line break is written only once text
 follows it; a row part with no text at all, which a written space is not, is
-a line break of its own. Selection ends move as Ghostty moves them: a start on
-a spacer to its wide character, a start on a spacer head past its row, and an
-end on a spacer head onto the wide character that wrapped. Concealed text
+a line break of its own. A row keeps the blanks pending before it only when
+its own wrap-continuation flag is set, whatever the row above says, as Copy
+reads it; core keeps that flag fresh (see
+[snapshot row flags](terminal-engines.md#runtime-behavior)). Selection ends
+move as Ghostty moves them: a start on a spacer to its wide character, a
+start on a spacer head past its row, and an end on a spacer head onto the
+wide character that wrapped. Concealed text
 stays, because Copy keeps it. Each character sits on the row that draws it,
 a grapheme cell is one character, and spacers add none. A row with no
 characters has no run, because AccessKit misbehaves next to an empty one
-(AccessKit #836 and #837), so an empty grid has no runs and no selection. A
-run holds at most 255 characters, because word starts are `u8`, and continues
-through `next_on_line`. The caret is the painter's `cursor_bounds`, clipped to
+(AccessKit #836 and #837). A displayed grid whose Copy text is empty, such as
+one `CSI 2J` cleared, would then have no runs: macOS would lose its text-range
+attributes and caret frame, and AT-SPI its Text interface. So its document is
+one line break, one cell wide, in the cursor's cell, or in the first cell when
+no cursor is displayed, and the caret is collapsed on it. This empty-document
+rule is the one place the document's text is not Copy's. A view that displays
+no rows or columns still has no runs and no selection. A run holds at most
+255 characters, because word starts are `u8`, and continues through
+`next_on_line`. The caret is the painter's `cursor_bounds`, clipped to
 the grid, with a hidden cursor's cell. macOS reads the caret's frame from that
 node, but AT-SPI clients read `getCharacterExtents(caretOffset)`, the
 character at the caret. So a cursor past its row's trimmed text moves that
@@ -1445,15 +1455,20 @@ Accessibility writes are ignored.
 
 `view_tests::a11y::the_accessible_text_matches_copy_for_random_selections`
 is the parity check: over real terminals whose screens hold written spaces,
-empty cells, wraps, wide characters, blank rows, and IL and DL, it compares the
-document and several hundred seeded random selections with the runtime's Copy
-text. Change Copy and the model together, and extend its fixtures when a
-mismatch turns up. One case cannot match, and the check exempts exactly it:
-Ghostty writes a selected row part with no text as a line break even when the
-row soft-wraps, such as the empty cells before a spacer head, and writes the
+empty cells, wraps, wide characters, blank rows, IL and DL, ED 1 above a
+continuation, and EL above one after a snapshot, it compares the document and
+over a thousand seeded random selections with the runtime's Copy text.
+Change Copy and the model together, and extend its fixtures when a mismatch
+turns up. Its whole-grid comparison expects `"\n"` where Copy is
+empty, by the empty-document rule, and its fixtures include a cleared screen.
+One selection case cannot match, and the check exempts exactly it: Ghostty
+writes a selected row part with no text as a line break even when the row
+soft-wraps, such as the empty cells before a spacer head, and writes the
 blanks pending before such a row after that break. No range of a document
 holding the grid's Copy text reads that, so a selection that passes such a
-part before its last row reads the row's blanks as spaces instead.
+part before its last row reads the row's blanks as spaces instead. The part's
+blanks pend when its row soft-wraps or the next row continues it by its own
+flag; the two agree except below rows ED 1 reset.
 
 GPUI rebuilds and sends the whole tree every frame, and AccessKit diffs it into
 notifications, so the pushed model must stay identical between publications.

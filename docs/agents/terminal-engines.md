@@ -139,25 +139,41 @@ before consuming damage. This keeps explicit overrides and cached row colors
 coherent without forcing unrelated rows to rebuild.
 
 Snapshot rows carry each row's soft-wrap and wrap-continuation flags and its
-OSC 133 prompt mark. The continuation flag usually equals the previous row's
-wrap flag, but IL and DL clear both flags on the rows they move, so a moved row
-stops continuing a row above that still wraps; Copy reads each row's own flag.
+OSC 133 prompt mark, as the live grid has them. The continuation flag usually
+equals the previous row's wrap flag, but not always: IL and DL clear both flags
+on the rows they move, so a moved row stops continuing a row above that still
+wraps, and ED 1 resets the rows above the cursor but leaves the cursor row's
+continuation, so it continues a row that no longer wraps. Copy reads each
+row's own continuation flag, and so do clients that follow it.
 A cell with no text, whether never written, skipped, erased, a background
 alone, or a spacer, is `CellText::EMPTY`, and a written space is
 `CellText::BLANK`, matching Ghostty's `Cell.hasText` (a nonzero codepoint):
 Copy treats a row part that holds no text differently from one holding a
 space. Clients that draw or print cells use `CellText::displayed`, which shows
 an empty cell as a space. The render state copies a row's flags only when it
-rebuilds a dirty row. A soft
-wrap dirties the row it marks, because the cursor leaves that row, but an OSC
-133 mark on the cursor row leaves it clean with a stale copy. After any
-semantic prompt effect, the next snapshot therefore reads the live grid's
-flags for clean rows and rebuilds a row whose flags changed. Ghostty's
-`cursorResetWrap` (ICH, DCH, ECH, EL) also clears the next row's continuation
-without dirtying it, so a client trusts a continuation only while the row
-above still wraps. `RowMatcher` compares flags as well as cells, so a row that
-becomes wrapped never reuses its unwrapped `Arc`. Contract tests in both
-crates pin this behavior.
+rebuilds a dirty row, and Ghostty's dirty tracking covers visible changes
+only: its render-state tests allow `wrap`, `wrap_continuation`, and
+`semantic_prompt` to go stale. A cursor move dirties the rows it leaves and
+enters, so a soft wrap, the continuation it marks, and the prompt
+continuation a line feed marks during a prompt land on dirty rows. A line
+feed that cannot move the cursor, on the last row below a scroll region,
+marks its row in place and is not refreshed until the next semantic prompt
+effect. Two more writes do not dirty the row they change:
+
+- An OSC 133 mark on the cursor row leaves it clean with a stale copy, so
+  after any semantic prompt effect the next snapshot reads the live grid's
+  flags for every clean row.
+- `cursorResetWrap` (ICH, DCH, ECH, EL) clears the cursor row's wrap, dirtying
+  that row, and the next row's continuation without dirtying it. So a clean
+  row below a row the snapshot extracted, or refreshed, reads its live flags
+  too, which costs one grid read per boundary between a rebuilt row and a
+  clean one.
+
+Either read rebuilds only a row whose flags changed. `RowMatcher` compares
+flags as well as cells, so a row that becomes wrapped never reuses its
+unwrapped `Arc`. Contract tests in `contract_tests.rs` pin the OSC 133
+refresh, the continuation refresh below an erased row, IL and DL, and ED 1;
+`row_matcher.rs` pins the flag comparison.
 
 Ghostty resolves a `Point::Viewport` grid reference from the viewport's own
 position, and with the `page-list-pin-nearest` patch a `Point::Screen`

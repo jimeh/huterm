@@ -17,7 +17,10 @@
 //! character extents are the cursor's (see [`reach_cursor`]). A row with
 //! no characters has no run, because
 //! AccessKit's position and line lookups misbehave next to an empty one
-//! (AccessKit #836 and #837). Runs longer than [`RUN_LIMIT`]
+//! (AccessKit #836 and #837). A displayed grid whose Copy text is empty
+//! would then have no runs, and so no text interface and no caret, so its
+//! document is one line break in the cursor's cell, or in the first cell
+//! without a displayed cursor. Runs longer than [`RUN_LIMIT`]
 //! characters continue in another run on the same line, since word starts
 //! are `u8` indices.
 //!
@@ -492,48 +495,24 @@ impl ModelBuilder {
         let rows = visible(area_height, cell_height, snapshot.size.rows)
             .min(u16::try_from(snapshot.rows.len()).unwrap_or(u16::MAX));
 
-        self.cells.begin();
-        self.texts.begin();
-        let mut keys = Vec::with_capacity(usize::from(rows));
-        let mut cells = Vec::with_capacity(usize::from(rows));
-        for row in &snapshot.rows[..usize::from(rows)] {
-            let key = RowKey {
-                row: Arc::as_ptr(row) as usize,
-                columns,
-                cell_width: cell_width.to_bits(),
-                clip_width: area_width.to_bits(),
-            };
-            keys.push(key);
-            cells.push(self.cells.get(
-                key,
-                |cached| Arc::ptr_eq(&cached.row, row),
-                || row_cells(row, columns, cell_width, area_width),
-            ));
-        }
-        let document = Document::new(&cells, usize::from(columns));
-        let texts: Vec<_> = keys
-            .iter()
-            .zip(&cells)
-            .zip(&document.plans)
-            .map(|((key, cells), plan)| {
-                self.texts.get(
-                    (*key, *plan),
-                    |cached| Arc::ptr_eq(&cached.row, &cells.row),
-                    || row_text(cells, *plan, cell_width, area_width),
-                )
-            })
-            .collect();
-        self.cells.end();
-        self.texts.end();
-        debug_assert_eq!(
-            texts.iter().map(|text| text.len).sum::<usize>(),
-            document.len,
-            "the runs hold the document"
+        let (cells, document, mut texts) = self.rows(
+            &snapshot.rows[..usize::from(rows)],
+            columns,
+            cell_width,
+            area_width,
         );
 
         let cursor = snapshot
             .cursor
             .filter(|cursor| cursor.row < rows && cursor.column < columns);
+        if document.len == 0 {
+            hold_empty_document(
+                &mut texts,
+                &cells,
+                cursor,
+                (cell_width, area_width),
+            );
+        }
         let cursor_cell = cursor.map(|cursor| {
             let x = cell_width * f32::from(cursor.column);
             CursorCell {
@@ -574,6 +553,86 @@ impl ModelBuilder {
             selection,
         }
     }
+
+    /// The displayed rows' cells, the formatter's pass over them, and their
+    /// characters, from the cache where the rows are unchanged.
+    fn rows(
+        &mut self,
+        rows: &[Arc<TerminalRow>],
+        columns: u16,
+        cell_width: f32,
+        clip_width: f32,
+    ) -> (Vec<Rc<RowCells>>, Document, Vec<Rc<RowText>>) {
+        self.cells.begin();
+        self.texts.begin();
+        let mut keys = Vec::with_capacity(rows.len());
+        let mut cells = Vec::with_capacity(rows.len());
+        for row in rows {
+            let key = RowKey {
+                row: Arc::as_ptr(row) as usize,
+                columns,
+                cell_width: cell_width.to_bits(),
+                clip_width: clip_width.to_bits(),
+            };
+            keys.push(key);
+            cells.push(self.cells.get(
+                key,
+                |cached| Arc::ptr_eq(&cached.row, row),
+                || row_cells(row, columns, cell_width, clip_width),
+            ));
+        }
+        let document = Document::new(&cells, usize::from(columns));
+        let texts: Vec<_> = keys
+            .iter()
+            .zip(&cells)
+            .zip(&document.plans)
+            .map(|((key, cells), plan)| {
+                self.texts.get(
+                    (*key, *plan),
+                    |cached| Arc::ptr_eq(&cached.row, &cells.row),
+                    || row_text(cells, *plan, cell_width, clip_width),
+                )
+            })
+            .collect();
+        self.cells.end();
+        self.texts.end();
+        debug_assert_eq!(
+            texts.iter().map(|text| text.len).sum::<usize>(),
+            document.len,
+            "the runs hold the document"
+        );
+        (cells, document, texts)
+    }
+}
+
+/// Gives a displayed grid whose Copy text is empty its one character: a
+/// line break in the cursor's cell, or in the first cell without a
+/// displayed cursor. Without it the terminal would have no runs, and so no
+/// text interface and no caret position. A view that displays no cells
+/// keeps none.
+fn hold_empty_document(
+    texts: &mut [Rc<RowText>],
+    cells: &[Rc<RowCells>],
+    cursor: Option<Cursor>,
+    (cell_width, clip_width): (f32, f32),
+) {
+    let (row, column) = cursor
+        .map_or((0, 0), |cursor| (usize::from(cursor.row), cursor.column));
+    let Some(cells) = cells.get(row).filter(|cells| !cells.columns.is_empty())
+    else {
+        return;
+    };
+    let x = cell_width * f32::from(column);
+    texts[row] = Rc::new(RowText {
+        row: Arc::clone(&cells.row),
+        segments: segments(&[Character {
+            text: "\n",
+            x,
+            width: cell_width.min(clip_width - x).max(0.0),
+        }]),
+        len: 1,
+        newline: true,
+    });
 }
 
 /// The cursor's displayed cell, relative to its row's left edge.
@@ -746,9 +805,10 @@ fn model_position(
 /// displayed cells. A row with text writes the line breaks pending before
 /// it, then its characters, each blank pending until text on its logical
 /// line follows; a row's own line break pends unless it soft-wraps, and a
-/// row that does not continue a soft-wrapped one drops the pending blanks. A
-/// row with no text adds a pending line break and nothing else, even when
-/// it soft-wraps. Whatever pends at the end is dropped.
+/// row without its own wrap-continuation flag drops the pending blanks,
+/// whatever the row above it says. A row with no text adds a pending line
+/// break and nothing else, even when it soft-wraps. Whatever pends at the
+/// end is dropped.
 #[derive(Debug)]
 struct Document {
     plans: Vec<Plan>,
@@ -798,12 +858,9 @@ impl Document {
             if !cells.row.wrapped {
                 lines.push(index);
             }
-            // The snapshot's continuation flag can outlive a reset wrap
-            // that left its row clean; the row above was rewritten then.
-            let continues = index > 0
-                && rows[index - 1].row.wrapped
-                && cells.row.wrap_continuation;
-            if !continues {
+            // Copy reads the row's own flag, even after ED 1 reset the row
+            // above, so it no longer wraps.
+            if !cells.row.wrap_continuation {
                 blanks.clear();
             }
             written.clear();

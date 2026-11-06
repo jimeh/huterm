@@ -335,6 +335,54 @@ fn ghostty_snapshots_report_wrap_continuations_apart_from_wraps() {
 }
 
 #[test]
+fn ghostty_snapshots_refresh_a_continuation_reset_below_a_rewritten_row() {
+    with_engine(|engine| {
+        engine.process(b"abcdefghij\r\n").unwrap();
+        let before = engine.snapshot().unwrap();
+        assert_eq!(continuations(&before), [false, true, false]);
+        // EL resets the cursor row's wrap and the next row's continuation,
+        // and dirties only the cursor row.
+        engine.process(b"\x1b[1;5H\x1b[K").unwrap();
+        let erased = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&erased), [false; 3]);
+        assert_eq!(continuations(&erased), [false; 3]);
+        assert_eq!(erased.rows[1].cells, before.rows[1].cells);
+        // The row below the refreshed one is read and kept.
+        assert!(Arc::ptr_eq(&erased.rows[2], &before.rows[2]));
+        assert_eq!(engine.last_snapshot_stats().allocated, 2);
+    });
+}
+
+#[test]
+fn ghostty_snapshots_report_a_continuation_the_row_above_no_longer_wraps() {
+    with_engine(|engine| {
+        // ED 1 resets the rows above the cursor, but the cursor row keeps
+        // its continuation, which Copy reads.
+        engine
+            .process(b"abcdefghij\x1b[2;1H\x1b[1J\x1b[1;1Hx")
+            .unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        assert_eq!(wrapped(&snapshot), [false; 3]);
+        assert_eq!(continuations(&snapshot), [false, true, false]);
+        let generation = engine.generation();
+        let grid = BufferRange::ordered(
+            BufferPoint {
+                rows_from_live_bottom: 2,
+                column: 0,
+            },
+            BufferPoint {
+                rows_from_live_bottom: 0,
+                column: 7,
+            },
+        );
+        assert_eq!(
+            engine.extract_text(generation, grid).unwrap().as_deref(),
+            Some("x\n        j")
+        );
+    });
+}
+
+#[test]
 fn ghostty_snapshots_report_osc_133_prompt_rows() {
     with_engine(|engine| {
         engine

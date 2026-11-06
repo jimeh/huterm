@@ -735,8 +735,9 @@ impl TerminalEngine {
     }
 
     /// Builds viewport rows from the updated render state. Clean rows keep
-    /// their retained `Arc` unless an OSC 133 mark changed their flags;
-    /// extracted rows reuse any identical retained row.
+    /// their retained `Arc` unless their live flags changed, which they
+    /// read after an OSC 133 mark and below a row this build extracted or
+    /// refreshed; extracted rows reuse any identical retained row.
     fn build_rows(
         &mut self,
         full: bool,
@@ -755,6 +756,10 @@ impl TerminalEngine {
         );
         let mut built = Vec::with_capacity(usize::from(self.size.rows));
         let (mut extracted, mut allocated, mut reused) = (0, 0, 0);
+        // Whether the row above was extracted or refreshed. Ghostty's
+        // `cursorResetWrap` clears the continuation of the row below the one
+        // it rewrites without dirtying it.
+        let mut above_changed = false;
         let mut rows = self.render.rows()?;
         while let Some(mut row) = rows.next() {
             let index = built.len();
@@ -762,18 +767,21 @@ impl TerminalEngine {
                 && !row.dirty()?
                 && let Some(retained) = previous.get(index)
             {
-                if self.prompt_marks_stale
+                if (self.prompt_marks_stale || above_changed)
                     && let Some(refreshed) =
                         refresh_flags(&self.terminal, retained, index)?
                 {
                     built.push(Arc::new(refreshed));
                     allocated += 1;
+                    above_changed = true;
                 } else {
                     built.push(Arc::clone(retained));
                     reused += 1;
+                    above_changed = false;
                 }
                 continue;
             }
+            above_changed = true;
             extract_row(
                 &mut row,
                 &mut self.scratch,

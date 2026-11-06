@@ -455,12 +455,49 @@ fn blank_rows_are_line_breaks_and_rows_without_text_have_no_run() {
     // The blank row's newline sits at its start, one cell wide.
     assert_eq!(bounds_of(&model, 5, 6), cell_rect(0, 1, 1.0));
     assert_eq!(model.runs[1].node.word_starts(), [] as [u8; 0]);
-    // An empty grid has no runs, so no selection, but keeps its caret.
-    let empty = with_cursor(snapshot(6, &["", ""]), 0, 0, CursorShape::Block);
-    let model = build(&empty);
-    assert_eq!(model.runs, []);
+}
+
+#[test]
+fn a_grid_without_text_is_one_line_break_at_the_cursor() {
+    // Copy of a cleared grid is empty, but an empty run would trip
+    // AccessKit, so the document is one line break in the cursor's cell.
+    let cursor = Cursor {
+        row: 1,
+        column: 2,
+        shape: CursorShape::Beam,
+    };
+    let cleared = with_cursor(
+        snapshot(6, &["", "", ""]),
+        cursor.column,
+        cursor.row,
+        cursor.shape,
+    );
+    let model = build(&cleared);
+    // `text` checks that the terminal still answers text ranges.
+    assert_eq!(text(&model), "\n");
+    assert_eq!(model.runs.len(), 1);
+    assert_eq!(model.runs[0].key, RunKey { row: 1, segment: 0 });
+    assert_eq!(selected(&model), Some((0, 0, String::new())));
+    assert_eq!(caret(&model), Some(painted_cursor(cursor)));
+    assert_eq!(caret_extents(&model), cell_rect(2, 1, 1.0));
+    // A selection Copy copies nothing from keeps the caret.
+    let all = BufferRange::ordered(at(&cleared, 0, 0), at(&cleared, 5, 2));
+    let model = build_in(
+        &mut ModelBuilder::default(),
+        &cleared,
+        geometry(&cleared),
+        Some(all),
+    );
+    assert_eq!(selected(&model), Some((0, 0, String::new())));
+}
+
+#[test]
+fn a_grid_without_text_or_a_displayed_cursor_starts_at_the_first_cell() {
+    let model = build(&snapshot(6, &["", ""]));
+    assert_eq!(text(&model), "\n");
+    assert_eq!(bounds_of(&model, 0, 1), cell_rect(0, 0, 1.0));
     assert_eq!(model.selection, None);
-    assert!(model.caret.is_some());
+    assert_eq!(model.caret, None);
 }
 
 #[test]
@@ -886,6 +923,15 @@ fn a_wrapped_row_keeps_the_blanks_its_line_continues_after() {
     let continued = snapshot_of(4, vec![first, row("b", 4, false), last]);
     let model = build_in(&mut builder, &continued, geometry(&continued), None);
     assert_eq!(text(&model), "a   b\nz");
+}
+
+#[test]
+fn a_row_keeps_pending_blanks_by_its_own_continuation_flag() {
+    // ED 1 resets the rows above the cursor but leaves the cursor row's
+    // continuation, and Copy reads the row's own flag.
+    let mut grid = snapshot(8, &["x", "·j"]);
+    Arc::make_mut(&mut grid.rows[1]).wrap_continuation = true;
+    assert_eq!(text(&build(&grid)), "x\n        j");
 }
 
 #[test]

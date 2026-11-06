@@ -1,23 +1,46 @@
 diff --git a/src/window.rs b/src/window.rs
-index aee1c4dbb0c6a22f9701f5d9b6c8671a787a6346..abcf743db2108dd062d76239856e2ef2901aece2 100644
+index aee1c4dbb0c6a22f9701f5d9b6c8671a787a6346..a0b5671330d6366a2229c52c1e002ec9f90cc398 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -1717,6 +1717,10 @@ impl Window {
-                     })
-                 },
-             });
-+            // The adapter keeps the bounds until assistive technology
-+            // activates it; `bounds_changed` sends every later move and
-+            // resize.
-+            platform_window.a11y_update_window_bounds();
- 
-             // A11y can be activated at any time, and so we cannot compute a
-             // correct `TreeUpdate` on-demand. When this happens, we return a
-@@ -2812,6 +2816,7 @@ impl Window {
+@@ -1728,7 +1728,13 @@ impl Window {
+                 .spawn(async move {
+                     while activation_receiver.recv().await.is_ok() {
+                         handle
+-                            .update(&mut async_cx, |_, window, _| window.refresh())
++                            .update(&mut async_cx, |_, window, _| {
++                                // `bounds_changed` sends later moves and resizes
++                                // only while accessibility is active, since X11
++                                // reads them with a server round trip.
++                                window.platform_window.a11y_update_window_bounds();
++                                window.refresh();
++                            })
+                             .log_err();
+                     }
+                 })
+@@ -2812,6 +2818,9 @@ impl Window {
          self.scale_factor = self.platform_window.scale_factor();
          self.viewport_size = self.platform_window.content_size();
          self.mouse_position = self.platform_window.mouse_position();
-+        self.platform_window.a11y_update_window_bounds();
++        if self.a11y.is_active_now() {
++            self.platform_window.a11y_update_window_bounds();
++        }
  
          self.refresh();
  
+diff --git a/src/window/a11y.rs b/src/window/a11y.rs
+index 5b63821232a73dcdcac5bb7c402b7b31645982e1..f1aa8476485ce979e8b65cbbd23a8f554b870676 100644
+--- a/src/window/a11y.rs
++++ b/src/window/a11y.rs
+@@ -221,6 +221,12 @@ impl A11y {
+         self.active_this_frame
+     }
+ 
++    /// Whether assistive technology is connected now, which can differ from
++    /// [`Self::is_active`] until the next frame starts.
++    pub(crate) fn is_active_now(&self) -> bool {
++        self.is_enabled() && self.active_flag.load(Ordering::SeqCst)
++    }
++
+     pub(crate) fn set_focusable(&mut self, node_id: NodeId, focus_id: FocusId) {
+         self.focus_ids.insert(node_id, focus_id);
+     }

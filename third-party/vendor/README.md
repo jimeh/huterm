@@ -286,13 +286,18 @@ to the window, into screen coordinates by adding the root window bounds it was
 last given, and reports those bounds as the window frame's extents. GPUI's
 Linux windows implement `a11y_update_window_bounds`, but core GPUI never
 called it, so screen coordinates equaled window coordinates and the frame had
-no extents. The core `a11y-window-bounds` patch calls it once after
-`a11y_init` (the adapter keeps the bounds until assistive technology
-activates it) and in `Window::bounds_changed`, which every platform move and
-resize reaches. macOS's implementation is empty; AppKit converts there.
+no extents. The core `a11y-window-bounds` patch calls it when assistive
+technology activates the adapter, in the task that already refreshes the
+window then, and in `Window::bounds_changed`, which every platform move and
+resize reaches, while the adapter's active flag is set. It reads the flag
+itself rather than the frame's copy, so a move between activation and the
+next frame still reaches the adapter. X11 reads the bounds with a server
+round trip, which windows skip while no assistive technology is connected.
+macOS's implementation is empty; AppKit converts there.
 
 The Linux `a11y-window-bounds` patch makes the bounds right. On X11 it asks
-the server for the window's root origin, because GPUI's stored origin keeps
+the server for the window's root origin through the existing
+`get_root_position` helper, because GPUI's stored origin keeps
 raw ConfigureNotify coordinates, which can be relative to the window
 manager's frame (see
 [window presentation](../../docs/agents/window-presentation.md#fullscreen)).
