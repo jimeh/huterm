@@ -29,7 +29,7 @@ export const SQUASH_WRAP_WIDTH = 72;
 
 const overrideBegin = "BEGIN_COMMIT_OVERRIDE";
 const overrideEnd = "END_COMMIT_OVERRIDE";
-const fence = /^\s*(```|~~~)/;
+const fence = /^\s*(`{3,}|~{3,})(.*)$/;
 
 function wrapLine(line: string): string[] {
   if (line.length <= SQUASH_WRAP_WIDTH) return [line];
@@ -56,14 +56,21 @@ function wrapLine(line: string): string[] {
  * commits whose descriptions were not edited after merging.
  */
 export function squashBody(description: string): string {
-  let inFence = false;
+  // The open fence's marker. As in CommonMark, only a run of the same
+  // character at least as long, with nothing after it, closes the fence. No
+  // squash commit here has shown how GitHub treats nested or tilde fences.
+  let open: string | undefined;
   const lines: string[] = [];
   for (const line of description.replace(/\r\n?/g, "\n").split("\n")) {
-    if (fence.test(line)) {
-      inFence = !inFence;
+    const marker = fence.exec(line);
+    if (open === undefined && marker && !(marker[1]![0] === "`" && marker[2]!.includes("`"))) {
+      open = marker[1]!;
+      lines.push(line);
+    } else if (open !== undefined) {
+      if (marker && marker[1]![0] === open[0] && marker[1]!.length >= open.length && !marker[2]!.trim()) open = undefined;
       lines.push(line);
     } else {
-      lines.push(...(inFence ? [line] : wrapLine(line)));
+      lines.push(...wrapLine(line));
     }
   }
   return lines.join("\n").replace(/\s+$/, "");
@@ -87,7 +94,7 @@ function splitMessages(message: string): string[] {
   const conventional = messages[0]!.split(
     /\r?\n\r?\n(?=(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\(.*?\))?: )/,
   );
-  return [...conventional, ...messages.slice(1)];
+  return [...conventional.filter(Boolean), ...messages.slice(1)];
 }
 
 function parseProblems(message: string, source: string): string[] {

@@ -32,6 +32,13 @@ test("the squash body keeps short and fenced lines and rewraps long prose lines 
   expect(squashMessage({ title, number: 7, body: " \n" })).toBe(`${title} (#7)`);
 });
 
+test("a fence closes only on a run of its own character at least as long", () => {
+  const long = `${"code ".repeat(20)}`;
+  const body = ["````md", "```", long, "```", long, "````", long].join("\n");
+  expect(squashBody(body).split("\n")).toEqual(["````md", "```", long, "```", long, "````", ...squashBody(long).split("\n")]);
+  expect(squashBody(long).split("\n").length).toBeGreaterThan(1);
+});
+
 test.each([["#410", pr410Line, "`Err(Runtime(\"terminal"], ["#354", pr354Line, "`columns(rows(*),"]])(
   "a description line that wraps call syntax to a line start fails like %s",
   (_, line, start) => {
@@ -62,11 +69,22 @@ test("a complete commit-override block replaces a description that would not par
   expect(problem).toContain("The commit-override block does not parse");
 });
 
+test("each nested commit in an override block is parsed on its own", () => {
+  const nested = (message: string) => `BEGIN_COMMIT_OVERRIDE\r\nBEGIN_NESTED_COMMIT\r\n${message}\r\nEND_NESTED_COMMIT\r\nEND_COMMIT_OVERRIDE\r\n`;
+  expect(checkPullRequest({ title, number: 1, body: nested("fix: include the change") })).toEqual([]);
+
+  const problems = checkPullRequest({ title, number: 1, body: nested("include the change") });
+  expect(problems).toHaveLength(1);
+  expect(problems[0]).toContain("The commit-override block does not parse");
+  expect(problems[0]).toContain("\n  include the change\n");
+});
+
 test.each([
   ["a marker in prose", "Avoid a stray `BEGIN_COMMIT_OVERRIDE` here.\n"],
   ["a block without an end marker", "BEGIN_COMMIT_OVERRIDE\nfix: keep the notes\n"],
   ["two blocks", "BEGIN_COMMIT_OVERRIDE\nfix: a\nEND_COMMIT_OVERRIDE\nBEGIN_COMMIT_OVERRIDE\nfix: b\nEND_COMMIT_OVERRIDE\n"],
   ["an empty block", "BEGIN_COMMIT_OVERRIDE\n\nEND_COMMIT_OVERRIDE\n"],
+  ["an end marker before the begin marker", "END_COMMIT_OVERRIDE\nfix: a\nBEGIN_COMMIT_OVERRIDE\n"],
 ])("%s is not a valid commit-override block", (_, body) => {
   const [problem, ...rest] = checkPullRequest({ title, number: 1, body });
   expect(rest).toEqual([]);

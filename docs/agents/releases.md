@@ -284,9 +284,11 @@ a word from mid-sentence to a line start; both failing lines started mid-line in
 the description. Reword nested or unclosed call syntax such as `foo(bar(`, even
 in backticks. Upstream fixed this in
 [release-please#2936](https://github.com/googleapis/release-please/pull/2936),
-unreleased as of release-please 17.11.2 and release-please-action 5.0.0. A
-commit that already shipped without its note stays missing from that release;
-recover an unreleased one with a commit-override block, as #410 did.
+unreleased as of release-please 17.11.2 and release-please-action 5.0.0.
+Recover an unreleased commit with a commit-override block, as #410 did. Release
+Please never revisits a shipped release, so add a shipped commit's line by hand
+to its release's `CHANGELOG.md` section on `main`, in the same format, as was
+done for #354. Sparkle's notes then include it.
 
 The `PR description` workflow runs `mise run release:check-pr-description` on
 every pull request when it opens, reopens, gets a push, or has its title or

@@ -40,6 +40,7 @@
 
 ### Features
 
+* add a Main Centered layout, an Arrange Panes menu, per-side Option as Meta, and an audible bell ([#354](https://github.com/jimeh/huterm/issues/354)) ([00ea72b](https://github.com/jimeh/huterm/commit/00ea72b1339e6632352132f126fda25343c931e4))
 * add split buttons to pane title bars, show the title bar on a tab's only pane, and turn auto-hide on or off from the bar's menu ([#364](https://github.com/jimeh/huterm/issues/364)) ([ced5df4](https://github.com/jimeh/huterm/commit/ced5df4bab5a7434788998723277cfcca3518b74))
 * drag a pane from anywhere inside it while holding a modifier combination ([#345](https://github.com/jimeh/huterm/issues/345)) ([2f58b14](https://github.com/jimeh/huterm/commit/2f58b14a2cdca9134169afe05d7dfcccabf55546))
 * drop a dragged pane on the title bar to open a new tab while the tab bar is hidden, and show a closed hand while dragging a tab ([#365](https://github.com/jimeh/huterm/issues/365)) ([a106969](https://github.com/jimeh/huterm/commit/a106969c86033b325fa1d59dda7ec255dac74554))
