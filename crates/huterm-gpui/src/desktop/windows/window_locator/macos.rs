@@ -39,7 +39,9 @@ pub(super) fn locate(
     source: &Window,
     pointer: gpui::Point<Pixels>,
     windows: &[(gpui::WindowId, u64)],
+    below: Option<u64>,
 ) -> anyhow::Result<Located> {
+    let below = isize::try_from(below.unwrap_or(0))?;
     let native = native(source)?;
     // SAFETY: All receivers are live AppKit objects read on the main
     // thread. Conversion uses NSWindow base coordinates (bottom-left),
@@ -55,7 +57,12 @@ pub(super) fn locate(
         let base: gpui::Point<f64> = msg_send![view, convertPoint: local toView: std::ptr::null_mut::<Object>()];
         let screen: gpui::Point<f64> =
             msg_send![native, convertPointToScreen: base];
-        let number: isize = msg_send![class!(NSWindow), windowNumberAtPoint: screen belowWindowWithWindowNumber: 0_isize];
+        // The drag preview can sit under the pointer, so the search starts
+        // below it; ignoring mouse events does not hide it from this query.
+        let mut number: isize = msg_send![class!(NSWindow), windowNumberAtPoint: screen belowWindowWithWindowNumber: below];
+        if below > 0 && number == below {
+            number = msg_send![class!(NSWindow), windowNumberAtPoint: screen belowWindowWithWindowNumber: number];
+        }
         if number <= 0 {
             return Ok(Located::Outside);
         }

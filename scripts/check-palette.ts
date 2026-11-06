@@ -981,12 +981,23 @@ command = "select_tab"
     await typeText("D");
     await terminalBytes("D");
 
+    // Keys and file commands reach the window by separate paths, so each
+    // command waits for the window to show it handled the key before it.
+    // A busy window refuses to open the palette, and an Enter handled after
+    // `busy-off` would open a tab.
     await shortcut("palette");
+    await state("w0.palette=true", "w0.palette_focused=true");
     await command("busy-on");
     await typeText("new tab");
-    await state("selected=new_tab", "structural operation in progress");
+    await state(
+      "selected=new_tab",
+      'unavailable=Some("structural operation in progress")',
+    );
     await key("enter");
-    await state("w0.palette=true", "structural operation in progress");
+    await state(
+      "w0.palette=true",
+      'diagnostic=Some("Unavailable: structural operation in progress")',
+    );
     await command("busy-off");
     await key("escape");
     await state("w0.palette=false", "w0.terminal_focused=true");

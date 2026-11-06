@@ -13,6 +13,7 @@ impl WindowLocator for Locator {
         _: &Window,
         _: gpui::Point<Pixels>,
         _: &[(gpui::WindowId, u64)],
+        _: Option<u64>,
     ) -> Located {
         self.0.get()
     }
@@ -2323,4 +2324,450 @@ fn moved_panes_and_tabs_paint_their_destinations_override(
             1.0
         ));
     });
+}
+
+mod drag_preview;
+
+impl DesktopHarness {
+    /// A one-tab source window whose tab is split, with the second pane
+    /// ready to drag.
+    fn split_source(&mut self) -> (AnyWindowHandle, TabId, PaneId, PaneId) {
+        let tab = self.open_tab(ECHO);
+        let source = self.attach_window();
+        self.activate(source, tab);
+        let first = self.first_pane(tab);
+        let second = self.split(tab, first, SplitDirection::Right, ECHO);
+        self.wait_for("source split installs", |cx| {
+            pane_view(cx, source, tab, second).is_some()
+        });
+        self.cx.run_until_parked();
+        (source, tab, first, second)
+    }
+    fn new_window(&mut self, existing: &[AnyWindowHandle]) -> AnyWindowHandle {
+        let mut opened = None;
+        self.wait_for("tear-off window", |cx| {
+            opened = cx
+                .windows()
+                .into_iter()
+                .find(|handle| !existing.contains(handle));
+            opened.is_some()
+        });
+        opened.unwrap()
+    }
+    fn idle(&mut self, window: AnyWindowHandle) {
+        self.wait_for("source settles", |cx| {
+            window
+                .update(cx, |root, _, cx| {
+                    !root.downcast::<WorkspaceView>().unwrap().read(cx).busy
+                })
+                .unwrap_or(false)
+        });
+    }
+}
+
+#[gpui::test]
+fn cross_window_pane_tears_off_a_one_tab_split_window(cx: &mut TestAppContext) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let (source, tab, first, second) = h.split_source();
+    let terminal = h
+        .runtime
+        .lock()
+        .tab(tab)
+        .unwrap()
+        .layout()
+        .pane(second)
+        .unwrap()
+        .terminal_id;
+    let _locator = h.cross_locator();
+    h.cross_begin_pane(source, tab, second);
+    assert!(h.update_view(source, |view, _, cx| view.tear_off_cue(cx)));
+    h.cross_release_pane(source);
+    let destination = h.new_window(&[source]);
+    h.cross_idle(destination, second);
+    let workspace = h.update_view(destination, |view, _, cx| {
+        assert_eq!(view.tabs.len(), 1);
+        view.workspace_id(cx).unwrap()
+    });
+    let mux = h.runtime.lock();
+    let moved = mux.workspace(workspace).unwrap().tabs[0].id;
+    assert_ne!(moved, tab, "the pane opens in a new tab");
+    let layout = mux.tab(moved).unwrap().layout();
+    assert_eq!(layout.panes().len(), 1);
+    assert_eq!(layout.pane(second).unwrap().terminal_id, terminal);
+    assert_eq!(
+        mux.tab(tab)
+            .unwrap()
+            .layout()
+            .panes()
+            .iter()
+            .map(|pane| pane.id)
+            .collect::<Vec<_>>(),
+        [first],
+        "the source keeps its other pane"
+    );
+    drop(mux);
+    assert!(h.cx.update(|cx| focused(cx, destination, moved)));
+    assert!(h.update_view(destination, |_, window, _| {
+        window.is_window_active()
+    }));
+    h.type_line(destination, "torn-off");
+    h.wait_text(destination, moved, "got:torn-off");
+}
+
+#[gpui::test]
+fn cross_window_the_windows_lone_pane_never_tears_off(cx: &mut TestAppContext) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let tab = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    let pane = h.cross_pane(tab);
+    let _locator = h.cross_locator();
+    h.cross_begin_pane(source, tab, pane);
+    h.update_view(source, |view, _, cx| {
+        assert!(view.cross_outside(cx));
+        assert!(!view.tear_off_cue(cx));
+        assert!(view.drawn_pane_tear_off.borrow().is_none());
+        assert_eq!(view.cross_drop_label(cx).as_deref(), Some("none"));
+    });
+    h.cross_release_pane(source);
+    h.cx.run_until_parked();
+    assert_eq!(h.cx.update(|cx| cx.windows().len()), 1);
+    assert!(contains(&h.runtime.lock(), h.workspace, tab));
+    assert!(h.update_view(source, |view, _, _| !view.busy));
+}
+
+#[gpui::test]
+fn cross_window_a_lone_pane_beside_other_tabs_tears_off(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let tab = h.open_tab(ECHO);
+    let other = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    let pane = h.cross_pane(tab);
+    let _locator = h.cross_locator();
+    h.cross_begin_pane(source, tab, pane);
+    assert!(h.update_view(source, |view, _, cx| view.tear_off_cue(cx)));
+    h.cross_release_pane(source);
+    let destination = h.new_window(&[source]);
+    h.cross_idle(destination, pane);
+    assert!(contains(&h.runtime.lock(), h.workspace, other));
+    assert!(h.update_view(source, |view, _, _| view.tabs.len() == 1));
+}
+
+#[gpui::test]
+fn cross_window_s1_marks_the_pane_only_while_outside_and_tearing_off(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let (source, tab, _, second) = h.split_source();
+    let locator = h.cross_locator();
+    let inside = h.update_view(source, |view, _, _| {
+        view.drawn_frame(second).unwrap().center()
+    });
+    locator.0.set(Located::Window(source.window_id(), inside));
+    h.cross_begin_pane(source, tab, second);
+    assert!(
+        h.update_view(source, |view, _, _| view
+            .drawn_pane_tear_off
+            .borrow()
+            .is_none()),
+        "no cue inside the source"
+    );
+    locator.0.set(Located::Outside);
+    h.update_view(source, |view, window, cx| {
+        view.update_pane_drag(point(px(-50.0), px(-50.0)), window, cx);
+    });
+    h.cx.run_until_parked();
+    let (pill, frame) = h.update_view(source, |view, _, _| {
+        (
+            view.drawn_pane_tear_off.borrow().expect("S1 was drawn"),
+            view.drawn_frame(second).unwrap(),
+        )
+    });
+    assert_eq!(
+        h.update_view(source, |view, _, _| *view.drawn_tear_off.borrow()),
+        None,
+        "a pane tear-off draws no tab bar pill"
+    );
+    assert_eq!(
+        pill.center(),
+        frame.center(),
+        "the pill centres in the pane"
+    );
+    assert_eq!(
+        super::super::cross_window::tear_off_label(pill),
+        "↗ New window"
+    );
+    let pill_at = VisualTestContext::from_window(source, &h.cx)
+        .debug_bounds("pane-tear-off-pill")
+        .expect("pill element was drawn");
+    // Layout snaps the element to device pixels.
+    assert_eq!(pill_at.size, pill.size);
+    assert!((pill_at.origin.x - pill.origin.x).abs() < px(1.0));
+    assert!((pill_at.origin.y - pill.origin.y).abs() < px(1.0));
+    assert!(
+        VisualTestContext::from_window(source, &h.cx)
+            .debug_bounds("pane-tear-off-outline")
+            .is_some_and(|outline| frame.contains(&outline.origin))
+    );
+    locator.0.set(Located::Blocked);
+    h.update_view(source, |view, window, cx| {
+        view.update_pane_drag(point(px(-60.0), px(-60.0)), window, cx);
+    });
+    h.cx.run_until_parked();
+    assert!(
+        h.update_view(source, |view, _, _| view
+            .drawn_pane_tear_off
+            .borrow()
+            .is_none()),
+        "no cue where a release does nothing"
+    );
+    h.update_view(source, WorkspaceView::cancel_pane_drag);
+    h.cx.run_until_parked();
+    assert!(h.update_view(source, |view, _, _| {
+        view.drawn_pane_tear_off.borrow().is_none()
+    }));
+}
+
+#[gpui::test]
+fn cross_window_s1_turns_compact_in_a_narrow_pane(cx: &mut TestAppContext) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let (source, tab, first, second) = h.split_source();
+    h.cx.simulate_window_resize(source, size(px(480.0), px(300.0)));
+    let third = h.split(tab, second, SplitDirection::Right, ECHO);
+    let _ = h.split(tab, first, SplitDirection::Right, ECHO);
+    h.wait_for("narrow panes install", |cx| {
+        pane_view(cx, source, tab, third).is_some()
+    });
+    h.cx.run_until_parked();
+    let _locator = h.cross_locator();
+    h.cross_begin_pane(source, tab, third);
+    h.update_view(source, |view, _, _| {
+        let frame = view.drawn_frame(third).unwrap();
+        assert!(
+            frame.size.width
+                < super::super::cross_window::TEAR_OFF_PILL + px(12.0),
+            "fixture pane must be narrow: {frame:?}"
+        );
+        let pill = view.drawn_pane_tear_off.borrow().expect("S1 was drawn");
+        assert_eq!(
+            pill.size.width,
+            super::super::cross_window::TEAR_OFF_COMPACT
+        );
+        assert_eq!(super::super::cross_window::tear_off_label(pill), "↗");
+    });
+}
+
+#[gpui::test]
+fn cross_window_pane_tear_off_failures_restore_spring_back_and_scroll(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+        config.tabs.width = TabWidth::Fill;
+    });
+    let tab = h.open_tab(ECHO);
+    let mut tabs = vec![tab];
+    for _ in 0..5 {
+        tabs.push(h.open_tab(ECHO));
+    }
+    let source = h.attach_window();
+    h.cx.simulate_window_resize(source, size(px(400.0), px(300.0)));
+    h.activate(source, tab);
+    let first = h.first_pane(tab);
+    let pane = h.split(tab, first, SplitDirection::Right, ECHO);
+    h.wait_for("source split installs", |cx| {
+        pane_view(cx, source, tab, pane).is_some()
+    });
+    h.cx.run_until_parked();
+    let locator = h.cross_locator();
+    for failure in ["window", "move"] {
+        let scroll = h.update_view(source, |view, window, _| {
+            let strip = view.tab_strip(window);
+            assert!(
+                strip.max_offset() > px(0.0),
+                "fixture strip must overflow"
+            );
+            view.tab_scroll = px(0.0);
+            strip.max_offset()
+        });
+        h.cx.run_until_parked();
+        // Spring-load the second tab inside the source, then leave.
+        let label = h.update_view(source, |view, window, _| {
+            view.tab_strip(window).label(1).center()
+        });
+        locator.0.set(Located::Window(source.window_id(), label));
+        h.update_view(source, |view, window, cx| {
+            let at = view.drawn_frame(pane).unwrap().center();
+            view.begin_pane_drag(tab, pane, at, false, window, cx);
+            view.update_pane_drag(label, window, cx);
+            view.advance_spring(Instant::now() + SPRING_LOAD_DELAY, window, cx);
+        });
+        h.cx.run_until_parked();
+        assert_eq!(
+            h.update_view(source, |view, _, cx| view.active_tab(cx)),
+            Some(tabs[1]),
+            "{failure}: the drag spring-loaded"
+        );
+        h.update_view(source, |view, _, _| view.tab_scroll = scroll);
+        locator.0.set(Located::Outside);
+        if failure == "window" {
+            h.cx.update(|cx| {
+                cx.global_mut::<Desktop>().cross.fail_window = true;
+            });
+        } else {
+            h.runtime.worker_hooks.fail(Stage::Transfer);
+        }
+        h.cross_release_pane(source);
+        h.wait_for("failed tear-off settles", |cx| {
+            cx.windows().len() == 1
+                && source
+                    .update(cx, |root, _, cx| {
+                        !root.downcast::<WorkspaceView>().unwrap().read(cx).busy
+                    })
+                    .unwrap()
+        });
+        h.update_view(source, |view, _, cx| {
+            assert_eq!(
+                view.active_tab(cx),
+                Some(tab),
+                "{failure}: springs back"
+            );
+            assert_eq!(view.tab_scroll, px(0.0), "{failure}: scroll returns");
+        });
+        let message = if failure == "window" {
+            "Cannot open the destination window"
+        } else {
+            "Cannot move terminal"
+        };
+        assert!(
+            h.cx.update(|cx| notices(cx, source)
+                .iter()
+                .any(|notice| notice.contains(message))),
+            "{failure}: notice"
+        );
+        assert!(
+            h.runtime
+                .lock()
+                .tab(tab)
+                .unwrap()
+                .layout()
+                .pane(pane)
+                .is_some(),
+            "{failure}: the pane stays"
+        );
+    }
+}
+
+#[gpui::test]
+fn cross_window_a_spring_loaded_pane_drag_keeps_a_tear_off_cue(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let tab = h.open_tab(ECHO);
+    let other = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    let first = h.first_pane(tab);
+    let pane = h.split(tab, first, SplitDirection::Right, ECHO);
+    h.wait_for("source split installs", |cx| {
+        pane_view(cx, source, tab, pane).is_some()
+    });
+    h.cx.run_until_parked();
+    let locator = h.cross_locator();
+    let label = h.update_view(source, |view, window, _| {
+        view.tab_strip(window).label(1).center()
+    });
+    locator.0.set(Located::Window(source.window_id(), label));
+    h.update_view(source, |view, window, cx| {
+        let at = view.drawn_frame(pane).unwrap().center();
+        view.begin_pane_drag(tab, pane, at, false, window, cx);
+        view.update_pane_drag(label, window, cx);
+        view.advance_spring(Instant::now() + SPRING_LOAD_DELAY, window, cx);
+    });
+    h.cx.run_until_parked();
+    assert_eq!(
+        h.update_view(source, |view, _, cx| view.active_tab(cx)),
+        Some(other),
+        "the drag spring-loaded the other tab"
+    );
+    locator.0.set(Located::Outside);
+    h.update_view(source, |view, window, cx| {
+        view.update_pane_drag(point(px(-50.0), px(-50.0)), window, cx);
+    });
+    h.cx.run_until_parked();
+    h.update_view(source, |view, _, cx| {
+        assert!(view.tear_off_cue(cx), "a release still tears off");
+        assert_eq!(
+            *view.drawn_pane_tear_off.borrow(),
+            None,
+            "the dragged pane is hidden, so no S1"
+        );
+        assert!(
+            view.drawn_tear_off.borrow().is_some(),
+            "the bar pill stands in for S1"
+        );
+    });
+}
+
+#[gpui::test]
+fn cross_window_move_pane_to_new_window_command(cx: &mut TestAppContext) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let tab = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    let availability = |h: &mut DesktopHarness| {
+        h.update_view(source, |view, window, cx| {
+            let target = PaletteTarget {
+                session: None,
+                workspace: view.workspace_id(cx),
+                tab: view.active_tab(cx),
+                terminal: None,
+                terminal_view: None,
+                contexts: window.context_stack(),
+            };
+            view.command_availability(ids::MOVE_PANE_TO_NEW_WINDOW, &target, cx)
+        })
+    };
+    let alone = |result: Result<(), CommandError>| {
+        matches!(result, Err(CommandError::Unavailable(reason))
+            if reason == "The pane is already alone in its window.")
+    };
+    assert!(alone(availability(&mut h)));
+    assert!(alone(
+        h.invoke(source, ids::MOVE_PANE_TO_NEW_WINDOW).map(|_| ())
+    ));
+    assert_eq!(h.cx.update(|cx| cx.windows().len()), 1);
+    let first = h.first_pane(tab);
+    let second = h.split(tab, first, SplitDirection::Down, ECHO);
+    h.wait_for("split installs", |cx| {
+        pane_view(cx, source, tab, second).is_some()
+    });
+    h.update_view(source, |view, window, cx| {
+        view.focus_pane(tab, second, window, cx);
+    });
+    assert!(availability(&mut h).is_ok());
+    h.invoke(source, ids::MOVE_PANE_TO_NEW_WINDOW).unwrap();
+    let destination = h.new_window(&[source]);
+    h.cross_idle(destination, second);
+    h.idle(source);
+    let layout = h.runtime.lock().tab(tab).unwrap().layout().clone();
+    assert!(layout.pane(second).is_none());
+    assert!(layout.pane(first).is_some());
 }

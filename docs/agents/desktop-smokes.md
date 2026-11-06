@@ -250,7 +250,16 @@ read the focus that followed the rebound shortcut to its new row as its
 Tab's move, sent a second Tab, and left focus on the row's switch. On X11,
 keys go through `xdotool` rather than file commands, so `command_sequence`
 does not order them; wait first for anything else that moves focus, as the
-rebind step waits for the rebound row.
+rebind step waits for the rebound row. A file command can also overtake an
+`xdotool` key sent before it, and so can a macOS `native` key, whose
+acknowledgment means only that it was queued (see below). Before a command
+whose outcome depends on that key, wait for state that only the key's
+handling produces, not for state that already held. In the palette smoke's
+busy step, `busy-on` overtook the palette shortcut and the busy window
+refused to open the palette. An Enter handled after `busy-off` opened a
+tab, because the check before `busy-off` already held before Enter. The
+step now waits for the open palette, and for the refused Enter's
+`diagnostic`.
 
 Use `timeout --foreground` around raw-PTY readers in desktop smoke fixtures.
 Without it, GNU timeout puts the reader outside the terminal foreground process
@@ -263,9 +272,10 @@ it, consuming an empty or partial command; in the fullscreen smoke this showed
 up as a spurious window-index error. Readers must never observe partial
 contents.
 
-Integration fixture native-command acknowledgments mean NSEvents were queued,
-not dispatched. Assert observed state transitions after each press/release;
-check independent Right release and link ownership in the same published state.
+Native-command acknowledgments, in the integration and palette fixtures,
+mean NSEvents were queued, not dispatched. Assert observed state transitions
+after each press/release; check independent Right release and link ownership
+in the same published state.
 
 The XDND source publishes terminal acknowledgements before closing Xlib and
 exiting. Await successful process exit and clear its fixture handle after
@@ -306,6 +316,37 @@ when that condition was already true at prefix start.
 Use XTest for `smoke:linux-input`: xdotool's `--window` path uses XSendEvent and
 does not exercise the server's XKB modifier state. The smoke explicitly unbinds
 Alt-3 because Linux reserves Alt-1 through Alt-9 for tab selection.
+
+## Drag preview and tear-off state
+
+The cross-window state publishes `preview` (`none`, `chip`, `window`, or
+`dimmed`) on every platform; Linux always reports `none`. On macOS it adds the
+native readback: `preview_visible` (`isVisible`), `preview_frame` (the screen
+frame as `x,y,w,h` in `AppKit` coordinates, `none` without a window), and
+`key_window` (the key window's number). Per window, `w<i>.tear_off_pill` and
+`w<i>.pane_tear_off` give the drawn bar pill and S1 pill bounds, or `none`.
+`w<i>.origin` is the content's top-left in screen coordinates, so a
+source-local point's screen point is `origin.x + x` and `origin.y - y` on
+macOS. Window indices count terminal windows only, never the preview.
+`w<i>.active_tab` is the active tab's index, which spring-load and spring-back
+steps read.
+
+`checkCrossWindowInput` runs the main transfer sequence. A second fixture
+session, `checkCrossWindowTargets`, covers destination targets in a fresh app:
+spring-loading another window's tab without taking focus and springing back on
+Escape, a refused pane centre, a lone pane into another window's bar, and, on
+macOS, the title row of a window whose bar is hidden. Its drags move through
+intermediate samples (`dragPath`) rather than one jump. Add a step to the
+session whose window and tab bookkeeping it fits, and give a new kind of
+target its own session rather than lengthening the main sequence.
+
+A torn-off window opens under the release point on macOS, so a later step
+that needs that empty space moves it aside with `place-window` first.
+`smoke:macos-input` cannot prove that the locator searches below the preview:
+on macOS 27.0 `windowNumberAtPoint:` skips the mouse-ignoring preview anyway,
+and the step passed with the search starting at the top. Window tests drive
+the preview through `DragPreview::hooks`, since test windows have no `AppKit`
+window.
 
 ## AppKit fixtures
 

@@ -195,6 +195,21 @@ holds every pane's size indicator while it lasts, as it does for a sidebar
 drag. A divider drag holds only the panes beside it. Linux has no such
 state, so the indicator lingers after the last resize there.
 
+The drag preview (`windows/drag_preview/macos.rs`) is a GPUI `PopUp`, which
+GPUI opens as a `Titled | FullSizeContentView` nonactivating panel at the
+popup level with `CanJoinAllSpaces | FullScreenAuxiliary`. It opens with
+`focus: false`, `show: false`, a transparent background, and no inactive frame
+cap. After open, a spawned task sets the style mask to borderless plus
+`NonactivatingPanel`, hides any standard buttons, and sets
+`ignoresMouseEvents`, no native shadow (the view draws its own inside a
+margin), `excludedFromWindowsMenu`, no hide on deactivate, and
+`IgnoresCycle`. Frames change with `setFrame:display:` and show with
+`orderFront:`, never `makeKeyAndOrderFront:`; both run in spawned tasks outside
+any GPUI update, since `AppKit` reports frame and style changes to GPUI
+synchronously, and each skips itself when a newer update is queued. Visibility
+comes from `isVisible` read back after the call. The panel class answers
+`canBecomeKeyWindow` with yes, so nothing may send it a key request.
+
 Guard nil retained handles before invoking `objc` message macros, including in
 retained-handle destructors. Adapter drop moves native resources, such as an
 AppKit owner, into deferred cleanup and leaves nil placeholders behind. The Rust

@@ -187,6 +187,7 @@ mod button_layout;
 mod checkpoints;
 mod client_frame;
 mod cross_window;
+mod drag_preview;
 mod exit_closes;
 mod field_menu;
 mod frame_limits;
@@ -2873,6 +2874,7 @@ fn open_window_with_profile(
                 drawn_panes: RefCell::new(None),
                 drawn_drop: RefCell::new(None),
                 drawn_tear_off: RefCell::new(None),
+                drawn_pane_tear_off: RefCell::new(None),
                 drawn_tabs: RefCell::new(Vec::new()),
                 drawn_focus: RefCell::new(FocusMarks::default()),
                 #[cfg(test)]
@@ -2883,6 +2885,7 @@ fn open_window_with_profile(
                 incoming: None,
                 transfer: None,
                 transfer_scroll: None,
+                transfer_back: None,
                 reveal: Reveal::default(),
                 reveal_context: None,
                 pointer_reveal: PointerReveal::default(),
@@ -4145,6 +4148,8 @@ struct WorkspaceView {
     drawn_drop: RefCell<Option<String>>,
     /// The tear-off pill bounds drawn in the last frame.
     drawn_tear_off: RefCell<Option<Bounds<Pixels>>>,
+    /// The source pane's tear-off pill bounds drawn in the last frame.
+    drawn_pane_tear_off: RefCell<Option<Bounds<Pixels>>>,
     /// The tabs the last frame built labels for, in bar order. Their press
     /// listeners exist only from that frame, so smokes wait for these.
     drawn_tabs: RefCell<Vec<TabId>>,
@@ -4164,6 +4169,9 @@ struct WorkspaceView {
     incoming: Option<cross_window::Incoming>,
     transfer: Option<cross_window::PendingTransfer>,
     transfer_scroll: Option<Pixels>,
+    /// The spring-back a pane tear-off restores when it fails, captured
+    /// before the release dropped its `PaneDrag`.
+    transfer_back: Option<pane_drag::SpringBack>,
     reveal: Reveal,
     reveal_context: Option<(TabPosition, bool, bool)>,
     pointer_reveal: PointerReveal,
@@ -9148,6 +9156,9 @@ impl WorkspaceView {
                     self.check_tab_tear_off_available(cx)?;
                     self.active_tab_id(cx).map(|_| ())
                 }
+                ids::MOVE_PANE_TO_NEW_WINDOW => {
+                    self.check_pane_tear_off_available(cx)
+                }
                 ids::NEW_TAB => self.check_new_tab_available(cx),
                 ids::CLOSE_TAB
                 | ids::CLOSE_OTHER_TABS
@@ -9885,6 +9896,9 @@ impl WorkspaceView {
         match invocation.id {
             ids::MOVE_TAB_TO_NEW_WINDOW => {
                 self.move_tab_to_new_window(invocation, window, cx)
+            }
+            ids::MOVE_PANE_TO_NEW_WINDOW => {
+                self.move_pane_to_new_window(window, cx)
             }
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
@@ -11870,6 +11884,8 @@ fn finish_reload(
             }
         });
     }
+    // A drag under way follows `macos_drag_preview` at once.
+    drag_preview::sync(cx);
     palette_smoke::record_reload_titles(cx);
     configure_watch(cx, inputs);
     follow_up_reload(cx);
@@ -13990,7 +14006,7 @@ impl Render for WorkspaceView {
             }
         }
         *self.drawn_tear_off.borrow_mut() = None;
-        if self.tear_off_cue(cx) {
+        if self.bar_tear_off_pill(cx) {
             let bounds = self.tear_off_pill_bounds(&strip, &layout);
             let floating = self.floating_colors();
             *self.drawn_tear_off.borrow_mut() = Some(bounds);
@@ -14505,6 +14521,7 @@ impl WorkspaceView {
             platform: Platform::current(),
             zoomed: self.shown_zoom(view, cx) == Some(pane),
             panes: view.panes.len(),
+            tabs: self.tabs.len(),
             title_bar: self.config.panes.title_bar,
             input_sync: input_sync::syncs_input(view.id, cx),
             directory_known: tab_directory_path(

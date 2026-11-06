@@ -20,11 +20,14 @@ pub(super) enum Located {
 }
 
 pub(super) trait WindowLocator {
+    /// The topmost window under `point`, searching below the native window
+    /// `below` (the drag preview, when one is open), which never counts.
     fn locate(
         &self,
         source: &Window,
         point: gpui::Point<Pixels>,
         windows: &[(gpui::WindowId, u64)],
+        below: Option<u64>,
     ) -> Located;
 }
 
@@ -37,12 +40,14 @@ impl WindowLocator for NativeLocator {
         source: &Window,
         point: gpui::Point<Pixels>,
         windows: &[(gpui::WindowId, u64)],
+        below: Option<u64>,
     ) -> Located {
         #[cfg(test)]
         if identity(source).is_none() {
             return Located::Window(source.window_handle().window_id(), point);
         }
-        platform::locate(source, point, windows).unwrap_or(Located::Blocked)
+        platform::locate(source, point, windows, below)
+            .unwrap_or(Located::Blocked)
     }
 }
 

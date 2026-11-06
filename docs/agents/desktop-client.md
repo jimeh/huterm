@@ -426,6 +426,10 @@ The Settings window (`windows/settings_window.rs`) has no session and no
 `cx.windows()` must downcast to `WorkspaceView` and skip what is not one, and
 Quit hosts only a window with a model record, or its confirmation would land
 in Settings and Quit would do nothing. Committing Quit closes Settings.
+The macOS drag preview is another such window, open only during a drag. Code
+that indexes or counts windows must count terminal windows only, as
+`cross_window::terminal_windows` does, and `cx.windows().is_empty()` guards
+stay correct only because the preview never outlives its drag.
 
 ## Rendering
 

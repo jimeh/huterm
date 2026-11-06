@@ -3,7 +3,9 @@
 Status: implemented. Delivers
 [#31](https://github.com/jimeh/huterm/issues/31) under the
 [workspaces plan](workspaces-windows-tabs.md); Jim settled the product
-decisions below on 2026-11-03.
+decisions below on 2026-11-03. Pane tear-off and the macOS floating drag
+preview followed in [pane tear-off and the drag preview](pane-tear-off-drag-preview.md),
+which supersedes this plan's "No pane tear-off" decision.
 
 ## Objective
 
@@ -239,10 +241,12 @@ quitting, terminating, or with a close confirmation open.
 
 ## Non-goals
 
-- Pane tear-off into a new window.
+- Pane tear-off into a new window, since delivered by
+  [pane tear-off and the drag preview](pane-tear-off-drag-preview.md).
 - Dropping onto a particular workspace, and moving workspaces (#32).
 - Moving a tab to an existing window by command.
-- A floating drag image outside Huterm windows.
+- A floating drag image outside Huterm windows, since delivered on macOS by
+  [pane tear-off and the drag preview](pane-tear-off-drag-preview.md).
 - Moves between server processes; there is no server yet.
 - Undo for cross-window moves.
 - Native Wayland: GPUI is built without its Wayland feature.

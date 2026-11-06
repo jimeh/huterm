@@ -11,6 +11,7 @@ use gpui::Hsla;
 use huterm_core::{Beside, MoveDestination, PaneRef};
 use huterm_ui::tokens::size;
 
+use super::cross_window::{TEAR_OFF_COMPACT, TEAR_OFF_PILL};
 use super::pane_geometry::{PaneRect, Zone, drop_zone, zone_preview};
 use super::pane_moves::PaneMove;
 use super::tab_strip::LabelZone;
@@ -171,6 +172,18 @@ pub(super) struct PaneDrag {
 impl PaneDrag {
     pub(super) fn remapped(&self) -> bool {
         self.remapped
+    }
+
+    /// Where the press began, in window coordinates.
+    #[cfg(target_os = "macos")]
+    pub(super) fn origin(&self) -> gpui::Point<Pixels> {
+        self.origin
+    }
+
+    /// The bar scroll when the press began, which a cancelled or failed
+    /// drag puts back.
+    pub(super) fn original_scroll(&self) -> Pixels {
+        self.original_scroll
     }
 
     /// The tab the drag expects active: the one it spring-loaded, else its
@@ -822,9 +835,13 @@ impl WorkspaceView {
         cx: &App,
     ) -> Vec<gpui::AnyElement> {
         let mut elements = Vec::new();
+        *self.drawn_pane_tear_off.borrow_mut() = None;
+        // The floating preview draws the chip while it shows one.
+        let mut chip = true;
         let (target, pointer, title, source) = if let Some(incoming) =
             &self.incoming
         {
+            chip = !super::drag_preview::draws_chip(cx);
             (
                 incoming.target,
                 incoming.pointer,
@@ -837,6 +854,15 @@ impl WorkspaceView {
             } else {
                 "none".into()
             });
+            if self.tear_off_pill(cx)
+                && let Some(frame) = self
+                    .pane_drag
+                    .as_ref()
+                    .filter(|drag| drag.dragging)
+                    .and_then(|drag| self.drawn_frame(drag.pane))
+            {
+                elements.extend(self.pane_tear_off_cue(frame, colors));
+            }
             return elements;
         } else if let Some(drag) =
             self.pane_drag.as_ref().filter(|drag| drag.dragging)
@@ -872,28 +898,23 @@ impl WorkspaceView {
         };
         *self.drawn_drop.borrow_mut() = Some(drop_label(target, &self.tabs));
         elements.extend(self.target_elements(target, source, colors, window));
+        if !chip {
+            return elements;
+        }
         // Measure the actual chip before choosing its side of the pointer.
         // All local pane, nesting-tab, and incoming drags share this path.
         elements.push(
             gpui::canvas(
                 move |_, window, cx| {
                     let viewport = window.viewport_size();
-                    let mut chip = div()
-                        .debug_selector(|| "drag-title-chip".to_owned())
-                        .max_w(px(240.0).min(viewport.width))
-                        .max_h(viewport.height)
-                        .overflow_hidden()
-                        .px(px(8.0))
-                        .py(px(2.0))
-                        .rounded(px(6.0))
-                        .bg(colors.active)
-                        .border_1()
-                        .border_color(colors.border)
-                        .text_color(colors.foreground)
-                        .opacity(0.9)
-                        .whitespace_nowrap()
-                        .child(title)
-                        .into_any_element();
+                    let mut chip = super::drag_preview::drag_chip(
+                        &title,
+                        colors,
+                        px(240.0).min(viewport.width),
+                    )
+                    .max_h(viewport.height)
+                    .opacity(0.9)
+                    .into_any_element();
                     let measured = chip.layout_as_root(
                         size(
                             gpui::AvailableSpace::MaxContent,
@@ -916,6 +937,61 @@ impl WorkspaceView {
             .into_any_element(),
         );
         elements
+    }
+
+    /// The source pane while a release would tear it off (S1): its contents
+    /// dimmed to 45%, a full-contrast dashed outline, and the tear-off pill
+    /// centred. Records the pill for smoke state.
+    fn pane_tear_off_cue(
+        &self,
+        frame: Bounds<Pixels>,
+        colors: TabColors,
+    ) -> Vec<gpui::AnyElement> {
+        let outline = drop_box(frame);
+        let pill = pane_tear_off_pill(frame);
+        *self.drawn_pane_tear_off.borrow_mut() = Some(pill);
+        vec![
+            // The terminal colour at 55% leaves the contents at 45%.
+            div()
+                .absolute()
+                .left(frame.origin.x)
+                .top(frame.origin.y)
+                .w(frame.size.width)
+                .h(frame.size.height)
+                .bg(colors.terminal.opacity(0.55))
+                .into_any_element(),
+            div()
+                .debug_selector(|| "pane-tear-off-outline".to_owned())
+                .absolute()
+                .left(outline.origin.x)
+                .top(outline.origin.y)
+                .w(outline.size.width)
+                .h(outline.size.height)
+                .rounded(px(size::CONTROL_RADIUS))
+                .border_1()
+                .border_dashed()
+                .border_color(colors.foreground)
+                .into_any_element(),
+            div()
+                .debug_selector(|| "pane-tear-off-pill".to_owned())
+                .absolute()
+                .left(pill.left())
+                .top(pill.top())
+                .w(pill.size.width)
+                .h(pill.size.height)
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .bg(colors.active)
+                .border_1()
+                .border_color(colors.accent)
+                .text_color(colors.foreground)
+                .child(super::cross_window::tear_off_label(pill))
+                .into_any_element(),
+        ]
     }
 
     /// The result region of a drag `target`, with the dragged pane's
@@ -993,6 +1069,25 @@ impl WorkspaceView {
         }
         elements
     }
+}
+
+/// The pill centred in a source pane that would tear off: labelled when
+/// the pane has room for it beside a margin, the arrow alone otherwise.
+pub(super) fn pane_tear_off_pill(frame: Bounds<Pixels>) -> Bounds<Pixels> {
+    const MARGIN: Pixels = px(6.0);
+    let width = if frame.size.width >= TEAR_OFF_PILL + MARGIN * 2.0 {
+        TEAR_OFF_PILL
+    } else {
+        TEAR_OFF_COMPACT
+    };
+    let height = px(24.0).min(frame.size.height);
+    Bounds::new(
+        point(
+            frame.center().x - width / 2.0,
+            frame.center().y - height / 2.0,
+        ),
+        size(width, height),
+    )
 }
 
 /// A drop target as smoke state names it: `pane:<index>:<zone>` with the
@@ -1105,6 +1200,31 @@ mod tests {
         assert_eq!(spring.armed_at(), Some(later + Duration::from_millis(100)));
         spring.hover(None, later);
         assert_eq!(spring, SpringLoad::default());
+    }
+
+    #[test]
+    fn the_pane_tear_off_pill_centres_and_turns_compact_in_a_narrow_pane() {
+        let wide =
+            Bounds::new(point(px(100.0), px(50.0)), size(px(300.0), px(200.0)));
+        assert_eq!(
+            pane_tear_off_pill(wide),
+            Bounds::new(
+                point(px(186.0), px(138.0)),
+                size(TEAR_OFF_PILL, px(24.0))
+            )
+        );
+        let narrow = Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(TEAR_OFF_PILL + px(11.0), px(20.0)),
+        );
+        let pill = pane_tear_off_pill(narrow);
+        assert_eq!(pill.size, size(TEAR_OFF_COMPACT, px(20.0)));
+        assert_eq!(pill.center(), narrow.center());
+        let fits = Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(TEAR_OFF_PILL + px(12.0), px(40.0)),
+        );
+        assert_eq!(pane_tear_off_pill(fits).size.width, TEAR_OFF_PILL);
     }
 
     #[test]
