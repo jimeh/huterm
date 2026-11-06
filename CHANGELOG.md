@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/jimeh/huterm/compare/v0.28.0...v0.29.0) (2026-11-06)
+
+
+### Features
+
+* select a word with a double-click and a line with a triple-click ([#412](https://github.com/jimeh/huterm/issues/412)) ([0e739d2](https://github.com/jimeh/huterm/commit/0e739d26fe6bfa83908540a1379283156178230c))
+
 ## [0.28.0](https://github.com/jimeh/huterm/compare/v0.27.0...v0.28.0) (2026-11-05)
 
 
