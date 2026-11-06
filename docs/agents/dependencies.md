@@ -17,7 +17,9 @@ Mise 2026.10.19 and newer default to `lockfile_mode = "generate"`, so
 `mise install` downloads each platform in `mise.lock` that lacks a checksum,
 Windows included, and fails when that platform's URL does not resolve. Make
 each `http:` tool's URL template resolve on every locked platform, as
-elvish's `os()`-selected archive extension does.
+elvish's `os()`-selected archive extension does. CI never regenerates the lock:
+the Mise action adds `--locked` whenever `mise.lock` exists, and every other CI
+install passes it explicitly. Keep `--locked` on any new CI install.
 
 The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.10 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
