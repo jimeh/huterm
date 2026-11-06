@@ -541,18 +541,73 @@ export function platformFromJobName(name: string): Platform | undefined {
 }
 
 /**
+ * The parts of a job log that belong to failures: a nextest `FAIL` or
+ * `TIMEOUT` block and libtest `---- name stdout ----` block for each failed
+ * Rust test, the output before each Bun `(fail)` line, and each workflow step
+ * that reported an `##[error]`. Each part names what failed, so a passing
+ * test or step whose name appears elsewhere in the log never matches.
+ */
+export function failureBlocks(log: string): { name: string; text: string }[] {
+  const lines = log.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").split("\n").map((line) => line.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z /, ""));
+  const blocks: { name: string; text: string }[] = [];
+  const nextest = /^\s*(PASS|FAIL|TIMEOUT|SIGSEGV|SIGABRT|SIGKILL|SIGTERM|SKIP|SLOW|LEAK|TRY \d+ FAIL)\s+\[[^\]]*\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)\s*$/;
+  let bunStart = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const result = nextest.exec(line);
+    if (result && !["PASS", "SKIP", "SLOW", "LEAK"].includes(result[1]!)) {
+      let end = index + 1;
+      while (end < lines.length && !nextest.test(lines[end]!) && !/^\s*Summary \[/.test(lines[end]!)) end++;
+      blocks.push({ name: `${result[2]} ${result[3]}`, text: lines.slice(index, end).join("\n") });
+    }
+    const libtest = /^---- (\S+) std(?:out|err) ----$/.exec(line.trim());
+    if (libtest) {
+      let end = index + 1;
+      while (end < lines.length && !/^---- \S+ std(?:out|err) ----$|^failures:$/.test(lines[end]!.trim())) end++;
+      blocks.push({ name: libtest[1]!, text: lines.slice(index, end).join("\n") });
+    }
+    const bun = /^\((pass|fail|skip|todo)\) (.*?)(?: \[[\d.]+m?s\])?$/.exec(line.trim());
+    if (bun) {
+      if (bun[1] === "fail") blocks.push({ name: bun[2]!, text: lines.slice(bunStart, index + 1).join("\n") });
+      bunStart = index + 1;
+    }
+  }
+  // Workflow steps: each `##[group]Run` header starts one; keep those that errored.
+  let header = "";
+  let section: string[] = [];
+  const flush = () => {
+    if (section.some((line) => line.includes("##[error]"))) blocks.push({ name: header, text: section.join("\n") });
+  };
+  for (const line of lines) {
+    const step = /##\[group\]Run (.*)$/.exec(line);
+    if (step) {
+      flush();
+      header = step[1]!;
+      section = [];
+    }
+    section.push(line);
+  }
+  flush();
+  return blocks;
+}
+
+/**
  * Entries that a failed job's log points at. Used when a run has no flake
  * report, for example a failure before the runner could classify it. An entry
- * matches when its selector appears in the log and its signature fits it.
+ * matches a failure block that names its selector, and its signature must fit
+ * that block alone.
  */
 export function classifyLog(flakes: Flake[], log: string, platform: Platform): Flake[] {
+  const blocks = failureBlocks(log);
   return flakes.filter((flake) => {
     if (!flake.platforms.includes(platform)) return false;
-    const tokens = flake.kind === "rust" ? flake.selector.tests ?? []
-      : flake.kind === "smoke" ? (flake.selector.steps ?? []).map((step) => `HUTERM_CI_SMOKE_STEP=${step}`)
-        : flake.kind === "bun" ? flake.selector.tests ?? []
-          : flake.selector.step_names ?? [];
-    return tokens.some((token) => log.includes(token)) && signatureMatches(flake, log);
+    return blocks.some((block) => {
+      const named = flake.kind === "rust" ? (flake.selector.tests ?? []).some((test) => block.name === `${flake.selector.binary} ${test}` || block.name === test)
+        : flake.kind === "smoke" ? (flake.selector.steps ?? []).some((step) => block.name.includes(`HUTERM_CI_SMOKE_STEP=${step} `))
+          : flake.kind === "bun" ? (flake.selector.tests ?? []).some((test) => block.name.includes(test))
+            : true;
+      return named && signatureMatches(flake, block.text);
+    });
   });
 }
 
@@ -576,7 +631,7 @@ export function appendOccurrence(text: string, occurrence: Occurrence): string {
 /** Workflow job keys (GITHUB_JOB) and the start of their display names. */
 const JOB_NAMES: Record<string, string> = { checks: "Checks", smoke: "Rust smoke", releasesafe: "Ghostty ReleaseSafe" };
 
-type GhJob = { id: number; name: string; conclusion: string | null; html_url: string; head_sha: string; started_at: string };
+type GhJob = { id: number; name: string; conclusion: string | null; html_url: string; head_sha: string; started_at: string; run_attempt: number };
 
 async function gh(args: string[]): Promise<string> {
   const proc = Bun.spawn(["gh", ...args], { stdout: "pipe", stderr: "pipe" });
@@ -593,11 +648,14 @@ export async function record(url: string, root = repositoryRoot): Promise<string
   const { flakes, errors } = loadFlakes(root);
   if (errors.length) throw new Error(`fix the registry first:\n${errors.join("\n")}`);
   const run = JSON.parse(await gh(["api", `repos/${repository}/actions/runs/${runId}`])) as { head_sha: string; created_at: string; pull_requests?: { number: number }[]; run_attempt: number };
-  const jobs = (JSON.parse(await gh(["api", "--paginate", "--slurp", `repos/${repository}/actions/runs/${runId}/attempts/${run.run_attempt}/jobs?per_page=100`])) as { jobs: GhJob[] }[])
+  // A failure retried by rerunning the job lives in an earlier attempt, so read every attempt's jobs.
+  const jobs = (JSON.parse(await gh(["api", "--paginate", "--slurp", `repos/${repository}/actions/runs/${runId}/jobs?filter=all&per_page=100`])) as { jobs: GhJob[] }[])
     .flatMap((page) => page.jobs)
     .filter((job) => !jobId || String(job.id) === jobId);
   const date = run.created_at.slice(0, 10);
-  const pr = run.pull_requests?.[0]?.number;
+  // `pull_requests` is empty once the branch is gone, so fall back to the commit's PRs.
+  const pr = run.pull_requests?.[0]?.number
+    ?? (JSON.parse(await gh(["api", `repos/${repository}/commits/${run.head_sha}/pulls`]).catch(() => "[]")) as { number: number }[])[0]?.number;
   const sha = run.head_sha.slice(0, 8);
   const notes: string[] = [];
   const add = (flake: Flake, occurrence: Occurrence) => {
@@ -617,7 +675,7 @@ export async function record(url: string, root = repositoryRoot): Promise<string
   try {
     await gh(["run", "download", runId, "--repo", repository, "--pattern", "flake-report-*", "--dir", reports]);
   } catch (error) {
-    if (!/no valid artifacts/i.test((error as Error).message)) notes.push(`no flake reports downloaded: ${(error as Error).message}`);
+    if (!/no valid artifacts|no artifact matches/i.test((error as Error).message)) notes.push(`no flake reports downloaded: ${(error as Error).message}`);
   }
   const reported = new Set<string>();
   if (existsSync(reports)) {
@@ -627,9 +685,10 @@ export async function record(url: string, root = repositoryRoot): Promise<string
       for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
         const item = JSON.parse(line) as ReportRecord;
         const flake = flakes.find((candidate) => candidate.id === item.flake);
-        if (!flake || item.run?.attempt !== String(run.run_attempt)) continue;
+        if (!flake) continue;
         const prefix = JOB_NAMES[item.run?.job ?? ""];
-        const job = jobs.find((candidate) => !!prefix && candidate.name.startsWith(prefix) && platformFromJobName(candidate.name) === item.platform);
+        const job = jobs.find((candidate) => !!prefix && candidate.name.startsWith(prefix)
+          && platformFromJobName(candidate.name) === item.platform && String(candidate.run_attempt) === item.run?.attempt);
         if (jobId && !job) continue;
         const occurrenceUrl = job?.html_url ?? `https://github.com/${repository}/actions/runs/${runId}`;
         reported.add(`${flake.id} ${occurrenceUrl}`);
@@ -644,7 +703,8 @@ export async function record(url: string, root = repositoryRoot): Promise<string
       notes.push(`${job.name}: unknown platform, skipped`);
       continue;
     }
-    const log = await gh(["api", `repos/${repository}/actions/jobs/${job.id}/logs`]);
+    // Job logs carry the runner's color codes; failureBlocks strips them.
+    const log = await gh(["api", "--allow-escape-sequences", `repos/${repository}/actions/jobs/${job.id}/logs`]);
     const matches = classifyLog(flakes, log, platform).filter((flake) => !reported.has(`${flake.id} ${job.html_url}`));
     if (!matches.length && ![...reported].some((key) => key.endsWith(` ${job.html_url}`))) {
       notes.push(`${job.name}: no registered flake matches; if it is a new flake, add an entry under ${flakeDirectory}`);

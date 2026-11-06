@@ -83,6 +83,14 @@ date = "2026-11-06"
 local = true
 platform = "macos-arm64"
 note = "pane tear-off work (#401)"
+
+[[occurrences]]
+date = "2026-11-03"
+url = "https://github.com/jimeh/huterm/actions/runs/41731482596/job/126249669413"
+pr = 383
+sha = "9d5e1247"
+platform = "macos-arm64"
+note = "hosted CI: the orphan test's `!orphan.foreground`"
 +++
 
 - **Label:**
@@ -151,6 +159,10 @@ note = "pane tear-off work (#401)"
   describes the same shell behavior. Longer deadlines would not help; a fix
   would give these fixtures a process group that they create and hand the
   terminal to themselves, rather than relying on `/bin/sh` job control.
+- **CI:** recording the registry's runs found one hosted failure the prose
+  above missed: on 2026-11-03, PR #383 (run 41731482596, job 126249669413)
+  failed the orphan test at `assert!(!orphan.foreground)` in
+  `Checks (macOS arm64)`.
 - **Fix (2026-11-06):** the fixtures own their process groups. The test
   binary reruns itself as a helper that calls `setpgid` and `tcsetpgrp`,
   prints a marker once it holds the foreground, and returns the terminal on

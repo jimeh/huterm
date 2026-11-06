@@ -169,10 +169,26 @@ describe("recording", () => {
     expect(parsed.flake?.body).toBe("\nEvidence.\n");
   });
 
-  test("a job log matches when it names the selector and fits the signature", () => {
-    const log = "run: HUTERM_CI_SMOKE_STEP=renderer mise run ci:smoke:step\nerror: renderer smoke timed out after 15000ms\n";
-    expect(classifyLog([flake()], log, "linux-x86_64").map((item) => item.id)).toEqual(["renderer-hang"]);
-    expect(classifyLog([flake()], log.replace("=renderer", "=linux-input"), "linux-x86_64")).toEqual([]);
+  test("a job log matches only a failed step that names the selector", () => {
+    const step = (name: string, body: string) => `2026-11-05T01:02:03.0000000Z ##[group]Run HUTERM_CI_SMOKE_STEP=${name} mise run ci:smoke:step\n${body}\n`;
+    const failed = step("renderer", "error: renderer smoke timed out after 15000ms\n##[error]Process completed with exit code 1.");
+    expect(classifyLog([flake()], failed, "linux-x86_64").map((item) => item.id)).toEqual(["renderer-hang"]);
+    expect(classifyLog([flake()], failed.replace("=renderer", "=linux-input"), "linux-x86_64")).toEqual([]);
+    // The same text in a step that passed, or beside a failure in another step, is no match.
+    expect(classifyLog([flake()], step("renderer", "renderer smoke timed out after 15000ms") + step("linux-input", "##[error]exit 1"), "linux-x86_64")).toEqual([]);
+  });
+
+  test("a job log matches a Rust test only inside its failure block", () => {
+    const rust = flake({
+      id: '"close"', kind: '"rust"', retries: "2",
+      selector: 'binary = "huterm-gpui"\ntests = ["window_tests::close"]',
+      signature: 'match = ["timed out waiting for the click"]',
+    });
+    const passing = "        PASS [   0.8s] (1/3) huterm-gpui window_tests::close\n";
+    const other = "        FAIL [   1.0s] (2/3) huterm-gpui window_tests::other\n  stderr: timed out waiting for the click\n";
+    expect(classifyLog([rust], passing + other, "linux-x86_64")).toEqual([]);
+    const failing = "        FAIL [  10.1s] (3/3) huterm-gpui window_tests::close\n  stderr: timed out waiting for the click to close\n     Summary [ 12s]\n";
+    expect(classifyLog([rust], passing + failing, "linux-x86_64").map((item) => item.id)).toEqual(["close"]);
   });
 });
 

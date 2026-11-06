@@ -70,8 +70,8 @@ test("smoke deadline closes pipes retained by a descendant after parent exit", a
 // macOS answers EPERM, not ESRCH, when it signals a group that holds only
 // exited, unreaped members, so the supervisor checks the members' states.
 test.skipIf(process.platform === "win32")("process group members report unreaped exits as zombies", async () => {
-  // `exec` replaces the shell without reaping its background child.
-  const leader = spawn("sh", ["-c", "true & exec sleep 5"], { detached: true, stdio: "ignore" });
+  // Perl leaves an exited child unreaped; a shell may reap it before `exec`.
+  const leader = spawn("perl", ["-e", "exit 0 if fork() == 0; sleep 5"], { detached: true, stdio: "ignore" });
   const group = leader.pid!;
   try {
     const deadline = Date.now() + 5_000;
