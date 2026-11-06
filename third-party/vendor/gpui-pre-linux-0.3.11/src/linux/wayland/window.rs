@@ -2276,7 +2276,20 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn a11y_update_window_bounds(&self) {
-        // Wayland doesn't expose window position, so this is a no-op
+        // Wayland doesn't expose window position, so screen coordinates are the window's own,
+        // but the window frame still reports its size.
+        let mut state = self.borrow_mut();
+        let scale = state.scale;
+        let size = state.bounds.size;
+        let bounds = accesskit::Rect {
+            x0: 0.0,
+            y0: 0.0,
+            x1: (f32::from(size.width) * scale) as f64,
+            y1: (f32::from(size.height) * scale) as f64,
+        };
+        if let Some(adapter) = state.accesskit_adapter.as_mut() {
+            adapter.set_root_window_bounds(bounds, bounds);
+        }
     }
 }
 

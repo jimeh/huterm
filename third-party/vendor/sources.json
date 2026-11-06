@@ -42,6 +42,11 @@
           "name": "native-key-identity",
           "file": "patches/gpui-pre/native-key-identity.patch",
           "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
+        },
+        {
+          "name": "a11y-window-bounds",
+          "file": "patches/gpui-pre/a11y-window-bounds.patch",
+          "description": "Send the window's bounds to the platform accessibility adapter when assistive technology activates it and on every move or resize while it is active. The Linux adapters implement a11y_update_window_bounds, but nothing called it, so AT-SPI reported window coordinates as screen coordinates and the window frame had no extents. X11 reads the bounds with a server round trip, so windows skip it while no assistive technology is connected."
         }
       ]
     },
@@ -76,6 +81,11 @@
           "name": "native-key-identity",
           "file": "patches/gpui-pre-linux/native-key-identity.patch",
           "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
+        },
+        {
+          "name": "a11y-window-bounds",
+          "file": "patches/gpui-pre-linux/a11y-window-bounds.patch",
+          "description": "Report the window's screen rectangle as AccessKit's root bounds. X11 reads the window's root origin from the server with the existing get_root_position helper, because GPUI's stored origin can be relative to the window manager's frame, and uses the X window's own rectangle, because GPUI's coordinates start there with client-side decoration insets included. Wayland, which has no global position, reports the window's size at the origin, so the window frame has extents."
         }
       ]
     },
@@ -110,6 +120,11 @@
           "name": "vm-display-link",
           "file": "patches/gpui-pre-macos/vm-display-link.patch",
           "description": "Pace windows with CVDisplayLink instead of CAMetalDisplayLink when kern.hv_vmm_present reports a virtual machine, where the Metal link stops issuing updates, and print the selected frame source once when GPUI_FRAME_SOURCE_DEBUG is set."
+        },
+        {
+          "name": "accessibility-view-adapter",
+          "file": "patches/gpui-pre-macos/accessibility-view-adapter.patch",
+          "description": "Attach the AccessKit adapter to GPUI's own view rather than the window's content view. GPUIView is a subview of the content view and the first responder, and AppKit resolves the application's focused element from the first responder, so an adapter on the content view left AX clients with the window instead of the focused node."
         }
       ]
     },

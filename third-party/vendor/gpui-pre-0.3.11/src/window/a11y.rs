@@ -221,6 +221,12 @@ impl A11y {
         self.active_this_frame
     }
 
+    /// Whether assistive technology is connected now, which can differ from
+    /// [`Self::is_active`] until the next frame starts.
+    pub(crate) fn is_active_now(&self) -> bool {
+        self.is_enabled() && self.active_flag.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn set_focusable(&mut self, node_id: NodeId, focus_id: FocusId) {
         self.focus_ids.insert(node_id, focus_id);
     }
