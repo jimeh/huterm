@@ -441,3 +441,118 @@ fn a_toast_taller_than_the_window_scrolls_and_opens_at_its_dismiss(
         "it opens at its top, where Dismiss is"
     );
 }
+
+fn focused_title(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> Option<String> {
+    harness.update_view(window, |view, window, _| {
+        let id = view.focused_notice?;
+        view.notice_focus
+            .is_focused(window)
+            .then(|| view.notices.get(id).unwrap().content.title.clone())
+    })
+}
+
+#[gpui::test]
+fn the_arrow_keys_read_through_a_tall_focused_toast_before_moving_on(
+    cx: &mut TestAppContext,
+) {
+    let (mut harness, window) = small_window(cx);
+    raise_persistent(
+        &mut harness,
+        window,
+        RESTORE,
+        "Saved state is damaged.",
+        false,
+    );
+    let message = "Another Huterm process is saving sessions. ".repeat(6);
+    raise_persistent(&mut harness, window, SAVE, &message, true);
+    let screen = area(&mut harness, window);
+    let retry = |harness: &mut DesktopHarness| {
+        drawn(harness, window, "toast-Can't save sessions-Retry").unwrap()
+    };
+    invoke(&mut harness, window, ids::FOCUS_NOTICES);
+    assert!(!inside(screen, retry(&mut harness)), "it opens at its top");
+    let mut presses = 0;
+    while !inside(screen, retry(&mut harness)) {
+        presses += 1;
+        assert!(presses < 20, "Down never reached the toast's actions");
+        invoke(&mut harness, window, ids::NOTICE_NEXT);
+        assert_eq!(focused_title(&mut harness, window).as_deref(), Some(SAVE));
+    }
+    assert!(presses > 1, "each press scrolls one step");
+    // Up reads back to its top, where Dismiss is, then moves on.
+    while !inside(screen, drawn_dismiss(&mut harness, window, SAVE)) {
+        invoke(&mut harness, window, ids::NOTICE_PREVIOUS);
+        assert_eq!(focused_title(&mut harness, window).as_deref(), Some(SAVE));
+    }
+    // Moving to an action scrolls it into view.
+    invoke(&mut harness, window, ids::NOTICE_FOCUS_NEXT);
+    assert!(
+        inside(screen, retry(&mut harness)),
+        "the current action shows"
+    );
+    invoke(&mut harness, window, ids::NOTICE_FOCUS_PREVIOUS);
+    assert!(
+        inside(screen, drawn_dismiss(&mut harness, window, SAVE)),
+        "the current Dismiss shows"
+    );
+    while focused_title(&mut harness, window).as_deref() == Some(SAVE) {
+        invoke(&mut harness, window, ids::NOTICE_PREVIOUS);
+    }
+    assert_eq!(
+        focused_title(&mut harness, window).as_deref(),
+        Some(RESTORE)
+    );
+}
+
+#[gpui::test]
+fn enter_presses_the_button_the_keyboard_moved_to(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let window = ready_window(&mut harness);
+    let two_actions = |title: &str| {
+        NoticeContent::diagnostic(
+            Severity::Error,
+            NoticeSource::Config,
+            title,
+            "message",
+        )
+        .action("Reload", CommandInvocation::new(ids::RELOAD_CONFIG, vec![]))
+        .action(
+            "Clear All",
+            CommandInvocation::new(ids::DISMISS_ALL_NOTICES, vec![]),
+        )
+    };
+    raise_persistent(
+        &mut harness,
+        window,
+        RESTORE,
+        "Saved state is damaged.",
+        false,
+    );
+    let first = two_actions("First");
+    harness.update_view(window, |view, _, cx| view.notify(first, cx));
+    harness.cx.run_until_parked();
+
+    // Backwards from no button wraps to Dismiss, which Enter presses.
+    invoke(&mut harness, window, ids::FOCUS_NOTICES);
+    invoke(&mut harness, window, ids::NOTICE_FOCUS_PREVIOUS);
+    invoke(&mut harness, window, ids::NOTICE_RUN_ACTION);
+    assert_eq!(harness.cx.update(|cx| notices(cx, window)).len(), 1);
+    assert_eq!(
+        focused_title(&mut harness, window).as_deref(),
+        Some(RESTORE),
+        "focus moves to the remaining toast"
+    );
+
+    // Forward past the first action, Enter runs the second.
+    let second = two_actions("Second");
+    harness.update_view(window, |view, _, cx| view.notify(second, cx));
+    harness.cx.run_until_parked();
+    invoke(&mut harness, window, ids::FOCUS_NOTICES);
+    invoke(&mut harness, window, ids::NOTICE_FOCUS_NEXT);
+    invoke(&mut harness, window, ids::NOTICE_FOCUS_NEXT);
+    invoke(&mut harness, window, ids::NOTICE_RUN_ACTION);
+    harness.wait_for("Clear All to run", |cx| notices(cx, window).is_empty());
+}

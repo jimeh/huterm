@@ -518,8 +518,8 @@ const EDGE: f32 = 12.0;
 /// toast scrolled to the column's edge keeps its ring in view. Two of these
 /// make the gap between toasts.
 const RING_ROOM: f32 = 4.0;
-/// How far the scroll region reaches past the toasts' left edge and above
-/// the top one, so their shadows fade before the region clips them.
+/// How far the scroll region reaches past the toasts' slots on the left,
+/// top, and bottom, so [`toast_shadow`] fades before the region clips it.
 const SHADOW_ROOM: f32 = 12.0;
 /// The scroll region's distance from the terminal area's right edge, where
 /// its scrollbar draws.
@@ -539,6 +539,8 @@ pub(crate) struct StackFit {
     /// The scroll region's height limit: the area's height above
     /// `region_bottom`. Taller content scrolls.
     max_height: Pixels,
+    /// The newest toast's bottom, above the area's bottom edge.
+    bottom: Pixels,
     /// The scroll region's bottom, above the area's bottom edge.
     region_bottom: Pixels,
     /// Whether older toasts collapse, because the area is short.
@@ -553,31 +555,33 @@ impl StackFit {
         bottom: Pixels,
         rem_size: Pixels,
     ) -> Self {
-        let region_bottom = (bottom - px(RING_ROOM)).max(Pixels::ZERO);
+        let region_bottom =
+            (bottom - px(RING_ROOM + SHADOW_ROOM)).max(Pixels::ZERO);
         Self {
             toast_width: px(TOAST_WIDTH)
                 .min(area.width - px(EDGE) * 2.0)
                 .max(Pixels::ZERO),
             max_height: (area.height - region_bottom).max(Pixels::ZERO),
+            bottom,
             region_bottom,
             compact: area.height < COMPACT_BELOW.to_pixels(rem_size),
         }
     }
 
     /// Space inside the scroll region around its slots: room for shadows
-    /// on the left and top, and for the scrollbar between the toasts and
-    /// the area's right edge.
-    pub(crate) fn region_padding() -> Edges<Pixels> {
+    /// on the left, top, and bottom, and for the scrollbar between the
+    /// toasts and the area's right edge.
+    pub(crate) fn region_padding(&self) -> Edges<Pixels> {
         Edges {
             top: px(SHADOW_ROOM),
             right: px(EDGE - SCROLLBAR_INSET - RING_ROOM),
-            bottom: Pixels::ZERO,
+            bottom: self.bottom - px(RING_ROOM) - self.region_bottom,
             left: px(SHADOW_ROOM),
         }
     }
 
     fn region_width(&self) -> Pixels {
-        let padding = Self::region_padding();
+        let padding = self.region_padding();
         self.toast_width + px(RING_ROOM) * 2.0 + padding.left + padding.right
     }
 }
@@ -590,6 +594,9 @@ pub(crate) struct NoticeColumn<'a> {
     pub(crate) now: Instant,
     /// The toast that carries the focus ring and stays expanded.
     pub(crate) focused: Option<NoticeId>,
+    /// The focused toast's current button, by index among its actions and
+    /// then Dismiss.
+    pub(crate) button: Option<usize>,
     /// Toasts under the pointer, which stay expanded.
     pub(crate) hovered: &'a HashSet<NoticeId>,
     pub(crate) fit: StackFit,
@@ -638,7 +645,11 @@ impl NoticeColumn<'_> {
                     .child(render_toast(
                         notice,
                         self.stack.progress(id, self.now),
-                        self.focused == Some(id),
+                        match (self.focused == Some(id), self.button) {
+                            (false, _) => ToastFocus::None,
+                            (true, None) => ToastFocus::Toast,
+                            (true, Some(index)) => ToastFocus::Button(index),
+                        },
                         expanded,
                         self.swatch,
                         self.handlers,
@@ -671,6 +682,20 @@ impl NoticeColumn<'_> {
     }
 }
 
+/// The raised-surface shadow, held within [`SHADOW_ROOM`] so the scroll
+/// region's rectangular clip does not show around the rounded toast.
+fn toast_shadow(swatch: Swatch) -> Vec<gpui::BoxShadow> {
+    swatch
+        .shadow()
+        .into_iter()
+        .map(|mut shadow| {
+            shadow.blur_radius = shadow.blur_radius.min(px(SHADOW_ROOM - 4.0));
+            shadow.offset.y = shadow.offset.y.min(px(4.0));
+            shadow
+        })
+        .collect()
+}
+
 /// A collapsed toast's one line: its title, or its message when it has
 /// none, cut short with an ellipsis.
 fn collapsed_body(content: &NoticeContent) -> Div {
@@ -689,9 +714,45 @@ fn collapsed_body(content: &NoticeContent) -> Div {
         .child(line.to_owned())
 }
 
+/// A toast's Dismiss button, `current` for the keyboard.
+fn dismiss_button(
+    id: NoticeId,
+    content: &NoticeContent,
+    current: bool,
+    swatch: Swatch,
+    handlers: &ToastHandlers,
+) -> Button {
+    let dismiss = Rc::clone(&handlers.dismiss);
+    // The name and tooltip say which of the stacked toasts it dismisses.
+    let name = if content.title.is_empty() {
+        "Dismiss".to_owned()
+    } else {
+        format!("Dismiss {}", content.title)
+    };
+    let selector = format!("toast-{name}");
+    Button::new(("toast-dismiss", id.0), name, swatch)
+        .variant(Variant::Ghost)
+        .icon(
+            svg()
+                .path(Icon::X.asset_path())
+                .w(px(12.0))
+                .h(px(12.0))
+                .text_color(swatch.muted),
+        )
+        .icon_only()
+        .size(px(22.0))
+        .rounded(px(5.0))
+        .cursor_pointer()
+        .current(current)
+        .debug_selector(|| selector)
+        .on_click(move |window, cx| dismiss(id, window, cx))
+}
+
+/// A full toast's text and action links; `button` is the current one.
 fn toast_body(
     id: NoticeId,
     content: &NoticeContent,
+    button: Option<usize>,
     swatch: Swatch,
     handlers: &ToastHandlers,
 ) -> Div {
@@ -723,6 +784,7 @@ fn toast_body(
     for (index, action) in content.actions.iter().enumerate() {
         let run = Rc::clone(&handlers.run_action);
         let command = action.command.clone();
+        let selector = format!("toast-{}-{}", content.title, action.label);
         actions = actions.child(
             Button::new(
                 SharedString::from(format!("toast-action-{}-{index}", id.0)),
@@ -736,6 +798,8 @@ fn toast_body(
             .text_size(ui(12.5))
             .font_weight(gpui::FontWeight::MEDIUM)
             .cursor_pointer()
+            .current(button == Some(index))
+            .debug_selector(|| selector)
             .on_click(move |window, cx| {
                 run(id, command.clone(), window, cx);
             }),
@@ -744,12 +808,32 @@ fn toast_body(
     body.child(actions)
 }
 
+/// How a toast shows keyboard focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToastFocus {
+    None,
+    /// The toast has focus and no current button.
+    Toast,
+    /// The toast has focus, and this button, by index among its actions
+    /// and then Dismiss, is current.
+    Button(usize),
+}
+
+impl ToastFocus {
+    fn button(self) -> Option<usize> {
+        match self {
+            Self::Button(index) => Some(index),
+            Self::None | Self::Toast => None,
+        }
+    }
+}
+
 /// One toast: in full when `expanded`, otherwise collapsed to its mark,
 /// title, and Dismiss button on one line.
 fn render_toast(
     notice: &Notice,
     progress: Option<f32>,
-    focused: bool,
+    focus: ToastFocus,
     expanded: bool,
     swatch: Swatch,
     handlers: &ToastHandlers,
@@ -757,18 +841,12 @@ fn render_toast(
     let id = notice.id;
     let content = &notice.content;
     let stripe = content.severity.color(swatch);
-    let mut shadow = swatch.shadow();
-    if focused {
+    let mut shadow = toast_shadow(swatch);
+    if focus != ToastFocus::None {
         shadow.extend(swatch.focus_ring());
     }
-    let dismiss = Rc::clone(&handlers.dismiss);
+    let button = focus.button();
     let hover = Rc::clone(&handlers.hover);
-    // The name and tooltip say which of the stacked toasts it dismisses.
-    let dismiss_name = if content.title.is_empty() {
-        "Dismiss".to_owned()
-    } else {
-        format!("Dismiss {}", content.title)
-    };
     // Presses stay on the toast: a click must not start a terminal selection
     // or application mouse input beneath it. Releases pass through, so a
     // terminal gesture that ends over the toast still finishes; the terminal
@@ -776,7 +854,6 @@ fn render_toast(
     let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
         cx.stop_propagation();
     };
-    let dismiss_selector = dismiss_name.clone();
     let progress_selector = content.title.clone();
     let toast_selector = content.title.clone();
     let mut toast = raised_panel(swatch, TOAST_RADIUS)
@@ -818,27 +895,17 @@ fn render_toast(
         ))
         .child(severity_mark(content.severity.glyph(), stripe, swatch))
         .child(if expanded {
-            toast_body(id, content, swatch, handlers)
+            toast_body(id, content, button, swatch, handlers)
         } else {
             collapsed_body(content)
         })
-        .child(
-            Button::new(("toast-dismiss", id.0), dismiss_name, swatch)
-                .variant(Variant::Ghost)
-                .icon(
-                    svg()
-                        .path(Icon::X.asset_path())
-                        .w(px(12.0))
-                        .h(px(12.0))
-                        .text_color(swatch.muted),
-                )
-                .icon_only()
-                .size(px(22.0))
-                .rounded(px(5.0))
-                .cursor_pointer()
-                .debug_selector(|| format!("toast-{dismiss_selector}"))
-                .on_click(move |window, cx| dismiss(id, window, cx)),
-        );
+        .child(dismiss_button(
+            id,
+            content,
+            button == Some(content.actions.len()),
+            swatch,
+            handlers,
+        ));
     if let Some(progress) = progress {
         // Inset by the corner radius and lifted off the border, so the line
         // stays inside the rounded panel; the content mask is rectangular.
@@ -1089,7 +1156,12 @@ mod tests {
         let fit =
             StackFit::new(Size::new(px(800.0), px(600.0)), px(12.0), design);
         assert_eq!(fit.toast_width, px(TOAST_WIDTH));
-        assert_eq!(fit.max_height, px(592.0), "down to the region's bottom");
+        assert_eq!(fit.max_height, px(600.0), "the area's whole height");
+        assert_eq!(
+            fit.region_padding().bottom,
+            px(8.0),
+            "the region reaches the area's edge below the newest toast"
+        );
         assert!(!fit.compact);
         let narrow =
             StackFit::new(Size::new(px(300.0), px(600.0)), px(12.0), design);

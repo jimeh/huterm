@@ -98,6 +98,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TAB_HEIGHT: Pixels = px(32.0);
+/// How far an arrow key scrolls a focused toast taller than the column.
+const NOTICE_KEY_STEP: Pixels = px(64.0);
 /// The smallest pane a split or resize leaves, in cells.
 const MIN_PANE_COLUMNS: u16 = 4;
 const MIN_PANE_ROWS: u16 = 2;
@@ -2923,6 +2925,7 @@ fn open_window_with_profile(
                     notice_scroll,
                 ),
                 notice_followed: (None, None),
+                notice_button: None,
                 palette: None,
                 palette_refresh_state: None,
                 retained_query: None,
@@ -3395,6 +3398,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.focused_notice != Some(id) {
+            self.notice_button = None;
+        }
         self.focused_notice = Some(id);
         self.notice_focus.focus(window, cx);
         self.reconcile_notices(window, cx);
@@ -3449,13 +3455,62 @@ impl WorkspaceView {
             ids::NOTICE_NEXT | ids::NOTICE_PREVIOUS => {
                 let id = self.focused_notice()?;
                 let forward = command == ids::NOTICE_NEXT;
-                if let Some(neighbour) = self.notices.neighbour(id, forward) {
+                // A toast taller than the column reads through first.
+                if self.scroll_focused_notice(forward, Some(NOTICE_KEY_STEP)) {
+                    cx.notify();
+                } else if let Some(neighbour) =
+                    self.notices.neighbour(id, forward)
+                {
                     self.focus_notice(neighbour, window, cx);
                 }
             }
+            ids::NOTICE_FOCUS_NEXT | ids::NOTICE_FOCUS_PREVIOUS => {
+                let id = self.focused_notice()?;
+                let forward = command == ids::NOTICE_FOCUS_NEXT;
+                let buttons = self
+                    .notices
+                    .get(id)
+                    .map_or(1, |notice| notice.content.actions.len() + 1);
+                let current = self
+                    .notice_button
+                    .filter(|(button_id, _)| *button_id == id)
+                    .map(|(_, index)| index);
+                let next = match (current, forward) {
+                    (None, true) => 0,
+                    (None, false) => buttons - 1,
+                    (Some(index), true) => (index + 1) % buttons,
+                    (Some(index), false) => (index + buttons - 1) % buttons,
+                };
+                self.notice_button = Some((id, next));
+                // Actions sit at the toast's bottom, Dismiss at its top.
+                self.scroll_focused_notice(next + 1 < buttons, None);
+                cx.notify();
+            }
             ids::NOTICE_RUN_ACTION => {
                 let id = self.focused_notice()?;
-                self.run_notice_action(id, None, window, cx)?;
+                let button = self
+                    .notice_button
+                    .filter(|(button_id, _)| *button_id == id)
+                    .map(|(_, index)| index);
+                let action = button.map(|index| {
+                    self.notices.get(id).and_then(|notice| {
+                        notice
+                            .content
+                            .actions
+                            .get(index)
+                            .map(|action| action.command.clone())
+                    })
+                });
+                match action {
+                    // Past the actions: the Dismiss button.
+                    Some(None) => self.dismiss_notice(id, window, cx),
+                    Some(Some(command)) => {
+                        self.run_notice_action(id, Some(command), window, cx)?;
+                    }
+                    None => {
+                        self.run_notice_action(id, None, window, cx)?;
+                    }
+                }
             }
             ids::NOTICE_DISMISS => {
                 let id = self.focused_notice()?;
@@ -3589,6 +3644,10 @@ impl WorkspaceView {
             stack: &self.notices,
             now: Instant::now(),
             focused: self.focused_notice,
+            button: self
+                .notice_button
+                .filter(|(id, _)| Some(*id) == self.focused_notice)
+                .map(|(_, index)| index),
             hovered: &self.hovered_notices,
             fit: StackFit::new(terminal.size, bottom, window.rem_size()),
             swatch,
@@ -3597,7 +3656,7 @@ impl WorkspaceView {
         let view = cx.entity();
         let region = ScrollArea::new("notices", &self.notice_scroll)
             .fill()
-            .padding(StackFit::region_padding())
+            .padding(column.fit.region_padding())
             .children(column.slots())
             .render(
                 &mut self.notice_scrollbar,
@@ -3615,6 +3674,48 @@ impl WorkspaceView {
                 .h(terminal.size.height)
                 .child(column.frame(&self.notice_focus, region)),
         )
+    }
+
+    /// Scrolls the toast column toward the focused toast's bottom edge
+    /// (`forward`) or its top while that edge is out of view, by at most
+    /// `step`, from the last layout. Returns whether it scrolled.
+    fn scroll_focused_notice(
+        &mut self,
+        forward: bool,
+        step: Option<Pixels>,
+    ) -> bool {
+        let Some(slot) =
+            self.focused_notice.and_then(|id| self.notices.slot(id))
+        else {
+            return false;
+        };
+        let Some(item) = self.notice_scroll.bounds_for_item(slot) else {
+            return false;
+        };
+        let viewport = self.notice_scroll.bounds();
+        let offset = self.notice_scroll.offset();
+        // Item bounds are unscrolled; the offset is zero or negative.
+        let hidden = if forward {
+            item.bottom() + offset.y - viewport.bottom()
+        } else {
+            viewport.top() - (item.top() + offset.y)
+        };
+        if hidden <= px(0.5) {
+            return false;
+        }
+        let distance = step.map_or(hidden, |step| hidden.min(step));
+        let y = if forward {
+            offset.y - distance
+        } else {
+            offset.y + distance
+        }
+        .clamp(-self.notice_scroll.max_offset().y, px(0.0));
+        if y == offset.y {
+            return false;
+        }
+        self.notice_scroll.set_offset(gpui::point(offset.x, y));
+        self.notice_scrollbar.show();
+        true
     }
 
     /// Scrolls the toast column to a newly focused toast, or to the newest
@@ -4287,6 +4388,10 @@ struct WorkspaceView {
     /// The newest and the focused notice when the column last followed
     /// them, so it scrolls only when either changes.
     notice_followed: (Option<NoticeId>, Option<NoticeId>),
+    /// The focused toast's button that `notice_focus_next` moved to, by
+    /// index among its actions and then Dismiss; Enter presses it. It
+    /// applies only while that toast keeps focus.
+    notice_button: Option<(NoticeId, usize)>,
     palette: Option<Entity<CommandPalette>>,
     palette_refresh_state: Option<PaletteRefreshState>,
     /// A cancelled search query and when it was cancelled.
@@ -9292,7 +9397,11 @@ impl WorkspaceView {
                 | ids::NOTICE_NEXT
                 | ids::NOTICE_PREVIOUS
                 | ids::NOTICE_RUN_ACTION
-                | ids::NOTICE_DISMISS => self.notice_availability(command),
+                | ids::NOTICE_DISMISS
+                | ids::NOTICE_FOCUS_NEXT
+                | ids::NOTICE_FOCUS_PREVIOUS => {
+                    self.notice_availability(command)
+                }
                 ids::OPEN_MENU => self.check_available(false),
                 ids::WINDOW_TRANSPARENCY => {
                     if self.panel.is_some() {
@@ -10030,7 +10139,9 @@ impl WorkspaceView {
             | ids::NOTICE_NEXT
             | ids::NOTICE_PREVIOUS
             | ids::NOTICE_RUN_ACTION
-            | ids::NOTICE_DISMISS => {
+            | ids::NOTICE_DISMISS
+            | ids::NOTICE_FOCUS_NEXT
+            | ids::NOTICE_FOCUS_PREVIOUS => {
                 self.run_notice_command(invocation.id, window, cx)
             }
             ids::CLOSE_WINDOW => {

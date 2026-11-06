@@ -910,6 +910,12 @@ pub mod ids {
         CommandId::new("notice_run_action");
     /// Dismisses the selected notice.
     pub const NOTICE_DISMISS: CommandId = CommandId::new("notice_dismiss");
+    /// Moves to the selected notice's next button.
+    pub const NOTICE_FOCUS_NEXT: CommandId =
+        CommandId::new("notice_focus_next");
+    /// Moves to the selected notice's previous button.
+    pub const NOTICE_FOCUS_PREVIOUS: CommandId =
+        CommandId::new("notice_focus_previous");
     /// Focuses the Settings search field.
     pub const SETTINGS_SEARCH: CommandId = CommandId::new("settings_search");
     /// Moves Settings focus to the next control.
@@ -2021,6 +2027,22 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Notices: Dismiss",
         "Dismiss the selected notice.",
+        &[],
+    ),
+    spec_in(
+        "notices",
+        ids::NOTICE_FOCUS_NEXT,
+        CommandScope::Window,
+        "Notices: Next Button",
+        "Move to the selected notice's next button, which Enter presses.",
+        &[],
+    ),
+    spec_in(
+        "notices",
+        ids::NOTICE_FOCUS_PREVIOUS,
+        CommandScope::Window,
+        "Notices: Previous Button",
+        "Move to the selected notice's previous button, which Enter presses.",
         &[],
     ),
     spec_in(

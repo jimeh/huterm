@@ -497,6 +497,8 @@ fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
         ("notices", ids::NOTICE_PREVIOUS),
         ("notices", ids::NOTICE_RUN_ACTION),
         ("notices", ids::NOTICE_DISMISS),
+        ("notices", ids::NOTICE_FOCUS_NEXT),
+        ("notices", ids::NOTICE_FOCUS_PREVIOUS),
     ];
     for (context, id) in expected {
         let spec = lookup(id.as_str()).unwrap();
