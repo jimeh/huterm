@@ -1466,9 +1466,12 @@ writes a selected row part with no text as a line break even when the row
 soft-wraps, such as the empty cells before a spacer head, and writes the
 blanks pending before such a row after that break. No range of a document
 holding the grid's Copy text reads that, so a selection that passes such a
-part before its last row reads the row's blanks as spaces instead. The part's
-blanks pend when its row soft-wraps or the next row continues it by its own
-flag; the two agree except below rows ED 1 reset.
+part before its last row reads the row's blanks as spaces instead. The
+check exempts a part whose row soft-wraps, for its line break, or whose next
+row continues it by its own flag, for the blanks that pend after that break.
+The two flags agree except below rows ED 1 reset, where only the next row's
+continuation remains, and on rows IL and DL move, where the row above still
+wraps but the moved row's continuation is cleared, so no blanks pend.
 
 GPUI rebuilds and sends the whole tree every frame, and AccessKit diffs it into
 notifications, so the pushed model must stay identical between publications.

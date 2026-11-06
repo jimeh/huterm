@@ -308,6 +308,11 @@ impl Xorshift {
     }
 }
 
+/// A parity fixture: its name, the parts its script prints, and, for a
+/// fixture with two parts, the row and the text it starts with once the
+/// first part is drawn.
+type ParityFixture = (&'static str, Vec<String>, Option<(usize, &'static str)>);
+
 /// Screens for the 49 by 14 grid the harness requests whose Copy text
 /// exercises Ghostty's whitespace rules: written spaces and empty cells
 /// (left by CUF, EL, ECH, and a background erase), soft wraps at a space,
@@ -315,10 +320,12 @@ impl Xorshift {
 /// characters wrapping at the last column, combining marks, NBSP, U+3000,
 /// rows that line deletion and insertion leave after a soft-wrapped one,
 /// a row that ED 1 leaves continuing a row that no longer wraps, and a
-/// continuation EL resets below the row it erases. A fixture prints its
-/// parts with a pause between them, so the view takes a snapshot in
-/// between. Each puts `READY` on row 12, so rows after it stay empty.
-fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
+/// continuation EL resets below the row it erases. A fixture with two parts
+/// names a row and the text it starts with once the first part is drawn;
+/// the script waits for a line of input after that part, and the test sends
+/// it only once a snapshot shows that row, so the view has taken a snapshot
+/// in between. Each puts `READY` on row 12, so rows after it stay empty.
+fn parity_fixtures() -> [ParityFixture; 6] {
     let run = |character: char, count: usize| {
         std::iter::repeat_n(character, count).collect::<String>()
     };
@@ -331,6 +338,7 @@ fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
                  g\\302\\240\\nh\\343\\200\\200\\ne\\314\\201 \\314\\201x  \\n\
                  {ready}"
             )],
+            None,
         ),
         (
             "wraps",
@@ -344,6 +352,7 @@ fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
                 run('r', 49),
                 run('o', 47),
             )],
+            None,
         ),
         (
             "wide",
@@ -352,6 +361,7 @@ fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
                  c{}\\033[1C漢\\n\\033[47C字字{ready}",
                 run(' ', 46),
             )],
+            None,
         ),
         (
             "erase",
@@ -364,10 +374,12 @@ fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
                 h = run('h', 48),
                 g = run('g', 48),
             )],
+            None,
         ),
         (
             "rows",
             vec![format!("$ ls\\n\\nfile one  \\n\\n\\n$ \\n{ready}")],
+            None,
         ),
         (
             "flags",
@@ -379,6 +391,7 @@ fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
                 ),
                 format!("\\033[4;5H\\033[K{ready}"),
             ],
+            Some((4, "ef")),
         ),
     ]
 }
@@ -392,8 +405,10 @@ fn parity_fixtures() -> [(&'static str, Vec<String>); 6] {
 /// part as a line break of its own, and blanks before it after that break,
 /// which no range of a document holding the grid's Copy text reads; see the
 /// terminal accessibility section of `docs/agents/desktop-client.md`. The
-/// two flags agree unless ED 1 reset the row above a continuation.
-fn passes_a_wrapped_part_without_text(
+/// two flags disagree below a row ED 1 reset, where only the next row's
+/// continuation remains, and on rows IL and DL move, where only the row
+/// above wraps.
+fn passes_a_carrying_part_without_text(
     snapshot: &TerminalSnapshot,
     start: (usize, usize),
     end: (usize, usize),
@@ -551,7 +566,7 @@ fn check_parity(
             copied
         };
         if index > 0
-            && passes_a_wrapped_part_without_text(
+            && passes_a_carrying_part_without_text(
                 &snapshot,
                 cell(range.start),
                 cell(range.end),
@@ -574,7 +589,7 @@ fn check_parity(
 /// document reads what Copy copies from the whole displayed grid, and
 /// every selection inside it reads what Copy copies from that selection,
 /// except one that passes a soft-wrapped row part with no text, which the
-/// document cannot hold (see [`passes_a_wrapped_part_without_text`]). A
+/// document cannot hold (see [`passes_a_carrying_part_without_text`]). A
 /// grid Copy copies nothing from is a document of one line break.
 #[gpui::test]
 fn the_accessible_text_matches_copy_for_random_selections(
@@ -585,13 +600,35 @@ fn the_accessible_text_matches_copy_for_random_selections(
     // The view starts the terminal unsized. Printed before its geometry
     // applies, a fixture's rows move when the grid resizes.
     let sized = "until [ \"$(stty size)\" = '14 49' ]; do sleep 0.01; done";
-    for (name, parts) in parity_fixtures() {
+    for (name, parts, drawn) in parity_fixtures() {
         let (last, earlier) = parts.split_last().unwrap();
+        assert_eq!(earlier.len(), usize::from(drawn.is_some()), "{name}");
         let earlier = earlier.iter().fold(String::new(), |script, part| {
-            script + "printf '" + part + "'; sleep 0.2; "
+            script + "printf '" + part + "'; stty -echo; read -r _; "
         });
         let script = format!("{sized}; {earlier}{}", text_fixture(last, ""));
         let mut harness = ViewHarness::new(cx, &script);
+        if let Some((row, prefix)) = drawn {
+            harness.wait_for(
+                &format!("row {row} to start with {prefix:?}"),
+                |view, _| {
+                    view.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.rows[row]
+                            .cells
+                            .iter()
+                            .take(prefix.len())
+                            .map(|cell| cell.text.as_str())
+                            .collect::<String>()
+                            == prefix
+                    })
+                },
+            );
+            harness.read(|view, _| {
+                view.viewer
+                    .send_input(TerminalInput::Text("\r".into()))
+                    .unwrap();
+            });
+        }
         harness.wait_ready(MouseTracking::Disabled);
         harness.wait_for("READY on row 12", |view, _| {
             view.snapshot.as_ref().is_some_and(|snapshot| {
