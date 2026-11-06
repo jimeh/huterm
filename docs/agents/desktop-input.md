@@ -196,6 +196,13 @@ override. Tabs and pane bars have no hover hand. A cursor change
 with no other effect, such as Shift over vim, re-renders only when the shape
 differs from the last one drawn.
 
+GPUI's `on_hover` also re-tests hover at paint against the last pointer
+position the window saw, which goes stale once the pointer leaves the window.
+An element that appears where the pointer last was reports hovered with no
+pointer movement. Hover that changes state, such as a toast pausing its
+expiry, enters only from a pointer move (`on_mouse_move`) and takes only the
+leave from `on_hover`.
+
 Derive scrollbar geometry and label text from the displayed snapshot offset.
 Growing the grid pulls rows out of terminal history. Let the runtime engine
 anchor its shared viewport across output and resize; never also compensate the

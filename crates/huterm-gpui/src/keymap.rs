@@ -1176,6 +1176,10 @@ fn notice_defaults() -> Vec<BindingEntry> {
         default("enter", ids::NOTICE_RUN_ACTION, "Run Action"),
         default("escape", ids::NOTICE_DISMISS, "Dismiss"),
         default("delete", ids::NOTICE_DISMISS, "Dismiss"),
+        default("tab", ids::NOTICE_FOCUS_NEXT, "Next Button"),
+        default("right", ids::NOTICE_FOCUS_NEXT, "Next Button"),
+        default("shift-tab", ids::NOTICE_FOCUS_PREVIOUS, "Previous Button"),
+        default("left", ids::NOTICE_FOCUS_PREVIOUS, "Previous Button"),
     ]
 }
 
