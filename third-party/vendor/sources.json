@@ -105,6 +105,11 @@
           "name": "native-key-identity",
           "file": "patches/gpui-pre-macos/native-key-identity.patch",
           "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
+        },
+        {
+          "name": "diagnostic-metal-frames",
+          "file": "patches/gpui-pre-macos/diagnostic-metal-frames.patch",
+          "description": "TEMPORARY CI diagnostic (HUTERM_METAL_DIAG): log CAMetalDisplayLink lifecycle and frame delivery to the smoke evidence directory."
         }
       ]
     },

@@ -306,10 +306,65 @@ pub struct MetalFrames {
     source: RefCell<Option<MetalFrameSource>>,
     /// Whether GPUI asked for a frame since the current update began.
     woken: Cell<bool>,
+    // HUTERM_METAL_DIAG: temporary CI diagnostic state.
+    pub diag: MetalDiag,
 }
+
+// HUTERM_METAL_DIAG: temporary CI diagnostic state.
+#[derive(Default)]
+pub struct MetalDiag {
+    pub link: Cell<u64>,
+    pub created_at: Cell<Option<std::time::Instant>>,
+    pub callbacks: Cell<u64>,
+    pub drawn: Cell<u64>,
+    pub idle: Cell<u64>,
+    pub no_callback: Cell<u64>,
+    pub paused: Cell<bool>,
+    pub pauses: Cell<u64>,
+    pub unpauses: Cell<u64>,
+    pub wakes_without_link: Cell<u64>,
+    pub outside_draws: Cell<u64>,
+    pub last_callback: Cell<Option<std::time::Instant>>,
+}
+
+static HUTERM_METAL_DIAG_LINKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl MetalFrames {
     pub fn replace(&self, source: Option<MetalFrameSource>) {
+        // HUTERM_METAL_DIAG
+        let diag = &self.diag;
+        if self.source.borrow().is_some() {
+            metal_diag!(
+                "link {} detached frames={} callbacks={} drawn={} idle={} no_callback={} pauses={} unpauses={} paused={} outside_draws={} lifetime_ms={:?} since_last_callback_ms={:?}",
+                diag.link.get(),
+                self as *const Self as usize,
+                diag.callbacks.get(),
+                diag.drawn.get(),
+                diag.idle.get(),
+                diag.no_callback.get(),
+                diag.pauses.get(),
+                diag.unpauses.get(),
+                diag.paused.get(),
+                diag.outside_draws.get(),
+                diag.created_at.get().map(|at| at.elapsed().as_millis()),
+                diag.last_callback.get().map(|at| at.elapsed().as_millis()),
+            );
+        }
+        if source.is_some() {
+            let link = HUTERM_METAL_DIAG_LINKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            diag.link.set(link);
+            diag.created_at.set(Some(std::time::Instant::now()));
+            diag.callbacks.set(0);
+            diag.drawn.set(0);
+            diag.idle.set(0);
+            diag.no_callback.set(0);
+            diag.paused.set(false);
+            diag.pauses.set(0);
+            diag.unpauses.set(0);
+            diag.outside_draws.set(0);
+            diag.last_callback.set(None);
+            metal_diag!("link {} attached frames={}", link, self as *const Self as usize);
+        }
         *self.source.borrow_mut() = source;
     }
 
@@ -320,10 +375,39 @@ impl MetalFrames {
     pub fn wake(&self) {
         self.woken.set(true);
         // A source being replaced starts unpaused, so skipping it is safe.
-        if let Ok(source) = self.source.try_borrow()
-            && let Some(source) = source.as_ref()
-        {
-            source.set_paused(false);
+        match self.source.try_borrow() {
+            Ok(source) => match source.as_ref() {
+                Some(source) => {
+                    // HUTERM_METAL_DIAG
+                    if self.diag.paused.replace(false) {
+                        let unpauses = self.diag.unpauses.get() + 1;
+                        self.diag.unpauses.set(unpauses);
+                        if unpauses <= 20 || unpauses % 100 == 0 {
+                            metal_diag!(
+                                "link {} unpause #{} since_last_callback_ms={:?}",
+                                self.diag.link.get(),
+                                unpauses,
+                                self.diag.last_callback.get().map(|at| at.elapsed().as_millis()),
+                            );
+                        }
+                    }
+                    source.set_paused(false);
+                }
+                None => {
+                    // HUTERM_METAL_DIAG
+                    let wakes = self.diag.wakes_without_link.get() + 1;
+                    self.diag.wakes_without_link.set(wakes);
+                    if wakes <= 20 || wakes % 100 == 0 {
+                        metal_diag!(
+                            "wake without link #{} frames={}",
+                            wakes,
+                            self as *const Self as usize
+                        );
+                    }
+                }
+            },
+            // HUTERM_METAL_DIAG
+            Err(_) => metal_diag!("link {} wake while source borrowed", self.diag.link.get()),
         }
     }
 
@@ -336,6 +420,14 @@ impl MetalFrames {
     pub fn end_frame(&self, used_drawable: bool) -> bool {
         let pause = !used_drawable && !self.woken.get();
         if pause && let Some(source) = self.source.borrow().as_ref() {
+            // HUTERM_METAL_DIAG
+            if !self.diag.paused.replace(true) {
+                let pauses = self.diag.pauses.get() + 1;
+                self.diag.pauses.set(pauses);
+                if pauses <= 20 || pauses % 100 == 0 {
+                    metal_diag!("link {} pause #{}", self.diag.link.get(), pauses);
+                }
+            }
             source.set_paused(true);
         }
         pause

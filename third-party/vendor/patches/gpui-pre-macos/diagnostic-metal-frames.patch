@@ -1,0 +1,356 @@
+diff --git a/src/display_link.rs b/src/display_link.rs
+index 90a25979a1e6a56f07cde1974d97c9e40600372f..cb845227c0734c1461633ed5ec52a74e8d4201a9 100644
+--- a/src/display_link.rs
++++ b/src/display_link.rs
+@@ -306,10 +306,65 @@ pub struct MetalFrames {
+     source: RefCell<Option<MetalFrameSource>>,
+     /// Whether GPUI asked for a frame since the current update began.
+     woken: Cell<bool>,
++    // HUTERM_METAL_DIAG: temporary CI diagnostic state.
++    pub diag: MetalDiag,
+ }
+ 
++// HUTERM_METAL_DIAG: temporary CI diagnostic state.
++#[derive(Default)]
++pub struct MetalDiag {
++    pub link: Cell<u64>,
++    pub created_at: Cell<Option<std::time::Instant>>,
++    pub callbacks: Cell<u64>,
++    pub drawn: Cell<u64>,
++    pub idle: Cell<u64>,
++    pub no_callback: Cell<u64>,
++    pub paused: Cell<bool>,
++    pub pauses: Cell<u64>,
++    pub unpauses: Cell<u64>,
++    pub wakes_without_link: Cell<u64>,
++    pub outside_draws: Cell<u64>,
++    pub last_callback: Cell<Option<std::time::Instant>>,
++}
++
++static HUTERM_METAL_DIAG_LINKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
+ impl MetalFrames {
+     pub fn replace(&self, source: Option<MetalFrameSource>) {
++        // HUTERM_METAL_DIAG
++        let diag = &self.diag;
++        if self.source.borrow().is_some() {
++            metal_diag!(
++                "link {} detached frames={} callbacks={} drawn={} idle={} no_callback={} pauses={} unpauses={} paused={} outside_draws={} lifetime_ms={:?} since_last_callback_ms={:?}",
++                diag.link.get(),
++                self as *const Self as usize,
++                diag.callbacks.get(),
++                diag.drawn.get(),
++                diag.idle.get(),
++                diag.no_callback.get(),
++                diag.pauses.get(),
++                diag.unpauses.get(),
++                diag.paused.get(),
++                diag.outside_draws.get(),
++                diag.created_at.get().map(|at| at.elapsed().as_millis()),
++                diag.last_callback.get().map(|at| at.elapsed().as_millis()),
++            );
++        }
++        if source.is_some() {
++            let link = HUTERM_METAL_DIAG_LINKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
++            diag.link.set(link);
++            diag.created_at.set(Some(std::time::Instant::now()));
++            diag.callbacks.set(0);
++            diag.drawn.set(0);
++            diag.idle.set(0);
++            diag.no_callback.set(0);
++            diag.paused.set(false);
++            diag.pauses.set(0);
++            diag.unpauses.set(0);
++            diag.outside_draws.set(0);
++            diag.last_callback.set(None);
++            metal_diag!("link {} attached frames={}", link, self as *const Self as usize);
++        }
+         *self.source.borrow_mut() = source;
+     }
+ 
+@@ -320,10 +375,39 @@ impl MetalFrames {
+     pub fn wake(&self) {
+         self.woken.set(true);
+         // A source being replaced starts unpaused, so skipping it is safe.
+-        if let Ok(source) = self.source.try_borrow()
+-            && let Some(source) = source.as_ref()
+-        {
+-            source.set_paused(false);
++        match self.source.try_borrow() {
++            Ok(source) => match source.as_ref() {
++                Some(source) => {
++                    // HUTERM_METAL_DIAG
++                    if self.diag.paused.replace(false) {
++                        let unpauses = self.diag.unpauses.get() + 1;
++                        self.diag.unpauses.set(unpauses);
++                        if unpauses <= 20 || unpauses % 100 == 0 {
++                            metal_diag!(
++                                "link {} unpause #{} since_last_callback_ms={:?}",
++                                self.diag.link.get(),
++                                unpauses,
++                                self.diag.last_callback.get().map(|at| at.elapsed().as_millis()),
++                            );
++                        }
++                    }
++                    source.set_paused(false);
++                }
++                None => {
++                    // HUTERM_METAL_DIAG
++                    let wakes = self.diag.wakes_without_link.get() + 1;
++                    self.diag.wakes_without_link.set(wakes);
++                    if wakes <= 20 || wakes % 100 == 0 {
++                        metal_diag!(
++                            "wake without link #{} frames={}",
++                            wakes,
++                            self as *const Self as usize
++                        );
++                    }
++                }
++            },
++            // HUTERM_METAL_DIAG
++            Err(_) => metal_diag!("link {} wake while source borrowed", self.diag.link.get()),
+         }
+     }
+ 
+@@ -336,6 +420,14 @@ impl MetalFrames {
+     pub fn end_frame(&self, used_drawable: bool) -> bool {
+         let pause = !used_drawable && !self.woken.get();
+         if pause && let Some(source) = self.source.borrow().as_ref() {
++            // HUTERM_METAL_DIAG
++            if !self.diag.paused.replace(true) {
++                let pauses = self.diag.pauses.get() + 1;
++                self.diag.pauses.set(pauses);
++                if pauses <= 20 || pauses % 100 == 0 {
++                    metal_diag!("link {} pause #{}", self.diag.link.get(), pauses);
++                }
++            }
+             source.set_paused(true);
+         }
+         pause
+diff --git a/src/gpui_macos.rs b/src/gpui_macos.rs
+index 8732badd321e109d55af5a5ae99ba143f5bc1ddd..4de137e0512f1cd3a8ab334a0ad53f993444b6d9 100644
+--- a/src/gpui_macos.rs
++++ b/src/gpui_macos.rs
+@@ -4,6 +4,9 @@
+ //! macOS screens have a y axis that goes up from the bottom of the screen and
+ //! an origin at the bottom left of the main display.
+ 
++// HUTERM_METAL_DIAG: temporary CI diagnostic.
++#[macro_use]
++mod metal_diag;
+ mod display;
+ mod display_link;
+ mod events;
+diff --git a/src/metal_diag.rs b/src/metal_diag.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..d0b599bd743225b3b69b8bf7410e07c596cdcb89
+--- /dev/null
++++ b/src/metal_diag.rs
+@@ -0,0 +1,67 @@
++//! HUTERM_METAL_DIAG: temporary CI diagnostic for CAMetalDisplayLink frame
++//! delivery. Writes to `$HUTERM_METAL_DIAG_DIR`, `$HUTERM_SMOKE_EVIDENCE_DIR`,
++//! or the GitHub runner's smoke evidence directory; does nothing otherwise.
++
++use std::{
++    fs::{File, OpenOptions},
++    io::Write,
++    path::PathBuf,
++    sync::{
++        Mutex, OnceLock,
++        atomic::{AtomicUsize, Ordering},
++    },
++    time::Instant,
++};
++
++static START: OnceLock<Instant> = OnceLock::new();
++static FILE: OnceLock<Option<Mutex<File>>> = OnceLock::new();
++static LINES: AtomicUsize = AtomicUsize::new(0);
++const MAX_LINES: usize = 50_000;
++
++fn open() -> Option<Mutex<File>> {
++    let directory = std::env::var_os("HUTERM_METAL_DIAG_DIR")
++        .or_else(|| std::env::var_os("HUTERM_SMOKE_EVIDENCE_DIR"))
++        .map(PathBuf::from)
++        .or_else(|| {
++            let runner = PathBuf::from("/Users/runner/work/_temp/huterm-smoke-evidence");
++            runner.is_dir().then_some(runner)
++        })?
++        .join("metal-diag");
++    std::fs::create_dir_all(&directory).ok()?;
++    let executable = std::env::current_exe()
++        .ok()
++        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
++        .unwrap_or_else(|| "unknown".into());
++    let path = directory.join(format!("{executable}-{}.log", std::process::id()));
++    OpenOptions::new()
++        .create(true)
++        .append(true)
++        .open(path)
++        .ok()
++        .map(Mutex::new)
++}
++
++pub fn log(arguments: std::fmt::Arguments) {
++    let start = *START.get_or_init(Instant::now);
++    let Some(file) = FILE.get_or_init(open) else {
++        return;
++    };
++    let line = LINES.fetch_add(1, Ordering::Relaxed);
++    if line >= MAX_LINES {
++        return;
++    }
++    if let Ok(mut file) = file.lock() {
++        let _ = writeln!(
++            file,
++            "{:>10.3} {}",
++            start.elapsed().as_secs_f64() * 1000.0,
++            arguments
++        );
++    }
++}
++
++macro_rules! metal_diag {
++    ($($argument:tt)*) => {
++        $crate::metal_diag::log(format_args!($($argument)*))
++    };
++}
+diff --git a/src/window.rs b/src/window.rs
+index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf186924a2 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -843,6 +843,31 @@ impl MacWindowState {
+     /// weakly to deliver frames.
+     fn start_display_link(&mut self, window_state: &Rc<Mutex<MacWindowState>>) {
+         self.stop_display_link();
++        // HUTERM_METAL_DIAG
++        {
++            let screen: *mut AnyObject = unsafe { msg_send![self.native_window, screen] };
++            let max_fps: isize = if screen.is_null() {
++                -1
++            } else {
++                unsafe { msg_send![screen, maximumFramesPerSecond] }
++            };
++            let occlusion = self.native_window().occlusionState();
++            let is_visible: bool = unsafe { msg_send![self.native_window, isVisible] };
++            let is_key: bool = unsafe { msg_send![self.native_window, isKeyWindow] };
++            metal_diag!(
++                "start_display_link window={:?} metal={} occlusion_visible={} is_visible={} is_key={} screen_null={} display={:?} max_fps={} layer={} drawable_size={:?}",
++                self.native_window,
++                matches!(self.frame_source, FrameSource::Metal(_)),
++                occlusion.contains(NSWindowOcclusionState::Visible),
++                is_visible,
++                is_key,
++                screen.is_null(),
++                display_id_for_screen(screen),
++                max_fps,
++                self.renderer.layer().is_some(),
++                self.renderer.layer().map(|layer| layer.drawableSize()),
++            );
++        }
+         if !self
+             .native_window()
+             .occlusionState()
+@@ -2160,6 +2185,25 @@ impl PlatformWindow for MacWindow {
+ 
+     fn draw(&self, scene: &gpui::Scene) {
+         let mut this = self.0.lock();
++        // HUTERM_METAL_DIAG
++        if let Some(metal_frames) = &self.2
++            && metal_frames.is_attached()
++        {
++            let drawable = this.renderer.set_frame_drawable(None);
++            if drawable.is_none() {
++                let draws = metal_frames.diag.outside_draws.get() + 1;
++                metal_frames.diag.outside_draws.set(draws);
++                if draws <= 20 || draws % 100 == 0 {
++                    metal_diag!(
++                        "link {} draw outside update #{}",
++                        metal_frames.diag.link.get(),
++                        draws
++                    );
++                }
++            } else {
++                this.renderer.set_frame_drawable(drawable);
++            }
++        }
+         this.renderer.draw(scene);
+     }
+ 
+@@ -3093,6 +3137,14 @@ fn report_visibility(window_state: &Rc<Mutex<MacWindowState>>) {
+ extern "C" fn window_did_change_occlusion_state(this: &AnyObject, _: Sel, _: *mut AnyObject) {
+     let window_state = unsafe { get_window_state(this) };
+     let mut lock = window_state.lock();
++    // HUTERM_METAL_DIAG
++    metal_diag!(
++        "occlusion change window={:?} visible={}",
++        lock.native_window,
++        lock.native_window()
++            .occlusionState()
++            .contains(NSWindowOcclusionState::Visible)
++    );
+     if lock
+         .native_window()
+         .occlusionState()
+@@ -3429,6 +3481,8 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
+     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
+     let window_state = unsafe { get_window_state(this) };
+     let mut lock = window_state.lock();
++    // HUTERM_METAL_DIAG
++    metal_diag!("display_layer window={:?}", lock.native_window);
+     if let Some(mut callback) = lock.request_frame_callback.take() {
+         lock.renderer.set_presents_with_transaction(true);
+         lock.stop_display_link();
+@@ -3480,7 +3534,40 @@ fn metal_frame(
+         return;
+     };
+     let metal_frames = metal_frames.clone();
++    // HUTERM_METAL_DIAG
++    {
++        let diag = &metal_frames.diag;
++        let callbacks = diag.callbacks.get() + 1;
++        diag.callbacks.set(callbacks);
++        let previous = diag.last_callback.replace(Some(std::time::Instant::now()));
++        let gap_ms = previous.map(|at| at.elapsed().as_millis());
++        if callbacks == 1 {
++            metal_diag!(
++                "link {} first callback after_ms={:?}",
++                diag.link.get(),
++                diag.created_at.get().map(|at| at.elapsed().as_millis()),
++            );
++        } else if callbacks % 240 == 0 || gap_ms.is_some_and(|gap| gap >= 250) {
++            metal_diag!(
++                "link {} callback #{} gap_ms={:?} drawn={} idle={} no_callback={} paused={} target_present={:.4}",
++                diag.link.get(),
++                callbacks,
++                gap_ms,
++                diag.drawn.get(),
++                diag.idle.get(),
++                diag.no_callback.get(),
++                diag.paused.get(),
++                update.targetPresentationTimestamp(),
++            );
++        }
++    }
+     let Some(mut callback) = lock.request_frame_callback.take() else {
++        // HUTERM_METAL_DIAG
++        let missing = metal_frames.diag.no_callback.get() + 1;
++        metal_frames.diag.no_callback.set(missing);
++        if missing <= 20 || missing % 100 == 0 {
++            metal_diag!("link {} callback without request_frame_callback #{}", metal_frames.diag.link.get(), missing);
++        }
+         return;
+     };
+     lock.renderer.set_frame_drawable(Some(update.drawable()));
+@@ -3496,6 +3583,12 @@ fn metal_frame(
+     // A frame with nothing to draw leaves its drawable unused; releasing it
+     // lets the link hand it out again.
+     let used_drawable = lock.renderer.set_frame_drawable(None).is_none();
++    // HUTERM_METAL_DIAG
++    if used_drawable {
++        metal_frames.diag.drawn.set(metal_frames.diag.drawn.get() + 1);
++    } else {
++        metal_frames.diag.idle.set(metal_frames.diag.idle.get() + 1);
++    }
+     metal_frames.end_frame(used_drawable);
+ }
+ 
