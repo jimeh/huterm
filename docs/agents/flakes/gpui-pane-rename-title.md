@@ -1,10 +1,10 @@
 +++
 id = "gpui-pane-rename-title"
 title = "huterm-gpui pane rename title on hosted macOS"
-status = "open"
+status = "fixed"
 kind = "rust"
 platforms = ["macos-arm64", "linux-x86_64", "linux-aarch64"]
-retries = 2
+retries = 0
 review_by = "2026-12-06"
 
 [selector]
@@ -48,5 +48,10 @@ platform = "macos-arm64"
   probe publishes the shell's directory about 50 ms after its first output
   (see the core runtime guide), so on a slow runner the label the test
   captured may have changed by the time the name clears. Unconfirmed.
-- **Triage:** record the run here and rerun. A hardening is to wait for the
-  pane's directory before capturing the default label.
+- **Fix (2026-11-06):** the test no longer captures the default label before
+  the renames. After clearing the name it waits for the published title to
+  equal the pane's label as it is then, and to differ from the cleared
+  name, so a directory published mid-test cannot leave it waiting for a
+  stale label.
+- **Triage:** a failure after the fix is new; read the published title and
+  label in the last state.
