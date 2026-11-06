@@ -1,10 +1,10 @@
 +++
 id = "core-foreground-job-tests"
 title = "huterm-core foreground-job tests under full local runs"
-status = "open"
+status = "fixed"
 kind = "rust"
 platforms = ["macos-arm64"]
-retries = 2
+retries = 0
 review_by = "2026-12-06"
 
 [selector]
@@ -151,5 +151,13 @@ note = "pane tear-off work (#401)"
   describes the same shell behavior. Longer deadlines would not help; a fix
   would give these fixtures a process group that they create and hand the
   terminal to themselves, rather than relying on `/bin/sh` job control.
-- **Triage:** rerun once, and check `uptime` before suspecting the change.
-  CI has not failed these.
+- **Fix (2026-11-06):** the fixtures own their process groups. The test
+  binary reruns itself as a helper that calls `setpgid` and `tcsetpgrp`,
+  prints a marker once it holds the foreground, and returns the terminal on
+  request, so no test relies on `/bin/sh` job control; see
+  [the core runtime guide](../core-runtime.md#process-information). Before
+  the fix, 4 of 30 full `huterm-core` lib runs failed at a load average of 7
+  to 25, two at a time; after it, 20 of 20 passed at 20 to 29, as did 20 of
+  20 `mux::` and 20 of 20 `terminal::tests` runs.
+- **Triage:** a failure after the fix is new; read its last observation,
+  which the shared `wait_until` prints, and check `uptime`.

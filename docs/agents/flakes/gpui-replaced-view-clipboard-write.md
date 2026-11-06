@@ -1,10 +1,10 @@
 +++
 id = "gpui-replaced-view-clipboard-write"
 title = "huterm-gpui replaced view's clipboard write on Linux"
-status = "open"
+status = "fixed"
 kind = "rust"
 platforms = ["linux-x86_64", "linux-aarch64"]
-retries = 2
+retries = 0
 review_by = "2026-12-06"
 
 [selector]
@@ -70,8 +70,19 @@ platform = "linux-x86_64"
   `huterm-gpui` suite runs under load. Temporary logging in the engine's
   clipboard callback saw only accepted admissions. Admission is
   nonblocking: a contended lock answers `Busy`, and Ghostty drops the write,
-  so a lost race would also lose a real OSC 52 write. That remains a
-  candidate, not a finding.
+  so a lost race would also lose a real OSC 52 write.
+- **Cause (2026-11-06):** confirmed by reading the code, and not specific to
+  a replaced view. Admission used `try_lock` on the sink state, both
+  budgets, and the recipient's queue, and the view's `try_next` holds that
+  queue on every refresh, so a write parsed while any view drained its
+  queue was answered `Busy` and dropped.
+- **Fix (2026-11-06):** admission waits for those locks instead of
+  answering `Busy`. `try_next` and `clear_queue` now free reservations after
+  releasing the queue, so the waits keep an acyclic lock order. A
+  `huterm-core` test holds the queue, waits until admission blocks on it,
+  then releases it and checks that both writes arrive in order; restoring
+  the drop makes it fail. The window test never failed on macOS, so Linux
+  CI is the check.
 - **Triage:** since 2026-10-26 the window-test failure state lists each
   tab's focused view with its `epoch`, `revoked`, `title`,
   `clipboard_writes`, and `text_tail`, and the fixture prints `CLIPPED`
@@ -80,5 +91,5 @@ platform = "linux-x86_64"
   `CLIPPED` with `clipboard_writes=0` at `epoch=1` means the terminal
   parsed the write and it never reached the view. `clip` without `CLIPPED`
   means the shell had not printed it, or that output had not reached the
-  view either. A higher epoch means a second replacement. Record which,
-  then rerun once.
+  view either. A higher epoch means a second replacement. A failure after
+  the fix is a regression; record which case it is.
