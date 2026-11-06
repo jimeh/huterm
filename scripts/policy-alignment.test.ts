@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { nextestArgs } from "./test-rust.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const read = (file: string) => readFileSync(join(repoRoot, file), "utf8");
@@ -44,7 +45,8 @@ test("the Rust lint, type-check, and test tasks build the GPUI view tests", () =
   const commands: Record<string, string | undefined> = {
     lint: tasks.lint.run,
     typecheck: tasks.typecheck.run,
-    "test:rust": (tasks["test:rust"].run as string[]).find((command) => command.includes("--workspace")),
+    // test:rust runs nextest through the wrapper, which owns its arguments.
+    "test:rust": tasks["test:rust"].run === "bun scripts/test-rust.ts workspace" ? nextestArgs("workspace").join(" ") : undefined,
   };
   const enabled = Object.fromEntries(Object.entries(commands).map(([name, command]) =>
     [name, /--features (\S+,)?huterm-gpui\/test-support(,|\s)/.test(command ?? "")]));

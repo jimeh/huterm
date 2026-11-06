@@ -166,7 +166,7 @@ jobs:
           cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun aqua:fish-shell/fish-shell aqua:nushell/nushell http:elvish
+          install_args: bun aqua:fish-shell/fish-shell aqua:nushell/nushell http:elvish github:nextest-rs/nextest
           version: 2026.10.25
 
       - name: Install Zig
@@ -658,7 +658,7 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun
+          install_args: bun github:nextest-rs/nextest
           version: 2026.10.25
 
       - name: Install Zig

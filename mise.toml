@@ -11,6 +11,8 @@ bun = "1.4.4"
 "cargo:cargo-deny" = "0.20.2"
 "cargo:cargo-auditable" = "0.7.7"
 "cargo:cargo-packager" = "0.11.8"
+# Rust tests run through nextest; see scripts/test-rust.ts.
+"github:nextest-rs/nextest" = { version = "0.9.150", version_prefix = "cargo-nextest-" }
 lefthook = "2.2.2"
 markdownlint-cli2 = "0.24.0"
 pinact = "5.0.2"
@@ -218,31 +220,21 @@ description = "Run workspace and scripting tests"
 depends = ["test:scripts", "test:rust"]
 
 [tasks."test:rust"]
-description = "Run Rust unit and PTY integration tests"
+description = "Run Rust unit and PTY integration tests through nextest, then huterm-ghostty's doctests"
 depends = ["ghostty:prepare"]
-# `--all-targets` skips doctests; huterm-ghostty's compile_fail doctests
-# prove its borrow and thread-affinity guarantees.
-run = [
-  "bash scripts/build-exec.sh cargo test --workspace --all-targets --features huterm-gpui/test-support --locked",
-  "bash scripts/build-exec.sh cargo test --locked -p huterm-ghostty --doc",
-]
+# nextest cannot run doctests, and `--all-targets` skips them anyway;
+# huterm-ghostty's compile_fail doctests prove its borrow and thread-affinity
+# guarantees, so the wrapper runs them with cargo test afterwards.
+run = "bun scripts/test-rust.ts workspace"
 
 [tasks."test:ghostty-releasesafe"]
 description = "Run huterm-ghostty and huterm-core tests against a ReleaseSafe Ghostty build"
 depends = ["ghostty:prepare"]
 # ReleaseSafe keeps Zig's bounds, overflow, and tag checks, which ReleaseFast
-# turns into undefined behavior. `.cargo/config.toml` forces ReleaseFast, so
-# override it here, and keep the separately built native library out of the
-# normal target directory.
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec bash scripts/build-exec.sh cargo test --locked --no-fail-fast --all-targets \
-  -p huterm-ghostty -p huterm-core \
-  --target-dir target/ghostty-releasesafe \
-  --config 'env.HUTERM_GHOSTTY_OPTIMIZE.value="ReleaseSafe"' \
-  --config 'env.HUTERM_GHOSTTY_OPTIMIZE.force=true'
-'''
+# turns into undefined behavior. The wrapper overrides `.cargo/config.toml`'s
+# forced ReleaseFast and keeps the separately built native library in
+# target/ghostty-releasesafe.
+run = "bun scripts/test-rust.ts releasesafe"
 
 [tasks."test:scroll-checker"]
 description = "Test scroll benchmark log validation"

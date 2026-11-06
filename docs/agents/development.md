@@ -376,12 +376,12 @@ showed came up short on macOS CI.
 
 | Trigger | Command | Scope | Evidence owner |
 | --- | --- | --- | --- |
-| Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
+| Iteration | focused `cargo nextest run -p <crate> <test>` or `cargo test -p <crate> <test>` | Changed behavior | Implementer |
 | Pre-commit | Lefthook change-aware jobs | Staged files where checks work per file; affected script tests; whole-project analysis only for matching inputs | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
 | Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, test-module order, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
 | Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
-| Pull request | `mise run lint:docs`, `lint:agents`, `ci:workflows`, `smoke:schema-editor`, `vendor:check`, `license`, and `audit:scripts` as separate Policy steps on Ubuntu 24.04 | Documentation, agent guides, workflows, editor schema behavior, vendor, Cargo dependency, and scripting dependency policy | CI |
+| Pull request | `mise run lint:docs`, `lint:agents`, `flakes:check`, `ci:workflows`, `smoke:schema-editor`, `vendor:check`, `license`, and `audit:scripts` as separate Policy steps on Ubuntu 24.04 | Documentation, agent guides, workflows, editor schema behavior, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, a raw Ghostty PTY, and automatic reload observed through OSC 11 | CI or implementer |
 | Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through Ghostty to an isolated X11 CLIPBOARD selection | CI or implementer |
