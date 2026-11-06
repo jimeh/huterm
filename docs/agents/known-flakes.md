@@ -76,7 +76,7 @@ delete the entry once the review date passes without a recurrence.
 | [GitHub API 403 during CI tool installation](flakes/ci-mise-github-api-403.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
 | [Zig mirror rate limit during CI tool installation](flakes/ci-zig-mirror-rate-limit.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
 | [huterm-core foreground-job tests under full local runs](flakes/core-foreground-job-tests.md) | rust | macos-arm64 | 10 local | 2026-11-06 | 2 | 2026-12-06 |
-| [huterm-gpui inactive tab close button](flakes/gpui-inactive-tab-close-button.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 3 CI | 2026-11-06 | 2 | 2026-12-06 |
+| [huterm-gpui inactive tab close button](flakes/gpui-inactive-tab-close-button.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 4 CI | 2026-11-06 | 2 | 2026-12-06 |
 | [Linux renderer smoke startup hang](flakes/linux-renderer-startup-hang.md) | smoke | linux-x86_64, linux-aarch64 | 10 CI | 2026-11-05 | 1 | 2026-12-06 |
 | [macOS quake smoke departed-witness activation](flakes/macos-quake-departed-witness-activation.md) | smoke | macos-arm64 | 1 CI, 1 local | 2026-10-30 | 1 | 2026-12-06 |
 | [Install Zig hang](flakes/ci-zig-install-hang.md) | infra | macos-arm64, linux-x86_64, linux-aarch64 | 1 CI | 2026-10-28 | 0 | 2027-01-15 |

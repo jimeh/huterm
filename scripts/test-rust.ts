@@ -15,10 +15,10 @@
  * by exact name, and a rerun that fails with a different signature fails.
  * Extra arguments after the mode go to the first nextest run.
  */
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
-  classify, currentPlatform, decideRetry, loadFlakes, reportFailure, reportRetry, retriedEntries, retryEnabled,
+  classify, currentPlatform, decideRetry, loadFlakes, reportDirectory, reportFailure, reportRetry, retriedEntries, retryEnabled,
   type Flake, type Platform,
 } from "./flakes.ts";
 
@@ -199,6 +199,8 @@ if (import.meta.main) {
   const profile = process.env.CI ? "ci" : "default";
   const junit = junitPath(mode, profile);
   const { flakes, errors } = loadFlakes();
+  const reports = reportDirectory();
+  let runs = 0;
   // A broken registry must not block tests; flakes:check reports it.
   for (const error of errors) console.error(`flakes: ignoring invalid entry: ${error}`);
   const status = await runWithRetries({
@@ -206,6 +208,12 @@ if (import.meta.main) {
     run: async (args) => {
       rmSync(junit, { force: true });
       const exitCode = await exec(["cargo", ...args]);
+      runs++;
+      // Keep each failed run's JUnit report, with every test's duration and output, for the CI artifact.
+      if (exitCode !== 0 && reports && existsSync(junit)) {
+        mkdirSync(reports, { recursive: true });
+        copyFileSync(junit, join(reports, `junit-${mode}-${runs}.xml`));
+      }
       return { exitCode, cases: existsSync(junit) ? parseJunit(readFileSync(junit, "utf8")) : undefined };
     },
   });

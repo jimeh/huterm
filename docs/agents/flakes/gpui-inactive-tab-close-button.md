@@ -31,6 +31,13 @@ sha = "5199386c"
 platform = "linux-aarch64"
 
 [[occurrences]]
+date = "2026-11-05"
+url = "https://github.com/jimeh/huterm/actions/runs/42100951208/job/127504182683"
+pr = 412
+sha = "606f1b21"
+platform = "macos-arm64"
+
+[[occurrences]]
 date = "2026-11-06"
 url = "https://github.com/jimeh/huterm/actions/runs/42188279420/job/127793745152"
 pr = 415
@@ -59,11 +66,16 @@ platform = "macos-arm64"
   The `huterm-gpui` suite took 199.48 seconds against about 23 locally.
   The rerun passed, although its suite took 197.29 seconds, so a slow
   suite alone does not make the test fail.
-- **Triage:** compare the suite's wall time with a passing run. If it
-  recurs on a normal-speed run, the harness wait or the close path needs a
-  closer look; otherwise record the run here and rerun.
 - **Fourth occurrence:** 2026-11-06 on PR #415 (run 42188279420, job
   127793745152, head `5c6c808b`), in `Checks (macOS arm64)` at
   `window_tests.rs:510`. The `huterm-gpui` suite took 203.84 seconds. The
   PR adds terminal accessibility and touches no tab or button code; the
   previous head's macOS checks passed this test.
+- **Mitigation (2026-11-06):** Rust tests run under nextest, whose
+  `gpui-windows` test group caps how many GPUI window tests run at once,
+  and CI reruns this signature up to twice. Nextest's JUnit report records
+  each test's own duration, which replaces the suite wall time as evidence.
+- **Triage:** read the test's duration in the `junit-*.xml` report inside the
+  `flake-report-*` artifact, or in the job log. If it recurs on a normal-speed
+  run, the harness wait or the close path needs a closer look. Record it with
+  `mise run flakes:record`.
