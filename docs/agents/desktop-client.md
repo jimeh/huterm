@@ -103,7 +103,16 @@ resumes queued closes. A worker failure with an invalid attachment
 switch holds one of `pending_spawns` (`hold_switch_spawn`, at most one per
 window in `Desktop::switch_spawns`) until `end_switch`, so Quit from any
 window waits until `apply_reopen` published the target's navigation; the
-window's removal releases it too. A switch also counts in
+window's removal releases it too. A Close Session of the window's own
+session takes that hold as its check begins (`hold_for_close_check`,
+recorded in `WorkspaceView::close_hold`), because a Quit that assessed
+before the commit could otherwise commit after the follow-up attached and
+before its navigation applied. The follow-up's install takes the hold
+over; every other end of the close (a cancel, a failed assessment or
+commit, no follow-up, a check of another target, teardown) releases it
+through `release_close_hold`, which is idempotent. A stale commit that
+assesses again keeps it. A Quit requested while that close's confirmation
+shows waits for the answer. A switch also counts in
 `Checkpoints::switching`, which defers captures and moves
 `DesktopRuntime::transfers`. Tier 2 tests hold `Stage::Switch` before the
 lock (a failure there fails the shell the switch would spawn) and
@@ -350,16 +359,18 @@ recreation, and by application exit without global registrations.
 with consent as for any close; its dialog lists titles from every open
 window. It merges with no other target. When it closes the window's own
 session, the commit's worker attaches the window to its most recently left
-session that still exists (`next_session`, from its navigation memory, else
-the most recently viewed session no other window or stash holds) right
-after the commit, and the completion installs it as a switch does
-(`install_session` with the new attachment), holding the window's switch
-spawn until it settles. With no session to follow, or when that attach
-fails, the window closes, except that on Linux the last window runs Quit
-instead when it would strand unviewed sessions (`window_close_target`). A
-completion whose close generation moved detaches the follow-up attachment
-it no longer takes. Tier 2 tests fail that attach with
-`Stage::CloseFollow`.
+session that still exists right after the commit. `next_sessions` lists
+the candidates in order, its navigation memory first, then the sessions
+no other window or stash holds, most recently viewed first, and the worker
+(`attach_first`) takes the first that still exists under one lock, so a
+candidate that closed since the window chose it gives way to the next.
+The completion installs it as a switch does (`install_session` with the
+new attachment). With no candidate left, or when the attach fails for
+another reason, the window closes, except that on Linux the last window
+runs Quit instead when it would strand unviewed sessions
+(`window_close_target`). A completion whose close generation moved
+detaches the follow-up attachment it no longer takes. Tier 2 tests hold
+the attach at `Stage::CloseFollow` and fail its first attempt there.
 Other windows on the closed session take the session-gone path, and
 `reconcile` drops Quake stashes and navigation memory of closed sessions.
 Close Window resolves through `window_close_target`: on Linux, the last open
@@ -811,8 +822,11 @@ its place. Its "exited" tags come from `Mux::exited_sessions`, read on a
 worker each time it opens; a generation drops a superseded answer. Huterm's
 popover opens first and takes the tags when the read answers. A native menu
 is a snapshot, so it waits for the read (`native_session_pending`, which
-shows the control open) and presents nothing if the control closed it,
-another menu or the palette opened, or the window went away meanwhile.
+shows the control open). `cancel_pending_session_menu` drops the request
+and supersedes the read when the control toggles it, `close_menu` runs
+(Escape, window deactivation, a command that replaces the menu), or the
+palette or another menu opens; a window that went away presents nothing.
+Tier 2 tests hold the read at `Stage::ExitedRead`.
 Its native lowering puts each session's Open in New Window in an
 alternate item (`setAlternate:` with the Command mask and no
 key), which AppKit swaps in while Command is held, and lists the

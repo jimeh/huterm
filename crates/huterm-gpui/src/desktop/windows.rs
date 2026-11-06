@@ -926,8 +926,9 @@ struct Desktop {
     /// nothing, so it cannot register global shortcuts again.
     quit_committed: bool,
     pending_spawns: usize,
-    /// Windows whose session switch, or Close Session follow-up, holds one
-    /// of `pending_spawns` until its navigation settles.
+    /// Windows whose session switch, or Close Session of their own session
+    /// from its check to its follow-up, holds one of `pending_spawns` until
+    /// its navigation settles.
     switch_spawns: std::collections::HashSet<gpui::WindowId>,
     quit_pending: bool,
     /// The Settings window, which is not in `windows`: it shows no session.
@@ -2997,6 +2998,7 @@ fn open_window_with_profile(
                 restore_focus: None,
                 reopen: None,
                 switch: None,
+                close_hold: false,
                 close: CloseState::default(),
                 notices: NoticeStack::default(),
                 notice_focus: cx.focus_handle(),
@@ -4481,6 +4483,10 @@ struct WorkspaceView {
     reopen: Option<restore::Focus>,
     /// The session switch in progress, from its guard to its settle.
     switch: Option<session_switch::SwitchPhase>,
+    /// Whether the close pipeline holds this window's switch spawn for a
+    /// Close Session of its own session, from the check's start until the
+    /// follow-up's install takes it over or the close ends without one.
+    close_hold: bool,
     close: CloseState,
     notices: NoticeStack,
     /// Focus for the toast column; `notices` bindings match while it holds
@@ -9200,6 +9206,7 @@ impl WorkspaceView {
         }
         self.cancel_pane_drag(window, cx);
         self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
+        self.cancel_pending_session_menu(cx);
 
         let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
@@ -11544,6 +11551,7 @@ impl WorkspaceView {
             return;
         }
         let target = self.close.begin_check(target);
+        self.hold_for_close_check(&target, cx);
         self.sync_dialog(window, cx);
         let Some(request) = self.close_request(&target, window, cx) else {
             self.release_exit_close_if_idle(cx);
@@ -11589,6 +11597,7 @@ impl WorkspaceView {
                 if resolution == Resolution::Cancelled {
                     // Teardown owns removal; decide nothing.
                     view.close.current = None;
+                    view.release_close_hold(cx);
                     return;
                 }
                 view.reconcile_own(window, cx);
@@ -11619,7 +11628,7 @@ impl WorkspaceView {
                     Some(CloseDecision::Close(target)) => {
                         view.finish_close(target, window, cx);
                     }
-                    None => {}
+                    None => view.release_close_hold(cx),
                 }
                 cx.notify();
             });
@@ -11892,6 +11901,7 @@ impl WorkspaceView {
         self.busy = false;
         self.reconcile_own(window, cx);
         let cancelled = self.close.cancel();
+        self.release_close_hold(cx);
         // A cancelled close never reached the runtime.
         self.release_exit_close_if_idle(cx);
         if matches!(cancelled, Some(CloseTarget::Application)) {
@@ -11936,6 +11946,7 @@ impl WorkspaceView {
             // Every tab or pane it asks about left the window, so its commit
             // could only go stale. Queued closes stay queued and run below.
             self.close.dismiss_confirmation();
+            self.release_close_hold(cx);
             self.sync_dialog(window, cx);
             self.release_exit_close_if_idle(cx);
             self.restore_tab_focus(window, cx);
@@ -12031,7 +12042,6 @@ impl WorkspaceView {
             None
         };
         let (own_session, follow) = self.close_follow(&target, window, cx);
-        let follows = follow.is_some();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task =
             cx.background_executor().spawn(session_switch::commit_close(
@@ -12072,6 +12082,7 @@ impl WorkspaceView {
                 }
                 if resolution == Resolution::Cancelled {
                     // Teardown owns removal; publish nothing.
+                    view.release_close_hold(cx);
                     view.reconcile_own(window, cx);
                     view.resume_close(window, cx);
                     cx.notify();
@@ -12104,9 +12115,6 @@ impl WorkspaceView {
                     ),
                 }
             });
-            if follows {
-                app.update(|cx| session_switch::settle_follow(cx, id));
-            }
         })
         .detach();
         cx.notify();
@@ -15396,8 +15404,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        // An opening menu closes the panel and ends a tab or pane drag; the
-        // menu then takes focus.
+        // An opening menu closes the panel, supersedes a native session
+        // menu waiting for its read, and ends a tab or pane drag; the menu
+        // then takes focus.
+        self.cancel_pending_session_menu(cx);
         self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
@@ -15486,6 +15496,9 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let _ = self.popover.close();
+        // A native session menu still waiting for its read is dismissed
+        // with it; it does not count as an open menu.
+        self.cancel_pending_session_menu(cx);
         let Some(menu) = self.menu.take() else {
             return false;
         };

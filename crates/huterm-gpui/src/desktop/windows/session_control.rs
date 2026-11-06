@@ -362,8 +362,8 @@ impl WorkspaceView {
     }
 
     /// Presents the native session menu that waited for the exited read,
-    /// unless the request went away: the control closed it, another menu
-    /// or the palette opened, or the window can no longer take it.
+    /// unless the request went away (`cancel_pending_session_menu`) or the
+    /// window can no longer take it.
     fn present_pending_session_menu(
         &mut self,
         window: &mut Window,
@@ -383,6 +383,22 @@ impl WorkspaceView {
         self.present_session_menu(from_keyboard, window, cx);
     }
 
+    /// Drops a native session menu still waiting for its exited read, and
+    /// supersedes that read, so its answer presents nothing: a dismissal,
+    /// window deactivation, the palette, or another menu replaced it.
+    /// Returns whether one was waiting.
+    pub(super) fn cancel_pending_session_menu(
+        &mut self,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if self.native_session_pending.take().is_none() {
+            return false;
+        }
+        self.exited_read = self.exited_read.wrapping_add(1);
+        cx.notify();
+        true
+    }
+
     /// The control: closes an open session menu, otherwise opens it with
     /// no selection.
     fn toggle_session_menu(
@@ -390,8 +406,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.native_session_pending.take().is_some() {
-            cx.notify();
+        if self.cancel_pending_session_menu(cx) {
             return;
         }
         if self
@@ -448,9 +463,14 @@ impl WorkspaceView {
         self.exited_read = self.exited_read.wrapping_add(1);
         let generation = self.exited_read;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let task = cx
-            .background_executor()
-            .spawn(async move { runtime.lock().exited_sessions() });
+        let task = cx.background_executor().spawn(async move {
+            #[cfg(all(test, feature = "test-support"))]
+            runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::ExitedRead)
+                .await;
+            runtime.lock().exited_sessions()
+        });
         cx.spawn_in(window, async move |view, cx| {
             let exited = task.await;
             let _ = view.update_in(cx, |view, window, cx| {

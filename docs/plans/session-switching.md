@@ -459,17 +459,23 @@ Recorded during implementation:
   settled decision 5 said, moves the Mux revision and invalidates the
   consent, which would prompt a second time. When the window's memory
   holds no live session, it moves to the most recently viewed session no
-  other window or Quake stash shows. When none remains or that attach
-  fails, the window closes; on Linux the last window runs Quit instead
-  while unviewed sessions remain, as its Close Window does.
+  other window or Quake stash shows. The worker tries those candidates in
+  that order and passes over one that closed since the window chose it.
+  When none remains or the attach fails, the window closes; on Linux the
+  last window runs Quit instead while unviewed sessions remain, as its
+  Close Window does.
 - Every switch counts in `pending_spawns`, not only one that opens a
   shell: the worker learns under the lock whether it needs one, and the
   cost is a Quit that waits slightly longer. The count holds until the
   switch settles, after `apply_reopen` restores the target's navigation,
-  so a Quit from another window saves it.
+  so a Quit from another window saves it. A Close Session of the window's
+  own session takes the same hold as its check begins, before the
+  assessment, and keeps it through any confirmation until the follow-up
+  settles, so a Quit requested meanwhile waits for it.
 - A native session menu opens once its "exited" read answers, since a
   native menu cannot take tags later; Huterm's popover still opens at once
-  and adds them.
+  and adds them. A dismissal, window deactivation, the palette, or another
+  menu drops the waiting request.
 - Open in New Window's Cmd/Ctrl-Enter is a menu command,
   `menu_confirm_alternate`, bound only inside menus. Settled decision 8's
   "no default key bindings" covers the session commands. In the native

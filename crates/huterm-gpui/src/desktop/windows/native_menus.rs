@@ -96,8 +96,10 @@ impl WorkspaceView {
         else {
             return false;
         };
-        // The panel closes first. A native menu leaves GPUI focus where it
-        // is, so focus goes back to the terminal.
+        // The panel closes first, and a native session menu waiting for its
+        // read gives way. A native menu leaves GPUI focus where it is, so
+        // focus goes back to the terminal.
+        self.cancel_pending_session_menu(cx);
         self.dismiss_panel(
             super::transparency_panel::PanelFocus::Terminal,
             window,

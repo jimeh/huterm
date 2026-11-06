@@ -9,6 +9,7 @@ use gpui::{Modifiers, MouseDownEvent};
 
 use super::super::menu_spec::{NativeItem, NativeMenu};
 use super::super::native_menus::{MenuAnchor, MenuPresenter, PresentedMenu};
+use super::worker_hooks::Stage;
 use super::*;
 
 /// One menu the presenter showed, with the sender that answers it.
@@ -414,6 +415,107 @@ fn the_first_native_session_menu_after_every_shell_exited_tags_the_session(
         Some(Some("1 tab · Every shell exited".to_owned())),
         "the menu used the exited read from before the shell exited"
     );
+}
+
+impl DesktopHarness {
+    /// Asks for the native session menu while its exited read waits, runs
+    /// `supersede`, then lets the read answer and settles its completion.
+    fn supersede_session_menu(
+        &mut self,
+        window: AnyWindowHandle,
+        supersede: impl FnOnce(&mut Self),
+    ) {
+        let runtime = Arc::clone(&self.runtime);
+        runtime.worker_hooks.hold(Stage::ExitedRead);
+        self.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+        self.wait_for("the exited read to wait", |_| {
+            runtime.worker_hooks.held(Stage::ExitedRead) == 1
+        });
+        supersede(self);
+        runtime.worker_hooks.release(Stage::ExitedRead);
+        self.wait_for("the exited read to answer", |_| {
+            runtime.worker_hooks.held(Stage::ExitedRead) == 0
+        });
+        self.cx.run_until_parked();
+    }
+}
+
+/// Whether `window`'s session menu is open or waits for its read.
+fn session_menu_open(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> bool {
+    harness.update_view(window, |view, _, _| view.session_menu_open())
+}
+
+#[gpui::test]
+fn a_native_session_menu_whose_window_deactivates_before_its_read_never_shows(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, presenter) = harness.native_window();
+    harness.supersede_session_menu(window, |harness| {
+        harness.deactivate(window);
+    });
+    assert!(
+        presenter.shown.borrow().is_empty(),
+        "the menu showed after its window deactivated"
+    );
+    assert!(!session_menu_open(&mut harness, window));
+    // A request nothing supersedes still shows once its read answers.
+    harness.activate(window, tab);
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.wait_shown(&presenter, 1);
+    harness.cx.update(|cx| {
+        assert_eq!(native_kind(cx, window), Some(MenuKind::Session));
+    });
+}
+
+#[gpui::test]
+fn a_native_session_menu_superseded_by_the_palette_never_shows(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, presenter) = harness.native_window();
+    harness.supersede_session_menu(window, |harness| {
+        harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+        harness.press(window, "escape");
+        harness.wait_for("the palette to close", |cx| {
+            window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>()
+                        .is_ok_and(|view| view.read(cx).palette.is_none())
+                })
+                .unwrap_or(false)
+        });
+    });
+    assert!(
+        presenter.shown.borrow().is_empty(),
+        "the menu showed after the palette opened and closed"
+    );
+    assert!(!session_menu_open(&mut harness, window));
+}
+
+#[gpui::test]
+fn a_native_session_menu_superseded_by_another_menu_never_shows(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, presenter) = harness.native_window();
+    harness.supersede_session_menu(window, |harness| {
+        harness.invoke(window, ids::OPEN_MENU).unwrap();
+        harness.wait_shown(&presenter, 1);
+        presenter.shown.borrow()[0].dismiss();
+        harness.wait_for("the window menu to close", |cx| {
+            native_kind(cx, window).is_none()
+        });
+    });
+    assert_eq!(
+        presenter.shown.borrow().len(),
+        1,
+        "the session menu showed after another menu opened and closed"
+    );
+    assert!(!session_menu_open(&mut harness, window));
 }
 
 #[gpui::test]
