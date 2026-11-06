@@ -78,9 +78,9 @@ timeout and three retries), but one that sends slowly is limited only by the
 retry once within 6 minutes, which reshuffles the mirrors.
 
 Every install, cached or not, also fetches `ziglang.org/download/index.json`
-to find the tarball URL. When that fails, Mise 2026.10.17 falls back to the
-filename order Zig used before 0.14 (`zig-macos-aarch64-…`), so a ziglang.org
-outage fails the install.
+to find the tarball URL. When that fails, Mise 2026.10.25 still falls back to
+the filename order Zig used before 0.14 (`zig-macos-aarch64-…`), so a
+ziglang.org outage fails the install.
 
 The Mise action saves its install cache right after its own install step, so
 tools installed later in a job, such as Zig and the `cargo:` tools, never reach
