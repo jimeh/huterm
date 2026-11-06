@@ -30,6 +30,28 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeout = 1
     await Bun.sleep(25);
   }
 }
+/**
+ * The visible X11 window titled exactly `title`, polled rather than waited on
+ * with `xdotool search --sync`: `run()` kills that after 5 seconds with empty
+ * stderr, which hid whether the window was slow to map or its owner exited.
+ */
+async function x11Window(title: string, owner: Bun.Subprocess, ownerStderr: () => string, timeout = 12_000): Promise<string> {
+  const deadline = performance.now() + timeout;
+  for (;;) {
+    if (owner.exitCode !== null || owner.signalCode !== null) {
+      throw new Error(`${title} exited (${owner.signalCode ?? owner.exitCode}) before mapping its window; stderr: ${ownerStderr().trim() || "none"}`);
+    }
+    const result = Bun.spawnSync(["xdotool", "search", "--onlyvisible", "--name", `^${title}$`], { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
+    const id = result.stdout.toString().trim().split(/\s+/).find(Boolean);
+    if (id) return id;
+    // `xdotool search` exits 1 when nothing matches yet.
+    if (performance.now() > deadline) {
+      const last = `${result.exitCode ?? result.signalCode} ${result.stderr.toString().trim()}`.trim();
+      throw new Error(`timed out waiting for X11 window ${title}: last search exit ${last}; owner stderr: ${ownerStderr().trim() || "none"}`);
+    }
+    await Bun.sleep(25);
+  }
+}
 async function publishCommand(file: string, text: string): Promise<void> {
   const temporary = `${file}.tmp`;
   await writeFile(temporary, text);
@@ -143,6 +165,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   let passed = false;
   const errors = (async () => { for await (const chunk of app.stderr) diagnostics += Buffer.from(chunk).toString(); })();
   const witness = Bun.spawn(macos ? [witnessExecutable!, directory] : ["xmessage", "-geometry", "500x320+100+100", "-bg", "white", "-title", "Quake external focus witness", "-buttons", "", "External application"], { stdout: "ignore", stderr: "pipe" });
+  let witnessStderr = "";
+  void collectStream(witness.stderr, (text) => { witnessStderr += text; });
   let witnessSequence = 0;
   const native = async (text: string) => {
     const id = witnessSequence++;
@@ -154,7 +178,8 @@ async function check(executable: string, engine: string, witnessExecutable?: str
   let witnessWindow = "";
   const focusWitness = async () => {
     if (macos) await native("focus");
-    else run(["xdotool","windowactivate","--sync",witnessWindow]);
+    // The caller waits for the activation; `--sync` would wait under run()'s 5-second limit.
+    else run(["xdotool","windowactivate",witnessWindow]);
   };
   const witnessActive = async () => macos ? parseState(await readFile(join(directory,"witness-state"),"utf8")).active === "true" : run(["xdotool","getactivewindow"]) === witnessWindow;
   const hotkey = async (code = 17, linux = "ctrl+alt+t") => {
@@ -254,7 +279,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
       await waitFor(() => Bun.file(join(directory,"witness-ready")).exists(),"external AppKit witness");
       const ready = parseState(await readFile(join(directory,"witness-ready"),"utf8"));
       if (ready.posting !== "true") throw new Error("macOS denied session event posting. The smoke host needs Accessibility event-posting permission; internal dispatch cannot prove a global shortcut.");
-    } else witnessWindow = run(["xdotool", "search", "--sync", "--name", "^Quake external focus witness$"]);
+    } else witnessWindow = await x11Window("Quake external focus witness", witness, () => witnessStderr);
     await focusWitness();
     await waitFor(witnessActive,"external witness focus");
     await hotkey();
@@ -544,7 +569,9 @@ async function check(executable: string, engine: string, witnessExecutable?: str
         await mkdir(departedDirectory);
         // Without a launch activation, the explicit focus command below is the
         // departed witness's only activation request.
-        const departed = Bun.spawn(macos ? [witnessExecutable!, departedDirectory, "--no-launch-activation"] : ["xmessage", "-title", "Quake departed focus witness", "-buttons", "", "Temporary focus target"], {stdout: "ignore", stderr: "ignore"});
+        const departed = Bun.spawn(macos ? [witnessExecutable!, departedDirectory, "--no-launch-activation"] : ["xmessage", "-title", "Quake departed focus witness", "-buttons", "", "Temporary focus target"], {stdout: "ignore", stderr: "pipe"});
+        let departedStderr = "";
+        void collectStream(departed.stderr, (text) => { departedStderr += text; });
         try {
           let departedTarget = String(departed.pid);
           if (macos) {
@@ -556,9 +583,10 @@ async function check(executable: string, engine: string, witnessExecutable?: str
               return witness.active === "true" && witness.front_pid === departedTarget;
             }, "temporary AppKit target is the exact frontmost process");
           } else {
-            const departedWindow = run(["xdotool", "search", "--sync", "--name", "^Quake departed focus witness$"]);
+            const departedWindow = await x11Window("Quake departed focus witness", departed, () => departedStderr);
             departedTarget = departedWindow;
-            run(["xdotool", "windowactivate", "--sync", departedWindow]);
+            // The wait below observes the activation through Huterm's own focus state.
+            run(["xdotool", "windowactivate", departedWindow]);
           }
           await waitFor(async () => {
             const value = await state();

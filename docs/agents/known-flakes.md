@@ -81,7 +81,6 @@ delete the entry once the review date passes without a recurrence.
 | [Linux renderer smoke startup hang](flakes/linux-renderer-startup-hang.md) | smoke | linux-x86_64, linux-aarch64 | 10 CI | 2026-11-05 | 1 | 2026-12-06 |
 | [huterm-gpui pane rename title on hosted macOS](flakes/gpui-pane-rename-title.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 2 CI | 2026-11-04 | 2 | 2026-12-06 |
 | [Linux palette smoke wheel does not scroll the results](flakes/linux-palette-wheel-scroll.md) | smoke | linux-x86_64, linux-aarch64 | 3 CI | 2026-11-04 | 1 | 2026-12-06 |
-| [Linux quake smoke external witness search timeout](flakes/linux-quake-witness-search-timeout.md) | smoke | linux-x86_64, linux-aarch64 | 1 CI | 2026-11-03 | 1 | 2026-12-06 |
 | [macOS quake smoke departed-witness activation](flakes/macos-quake-departed-witness-activation.md) | smoke | macos-arm64 | 1 CI, 1 local | 2026-10-30 | 1 | 2026-12-06 |
 | [smoke-process.test.ts deadlines under parallel builds](flakes/smoke-process-test-deadlines.md) | bun | macos-arm64 | 4 local | 2026-10-30 | 0 | 2026-12-06 |
 | [Install Zig hang](flakes/ci-zig-install-hang.md) | infra | macos-arm64, linux-x86_64, linux-aarch64 | 1 CI | 2026-10-28 | 0 | 2027-01-15 |
@@ -100,6 +99,7 @@ entry once its review date passes without a recurrence.
 | --- | --- | --- | --- | --- | --- | --- |
 | [Linux palette smoke busy step](flakes/linux-palette-busy-step.md) | smoke | linux-x86_64, linux-aarch64 | 15 CI | 2026-11-05 | 0 | 2026-12-06 |
 | [Linux input smoke tear-off cue timeout](flakes/linux-input-tear-off-cue.md) | smoke | linux-x86_64, linux-aarch64 | 2 CI | 2026-11-04 | 0 | 2026-12-06 |
+| [Linux quake smoke external witness search timeout](flakes/linux-quake-witness-search-timeout.md) | smoke | linux-x86_64, linux-aarch64 | 1 CI | 2026-11-03 | 0 | 2026-12-06 |
 | [huterm-gpui Edit menu Select All](flakes/gpui-edit-menu-select-all.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 6 CI, 1 local | 2026-10-31 | 0 | 2026-12-06 |
 | [Linux overlays smoke Enter on "Close 2 tabs?" closes no tabs](flakes/linux-overlays-close-tabs-enter.md) | smoke | linux-x86_64, linux-aarch64 | 7 CI | 2026-10-31 | 0 | 2026-12-06 |
 | [macOS input smoke empty state read](flakes/macos-input-empty-state-read.md) | smoke | macos-arm64 | 2 CI, 1 local | 2026-10-30 | 0 | 2026-12-06 |

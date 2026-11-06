@@ -1,19 +1,17 @@
 +++
 id = "linux-quake-witness-search-timeout"
 title = "Linux quake smoke external witness search timeout"
-status = "open"
+status = "fixed"
 kind = "smoke"
 platforms = ["linux-x86_64", "linux-aarch64"]
-retries = 1
+retries = 0
 review_by = "2026-12-06"
 
 [selector]
 steps = ["linux-quake"]
 
 [signature]
-match = [
-  "xdotool search --sync --name \\^Quake external focus witness\\$:",
-]
+match = ["(?:timed out waiting for X11 window Quake|focus witness exited \\()"]
 
 [[occurrences]]
 date = "2026-11-03"
@@ -40,6 +38,12 @@ platform = "linux-x86_64"
   still waiting for the `xmessage` witness. Whether `xmessage` was slow to map
   or exited early is unconfirmed: the harness pipes its stderr but does not
   print it or its exit status on failure.
-- **Triage:** a failure at this label with empty stderr is this flake; rerun.
-  If it recurs, make the failure print the witness's exit status and stderr
-  before changing the timeout, so the next occurrence shows which cause it is.
+- **Fix:** the harness polls `xdotool search --onlyvisible` for each witness
+  window under its 12-second wait instead of `--sync` under the 5-second
+  command limit, checks between polls that the witness is still running, and
+  reports the witness's exit status and stderr if it exits or never maps.
+  Window activation no longer uses `--sync`; the harness already waits for
+  the focus change it requested. The departed witness got the same change.
+- **Triage:** a failure after the fix names its cause: a witness that exited
+  prints its status and stderr, and a timeout prints the last search result.
+  Record which, then investigate rather than rerun.
