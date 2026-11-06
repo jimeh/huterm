@@ -431,9 +431,10 @@ requests restore main's entries; per-PR copies pushed the repository past
 GitHub's 10 GB cache limit, and the resulting evictions made unrelated jobs
 compile cold.
 
-Each CI smoke step has a five-minute process deadline and a six-minute Actions
-backstop. The supervisor streams output and records stdout, stderr, elapsed-time
-events, and exit status under `HUTERM_SMOKE_EVIDENCE_DIR/steps/<step>`. Evidence
+Each CI smoke step has a five-minute process deadline, a 330-second budget
+for all its attempts, and a six-minute Actions backstop. The supervisor streams
+output and records stdout, stderr, elapsed-time events, and exit status under
+`HUTERM_SMOKE_EVIDENCE_DIR/steps/<step>`. Evidence
 is uploaded for successful and failed jobs so timing can be compared. The
 renderer also records its native process events under `renderer-process`,
 distinguishing paint completion from process exit. Its 15-second deadline and
@@ -442,7 +443,12 @@ completion assertions remain enforced.
 After compilation succeeds, independent smoke steps continue after a failure;
 the failed step still fails the job. Cancellation stops subsequent steps. The
 supervisor forwards termination to its private process group, escalates to KILL,
-and removes remaining group members on exit. It does not retry failed assertions.
+and removes remaining group members on exit. It reruns a failure once only
+when it matches a registered [known flake](known-flakes.md#retries-in-ci) and
+another attempt fits the remaining budget: at least 30 seconds and twice the
+failed attempt's duration. A retry writes its evidence under
+`steps/<step>/attempt-2`, with `HUTERM_SMOKE_EVIDENCE_DIR` pointed at
+`retries/<step>-attempt-2`, so the first attempt's files stay intact.
 To reproduce one supervised step after building, run
 `HUTERM_CI_SMOKE_STEP=renderer mise run ci:smoke:step`.
 

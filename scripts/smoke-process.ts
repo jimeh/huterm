@@ -10,6 +10,8 @@ export type SmokeOutcome = {
   timedOut: boolean;
   /** `stopWhen` matched and the supervisor ended the process. */
   stopped: boolean;
+  /** The supervisor itself received this signal and forwarded it. */
+  interrupted?: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
   elapsedMs: number;
@@ -124,7 +126,7 @@ export async function runSmokeProcess(command: string[], options: {
       // Wait for output as well as exit; descendants holding pipes are also bounded.
       spawned.once("close", (exitCode, signalCode) => resolve({ exitCode, signalCode }));
     });
-    const outcome = { ...status, signalCode: interrupted ?? status.signalCode, timedOut, stopped, stdout, stderr, elapsedMs: elapsed() };
+    const outcome = { ...status, signalCode: interrupted ?? status.signalCode, interrupted, timedOut, stopped, stdout, stderr, elapsedMs: elapsed() };
     event("closed", status);
     if (directory) writeFileSync(join(directory, "outcome.json"), `${JSON.stringify({ exitCode: outcome.exitCode, signalCode: outcome.signalCode, timedOut, elapsedMs: outcome.elapsedMs }, null, 2)}\n`);
     return outcome;

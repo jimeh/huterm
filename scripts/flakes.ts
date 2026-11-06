@@ -573,6 +573,9 @@ export function appendOccurrence(text: string, occurrence: Occurrence): string {
   return `+++\n${parts.front.replace(/\s+$/, "")}\n${lines.join("\n")}\n+++\n${parts.body}`;
 }
 
+/** Workflow job keys (GITHUB_JOB) and the start of their display names. */
+const JOB_NAMES: Record<string, string> = { checks: "Checks", smoke: "Rust smoke", releasesafe: "Ghostty ReleaseSafe" };
+
 type GhJob = { id: number; name: string; conclusion: string | null; html_url: string; head_sha: string; started_at: string };
 
 async function gh(args: string[]): Promise<string> {
@@ -625,7 +628,8 @@ export async function record(url: string, root = repositoryRoot): Promise<string
         const item = JSON.parse(line) as ReportRecord;
         const flake = flakes.find((candidate) => candidate.id === item.flake);
         if (!flake || item.run?.attempt !== String(run.run_attempt)) continue;
-        const job = jobs.find((candidate) => platformFromJobName(candidate.name) === item.platform && artifact.includes(item.run?.job ?? "\0"));
+        const prefix = JOB_NAMES[item.run?.job ?? ""];
+        const job = jobs.find((candidate) => !!prefix && candidate.name.startsWith(prefix) && platformFromJobName(candidate.name) === item.platform);
         if (jobId && !job) continue;
         const occurrenceUrl = job?.html_url ?? `https://github.com/${repository}/actions/runs/${runId}`;
         reported.add(`${flake.id} ${occurrenceUrl}`);
