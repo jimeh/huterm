@@ -1,10 +1,10 @@
 +++
 id = "macos-refresh-resize-indicator"
 title = "macOS refresh smoke resize indicator"
-status = "open"
+status = "fixed"
 kind = "smoke"
 platforms = ["macos-arm64"]
-retries = 1
+retries = 0
 review_by = "2026-12-06"
 
 [selector]
@@ -37,9 +37,14 @@ platform = "macos-arm64"
   indicator reads `[window] size_indicator_linger_ms` at each resize, the
   100 ms hold no longer carries into `check_render_resize`, which removes the
   first candidate.
+- **Fix (2026-11-06):** the step no longer samples the indicator's opacity.
+  It records the view's `resize_indicators` count, which the render that
+  sees the new viewport increments as it raises the indicator, and waits
+  for the count to advance. A stalled sampler can no longer miss the
+  indicator's short visible window; a timeout now means no render saw the
+  resize, the remaining candidate, which is a frame-scheduling regression.
 - **Triage:** read the step's panic output first; this smoke has caught real
-  bugs. On a second occurrence, look for frame evidence before changing the
-  check.
+  bugs. The timeout prints `resize_indicators` and its starting value.
 - **Not this flake:** "missing pending_work_cancellation success" failed twice
   on feature branches (2026-10-01 alongside a `projection.rs` panic, and
   2026-10-02 on in-progress shared-viewer work). Treat that signature as a

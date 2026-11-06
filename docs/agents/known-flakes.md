@@ -85,7 +85,6 @@ delete the entry once the review date passes without a recurrence.
 | [Release stapler CloudKit ticket lookup](flakes/release-stapler-cloudkit-lookup.md) | infra | macos-arm64 | 3 CI | 2026-10-27 | 0 | 2027-01-15 |
 | [Linux client-frame smoke first key lost after a title-bar drag](flakes/linux-client-frame-first-key-after-drag.md) | smoke | linux-x86_64, linux-aarch64 | 1 CI | 2026-10-01 | 0 | 2026-12-06 |
 | [Linux integration smoke held-link hover timeout](flakes/linux-integration-held-link-hover.md) | smoke | linux-x86_64, linux-aarch64 | 2 CI | 2026-09-29 | 1 | 2026-12-06 |
-| [macOS refresh smoke resize indicator](flakes/macos-refresh-resize-indicator.md) | smoke | macos-arm64 | 1 CI | 2026-09-26 | 1 | 2026-12-06 |
 
 ### Fixed, under observation
 
@@ -106,6 +105,7 @@ entry once its review date passes without a recurrence.
 | [smoke-process.test.ts deadlines under parallel builds](flakes/smoke-process-test-deadlines.md) | bun | macos-arm64 | 4 local | 2026-10-30 | 0 | 2026-12-06 |
 | [macOS palette smoke stray DEL at an early step](flakes/macos-palette-stray-del.md) | smoke | macos-arm64 | 2 local | 2026-10-26 | 0 | 2026-12-06 |
 | [huterm-procinfo live group leader arguments on Linux](flakes/procinfo-live-group-leader-arguments.md) | rust | linux-x86_64, linux-aarch64 | 4 CI | 2026-10-26 | 0 | 2026-12-06 |
+| [macOS refresh smoke resize indicator](flakes/macos-refresh-resize-indicator.md) | smoke | macos-arm64 | 1 CI | 2026-09-26 | 0 | 2026-12-06 |
 
 <!-- flakes:index:end -->
 

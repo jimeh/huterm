@@ -365,17 +365,22 @@ async fn check_animations(cx: &mut AsyncApp) -> anyhow::Result<()> {
 }
 
 async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
-    let (original, requests) = cx.update(|cx| {
+    let (original, requests, raised) = cx.update(|cx| {
         workspace(cx, |view, window, cx| {
             let original = window.viewport_size();
-            let requests = view.tabs[0].focused_view().read(cx).resize_requests;
+            let terminal = view.tabs[0].focused_view().read(cx);
+            let requests = terminal.resize_requests;
+            let raised = terminal.resize_indicators;
             window.resize(gpui::size(
                 original.width + gpui::px(1.0),
                 original.height,
             ));
-            (original, requests)
+            (original, requests, raised)
         })
     })?;
+    // The render that sees the new viewport raises the indicator and counts
+    // it. Sampling the opacity instead left only the linger's few hundred
+    // milliseconds to observe it, which a stalled runner could miss.
     wait(
         cx,
         "one-pixel resize activates the indicator without resizing the grid",
@@ -389,10 +394,11 @@ async fn check_render_resize(cx: &mut AsyncApp) -> anyhow::Result<()> {
                 let opacity = terminal.resize_visibility.opacity;
                 Ok((
                     window.viewport_size().width > original.width
-                        && opacity > 0.0,
+                        && terminal.resize_indicators > raised,
                     format!(
-                        "size={:?}, opacity={opacity}",
-                        window.viewport_size()
+                        "size={:?}, resize_indicators={} (was {raised}), opacity={opacity}",
+                        window.viewport_size(),
+                        terminal.resize_indicators
                     ),
                 ))
             })?
