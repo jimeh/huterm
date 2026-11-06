@@ -246,6 +246,9 @@ struct Wanted {
     title: String,
     colors: TabColors,
     screen: Option<gpui::Point<f64>>,
+    /// The source window's `[window] power_frame_limits`, read when the
+    /// preview opens.
+    power_frame_limits: bool,
 }
 
 fn wanted(cx: &App) -> Option<Wanted> {
@@ -283,6 +286,7 @@ fn wanted(cx: &App) -> Option<Wanted> {
         title: drag.payload.title.clone(),
         colors: source.floating_colors(),
         screen: drag.screen,
+        power_frame_limits: source.config.window.power_frame_limits,
     })
 }
 
@@ -402,27 +406,9 @@ fn open(
         eprintln!("Drag preview: injected open failure");
         return None;
     }
-    let extent = MINIATURE.width.max(MINIATURE.height) + SHADOW_MARGIN * 2.0;
-    #[expect(clippy::cast_possible_truncation, reason = "a small point size")]
-    let extent = px(extent as f32);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-            point(px(0.0), px(0.0)),
-            size(extent, extent),
-        ))),
-        titlebar: None,
-        focus: false,
-        show: false,
-        kind: WindowKind::PopUp,
-        is_movable: false,
-        is_resizable: false,
-        is_minimizable: false,
-        inactive_frame_interval: None,
-        window_background: WindowBackgroundAppearance::Transparent,
-        ..WindowOptions::default()
-    };
     let (mode, title, colors) =
         (wanted.mode, wanted.title.clone(), wanted.colors);
+    let options = window_options(wanted.power_frame_limits);
     let handle = match cx.open_window(options, move |_, cx| {
         cx.new(|_| DragPreviewView {
             mode,
@@ -449,6 +435,29 @@ fn open(
         configure_native(number, cx);
     }
     Some(handle)
+}
+
+/// The preview's hidden, unfocused, transparent pop-up, sized for the
+/// miniature and its shadow, with the terminal windows' frame intervals.
+fn window_options(power_frame_limits: bool) -> WindowOptions {
+    let extent = MINIATURE.width.max(MINIATURE.height) + SHADOW_MARGIN * 2.0;
+    #[expect(clippy::cast_possible_truncation, reason = "a small point size")]
+    let extent = px(extent as f32);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+            point(px(0.0), px(0.0)),
+            size(extent, extent),
+        ))),
+        titlebar: None,
+        focus: false,
+        show: false,
+        kind: WindowKind::PopUp,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        window_background: WindowBackgroundAppearance::Transparent,
+        ..super::frame_limits::window_options(power_frame_limits)
+    }
 }
 
 /// Styles the fresh native window on a later turn, outside GPUI borrows:
@@ -778,5 +787,52 @@ mod tests {
             point(17.0, -29.0),
             "no screen leaves the chip unclamped"
         );
+    }
+
+    #[test]
+    fn the_preview_window_follows_power_frame_limits() {
+        let defaults = WindowOptions::default();
+        assert!(defaults.low_power_frame_interval.is_some());
+        assert!(defaults.thermal_frame_interval.is_some());
+        for (power_frame_limits, caps) in [
+            (
+                true,
+                (
+                    defaults.low_power_frame_interval,
+                    defaults.thermal_frame_interval,
+                ),
+            ),
+            (false, (None, None)),
+        ] {
+            let options = window_options(power_frame_limits);
+            assert_eq!(
+                (
+                    options.low_power_frame_interval,
+                    options.thermal_frame_interval
+                ),
+                caps,
+                "power_frame_limits = {power_frame_limits}"
+            );
+            assert_eq!(options.inactive_frame_interval, None);
+            assert_eq!(options.kind, WindowKind::PopUp);
+            assert!(!options.focus && !options.show);
+            assert!(options.titlebar.is_none());
+            assert!(
+                !options.is_movable
+                    && !options.is_resizable
+                    && !options.is_minimizable
+            );
+            assert_eq!(
+                options.window_background,
+                WindowBackgroundAppearance::Transparent
+            );
+            assert_eq!(
+                options.window_bounds,
+                Some(WindowBounds::Windowed(Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(px(208.0), px(208.0)),
+                )))
+            );
+        }
     }
 }

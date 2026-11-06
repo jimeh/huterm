@@ -1,17 +1,17 @@
 diff --git a/src/window.rs b/src/window.rs
-index fc56555ea1da0320432174777691495587ab82b7..f22ca79af1a6520a52001cb38955a2b75568d8b5 100644
+index 1596d4ce020279b4b5b6318bb166d1321e312891..a12076fa2cd0f71e577e78c623319fafa39ad8e9 100644
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -30,7 +30,7 @@ use gpui_util::ResultExt;
  use objc2::{
-     AnyThread, MainThreadMarker, class, msg_send,
+     AnyThread, MainThreadMarker, Message, class, msg_send,
      rc::{Retained, autoreleasepool},
 -    runtime::{AnyClass, AnyObject, AnyProtocol, Bool, ClassBuilder, ProtocolObject, Sel},
 +    runtime::{AnyClass, AnyObject, AnyProtocol, Bool, ClassBuilder, Ivar, ProtocolObject, Sel},
      sel,
  };
  #[expect(
-@@ -73,6 +73,7 @@ use std::{
+@@ -74,6 +74,7 @@ use std::{
  };
  
  const WINDOW_STATE_IVAR: &CStr = c"windowState";
@@ -19,7 +19,7 @@ index fc56555ea1da0320432174777691495587ab82b7..f22ca79af1a6520a52001cb38955a2b7
  
  static RESTORES_WORKSPACE_AT_LAUNCH_DEFAULT: Once = Once::new();
  
-@@ -411,6 +412,20 @@ unsafe fn build_window_class(name: &CStr, superclass: &AnyClass) -> *const AnyCl
+@@ -412,6 +413,20 @@ unsafe fn build_window_class(name: &CStr, superclass: &AnyClass) -> *const AnyCl
      unsafe {
          let mut decl = ClassBuilder::new(name, superclass).unwrap();
          decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
@@ -40,7 +40,7 @@ index fc56555ea1da0320432174777691495587ab82b7..f22ca79af1a6520a52001cb38955a2b7
          decl.add_method(sel!(dealloc), dealloc_window as extern "C" fn(_, Sel));
  
          decl.add_method(
-@@ -2408,6 +2423,39 @@ impl rwh::HasDisplayHandle for MacWindow {
+@@ -2474,6 +2489,39 @@ impl rwh::HasDisplayHandle for MacWindow {
      }
  }
  

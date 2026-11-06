@@ -198,8 +198,9 @@ state, so the indicator lingers after the last resize there.
 The drag preview (`windows/drag_preview/macos.rs`) is a GPUI `PopUp`, which
 GPUI opens as a `Titled | FullSizeContentView` nonactivating panel at the
 popup level with `CanJoinAllSpaces | FullScreenAuxiliary`. It opens with
-`focus: false`, `show: false`, a transparent background, and no inactive frame
-cap. After open, a spawned task sets the style mask to borderless plus
+`focus: false`, `show: false`, a transparent background, no inactive frame
+cap, and the power frame caps that `[window] power_frame_limits` selects.
+After open, a spawned task sets the style mask to borderless plus
 `NonactivatingPanel`, hides any standard buttons, and sets
 `ignoresMouseEvents`, no native shadow (the view draws its own inside a
 margin), `excludedFromWindowsMenu`, no hide on deactivate, and
@@ -263,6 +264,34 @@ the retained view with the window in deferred native cleanup.
 AppKit returns no NSScreen for a fully offscreen window during quake slides.
 GPUI display-link and maximization getters must handle nil; screen and occlusion
 callbacks restart the display link when the window returns.
+
+Since gpui-pre 0.3.11 (zed#65472), a macOS window chooses its frame source
+once, at creation. It uses a `CAMetalDisplayLink` on its Metal layer when the
+class exists, which it always does on macOS 14+, unless the process runs in a
+virtual machine; otherwise it uses `CVDisplayLink`. The `vm-display-link`
+patch adds the virtual-machine rule: `sysctlbyname("kern.hv_vmm_present")`
+reporting 1 keeps `CVDisplayLink`, and a failed or absent sysctl counts as
+real hardware. The probe runs once per process. On Apple-virtualized macOS
+(GitHub's macos-15 and macos-26 runners, kernel `RELEASE_ARM64_VMAPPLE`), the
+Metal link stopped issuing updates after a short burst while unpaused, with
+no drawables outstanding and every drawable's `presentedTime` 0, while a
+`CVDisplayLink` on the same display kept ticking at about 60 Hz. Forcing
+`CVDisplayLink` made every CI smoke pass; real hardware works with the Metal
+link. CI's macOS smokes therefore exercise only `CVDisplayLink`, and host
+runs on real hardware exercise the Metal link. Set `GPUI_FRAME_SOURCE_DEBUG`
+to any value to print the chosen source and the sysctl value to stderr once
+per process, for example `gpui: frame source CAMetalDisplayLink,
+kern.hv_vmm_present=0`.
+
+The Metal link needs no NSScreen, so an offscreen quake window keeps receiving
+frames while AppKit reports it visible. `MetalFrameSource::new` returns `None`
+only when the class is missing, and a window renderer always has a layer, so
+neither leaves a window without frames on supported systems; a window that
+chose Metal never falls back to `CVDisplayLink`. Both sources still stop
+while the window lacks the Visible occlusion bit. The `macos-offscreen-screen`
+patch remains for the maximized check and backing scale. The quake smoke's
+recreated window shows frame delivery indirectly: only a delivered frame
+renews the snapshot allowance, so its echo after `READY` needs one.
 
 Reassert macOS quake geometry during settling after changing presentation options.
 AppKit can move the frame after its initial write. Keep X11 fullscreen geometry

@@ -143,8 +143,8 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
-      cargoPackage("gpui-pre", "0.3.10"),
-      cargoPackage("gpui-pre-macos", "0.3.10"),
+      cargoPackage("gpui-pre", "0.3.11"),
+      cargoPackage("gpui-pre-macos", "0.3.11"),
     ],
     documentDescribes: ["SPDXRef-huterm"],
   };
@@ -170,6 +170,9 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
   for (const name of ["Sparkle", "ghostty", "uucode", "highway", "wuffs"]) {
     expect(packages.some(pkg => pkg.name === name)).toBe(true);
   }
+  // Evidence from a superseded GPUI snapshot must not satisfy the pin.
+  packages.find(pkg => pkg.name === "gpui-pre")!.versionInfo = "0.3.10";
+  expect(() => validateRuntimeSpdx(result, "0.4.0")).toThrow("SBOM lacks required runtime component gpui-pre@0.3.11");
 });
 
 test("SPDX augmentation preserves packages without optional version metadata", async () => {
@@ -194,8 +197,8 @@ test("SPDX augmentation preserves packages without optional version metadata", a
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
-      cargoPackage("gpui-pre", "0.3.10"),
-      cargoPackage("gpui-pre-macos", "0.3.10"),
+      cargoPackage("gpui-pre", "0.3.11"),
+      cargoPackage("gpui-pre-macos", "0.3.11"),
       unversioned,
       blankVersion,
     ],
@@ -237,7 +240,7 @@ test("Ghostty SPDX source names the reviewed native patches", async () => {
     SPDXID: "SPDXRef-DOCUMENT",
     spdxVersion: "SPDX-2.3",
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
-    packages: [cargoPackage("huterm", "0.4.0"), cargoPackage("gpui-pre", "0.3.10"), cargoPackage("gpui-pre-macos", "0.3.10")],
+    packages: [cargoPackage("huterm", "0.4.0"), cargoPackage("gpui-pre", "0.3.11"), cargoPackage("gpui-pre-macos", "0.3.11")],
     documentDescribes: ["SPDXRef-huterm"],
   }, {
     arm64: { packages: [] },

@@ -1,5 +1,5 @@
 diff --git a/src/platform/test/window.rs b/src/platform/test/window.rs
-index 5692b1e7cb81a80f5cf9393c68bab3f56448e3e3..5cb367ae779e82246866bd1ec75441cca027163c 100644
+index 4a8ccc67ee48d3129e615f3d01881dc120a8bea0..edafcbc8aa359b2a029b394c540dd0d8db80e141 100644
 --- a/src/platform/test/window.rs
 +++ b/src/platform/test/window.rs
 @@ -1,5 +1,5 @@
@@ -9,7 +9,7 @@ index 5692b1e7cb81a80f5cf9393c68bab3f56448e3e3..5cb367ae779e82246866bd1ec75441cc
      Pixels, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput,
      PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene, Size,
      TestDisplay, TestPlatform, TextInputConfiguration, TextInputStateChange, WindowAppearance,
-@@ -325,6 +325,13 @@ impl PlatformWindow for TestWindow {
+@@ -334,6 +334,13 @@ impl PlatformWindow for TestWindow {
          self.0.lock().insets_callback = Some(callback);
      }
  
@@ -24,10 +24,10 @@ index 5692b1e7cb81a80f5cf9393c68bab3f56448e3e3..5cb367ae779e82246866bd1ec75441cc
          self.0.lock().virtual_keyboard_requests += 1;
      }
 diff --git a/src/window.rs b/src/window.rs
-index a6fa7cfa0d205f776f3f5c533b4716544d8f9b34..5069693482c81c8ecd23076fa1c52e26383f40cd 100644
+index 5d77b7a686c692df61bec6135e7f6209cf2092fb..a8fc2bd8bab4dbeeb11027ff1740e8959b1d0e47 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -7083,6 +7083,14 @@ impl Window {
+@@ -7306,6 +7306,14 @@ impl Window {
              .push((action, Box::new(listener)));
      }
  

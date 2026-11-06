@@ -1,8 +1,8 @@
 diff --git a/src/linux/wayland/window.rs b/src/linux/wayland/window.rs
-index 8d92234ef1ea40612220bd6b78b00fc2dd7c3565..8ac8ff2dcecec00e0115e99d05b250cf1ce9975c 100644
+index 6647a8ef7f7ea7cbcf4f382b43d9018914bbf14d..664d5e888d71b986454cd2ce48eadced375a6fba 100644
 --- a/src/linux/wayland/window.rs
 +++ b/src/linux/wayland/window.rs
-@@ -2254,7 +2254,20 @@ impl PlatformWindow for WaylandWindow {
+@@ -2276,7 +2276,20 @@ impl PlatformWindow for WaylandWindow {
      }
  
      fn a11y_update_window_bounds(&self) {

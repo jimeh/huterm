@@ -1,8 +1,8 @@
 diff --git a/src/window.rs b/src/window.rs
-index f2208d35ecd15d90733d9d07a0d56aa13b8f91e2..fc56555ea1da0320432174777691495587ab82b7 100644
+index 32a6a5400929e2deaf5d9f4e85c18e78efe64dfb..1596d4ce020279b4b5b6318bb166d1321e312891 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -2409,21 +2409,11 @@ impl rwh::HasDisplayHandle for MacWindow {
+@@ -2475,21 +2475,11 @@ impl rwh::HasDisplayHandle for MacWindow {
  }
  
  fn get_scale_factor(native_window: *mut AnyObject) -> f32 {

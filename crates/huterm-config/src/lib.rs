@@ -976,6 +976,19 @@ pub struct WindowConfig {
         ],
     )))]
     pub size_indicator_linger_ms: u16,
+    /// Cap terminal windows and the macOS drag preview at about 30 frames
+    /// per second in Low Power Mode or a power-saver profile, and about 60
+    /// under serious or critical thermal pressure. Off draws at the display's
+    /// rate.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "windows",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Lower frame rate to save power",
+        "x-huterm-order" = 33,
+        "x-huterm-apply" = "new_windows",
+        "x-huterm-advanced" = true,
+    )))]
+    pub power_frame_limits: bool,
 }
 
 /// How the window shows its grid size while it resizes.
@@ -1196,6 +1209,7 @@ impl Default for WindowConfig {
             macos_drag_preview: true,
             size_indicator: SizeIndicator::Full,
             size_indicator_linger_ms: 100,
+            power_frame_limits: true,
         }
     }
 }
@@ -4121,6 +4135,17 @@ mod panes_tests {
             window("[window]\nsize_indicator_linger_ms = 10001").unwrap_err(),
             "window.size_indicator_linger_ms must be between 0 and 10000"
         );
+    }
+
+    #[test]
+    fn power_frame_limits_default_on_and_parse_off() {
+        let window = |source: &str| {
+            toml::from_str::<RawConfig>(source)
+                .map(|raw| raw.window.power_frame_limits)
+        };
+        assert!(window("").unwrap());
+        assert!(!window("[window]\npower_frame_limits = false").unwrap());
+        assert!(window("[window]\npower_frame_limits = 'off'").is_err());
     }
 
     #[test]

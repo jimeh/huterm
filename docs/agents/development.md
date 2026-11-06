@@ -162,7 +162,10 @@ windows, focus changes, fullscreen Spaces, cursor warps, and global hotkeys off
 the host, so parallel sessions do not collide. Install Tart first; these
 tasks sit alongside the host `smoke:macos-*` tasks and do not replace them.
 The host tasks instead take turns through
-[the host smoke lock](desktop-smokes.md#host-smoke-lock).
+[the host smoke lock](desktop-smokes.md#host-smoke-lock). A VM paces GPUI
+frames with `CVDisplayLink`, as CI does, never the `CAMetalDisplayLink` real
+hardware uses (see [window presentation](window-presentation.md#quake-windows)),
+so a change that depends on the frame source needs a host run.
 
 ```sh
 mise run vm:macos:smoke

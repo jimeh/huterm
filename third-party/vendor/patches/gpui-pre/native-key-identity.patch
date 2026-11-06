@@ -1,8 +1,8 @@
 diff --git a/src/app.rs b/src/app.rs
-index 77403564e7bf684573e583540cf7e767efa83d95..89535617ab9274d92c018fdfa10273efe9eb2c95 100644
+index e838e53f9caacaa3a61718d53957254f2e82d2e6..c2ff1faa9a1895272910a29c81208d8716d3ef5c 100644
 --- a/src/app.rs
 +++ b/src/app.rs
-@@ -3605,6 +3605,8 @@ pub enum InputPreference {
+@@ -3591,6 +3591,8 @@ pub enum InputPreference {
  /// A keystroke event, and potentially the associated action
  #[derive(Debug)]
  pub struct KeystrokeEvent {
@@ -12,10 +12,10 @@ index 77403564e7bf684573e583540cf7e767efa83d95..89535617ab9274d92c018fdfa10273ef
      pub keystroke: Keystroke,
  
 diff --git a/src/elements/div.rs b/src/elements/div.rs
-index 11f0b72406a23d32aa3e701ca2eac6f5e771225f..dc34a169f897a0e34b867cc5d0a5bd73efa58dc3 100644
+index 9b34aa23469eacd5c95b89655e50ca5332f7538c..e0e5348cdc4c1afe6e4e163d165ed6fbe9759a38 100644
 --- a/src/elements/div.rs
 +++ b/src/elements/div.rs
-@@ -5510,6 +5510,7 @@ mod tests {
+@@ -5512,6 +5512,7 @@ mod tests {
          cx.update_window(window, |_, window, cx| {
              window.dispatch_event(
                  KeyDownEvent {
@@ -24,10 +24,10 @@ index 11f0b72406a23d32aa3e701ca2eac6f5e771225f..dc34a169f897a0e34b867cc5d0a5bd73
                      is_held: false,
                      prefer_character_input: false,
 diff --git a/src/gpui.rs b/src/gpui.rs
-index 2328e954df3062c6cc7e99973b4d6712051cf439..4b99f4f17b384bdb1d2e633b935dfeba5e4b59f1 100644
+index 5b31a3557fb436c818a162254650087441b3645f..7d9d3cb857115354916de1ecd8a03733822ec177 100644
 --- a/src/gpui.rs
 +++ b/src/gpui.rs
-@@ -31,6 +31,8 @@ mod hot_reload;
+@@ -41,6 +41,8 @@ mod global;
  mod input;
  mod inspector;
  mod interactive;
@@ -66,7 +66,7 @@ index cfb1410c78830fde3f501c303c72d3251a2ec0e9..f8f1f13f6f5c493ee8e4fb6ae7c0207b
      pub keystroke: Keystroke,
  
 diff --git a/src/key_dispatch.rs b/src/key_dispatch.rs
-index 1e7a42447254f6ad4a2c7a2e0cf15940443d12a3..554c82398f5beabda51f268c7f1fd17d6e09500e 100644
+index e4bce617277af303188208c4d58b931f8e0ea9c1..ed33f208951af7c82dfc97090914fb8b2cead7aa 100644
 --- a/src/key_dispatch.rs
 +++ b/src/key_dispatch.rs
 @@ -947,6 +947,7 @@ mod tests {
@@ -95,10 +95,10 @@ index 0000000000000000000000000000000000000000..bf5a907a948234ed2db27c086c9c2c82
 +    KeyIdentity { unshifted: printable(unshifted), shifted: printable(shifted), shift, base_layout }
 +}
 diff --git a/src/window.rs b/src/window.rs
-index 9809a4400c355f6a8b26f68742bd1370b5fd9575..aee1c4dbb0c6a22f9701f5d9b6c8671a787a6346 100644
+index c8f4c44c6b0bd259cdcc1b9f40eb5814e8d581dd..ef47a694075350081412322350e9e578b286c01f 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -2585,6 +2585,7 @@ impl Window {
+@@ -2786,6 +2786,7 @@ impl Window {
                      keystroke: keystroke.clone(),
                      input_preference,
                      is_held: false,
@@ -106,7 +106,7 @@ index 9809a4400c355f6a8b26f68742bd1370b5fd9575..aee1c4dbb0c6a22f9701f5d9b6c8671a
                      action: action.map(|action| action.boxed_clone()),
                      context_stack: context_stack.clone(),
                  },
-@@ -2599,6 +2600,7 @@ impl Window {
+@@ -2800,6 +2801,7 @@ impl Window {
          keystroke: &Keystroke,
          input_preference: InputPreference,
          is_held: bool,
@@ -114,15 +114,15 @@ index 9809a4400c355f6a8b26f68742bd1370b5fd9575..aee1c4dbb0c6a22f9701f5d9b6c8671a
          context_stack: Vec<KeyContext>,
          cx: &mut App,
      ) {
-@@ -2610,6 +2612,7 @@ impl Window {
-                         keystroke: keystroke.clone(),
-                         input_preference,
-                         is_held,
-+                        key_identity,
-                         action: None,
-                         context_stack: context_stack.clone(),
-                     },
-@@ -5597,6 +5600,7 @@ impl Window {
+@@ -2809,6 +2811,7 @@ impl Window {
+                     keystroke: keystroke.clone(),
+                     input_preference,
+                     is_held,
++                    key_identity,
+                     action: None,
+                     context_stack: context_stack.clone(),
+                 },
+@@ -5806,6 +5809,7 @@ impl Window {
          let keystroke = keystroke.with_simulated_ime();
          let result = self.dispatch_event(
              PlatformInput::KeyDown(KeyDownEvent {
@@ -130,7 +130,7 @@ index 9809a4400c355f6a8b26f68742bd1370b5fd9575..aee1c4dbb0c6a22f9701f5d9b6c8671a
                  keystroke: keystroke.clone(),
                  is_held: false,
                  prefer_character_input: false,
-@@ -6137,6 +6141,7 @@ impl Window {
+@@ -6352,6 +6356,7 @@ impl Window {
              &keystroke,
              input_preference,
              is_held,
@@ -138,7 +138,7 @@ index 9809a4400c355f6a8b26f68742bd1370b5fd9575..aee1c4dbb0c6a22f9701f5d9b6c8671a
              self.context_stack(),
              cx,
          );
-@@ -6487,6 +6492,7 @@ impl Window {
+@@ -6710,6 +6715,7 @@ impl Window {
  
          'replay: for replay in replays {
              let event = KeyDownEvent {
@@ -146,7 +146,7 @@ index 9809a4400c355f6a8b26f68742bd1370b5fd9575..aee1c4dbb0c6a22f9701f5d9b6c8671a
                  keystroke: replay.keystroke.clone(),
                  is_held: false,
                  prefer_character_input: true,
-@@ -9002,6 +9008,7 @@ mod tests {
+@@ -9375,6 +9381,7 @@ mod tests {
              window.draw(cx).clear(cx);
              window.dispatch_event(
                  PlatformInput::KeyDown(KeyDownEvent {

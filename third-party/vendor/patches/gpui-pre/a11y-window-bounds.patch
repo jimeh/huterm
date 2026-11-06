@@ -1,8 +1,8 @@
 diff --git a/src/window.rs b/src/window.rs
-index aee1c4dbb0c6a22f9701f5d9b6c8671a787a6346..a0b5671330d6366a2229c52c1e002ec9f90cc398 100644
+index ef47a694075350081412322350e9e578b286c01f..db57696279dff18bd210429da907620670350571 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -1728,7 +1728,13 @@ impl Window {
+@@ -1806,7 +1806,13 @@ impl Window {
                  .spawn(async move {
                      while activation_receiver.recv().await.is_ok() {
                          handle
@@ -14,10 +14,10 @@ index aee1c4dbb0c6a22f9701f5d9b6c8671a787a6346..a0b5671330d6366a2229c52c1e002ec9
 +                                window.platform_window.a11y_update_window_bounds();
 +                                window.refresh();
 +                            })
-                             .log_err();
-                     }
-                 })
-@@ -2812,6 +2818,9 @@ impl Window {
+                             .with_context(|| {
+                                 format!(
+                                     "handling accessibility activation for window {:?}",
+@@ -3009,6 +3015,9 @@ impl Window {
          self.scale_factor = self.platform_window.scale_factor();
          self.viewport_size = self.platform_window.content_size();
          self.mouse_position = self.platform_window.mouse_position();

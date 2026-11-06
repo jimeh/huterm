@@ -151,6 +151,16 @@ export function checkAppliedBudget(summary: Summary, budgetUs: number): void {
   }
 }
 
+/**
+ * Reads `HUTERM_BENCH_POWER_FRAME_LIMITS`. Unset leaves `[window]
+ * power_frame_limits` at its default, which is on.
+ */
+export function powerFrameLimits(value: string | undefined): { effective: boolean; config: string } {
+  if (value === undefined) return { effective: true, config: "" };
+  if (value !== "true" && value !== "false") throw new Error(`HUTERM_BENCH_POWER_FRAME_LIMITS must be true or false, not ${value}`);
+  return { effective: value === "true", config: `[window]\npower_frame_limits = ${value}\n` };
+}
+
 if (import.meta.main) {
   const [executable, workload, mode = "echo", secondsArgument] = Bun.argv.slice(2);
   // Compression mode stops when its driver finishes; the default only bounds it.
@@ -179,11 +189,13 @@ if (import.meta.main) {
   // out of the measurement; a running Huterm would otherwise own the shortcuts.
   const refresh = process.env.HUTERM_BENCH_REFRESH;
   if (refresh !== undefined && refresh !== "display" && refresh !== "unlimited") throw new Error(`HUTERM_BENCH_REFRESH must be display or unlimited, not ${refresh}`);
+  const powerLimits = powerFrameLimits(process.env.HUTERM_BENCH_POWER_FRAME_LIMITS);
+  console.log(`mode=${mode} power_frame_limits=${powerLimits.effective}`);
   const configDirectory = await mkdtemp(join(tmpdir(), "huterm-output-latency-"));
   const config = join(configDirectory, "config.toml");
   // Outside compression mode, a pass that starts mid-run would change what is measured.
   const terminal = mode === "compression" ? `scrollback_rows = 100000\nscrollback_compression = ${compressed}\n` : "scrollback_compression = false\n";
-  await Bun.write(config, `[terminal]\n${terminal}${refresh === undefined ? "" : `refresh = "${refresh}"\n`}`);
+  await Bun.write(config, `[terminal]\n${terminal}${refresh === undefined ? "" : `refresh = "${refresh}"\n`}${powerLimits.config}`);
   // "events" records the probe without requesting a frame per display tick;
   // continuous drawing would otherwise hold the main thread in present.
   // Always set the workload so an inherited value cannot change the mode.

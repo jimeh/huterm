@@ -77,6 +77,23 @@ terminal benchmarks under a compositor such as `xcompmgr` for reduced-alpha
 measurements; otherwise the production fallback deliberately measures opaque
 paint. Compare the defaults and background 0.8 independently.
 
+`bench:output-latency` and `bench:scroll` accept
+`HUTERM_BENCH_POWER_FRAME_LIMITS=true|false`, which writes `[window]
+power_frame_limits` into their generated config; unset keeps the default, on.
+Each logs the effective value. The caps engage only in Low Power Mode, the
+`power-saver` profile, or under thermal pressure, so at nominal power both
+values measure the same path. In Low Power Mode on a 60 Hz display
+(2026-11-06, Apple M3 Max on AC power), `-- flood` drew 30 snapshots per second
+with the caps on and 60 with them off, and the echo and keys maxima rose to
+about 33 ms. `bench:scroll`'s p95 input-to-paint budget assumes uncapped frames
+and fails with the caps on (47 ms against 33.4 ms), so run it with
+`HUTERM_BENCH_POWER_FRAME_LIMITS=false` while Low Power Mode is on. Record
+`ProcessInfo.isLowPowerModeEnabled` with the run; on AC power, Low Power Mode
+engages only when System Settings sets it to Always. The renderer benchmarks do
+not read it:
+`bench:renderer-scenarios` opens fixture windows with GPUI's defaults, and
+`bench:renderer` keeps the setting's default.
+
 - `mise run bench:renderer` drives the release renderer under Xvfb and reports
   opt-in CPU preparation and paint-encoding timings.
 - `mise run bench:renderer-scenarios` times production `prepare` and `paint`

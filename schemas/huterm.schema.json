@@ -11156,6 +11156,17 @@
           "x-huterm-section": "appearance",
           "x-huterm-unit": "pt"
         },
+        "power_frame_limits": {
+          "default": true,
+          "description": "Cap terminal windows and the macOS drag preview at about 30 frames\nper second in Low Power Mode or a power-saver profile, and about 60\nunder serious or critical thermal pressure. Off draws at the display's\nrate.",
+          "type": "boolean",
+          "x-huterm-advanced": true,
+          "x-huterm-apply": "new_windows",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Lower frame rate to save power",
+          "x-huterm-order": 33,
+          "x-huterm-section": "windows"
+        },
         "shortcut_hints": {
           "default": false,
           "description": "Show key hints on the scroll pill and on dialog and panel buttons.",

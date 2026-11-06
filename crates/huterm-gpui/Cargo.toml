@@ -63,7 +63,7 @@ accesskit_consumer = "=0.38.0"
 
 # Real text-system registration tests use the same pinned native backends as GPUI.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-gpui_apple = { package = "gpui-pre-apple", version = "=0.3.10", default-features = false, features = ["font-kit"] }
+gpui_apple = { package = "gpui-pre-apple", version = "=0.3.11", default-features = false, features = ["font-kit"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.10", default-features = false, features = ["font-kit"] }
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.11", default-features = false, features = ["font-kit"] }

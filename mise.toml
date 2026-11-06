@@ -343,6 +343,15 @@ if [ "$platform" = Linux ] && ! command -v twm >/dev/null 2>&1; then
   echo "Scroll benchmark requires twm so Xvfb exposes the GPUI window" >&2
   exit 1
 fi
+# Unset leaves `[window] power_frame_limits` at its default, which is on.
+power_frame_limits="${HUTERM_BENCH_POWER_FRAME_LIMITS-}"
+case "$power_frame_limits" in
+  ""|true|false) ;;
+  *)
+    echo "HUTERM_BENCH_POWER_FRAME_LIMITS must be true or false, not $power_frame_limits" >&2
+    exit 1
+    ;;
+esac
 bash scripts/build-exec.sh cargo build --release --locked -p huterm
 bench_config="$(mktemp)"
 # The benchmark waits for 10,000 history rows, which the default limit,
@@ -350,6 +359,10 @@ bench_config="$(mktemp)"
 # starts during a scroll pause would change what is measured.
 printf '[terminal]\nscrollback_rows = 20000\nscrollback_compression = false\n' > "$bench_config"
 printf '[window]\nbackground_opacity = %s\nforeground_opacity = %s\n' "${HUTERM_BENCH_BACKGROUND_OPACITY:-1}" "${HUTERM_BENCH_FOREGROUND_OPACITY:-1}" >> "$bench_config"
+if [ -n "$power_frame_limits" ]; then
+  printf 'power_frame_limits = %s\n' "$power_frame_limits" >> "$bench_config"
+fi
+echo "scroll benchmark power_frame_limits=${power_frame_limits:-true}"
 export HUTERM_CONFIG_FILE="$bench_config"
 bench_state="$(mktemp -d)"
 export HUTERM_STATE_DIR="$bench_state"

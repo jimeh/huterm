@@ -93,7 +93,7 @@ entry once its review date passes without a recurrence.
 
 | Flake | Kind | Platforms | Seen | Last | Retries | Review by |
 | --- | --- | --- | --- | --- | --- | --- |
-| [huterm-core foreground-job tests under full local runs](flakes/core-foreground-job-tests.md) | rust | macos-arm64 | 1 CI, 10 local | 2026-11-06 | 0 | 2026-12-06 |
+| [huterm-core foreground-job tests under full local runs](flakes/core-foreground-job-tests.md) | rust | macos-arm64 | 1 CI, 11 local | 2026-11-06 | 0 | 2026-12-06 |
 | [idle-sample.test.ts native sampler compile timeout](flakes/idle-sample-compile-timeout.md) | bun | macos-arm64 | 1 CI, 1 local | 2026-11-06 | 0 | 2026-12-06 |
 | [Linux palette smoke busy step](flakes/linux-palette-busy-step.md) | smoke | linux-x86_64, linux-aarch64 | 15 CI | 2026-11-05 | 0 | 2026-12-06 |
 | [huterm-gpui pane rename title on hosted macOS](flakes/gpui-pane-rename-title.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 2 CI | 2026-11-04 | 0 | 2026-12-06 |

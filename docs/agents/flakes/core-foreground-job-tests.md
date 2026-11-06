@@ -85,6 +85,12 @@ platform = "macos-arm64"
 note = "pane tear-off work (#401)"
 
 [[occurrences]]
+date = "2026-11-06"
+local = true
+platform = "macos-arm64"
+note = "gpui-pre 0.3.11 upgrade (#419), before the fixture fix"
+
+[[occurrences]]
 date = "2026-11-03"
 url = "https://github.com/jimeh/huterm/actions/runs/41731482596/job/126249669413"
 pr = 383
@@ -146,7 +152,10 @@ note = "hosted CI: the orphan test's `!orphan.foreground`"
   3 isolated ReleaseSafe reruns. On 2026-11-06, during the pane tear-off
   work (#401), which changes no `huterm-core` code, one local `mise run test`
   failed it with the same message (`sleep 30` still in a background group);
-  it passed in 3 isolated reruns.
+  it passed in 3 isolated reruns. The same day, during the gpui-pre 0.3.11
+  upgrade (#419), one full local `mise run test` at a load average near 20
+  failed both mux tests (`!orphan.foreground` and "foreground job not
+  observed"); three `mux::lifecycle` reruns passed.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.

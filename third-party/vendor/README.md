@@ -9,10 +9,10 @@ Keep each coherent fix together. GPUI's core crate has hidden-window creation,
 file-drop pointer-modality, test-window accessibility, keystroke held-flag,
 App-free keybinding loader, and accessibility window-bounds patches, its Linux
 crate has X11 file-drop, fullscreen-state, key-repeat, and accessibility
-window-bounds patches, and its macOS crate has
-offscreen-screen, per-window frame-constraint, and accessibility view adapter
-patches. AccessKit's macOS
-adapter has the terminal text patches described below.
+window-bounds patches, and its macOS crate has offscreen-screen, per-window
+frame-constraint, virtual-machine display-link, and accessibility view adapter
+patches. AccessKit's macOS adapter has the terminal text patches described
+below.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -151,8 +151,8 @@ patches, and manifest entry, then validate the registry dependency instead.
 ## GPUI snapshot crates
 
 Zed has not published GPUI to crates.io since 0.2.2. Huterm uses `gpui-pre`
-0.3.10, which republishes Zed's workspace crates from revision
-`08cbb88a152c3751a43e853425a70e9f631a5918` as separate Apache-2.0 registry
+0.3.11, which republishes Zed's workspace crates from revision
+`f816e1f9263e3a8ef63c4baaa02e1441ce1c6038` as separate Apache-2.0 registry
 crates. Only the three patched crates are vendored: `gpui-pre` (Zed's
 `crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), and `gpui-pre-macos`
 (`crates/gpui_macos`). The other snapshot crates resolve from the registry.
@@ -198,7 +198,7 @@ positioning the pointer and before each native drop, so it fails without it.
 GPUI still calls `map_window()` even for `WindowOptions { show: false }`.
 The `hidden-window-creation` patch gates that call on `show` and propagates
 mapping errors. Quake addresses the exact window through GPUI's X11 handle.
-GPUI 0.3.10 destroys the X11 window only when its platform window drops, so the
+GPUI 0.3.11 destroys the X11 window only when its platform window drops, so the
 handle cannot outlive it and the former `x11-window-handle` patch is gone. The
 native quake smoke checks an untouched hidden GPUI window before any hide
 operation, then summons a real profile through the OS shortcut and reads its
@@ -227,9 +227,22 @@ conversion and retained-window cleanup. AppKit clamps intermediate top-edge
 animation frames even with a zero borderless style mask. The native smoke checks
 actual slide intermediates and restored constraints on regular conversion.
 
+## GPUI frame source in virtual machines
+
+GPUI 0.3.11 paces each macOS 14+ window with a `CAMetalDisplayLink`. On
+Apple-virtualized macOS, such as GitHub's macOS runners, that link stops
+issuing updates after a short burst while a `CVDisplayLink` on the same
+display keeps ticking, so smokes waiting on drawn frames time out. The
+`vm-display-link` patch reads `kern.hv_vmm_present` through `sysctlbyname`
+once per process and keeps the `CVDisplayLink` source when it reports 1; a
+failed or absent sysctl counts as real hardware, which keeps upstream's Metal
+link. Setting `GPUI_FRAME_SOURCE_DEBUG` prints the chosen source and the
+sysctl value to stderr once. Drop the patch when a reviewed snapshot delivers
+Metal-link frames on GitHub's macOS runners; CI's macOS smokes fail without it.
+
 ## GPUI keybinding loading without an App
 
-GPUI 0.3.10 resolves `secondary-` from the application's host OS, so
+GPUI 0.3.11 resolves `secondary-` from the application's host OS, so
 `KeyBinding::load` takes an `App`, and `KeyBinding::new` accepts only static
 keystrokes. Huterm compiles keymaps without an `App`: the configuration
 validator checks a candidate file off the main thread, and unit tests build
@@ -369,7 +382,7 @@ platforms' input smokes when removing them.
 ## AccessKit macOS terminal text
 
 `accesskit_macos-0.26.3` is the published MIT OR Apache-2.0 crate from
-AccessKit's `platforms/macos` directory, the version GPUI 0.3.10 resolves. The
+AccessKit's `platforms/macos` directory, the version GPUI 0.3.11 resolves. The
 archive SHA-256 is
 `ce02dc63b43f0c9296af9ac946312a2dc8814427d7a64d2d600971dac55b6076`; its
 upstream revision is `c88605b96d04431f9c3c792464a0f2f253480e94`. All other
