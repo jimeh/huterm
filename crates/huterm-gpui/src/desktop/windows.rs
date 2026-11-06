@@ -3672,7 +3672,17 @@ impl WorkspaceView {
                 .top(terminal.origin.y)
                 .w(terminal.size.width)
                 .h(terminal.size.height)
-                .child(column.frame(&self.notice_focus, region)),
+                .child(column.frame(&self.notice_focus, region).on_scroll({
+                    let scroll = self.notice_scroll.clone();
+                    // A stack that scrolls takes the wheel, so the terminal
+                    // beneath does not scroll or report it too. One that
+                    // fits lets it through.
+                    move |_, _, cx| {
+                        if scroll.max_offset().y > Pixels::ZERO {
+                            cx.stop_propagation();
+                        }
+                    }
+                })),
         )
     }
 
@@ -3719,26 +3729,27 @@ impl WorkspaceView {
     }
 
     /// Scrolls the toast column to a newly focused toast, or to the newest
-    /// toast when one arrives, so neither opens out of view. The scroll
-    /// applies after the next layout, so a toast that expands as it takes
-    /// focus shows whole, and one taller than the column shows its top,
-    /// where Dismiss is.
+    /// toast when one arrives, so neither opens out of view; a toast that
+    /// arrives while another has keyboard focus keeps the focused one in
+    /// view instead. The scroll applies after the next layout, so a toast
+    /// that expands as it takes focus shows whole, and one taller than the
+    /// column shows its top, where Dismiss is.
     fn follow_notices(&mut self) {
         let newest = self.notices.newest();
         let focused = self.focused_notice;
         let (followed_newest, followed_focus) = self.notice_followed;
-        if let Some(slot) = focused
-            .filter(|id| Some(*id) != followed_focus)
-            .and_then(|id| self.notices.slot(id))
-        {
-            self.notice_scroll.scroll_to_item(slot);
-        } else if newest != followed_newest
-            && let Some(slot) = newest.and_then(|id| self.notices.slot(id))
-        {
-            self.notice_scroll.scroll_to_item(slot);
-            // A column that overflows shows its indicator for a moment, so
-            // toasts scrolled out above are not missed.
-            self.notice_scrollbar.show();
+        let arrived = newest != followed_newest;
+        if (focused.is_some() && focused != followed_focus) || arrived {
+            if let Some(slot) =
+                focused.or(newest).and_then(|id| self.notices.slot(id))
+            {
+                self.notice_scroll.scroll_to_item(slot);
+            }
+            if arrived {
+                // A column that overflows shows its indicator for a
+                // moment, so toasts scrolled out of view are not missed.
+                self.notice_scrollbar.show();
+            }
         }
         self.notice_followed = (newest, focused);
     }
@@ -4670,9 +4681,11 @@ impl CloseTarget {
     }
 }
 
-/// The owner-side bookkeeping after the notice stack changed: focus and
-/// hover state for notices that no longer exist are dropped, and expiry
-/// pauses only while a live toast is hovered or focused. Returns whether the
+/// The owner-side bookkeeping after the notice stack changed: focus state
+/// for notices that no longer exist and hover state for toasts no longer
+/// drawn are dropped, and expiry pauses only while a live toast is hovered
+/// or focused. A toast pushed into the overflow never reports the pointer
+/// leaving, so its hover would otherwise pause the stack until dismissed. Returns whether the
 /// focused toast went away, so the caller returns focus to the terminal.
 fn reconcile_notice_state(
     notices: &mut NoticeStack,
@@ -4681,7 +4694,7 @@ fn reconcile_notice_state(
     now: Instant,
 ) -> bool {
     let focus_lost = focused.take_if(|id| notices.get(*id).is_none()).is_some();
-    hovered.retain(|id| notices.get(*id).is_some());
+    hovered.retain(|id| notices.slot(*id).is_some());
     if focused.is_some() || !hovered.is_empty() {
         notices.pause(now);
     } else {

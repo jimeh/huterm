@@ -1670,6 +1670,29 @@ fn a_repeated_close_window_is_refused_while_its_confirmation_shows() {
 }
 
 #[test]
+fn a_hovered_toast_pushed_into_the_overflow_stops_pausing_expiry() {
+    let now = Instant::now();
+    let mut stack = NoticeStack::default();
+    let hovered_id =
+        stack.push(NoticeContent::command_failure("Hovered", "first"), now);
+    let mut focused = None;
+    let mut hovered = HashSet::from([hovered_id]);
+    reconcile_notice_state(&mut stack, &mut focused, &mut hovered, now);
+    assert_eq!(stack.next_deadline(), None, "hover pauses expiry");
+    // Three newer notices push it out of view, where it never reports the
+    // pointer leaving.
+    for index in 0..3 {
+        stack.push(
+            NoticeContent::command_failure("Newer", format!("{index}")),
+            now,
+        );
+    }
+    reconcile_notice_state(&mut stack, &mut focused, &mut hovered, now);
+    assert!(hovered.is_empty(), "a toast no longer drawn is not hovered");
+    assert!(stack.next_deadline().is_some(), "expiry resumes");
+}
+
+#[test]
 fn a_replaced_focused_toast_releases_focus_and_resumes_expiry() {
     let now = Instant::now();
     let tab = TabId::new(1);

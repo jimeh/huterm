@@ -6,7 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use gpui::{Bounds, Modifiers, Pixels, point, px};
+use gpui::{
+    Bounds, Modifiers, Pixels, ScrollDelta, ScrollEvent, TouchPhase, point, px,
+};
 
 use huterm_protocol::CommandInvocation;
 
@@ -18,7 +20,15 @@ use super::*;
 
 /// A window showing one ready terminal.
 fn ready_window(harness: &mut DesktopHarness) -> AnyWindowHandle {
-    let tab = harness.open_tab(ECHO);
+    ready_window_running(harness, ECHO)
+}
+
+/// A window showing one terminal running `script`, once it printed READY.
+fn ready_window_running(
+    harness: &mut DesktopHarness,
+    script: &str,
+) -> AnyWindowHandle {
+    let tab = harness.open_tab(script);
     let window = harness.attach_window();
     harness.activate(window, tab);
     harness.wait_text(window, tab, "READY");
@@ -171,10 +181,18 @@ fn moving_the_pointer_onto_a_toast_pauses_it_until_it_leaves(
 /// A ready window at the largest interface font, resized to the small
 /// window #408 reported.
 fn small_window(cx: &mut TestAppContext) -> (DesktopHarness, AnyWindowHandle) {
+    small_window_running(cx, ECHO)
+}
+
+/// [`small_window`] with its terminal running `script`.
+fn small_window_running(
+    cx: &mut TestAppContext,
+    script: &str,
+) -> (DesktopHarness, AnyWindowHandle) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.font.ui_size = huterm_config::MAX_UI_FONT_SIZE;
     });
-    let window = ready_window(&mut harness);
+    let window = ready_window_running(&mut harness, script);
     VisualTestContext::from_window(window, &harness.cx)
         .simulate_resize(gpui::size(px(344.0), px(233.0)));
     harness.cx.run_until_parked();
@@ -342,8 +360,15 @@ fn focusing_a_toast_scrolled_out_of_view_expands_it_in_view_and_the_keyboard_dis
         inside(screen, focused),
         "the focused toast scrolled into view: {focused:?} in {screen:?}"
     );
+    // A notice that arrives meanwhile leaves the focused one in view.
+    raise_persistent(&mut harness, window, "Later", "Another failure.", false);
+    let focused = drawn(&mut harness, window, selector).unwrap();
+    assert!(
+        inside(screen, focused),
+        "the focused toast stays in view: {focused:?} in {screen:?}"
+    );
     invoke(&mut harness, window, ids::NOTICE_DISMISS);
-    assert_eq!(harness.cx.update(|cx| notices(cx, window)).len(), 1);
+    assert_eq!(harness.cx.update(|cx| notices(cx, window)).len(), 2);
     assert!(
         harness.update_view(window, |view, window, _| {
             view.notice_focus.is_focused(window)
@@ -555,4 +580,71 @@ fn enter_presses_the_button_the_keyboard_moved_to(cx: &mut TestAppContext) {
     invoke(&mut harness, window, ids::NOTICE_FOCUS_NEXT);
     invoke(&mut harness, window, ids::NOTICE_RUN_ACTION);
     harness.wait_for("Clear All to run", |cx| notices(cx, window).is_empty());
+}
+
+#[gpui::test]
+fn the_wheel_scrolls_an_overflowing_stack_and_not_the_terminal_beneath(
+    cx: &mut TestAppContext,
+) {
+    // The terminal holds scrollback for the wheel to scroll.
+    let (mut harness, window) =
+        small_window_running(cx, &format!("seq 1 200; {ECHO}"));
+    let tab = harness.update_view(window, |view, _, _| view.tabs[0].id);
+    let terminal_scroll = |harness: &mut DesktopHarness| {
+        harness.cx.update(|cx| {
+            terminal(cx, window, tab).unwrap().read(cx).scroll.desired()
+        })
+    };
+    let wheel = |harness: &mut DesktopHarness,
+                 at: gpui::Point<Pixels>,
+                 lines: f32| {
+        let mut visual = VisualTestContext::from_window(window, &harness.cx);
+        visual.simulate_mouse_move(at, None, Modifiers::none());
+        visual.simulate_event(ScrollEvent {
+            position: at,
+            delta: ScrollDelta::Lines(point(0.0, lines)),
+            modifiers: Modifiers::none(),
+            touch_phase: TouchPhase::Moved,
+            ..Default::default()
+        });
+        harness.cx.run_until_parked();
+    };
+    let stack_offset = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, _| view.notice_scroll.offset().y)
+    };
+
+    // One short toast fits: the wheel over it scrolls the terminal, as
+    // before the stack could scroll.
+    raise_persistent(
+        &mut harness,
+        window,
+        SAVE,
+        "Another process saves.",
+        false,
+    );
+    let toast =
+        drawn(&mut harness, window, "notice-Can't save sessions").unwrap();
+    wheel(&mut harness, toast.center(), 3.0);
+    let after_fit = terminal_scroll(&mut harness);
+    assert!(after_fit > 0, "a stack that fits passes the wheel through");
+
+    // A toast taller than the window overflows: the stack takes the wheel.
+    let message = "Saved state is damaged. ".repeat(30);
+    raise_persistent(&mut harness, window, RESTORE, &message, true);
+    let before = stack_offset(&mut harness);
+    let toast = drawn(
+        &mut harness,
+        window,
+        "notice-Couldn't restore your previous windows",
+    )
+    .unwrap();
+    let at = point(toast.center().x, area(&mut harness, window).center().y);
+    // Down: the tall toast opens at its top, with more below.
+    wheel(&mut harness, at, -3.0);
+    assert_ne!(stack_offset(&mut harness), before, "the stack scrolled");
+    assert_eq!(
+        terminal_scroll(&mut harness),
+        after_fit,
+        "the terminal beneath did not scroll"
+    );
 }

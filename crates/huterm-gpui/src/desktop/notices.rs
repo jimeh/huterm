@@ -780,7 +780,13 @@ fn toast_body(
     if content.actions.is_empty() {
         return body;
     }
-    let mut actions = div().flex().gap(px(14.0)).mt(px(6.0));
+    // Actions wrap rather than overflow a toast narrowed to the window.
+    let mut actions = div()
+        .flex()
+        .flex_wrap()
+        .gap_x(px(14.0))
+        .gap_y(px(4.0))
+        .mt(px(6.0));
     for (index, action) in content.actions.iter().enumerate() {
         let run = Rc::clone(&handlers.run_action);
         let command = action.command.clone();
