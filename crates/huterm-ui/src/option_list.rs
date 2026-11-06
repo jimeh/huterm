@@ -208,14 +208,17 @@ impl OptionList {
         self.options.iter().find(|option| &option.id == id)
     }
 
-    /// Records the pointer entering or leaving the option `id`. A leave
-    /// clears only that option, since the next one's enter may come first.
-    fn set_hovered(&mut self, id: &ItemId, hovering: bool) {
+    /// Records the pointer entering or leaving the option `id`, and
+    /// returns whether the hovered option changed. A leave clears only that
+    /// option, since the next one's enter may come first.
+    fn set_hovered(&mut self, id: &ItemId, hovering: bool) -> bool {
+        let before = self.hovered.clone();
         if hovering {
             self.hovered = Some(id.clone());
         } else if self.hovered.as_ref() == Some(id) {
             self.hovered = None;
         }
+        self.hovered != before
     }
 
     pub(crate) fn position(&self, id: &str) -> Option<usize> {
@@ -579,8 +582,13 @@ fn option_row<V: Owner>(
                 tokens.pressed()
             })
         })
-        .on_hover(cx.listener(move |owner, hovering: &bool, _, _| {
-            owner.option_list().set_hovered(&entered, *hovering);
+        // Redraw on a hover change, so the next frame's hitboxes and the
+        // owner's state agree on the row under the pointer before a wheel
+        // or press arrives.
+        .on_hover(cx.listener(move |owner, hovering: &bool, _, cx| {
+            if owner.option_list().set_hovered(&entered, *hovering) {
+                cx.notify();
+            }
         }))
         // Only a moving pointer highlights: a list that opens or filters
         // under a resting pointer keeps its highlight.

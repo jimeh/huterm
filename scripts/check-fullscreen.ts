@@ -507,7 +507,14 @@ done
     let windowId = "";
     if (macos) await accepted("native\tcursor-center");
     if (!macos) {
-      windowId = run(["xdotool", "search", "--sync", "--onlyvisible", "--pid", String(app.pid)]).split(/\s+/)[0]!;
+      // Poll rather than `search --sync`, which run()'s 5-second limit kills
+      // with empty stderr; this wait's timeout names the window it missed.
+      await waitFor(async () => {
+        if (app.exitCode !== null) throw new Error(`Huterm exited ${app.exitCode} before mapping its window: ${stderr}`);
+        const probe = Bun.spawnSync(["xdotool", "search", "--onlyvisible", "--pid", String(app.pid)], { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
+        windowId = probe.stdout.toString().trim().split(/\s+/)[0] ?? "";
+        return windowId !== "";
+      }, `visible Huterm X11 window for pid ${app.pid}`);
       run(["xdotool", "windowfocus", "--sync", windowId]);
     }
     if (!noWm && !frameProbe && !fallback && !schedulerOnly) {

@@ -19,6 +19,9 @@ env:
   # Line tables keep symbolized backtraces while shrinking debug builds and
   # their caches. Keys without Rust's environment hash must include this value.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # Test and smoke runners rerun failures that match a registered known flake
+  # (docs/agents/known-flakes.md); local runs never retry.
+  HUTERM_FLAKE_RETRY: '1'
 
 jobs:
   policy:
@@ -63,6 +66,10 @@ jobs:
       - name: Check agent guides
         if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
         run: mise run lint:agents
+
+      - name: Check known-flake registry
+        if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
+        run: mise run flakes:check
 
       - name: Check workflows and action pins
         if: ${{ !cancelled() && steps.policy-setup.outcome == 'success' }}
@@ -159,7 +166,7 @@ jobs:
           cache: ${{ runner.os != 'macOS' }}
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun aqua:fish-shell/fish-shell aqua:nushell/nushell http:elvish
+          install_args: bun aqua:fish-shell/fish-shell aqua:nushell/nushell http:elvish github:nextest-rs/nextest
           version: 2026.10.25
 
       - name: Install Zig
@@ -190,6 +197,9 @@ jobs:
         uses: ./.github/actions/restore-ghostty # zizmor: ignore[self-repository]
         with:
           namespace: test
+
+      - name: Prepare flake report
+        run: echo "HUTERM_FLAKE_REPORT_DIR=$RUNNER_TEMP/huterm-flake-report" >> "$GITHUB_ENV"
 
       - name: Check platform prerequisites
         id: checks-setup
@@ -227,6 +237,14 @@ jobs:
           HUTERM_REQUIRE_SHELLS: "1"
         if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run ci:test
+
+      - name: Upload flake report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flake-report-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/huterm-flake-report
+          if-no-files-found: ignore
 
       - name: Upload Linux check failure evidence
         if: failure() && runner.os == 'Linux'
@@ -363,6 +381,7 @@ jobs:
             uname -a
           } > "$evidence/runner.txt"
           echo "HUTERM_SMOKE_EVIDENCE_DIR=$evidence" >> "$GITHUB_ENV"
+          echo "HUTERM_FLAKE_REPORT_DIR=$RUNNER_TEMP/huterm-flake-report" >> "$GITHUB_ENV"
 
       - name: Prepare desktop smoke dependencies
         id: smoke-prepare
@@ -529,6 +548,14 @@ jobs:
         timeout-minutes: 6
         run: HUTERM_CI_SMOKE_STEP=macos-restore mise run ci:smoke:step
 
+      - name: Upload flake report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flake-report-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/huterm-flake-report
+          if-no-files-found: ignore
+
       - name: Upload smoke evidence
         if: ${{ !cancelled() && (steps.smoke-build.outcome == 'success' || failure()) }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -631,7 +658,7 @@ jobs:
           cache: true
           # Lock and toolchain inputs exclude task-only edits from tool cache keys.
           cache_key: huterm-mise-v2-{{version}}-{{platform}}-{{install_args_hash}}-${{ hashFiles('mise.lock', 'rust-toolchain.toml') }}
-          install_args: bun
+          install_args: bun github:nextest-rs/nextest
           version: 2026.10.25
 
       - name: Install Zig
@@ -663,8 +690,19 @@ jobs:
         with:
           namespace: releasesafe
 
+      - name: Prepare flake report
+        run: echo "HUTERM_FLAKE_REPORT_DIR=$RUNNER_TEMP/huterm-flake-report" >> "$GITHUB_ENV"
+
       - name: Run tests against ReleaseSafe Ghostty
         run: mise run ci:test:ghostty-releasesafe
+
+      - name: Upload flake report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flake-report-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/huterm-flake-report
+          if-no-files-found: ignore
 
       - name: Save prebuilt Ghostty
         if: ${{ !cancelled() }}

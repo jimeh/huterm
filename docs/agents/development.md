@@ -376,12 +376,12 @@ showed came up short on macOS CI.
 
 | Trigger | Command | Scope | Evidence owner |
 | --- | --- | --- | --- |
-| Iteration | focused `cargo test -p <crate> <test>` | Changed behavior | Implementer |
+| Iteration | focused `cargo nextest run -p <crate> <test>` or `cargo test -p <crate> <test>` | Changed behavior | Implementer |
 | Pre-commit | Lefthook change-aware jobs | Staged files where checks work per file; affected script tests; whole-project analysis only for matching inputs | Local hook |
 | Handoff | `mise run verify` | Check, tests, licenses, workflows | Implementer |
 | Pull request | `mise run format:check`, `mise run ci:lint`, `mise run schema:check`, `mise run check:scripts`, and `mise run ci:test` on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64 | Rust formatting, Clippy, test-module order, protocol boundaries, generated schemas, scripts, and Rust tests in one job per platform | CI |
 | Pull request | Named platform smoke steps on `macos-15`, Ubuntu 24.04 x86_64, and Ubuntu 24.04 aarch64, supervised by `mise run ci:smoke:step` as slices of `mise run ci:smoke:run`; equivalent to the local `mise run ci:smoke` aggregate and order | Cached native source preparation, one smoke binary compilation, then serial desktop smoke execution for each platform | CI |
-| Pull request | `mise run lint:docs`, `lint:agents`, `ci:workflows`, `smoke:schema-editor`, `vendor:check`, `license`, and `audit:scripts` as separate Policy steps on Ubuntu 24.04 | Documentation, agent guides, workflows, editor schema behavior, vendor, Cargo dependency, and scripting dependency policy | CI |
+| Pull request | `mise run lint:docs`, `lint:agents`, `flakes:check`, `ci:workflows`, `smoke:schema-editor`, `vendor:check`, `license`, and `audit:scripts` as separate Policy steps on Ubuntu 24.04 | Documentation, agent guides, workflows, editor schema behavior, vendor, Cargo dependency, and scripting dependency policy | CI |
 | Linux smoke | `mise run smoke:linux` | GPUI window remains live under Xvfb | CI or implementer |
 | Linux keyboard | `mise run smoke:linux-input` | XTest input through XKB, shortcut dispatch, a raw Ghostty PTY, and automatic reload observed through OSC 11 | CI or implementer |
 | Linux clipboard | `mise run smoke:linux-clipboard` | Exact OSC 52 and tmux writes through Ghostty to an isolated X11 CLIPBOARD selection | CI or implementer |
@@ -431,18 +431,26 @@ requests restore main's entries; per-PR copies pushed the repository past
 GitHub's 10 GB cache limit, and the resulting evictions made unrelated jobs
 compile cold.
 
-Each CI smoke step has a five-minute process deadline and a six-minute Actions
-backstop. The supervisor streams output and records stdout, stderr, elapsed-time
-events, and exit status under `HUTERM_SMOKE_EVIDENCE_DIR/steps/<step>`. Evidence
+Each CI smoke step has a five-minute process deadline, a 330-second budget
+for all its attempts, and a six-minute Actions backstop. The supervisor streams
+output and records stdout, stderr, elapsed-time events, and exit status under
+`HUTERM_SMOKE_EVIDENCE_DIR/steps/<step>`. Evidence
 is uploaded for successful and failed jobs so timing can be compared. The
 renderer also records its native process events under `renderer-process`,
-distinguishing paint completion from process exit. Its 15-second deadline and
-completion assertions remain enforced.
+distinguishing paint completion from process exit. On Linux it first flushes
+dirty pages and reads its binary and Mesa into the page cache, outside its
+deadline. It then fails after 15 seconds without a new `RENDERER_SMOKE` line,
+or after 60 seconds in total, and its completion assertions remain enforced.
 
 After compilation succeeds, independent smoke steps continue after a failure;
 the failed step still fails the job. Cancellation stops subsequent steps. The
 supervisor forwards termination to its private process group, escalates to KILL,
-and removes remaining group members on exit. It does not retry failed assertions.
+and removes remaining group members on exit. It reruns a failure once only
+when it matches a registered [known flake](known-flakes.md#retries-in-ci) and
+another attempt fits the remaining budget: at least 30 seconds and twice the
+failed attempt's duration. A retry writes its evidence under
+`steps/<step>/attempt-2`, with `HUTERM_SMOKE_EVIDENCE_DIR` pointed at
+`retries/<step>-attempt-2`, so the first attempt's files stay intact.
 To reproduce one supervised step after building, run
 `HUTERM_CI_SMOKE_STEP=renderer mise run ci:smoke:step`.
 

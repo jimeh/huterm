@@ -30,6 +30,21 @@ output, which changes the status. A test that asserts no status change must
 first wait for that directory, and must not fork per line, or it passes only
 while it outruns the probe.
 
+Tests that need a job in its own foreground group use
+`test_support::foreground_job` or `orphaned_sleep`, never `set -m` with `fg`:
+macOS `/bin/sh` job control left those jobs stuck in about 1 in 3 full local
+runs. The test binary reruns itself as `test_support::job_helper`, calls
+`setpgid` and `tcsetpgrp` itself, prints `HELD:<pid>;` once it holds the
+foreground, and hands the terminal back after one line. Follow it with another
+shell command, since a `-c` shell can exec its last command, which makes the
+job a session leader. Like `sleep 30`, it survives a hangup, so only a signal
+ends it early.
+
+Core tests wait through `test_support::wait_until`, which has a 10-second
+deadline and prints the last observation when it fails. A wall-clock bound
+times only the operation under test, not runtime spawn or shell startup. Name
+scratch directories with `test_support::scratch_dir`, not the clock.
+
 Separately, `Reports` keeps the root shell's own last local OSC 7 report,
 attributed when the root's group (its PID) holds the foreground, as
 `TerminalMetadata::shell_directory`. Reports from other groups, such as a
@@ -174,6 +189,12 @@ Each view reaches a terminal through its own `TerminalViewer` registration (see
 state, published only when a value changes, so floods cost constant memory and
 a late viewer reads the current state; a gap in failure numbers is reported,
 never hidden. Host-effect admission wakes the selected recipient's own viewer.
+Admission waits for its locks instead of dropping a write: it used to answer
+`Busy` whenever a view's `try_next` held the queue, and Ghostty dropped the
+OSC 52 write. It releases the sink state before it takes the terminal budget,
+then the process budget, then the queue. Code that holds the queue or a budget
+must not take another of these locks, so free `PendingHostEffect` reservations
+after releasing the queue, as `try_next` and `clear_queue` do.
 The runtime closes every viewer's wake when it stops, through a guard that also
 runs on panic, and closes a revoked viewer's wake when it finalizes that viewer.
 

@@ -93,9 +93,7 @@ impl Host for EngineHost {
         };
         match sink.admit_borrowed(text) {
             HostEffectAdmission::Accepted => ClipboardWriteResult::Success,
-            HostEffectAdmission::Full | HostEffectAdmission::Contended => {
-                ClipboardWriteResult::Busy
-            }
+            HostEffectAdmission::Full => ClipboardWriteResult::Busy,
             HostEffectAdmission::NoRecipient
             | HostEffectAdmission::Denied
             | HostEffectAdmission::Closed => ClipboardWriteResult::Denied,

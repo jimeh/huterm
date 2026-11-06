@@ -9,7 +9,17 @@ use huterm_protocol::{TerminalLifecycle, TerminalStatus, ViewerCapabilities};
 
 use super::*;
 
-use crate::test_support::TestClient;
+use crate::test_support::{
+    HELD, TestClient, foreground_job, held_pid, job_name, snapshot_text,
+    wait_for_exit, wait_for_text, wait_until,
+};
+
+/// An upper bound on a shutdown that signals its child instead of waiting
+/// for it. Its own waits total at most 2.2 s (0.1 s each after SIGHUP and
+/// SIGTERM, 1 s after SIGKILL, and 1 s for the final reap); the rest is
+/// room for a loaded host. The children these tests stop live for 30
+/// seconds or forever, so waiting for one exceeds the bound.
+const SHUTDOWN_BOUND: Duration = Duration::from_secs(5);
 
 fn test_client(runtime: &TerminalRuntime) -> TestClient {
     TestClient::new(runtime)
@@ -201,8 +211,9 @@ fn process_directories_follow_cd_and_running_jobs_without_osc7() {
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(98),
         &command(&format!(
-            "set -m; printf READY; read line; cd /; printf MOVED; read line; (cd '{}' && exec head -n 1 >/dev/null); printf DONE; read line",
-            job_directory.display()
+            "printf READY; read line; cd /; printf MOVED; read line; (cd '{}' && {}); printf DONE; read line",
+            job_directory.display(),
+            foreground_job(None),
         )),
     )
     .unwrap();
@@ -240,8 +251,8 @@ fn osc7_reports_apply_only_while_their_reporter_holds_the_foreground() {
         TerminalId::new(99),
         &command(
             &format!(
-                "set -m; printf '\\033]7;file://localhost/reported\\007READY'; read line; {}; printf DONE; read line; printf '\\033]7;\\007CLEARED'; read line",
-                foreground_reporter("printf '\\033]7;file://remote.example/srv\\007'")
+                "printf '\\033]7;file://localhost/reported\\007READY'; read line; {}; printf DONE; read line; printf '\\033]7;\\007CLEARED'; read line",
+                foreground_job(Some("7;file://remote.example/srv"))
             ),
         ),
     )
@@ -296,8 +307,8 @@ fn job_titles_apply_only_while_the_job_holds_the_foreground() {
         TerminalId::new(100),
         &command(
             &format!(
-                "set -m; printf '\\033]2;shell title\\007READY'; read line; {}; printf DONE; read line",
-                foreground_reporter("printf '\\033]2;job title\\007'")
+                "printf '\\033]2;shell title\\007READY'; read line; {}; printf DONE; read line",
+                foreground_job(Some("2;job title"))
             ),
         ),
     )
@@ -333,13 +344,14 @@ fn job_titles_apply_only_while_the_job_holds_the_foreground() {
 
 #[test]
 fn foreground_jobs_are_named_while_running_and_cleared_on_return() {
-    // Job control gives the quiet `head` its own foreground group. It
-    // exits normally after one line; dash ends a script on SIGINT.
+    // The quiet job takes the foreground for its own group and returns it
+    // after one line.
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(96),
-        &command(
-            "set -m; printf READY; read line; head -n 1 >/dev/null; printf DONE; read line",
-        ),
+        &command(&format!(
+            "printf READY; read line; {}; printf DONE; read line",
+            foreground_job(None)
+        )),
     )
     .unwrap();
     let client = test_client(&runtime);
@@ -348,7 +360,7 @@ fn foreground_jobs_are_named_while_running_and_cleared_on_return() {
     client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
-    wait_for_foreground(&client, &mut current, Some("head"));
+    wait_for_foreground(&client, &mut current, Some(&job_name()));
     client
         .send_input(TerminalInput::Text("stop\n".into()))
         .unwrap();
@@ -968,7 +980,10 @@ fn ghostty_runtime_round_trips_and_closes_a_live_child() {
     wait_for_text(&client, "GHOSTTY:hello");
     let started = Instant::now();
     runtime.shutdown().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(
+        started.elapsed() < SHUTDOWN_BOUND,
+        "shutdown waited for the live child"
+    );
 }
 
 #[test]
@@ -1101,7 +1116,7 @@ fn blocking_snapshot_receive_times_out_and_reports_disconnect() {
     ));
 }
 
-fn foreground_job(client: &TestClient) -> bool {
+fn needs_job_consent(client: &TestClient) -> bool {
     let mut future = std::pin::pin!(client.has_foreground_job());
     let waker = std::task::Waker::noop();
     let mut context = std::task::Context::from_waker(waker);
@@ -1121,17 +1136,24 @@ fn foreground_job(client: &TestClient) -> bool {
 fn close_confirmation_distinguishes_idle_shell_foreground_job_and_exit() {
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(31),
-        &command("printf IDLE; read value; set -m; sleep 30 & fg; printf DONE"),
+        &command(&format!(
+            "printf IDLE; read value; {}; printf DONE",
+            foreground_job(None)
+        )),
     )
     .unwrap();
     let client = test_client(&runtime);
     wait_for_text(&client, "IDLE");
-    assert!(!foreground_job(&client), "shell waiting for input is idle");
+    assert!(
+        !needs_job_consent(&client),
+        "shell waiting for input is idle"
+    );
     client
         .send_input(TerminalInput::Text("go\n".into()))
         .unwrap();
+    wait_for_text(&client, HELD);
     let deadline = Instant::now() + Duration::from_secs(3);
-    while !foreground_job(&client) {
+    while !needs_job_consent(&client) {
         assert!(Instant::now() < deadline, "foreground job not detected");
         thread::sleep(Duration::from_millis(10));
     }
@@ -1140,22 +1162,10 @@ fn close_confirmation_distinguishes_idle_shell_foreground_job_and_exit() {
         .unwrap();
     wait_for_exit(&client);
     assert!(
-        !foreground_job(&client),
+        !needs_job_consent(&client),
         "exited child must not need confirmation"
     );
     runtime.shutdown().unwrap();
-}
-
-/// A job that runs `report` once it holds the foreground, then waits for
-/// one line. The shell may hand over the terminal after the job starts:
-/// macOS `/bin/sh` (bash 3.2) does, so a report sent sooner is credited to
-/// the shell's group. Under heavy load that shell can also leave the job
-/// in the shell's group while the terminal names the job's PID as its
-/// foreground group; the job then never reports and the test times out.
-fn foreground_reporter(report: &str) -> String {
-    format!(
-        "sh -c \"until [ \\$(ps -o tpgid= -p \\$\\$) = \\$(ps -o pgid= -p \\$\\$) ]; do sleep 0.01; done; {report}; exec head -n 1 >/dev/null\""
-    )
 }
 
 /// Returns scripted read results, then blocks.
@@ -1620,37 +1630,6 @@ fn command(script: &str) -> TerminalCommand {
     }
 }
 
-fn wait_for_text(client: &TestClient, needle: &str) -> Arc<TerminalSnapshot> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let snapshot = client.read_snapshot().expect("snapshot should work");
-        let text: String =
-            snapshot.cells().map(|cell| cell.text.displayed()).collect();
-        if text.contains(needle) {
-            return snapshot;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "terminal output did not contain {needle:?}"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn wait_for_exit(client: &TestClient) -> ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let TerminalLifecycle::Exited(status) = client.status().lifecycle {
-            return status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "terminal child did not report exit"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
 #[test]
 fn a_queued_request_needs_its_capability_and_an_unrevoked_viewer() {
     let registry = Registry::new(
@@ -1868,13 +1847,21 @@ fn pty_runtime_applies_explicit_terminal_environment() {
 #[cfg(unix)]
 #[test]
 fn pty_runtime_should_process_bursty_output_without_poll_delay() {
-    let started = Instant::now();
     let runtime = TerminalRuntime::spawn(
         TerminalId::new(17),
-        &command("dd if=/dev/zero bs=1048576 count=1 2>/dev/null; printf DONE"),
+        &command(
+            "printf READY; read line; dd if=/dev/zero bs=1048576 count=1 2>/dev/null; printf DONE",
+        ),
     )
     .expect("runtime should start");
-    wait_for_text(&test_client(&runtime), "DONE");
+    let client = test_client(&runtime);
+    wait_for_text(&client, "READY");
+    // Time the burst alone, not the runtime's spawn or the shell's startup.
+    let started = Instant::now();
+    client
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    wait_for_text(&client, "DONE");
     let elapsed = started.elapsed();
     runtime.shutdown().expect("runtime should stop cleanly");
 
@@ -1982,7 +1969,7 @@ fn shutdown_should_escalate_for_a_hup_resistant_child() {
     runtime.shutdown().expect("runtime should stop cleanly");
 
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < SHUTDOWN_BOUND,
         "shutdown should not wait for the live child"
     );
 }
@@ -2113,7 +2100,8 @@ fn saturated_input_should_not_block_client_or_priority_close() {
         Err(RuntimeError::Busy)
     ));
 
-    let enqueue_started = Instant::now();
+    // The child never reads, so an enqueue that waited for room would never
+    // return; reaching `Busy` proves the client does not block.
     let mut accepted = 0;
     for _ in 0..2_048 {
         match client.send_input(TerminalInput::Text("x".repeat(1_024))) {
@@ -2126,15 +2114,11 @@ fn saturated_input_should_not_block_client_or_priority_close() {
     }
     assert!(accepted > 0, "runtime should accept initial input");
     assert!(accepted < 2_048, "bounded ingress should report saturation");
-    assert!(
-        enqueue_started.elapsed() < Duration::from_secs(1),
-        "client enqueue should not inherit bounded queue backpressure"
-    );
 
     let shutdown_started = Instant::now();
     runtime.shutdown().expect("runtime should stop cleanly");
     assert!(
-        shutdown_started.elapsed() < Duration::from_secs(3),
+        shutdown_started.elapsed() < SHUTDOWN_BOUND,
         "priority close should bypass saturated data traffic"
     );
 }
@@ -2562,21 +2546,21 @@ fn shutdown_should_terminate_a_distinct_foreground_process_group() {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
 
-    let pid_path = std::env::temp_dir()
-        .join(format!("huterm-foreground-job-{}.pid", std::process::id()));
-    let _ = std::fs::remove_file(&pid_path);
-    let script = format!(
-        "trap '' HUP TERM; set -m; sleep 30 & child=$!; printf %s \"$child\" > {}; printf READY; fg",
-        pid_path.display()
-    );
+    // The job inherits the shell's ignored hangup and termination.
+    let script =
+        format!("trap '' HUP TERM; {}; printf DONE", foreground_job(None));
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(17), &command(&script))
             .expect("runtime should start");
-    wait_for_text(&test_client(&runtime), "READY");
-    let foreground_pid: i32 = std::fs::read_to_string(&pid_path)
-        .expect("foreground PID should be written")
-        .parse()
-        .expect("foreground PID should be numeric");
+    // The marker's prefix can reach the screen before its PID, so wait for
+    // the whole `HELD:<pid>;`.
+    let client = test_client(&runtime);
+    let foreground_pid = wait_until("the job's PID on screen", || {
+        let text = snapshot_text(
+            &client.read_snapshot().expect("snapshot should work"),
+        );
+        held_pid(&text).ok_or(text)
+    });
 
     runtime.shutdown().expect("runtime should stop cleanly");
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2591,7 +2575,6 @@ fn shutdown_should_terminate_a_distinct_foreground_process_group() {
             ),
         }
     }
-    std::fs::remove_file(pid_path).expect("PID file should be removable");
 }
 
 #[test]

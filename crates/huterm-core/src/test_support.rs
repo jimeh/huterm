@@ -1,9 +1,15 @@
 //! Test-only clients that pair a full-capability viewer with the runtime's
 //! control client.
 
+use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
-use huterm_protocol::{CellSize, GridSize, TerminalStatus, ViewerCapabilities};
+use huterm_protocol::{
+    CellSize, ExitStatus, GridSize, TerminalLifecycle, TerminalSnapshot,
+    TerminalStatus, ViewerCapabilities,
+};
 
 use crate::terminal::RuntimeClient;
 use crate::{RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions};
@@ -55,10 +61,222 @@ impl TestClient {
     }
 }
 
+/// The text of every cell in `snapshot`, row by row, without line breaks.
+pub(crate) fn snapshot_text(snapshot: &TerminalSnapshot) -> String {
+    snapshot.cells().map(|cell| cell.text.displayed()).collect()
+}
+
+/// Creates a new directory under the system temporary directory, named
+/// after `prefix`, this process, a per-process sequence number, and the
+/// clock. Concurrent tests can read the same wall-clock time, so the
+/// sequence keeps names in one process unique.
+pub(crate) fn scratch_dir(prefix: &str) -> std::path::PathBuf {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    // Nextest runs each test in its own process, so the sequence alone
+    // repeats across processes; the clock keeps a reused PID from meeting
+    // a directory a killed test left behind.
+    let directory = std::env::temp_dir().join(format!(
+        "{prefix}-{}-{}-{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    directory
+}
+
+/// How long a test waits for a condition. A loaded host can stall a shell
+/// or a runtime thread for seconds, and a passing test never waits it out.
+pub(crate) const WAIT: Duration = Duration::from_secs(10);
+
+/// Polls `probe` until it returns `Ok`, and returns that value. While the
+/// condition does not hold, the probe returns what it observed; after
+/// [`WAIT`] the test fails naming `what` and the last observation.
+pub(crate) fn wait_until<T, Observed: Debug>(
+    what: &str,
+    mut probe: impl FnMut() -> Result<T, Observed>,
+) -> T {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let observed = match probe() {
+            Ok(value) => return value,
+            Err(observed) => observed,
+        };
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}; last observed {observed:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Waits until `viewer`'s screen contains `needle`.
+pub(crate) fn wait_for_text(
+    viewer: &TerminalViewer,
+    needle: &str,
+) -> Arc<TerminalSnapshot> {
+    wait_until(&format!("{needle:?} on screen"), || {
+        let snapshot = viewer.read_snapshot().expect("snapshot should work");
+        let text = snapshot_text(&snapshot);
+        if text.contains(needle) {
+            Ok(snapshot)
+        } else {
+            Err(text)
+        }
+    })
+}
+
+/// Waits until the terminal's child has exited, and returns its status.
+pub(crate) fn wait_for_exit(client: &TestClient) -> ExitStatus {
+    wait_until("the child's exit", || match client.status().lifecycle {
+        TerminalLifecycle::Exited(status) => Ok(status),
+        lifecycle @ TerminalLifecycle::Running => Err(lifecycle),
+    })
+}
+
 /// A spawning viewer with every capability and no initial state.
 pub(crate) fn viewer_options() -> ViewerOptions {
     ViewerOptions {
         spawned: true,
         ..ViewerOptions::new(ViewerCapabilities::ALL)
     }
+}
+
+/// Selects the job helper's mode when this test binary runs inside a
+/// terminal as [`foreground_job`] or [`orphaned_sleep`].
+const JOB_MODE: &str = "HUTERM_TEST_JOB";
+/// The OSC payload a held job writes once it holds the foreground.
+const JOB_REPORT: &str = "HUTERM_TEST_JOB_REPORT";
+/// The marker a held job prints, followed by its PID and `;`.
+pub(crate) const HELD: &str = "HELD:";
+
+/// Shell text that runs this test binary as a plain foreground command
+/// that moves itself into a new process group and takes the terminal.
+/// Once it holds the foreground it writes `ESC ] report BEL` when given,
+/// then prints [`HELD`], its PID, and `;`. It hands the terminal back to
+/// the shell's group after reading one line, and then exits. A hangup does
+/// not end it: like `sleep 30`, it then exits after 30 seconds.
+///
+/// The job owns its group instead of relying on the shell's job control:
+/// macOS `/bin/sh` (bash 3.2) can fail its `setpgid` under load, or leave
+/// the job in the shell's group while the terminal names another. A
+/// non-interactive shell may exec its last command, which would make the
+/// job a session leader, so follow it with another command.
+#[cfg(unix)]
+pub(crate) fn foreground_job(report: Option<&str>) -> String {
+    let report = report
+        .map(|report| format!("{JOB_REPORT}={} ", shell_quote(report)))
+        .unwrap_or_default();
+    format!("{report}{}", job_command("hold"))
+}
+
+/// Shell text that starts `sleep 30` in a new process group and exits
+/// without waiting for it, leaving an orphan that holds the terminal from
+/// outside both the shell's tree and the foreground group.
+#[cfg(unix)]
+pub(crate) fn orphaned_sleep() -> String {
+    job_command("orphan")
+}
+
+/// The name a runtime publishes while [`foreground_job`] holds its
+/// foreground.
+#[cfg(unix)]
+pub(crate) fn job_name() -> String {
+    let exe = std::env::current_exe().unwrap();
+    huterm_procinfo::display_name(&[exe.to_string_lossy().into_owned()])
+        .unwrap()
+}
+
+/// The PID a held [`foreground_job`] printed in `text`.
+#[cfg(unix)]
+pub(crate) fn held_pid(text: &str) -> Option<i32> {
+    let (_, rest) = text.split_once(HELD)?;
+    rest.split_once(';')?.0.parse().ok()
+}
+
+#[cfg(unix)]
+fn job_command(mode: &str) -> String {
+    let exe = std::env::current_exe().unwrap();
+    // libtest's own output goes nowhere; the job writes to `/dev/tty`.
+    format!(
+        "{JOB_MODE}={mode} {} --exact test_support::job_helper --nocapture >/dev/null",
+        shell_quote(&exe.to_string_lossy())
+    )
+}
+
+#[cfg(unix)]
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+#[cfg(unix)]
+fn hold(report: Option<String>) {
+    use std::io::{Read, Write};
+
+    use nix::sys::signal::{SigSet, Signal};
+    use nix::unistd::{Pid, getpgrp, getpid, setpgid, tcsetpgrp};
+
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .unwrap();
+    let shell = getpgrp();
+    setpgid(Pid::from_raw(0), Pid::from_raw(0))
+        .expect("the job leads its session; was it the shell's last command?");
+    // A background group that changes the terminal's group gets SIGTTOU
+    // unless the calling thread blocks or ignores it.
+    let mut ttou = SigSet::empty();
+    ttou.add(Signal::SIGTTOU);
+    ttou.thread_block().unwrap();
+    tcsetpgrp(&tty, getpid()).unwrap();
+    let report = report
+        .map(|report| format!("\x1b]{report}\x07"))
+        .unwrap_or_default();
+    write!(tty, "{report}{HELD}{};", getpid()).unwrap();
+    // A canonical-mode read returns at most one line. After a hangup the
+    // job lives on, as `sleep 30` would, so only a signal ends it early.
+    if !matches!(tty.read(&mut [0; 256]), Ok(1..)) {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return;
+    }
+    tcsetpgrp(&tty, shell).unwrap();
+}
+
+#[cfg(unix)]
+fn orphan() {
+    use nix::unistd::{Pid, setpgid};
+    use std::process::{Command, Stdio};
+
+    setpgid(Pid::from_raw(0), Pid::from_raw(0))
+        .expect("the job leads its session; was it the shell's last command?");
+    #[expect(
+        clippy::zombie_processes,
+        reason = "the helper exits at once and orphans `sleep` on purpose"
+    )]
+    Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+}
+
+/// Runs the job helper when [`JOB_MODE`] selects it, and otherwise passes
+/// at once. It exits the process when done, so libtest reports nothing.
+#[cfg(unix)]
+#[test]
+fn job_helper() {
+    let Ok(mode) = std::env::var(JOB_MODE) else {
+        return;
+    };
+    match mode.as_str() {
+        "hold" => hold(std::env::var(JOB_REPORT).ok()),
+        "orphan" => orphan(),
+        other => panic!("unknown job helper mode {other:?}"),
+    }
+    std::process::exit(0);
 }

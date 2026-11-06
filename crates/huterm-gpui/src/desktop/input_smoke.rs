@@ -34,8 +34,12 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     .timer(std::time::Duration::from_millis(10))
                     .await;
                 let state = cx.update(read_state);
-                std::fs::write(directory.join("state"), state)
-                    .expect("write smoke state");
+                // `fs::write` truncates first, so a reader could see an empty
+                // file; a rename replaces the whole state at once.
+                let temporary = directory.join("state.tmp");
+                std::fs::write(&temporary, state).expect("write smoke state");
+                std::fs::rename(temporary, directory.join("state"))
+                    .expect("publish smoke state");
                 let file = directory.join(format!("event-{sequence}"));
                 if let Ok(command) = std::fs::read_to_string(&file) {
                     let result = if command == "shutdown" {

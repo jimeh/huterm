@@ -38,6 +38,10 @@ pre-commit:
       glob: "{AGENTS.md,docs/agents/*.md,docs/plans/*.md}"
       run: mise run lint:agents
 
+    - name: flakes
+      glob: "{docs/agents/known-flakes.md,docs/agents/flakes/*.md,scripts/flakes.ts}"
+      run: mise run flakes:check
+
     - name: workflows
       glob: "{.github/workflows/*.{yml,yaml},.github/actions/**/action.{yml,yaml},.github/dependabot.yml,.pinact.yaml,zizmor.yml}"
       run: mise run ci:workflows:staged

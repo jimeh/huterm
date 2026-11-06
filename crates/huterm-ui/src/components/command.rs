@@ -106,6 +106,8 @@ pub struct Command {
     fallback: HighlightFallback,
     empty: SharedString,
     list: OptionList,
+    /// The hovered item when the list last rendered.
+    drawn_hover: Option<ItemId>,
 }
 
 impl std::fmt::Debug for Command {
@@ -140,6 +142,7 @@ impl Command {
             fallback: HighlightFallback::First,
             empty: "No results".into(),
             list: OptionList::new(),
+            drawn_hover: None,
         };
         command.sync_field(cx);
         command
@@ -202,6 +205,15 @@ impl Command {
     #[must_use]
     pub fn hovered(&self) -> Option<&ListOption> {
         self.list.hovered()
+    }
+
+    /// The item that was hovered when the list last rendered. Hitboxes come
+    /// from the drawn frame, so input aimed at the hovered row should wait
+    /// until this matches [`Command::hovered`].
+    #[must_use]
+    pub fn drawn_hovered(&self) -> Option<&ListOption> {
+        let id = self.drawn_hover.as_ref()?;
+        self.list.options().iter().find(|option| &option.id == id)
     }
 
     /// Recolors the list, as after a theme change; unchanged tokens are
@@ -411,6 +423,7 @@ impl Render for Command {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement {
+        self.drawn_hover = self.list.hovered().map(|option| option.id.clone());
         let tokens = self.tokens;
         let content = if self.list.options().is_empty() {
             Empty::new("empty", self.empty.clone(), tokens).into_any_element()

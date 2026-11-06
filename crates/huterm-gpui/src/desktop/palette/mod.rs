@@ -1595,6 +1595,13 @@ impl CommandPalette {
         list.options().iter().position(|option| &option.id == id)
     }
 
+    /// The hovered row in the last frame the results list drew.
+    fn drawn_pointer_row(&self, cx: &App) -> Option<usize> {
+        let list = self.list.as_ref()?.read(cx);
+        let id = &list.drawn_hovered()?.id;
+        list.options().iter().position(|option| &option.id == id)
+    }
+
     /// The search and argument field.
     pub(super) fn field(&self) -> Entity<Input> {
         self.input.clone()
@@ -1621,7 +1628,7 @@ impl CommandPalette {
             Stage::Search(search) => {
                 let selected = self.selected_match(cx);
                 format!(
-                    "commands selected={} query={:?} unavailable={:?} results={} highlighted_row={:?} hover={:?}",
+                    "commands selected={} query={:?} unavailable={:?} results={} highlighted_row={:?} hover={:?} drawn_pointer_row={:?}",
                     selected.map_or("", |matched| matched.spec.id.as_str()),
                     search.query,
                     selected.and_then(|matched| self
@@ -1633,6 +1640,7 @@ impl CommandPalette {
                             |result| result.spec.id == matched.spec.id
                         )),
                     self.hovered_row(cx),
+                    self.drawn_pointer_row(cx),
                 )
             }
             Stage::Slots(editor) => format!(

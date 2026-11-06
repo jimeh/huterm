@@ -119,6 +119,37 @@ Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligne
 with the repository ruleset. These gates require every validation job and disable
 matrix fail-fast so each reports its own failure instead of cancelling its sibling.
 
+## Rust tests and known-flake retries
+
+`test:rust`, `ci:test`, and `test:ghostty-releasesafe` run
+`scripts/test-rust.ts`, which runs cargo-nextest with the profile in
+`.config/nextest.toml` (`ci` when `CI` is set) and then huterm-ghostty's
+doctests, which nextest cannot run. Its two modes keep the earlier
+`cargo test` arguments. The ReleaseSafe mode passes `.config/releasesafe.toml`
+with `--config`, which forces `HUTERM_GHOSTTY_OPTIMIZE=ReleaseSafe` over
+`.cargo/config.toml`'s forced ReleaseFast; without it the tests silently run
+ReleaseFast. Nextest rejects the dotted `--config 'env.…'` flags that
+`cargo test` accepted, so the override lives in that file.
+`scripts/test-rust.test.ts` checks both modes' arguments and the file.
+
+Nextest runs every binary's tests at once, one process per test, where
+`cargo test` ran one binary at a time. The config sets no test groups: on a
+16-core Mac, capping the GPUI window tests at 4 and the PTY-heavy core suites
+at 8 doubled the run to about 120 seconds against 55 without them, and hosted
+runners have only 3 or 4 CPUs, so those caps never bind there. Nextest's
+JUnit report records each test's duration; add a group only if those show
+that concurrency, not runner speed, slows the wall-clock tests.
+
+Nextest's own `retries` stay at 0. The wrapper reads nextest's JUnit report
+and reruns, by exact name, only failures that match a registered
+[known flake](known-flakes.md#retries-in-ci); `run-smoke-step.ts` does the
+same for smoke steps. The workflow sets `HUTERM_FLAKE_RETRY=1` for every job,
+and each test and smoke job points `HUTERM_FLAKE_REPORT_DIR` at a directory
+that it uploads as a `flake-report-*` artifact, even when the job passes,
+because a retried pass leaves no failed job to inspect. Setting either
+variable does not affect rust-cache keys, which hash only `CARGO*`, `RUST*`,
+`CC*`, `CXX*`, and `CMAKE*` variables.
+
 ## Workflow policy
 
 Keep workflow scanning scoped to the root `.github` directory. Published vendor

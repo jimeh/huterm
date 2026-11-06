@@ -199,10 +199,6 @@ fn renaming_an_unfocused_pane_republishes_its_title(cx: &mut TestAppContext) {
     harness.wait_for("the tab to show its name", |cx| {
         labels(cx, window, tab, left).is_some_and(|(_, tab)| tab == "work")
     });
-    let (default_label, _) = harness
-        .cx
-        .update(|cx| labels(cx, window, tab, right))
-        .unwrap();
     harness
         .runtime
         .lock()
@@ -212,7 +208,12 @@ fn renaming_an_unfocused_pane_republishes_its_title(cx: &mut TestAppContext) {
         published(cx, terminal).as_deref() == Some("logs")
     });
     harness.runtime.lock().rename_pane(right, None).unwrap();
+    // The default label follows the shell's directory, which the first
+    // foreground probe can publish at any point in this test, so compare the
+    // published title with the label as it is now, not as it was before.
     harness.wait_for("the cleared name to leave the published title", |cx| {
-        published(cx, terminal).as_deref() == Some(default_label.as_str())
+        let current = labels(cx, window, tab, right).map(|(pane, _)| pane);
+        current.as_deref().is_some_and(|label| label != "logs")
+            && published(cx, terminal) == current
     });
 }
