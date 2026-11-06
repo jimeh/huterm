@@ -1,10 +1,10 @@
 +++
 id = "linux-palette-wheel-scroll"
 title = "Linux palette smoke wheel does not scroll the results"
-status = "open"
+status = "fixed"
 kind = "smoke"
 platforms = ["linux-x86_64", "linux-aarch64"]
-retries = 1
+retries = 0
 review_by = "2026-12-06"
 
 [selector]
@@ -61,6 +61,11 @@ platform = "linux-aarch64"
   (`results=84`, `highlighted_row=Some(0)`, `hover=Some(0)`,
   `wheel_events=1`, `scroll_offset=0.0`). The PR bundles a terminal font and
   does not touch the palette or `option_list`.
-- **Triage:** rerun and record the run here. If it recurs, have the smoke
-  wait for a frame drawn after `movePointerToRow` before the wheel, or make
-  a hover change in `option_list` request a frame.
+- **Fix (2026-11-06):** both remedies. A hover change in `option_list` now
+  calls `cx.notify()`, so a frame follows it, as the palette's own list did
+  before #322. `Command` records the item hovered when it last rendered,
+  the palette smoke reports it as `drawn_pointer_row`, and
+  `movePointerToRow` waits for it to match the row before any wheel or
+  press. A `huterm-ui` test fails without the redraw.
+- **Triage:** a recurrence with `drawn_pointer_row` equal to the hovered row
+  rules out this cause; record the last state and investigate.
