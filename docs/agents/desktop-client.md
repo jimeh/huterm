@@ -167,10 +167,12 @@ next-frame callbacks in unfocused windows to `inactive_frame_interval`, 30 fps
 by default; desktop windows set it to `None`. With the throttle, Linux
 `bench:scroll` p95 input-to-paint latency rose from about 6.5 ms to 35 ms.
 Since gpui-pre 0.3.11, the frame limits also defer dirty and input-driven
-redraws (zed#66237), and two more apply: `low_power_frame_interval` (about
-30 fps in macOS Low Power Mode or the Linux `power-saver` profile) and
-`thermal_frame_interval` (about 60 fps under serious or critical thermal
-pressure, macOS only). `frame_limits::terminal_window_options` sets all three
+redraws (zed#66237). It adds `low_power_frame_interval` (about 30 fps in macOS
+Low Power Mode or the Linux `power-saver` profile) and makes the about 60 fps
+cap under serious or critical thermal pressure, macOS only, configurable as
+`thermal_frame_interval`; 0.3.10 hardcoded it for forced renders and
+next-frame callbacks, so turning the setting off also removes a cap older
+builds had. `frame_limits::terminal_window_options` sets all three
 for terminal windows and keeps or clears the power pair from `[window]
 power_frame_limits`. GPUI reads the intervals once, when it creates the
 window, so the setting applies to new windows. The Settings window and
@@ -300,8 +302,11 @@ sequence wait is cancelled by teardown decides nothing.
 Since gpui-pre 0.3.11 (zed#66181), GPUI handles a native window close on a
 spawned foreground task, which removes the window only if the app has not
 already, so a natively destroyed window stays in `cx.windows()` until that
-task runs. Huterm's closes are app-driven: the close callback returns false
-and the pipeline removes the window, so the deferred task finds it gone. The
+task runs. Terminal window closes are app-driven: the close callback returns
+false and the pipeline removes the window, so the deferred task finds it gone.
+A clean Settings window close returns true and takes the deferred path, which
+is harmless because exit decisions run from `on_window_closed`, after GPUI
+removes the window. The
 quake smoke covers a final-window close followed by zero-window keepalive and
 recreation, and by application exit without global registrations.
 

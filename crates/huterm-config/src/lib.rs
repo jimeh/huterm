@@ -965,7 +965,8 @@ pub struct WindowConfig {
     )))]
     pub size_indicator_linger_ms: u16,
     /// Cap terminal windows at about 30 frames per second in Low Power Mode
-    /// or a power-saver profile, and about 60 under serious thermal pressure.
+    /// or a power-saver profile, and about 60 under serious or critical
+    /// thermal pressure.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
         "x-huterm-group" = "Window",

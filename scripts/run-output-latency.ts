@@ -190,6 +190,7 @@ if (import.meta.main) {
   const refresh = process.env.HUTERM_BENCH_REFRESH;
   if (refresh !== undefined && refresh !== "display" && refresh !== "unlimited") throw new Error(`HUTERM_BENCH_REFRESH must be display or unlimited, not ${refresh}`);
   const powerLimits = powerFrameLimits(process.env.HUTERM_BENCH_POWER_FRAME_LIMITS);
+  console.log(`mode=${mode} power_frame_limits=${powerLimits.effective}`);
   const configDirectory = await mkdtemp(join(tmpdir(), "huterm-output-latency-"));
   const config = join(configDirectory, "config.toml");
   // Outside compression mode, a pass that starts mid-run would change what is measured.
@@ -211,7 +212,6 @@ if (import.meta.main) {
     if (!outcome.timedOut && !outcome.stopped) throw new Error(`Huterm exited early (${outcome.exitCode ?? outcome.signalCode})\n${outcome.stderr}`);
     if (mode === "compression" && !outcome.stopped) throw new Error(`the compression driver did not finish within ${seconds} s`);
     for (const line of outcome.stderr.split(/\r?\n/).filter(line => line.startsWith("HUTERM_BENCH "))) console.log(line);
-    console.log(`mode=${mode} power_frame_limits=${powerLimits.effective}`);
     if (mode === "compression") {
       const summary = summarizeCycles(parseCycles(outcome.stderr), compressed, 40);
       console.log(`mode=${mode} history=${history} compression=${compressed ? "on" : "off"} ${formatCycles(summary)}`);
