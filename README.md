@@ -198,7 +198,10 @@ Command turns each row into its own Open in New Window. Close Session in the
 command palette asks which session to close, so one that no window shows
 can be ended without switching to it. Closing the window's own session moves
 the window to the session it showed most recently, else to one no window
-shows; with none left the window closes. Without a title bar, in
+shows, passing over any it cannot show; when one could not be shown and
+none is left, the window opens a new session, and with none at all it
+closes. Quit cancels a Close Session still asking or checking, so
+restore brings that session back. Without a title bar, in
 fullscreen, Quake windows, and Linux without client-side decorations, the
 control ends a top or bottom tab bar, or sits icon-only beside `+` in a left
 or right column. A long name truncates, and a narrow window shows only the

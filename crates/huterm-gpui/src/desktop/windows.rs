@@ -927,14 +927,13 @@ struct Desktop {
     quit_committed: bool,
     pending_spawns: usize,
     /// Windows whose session switch, or Close Session of their own session
-    /// from its check to its follow-up, holds one of `pending_spawns` until
-    /// its navigation settles.
+    /// from its commit to its follow-up, holds one of `pending_spawns`
+    /// until its navigation settles.
     switch_spawns: std::collections::HashSet<gpui::WindowId>,
-    /// The windows of `switch_spawns` whose Close Session hold shows its
-    /// confirmation. Such a hold keeps no Quit waiting: the window hosts
-    /// the Quit, whose dialog replaces its own and covers the session.
-    confirming_holds: std::collections::HashSet<gpui::WindowId>,
     quit_pending: bool,
+    /// The Linux last window whose emptied close became the Quit under
+    /// way; a cancelled Quit moves it to a session it can show.
+    emptied_quit: Option<gpui::WindowId>,
     /// The Settings window, which is not in `windows`: it shows no session.
     settings: Option<gpui::WindowHandle<settings_window::SettingsView>>,
     /// The configured font families that were not installed when Huterm
@@ -1759,9 +1758,9 @@ fn install_desktop(
         quit_committed: false,
         pending_spawns: 0,
         switch_spawns: std::collections::HashSet::new(),
-        confirming_holds: std::collections::HashSet::new(),
         settings: None,
         quit_pending: false,
+        emptied_quit: None,
         unavailable_fonts: UnavailableFonts::default(),
         applied_terminal_family: None,
         external_drag_window: None,
@@ -1802,7 +1801,6 @@ fn install_desktop(
         desktop.cross.windows.retain(|(id, _)| *id != window);
         checkpoints::set_transfer_reserved(cx, window, false);
         checkpoints::set_switching(cx, window, false);
-        cx.global_mut::<Desktop>().confirming_holds.remove(&window);
         session_switch::release_switch_spawn(cx, window);
         restore::window_settled(cx, window);
         let desktop = cx.global_mut::<Desktop>();
@@ -2206,23 +2204,10 @@ fn spawn_disposition(
 }
 
 /// Settles one spawn: Quit deferred behind pending spawns resumes when the
-/// last one settles, or when only `hosting` remain, the holds of Close
-/// Session confirmations that host it. Returns whether it resumes.
-fn settle_spawn(
-    pending_spawns: &mut usize,
-    hosting: usize,
-    quit_pending: &mut bool,
-) -> bool {
+/// last one settles. Returns whether it resumes.
+fn settle_spawn(pending_spawns: &mut usize, quit_pending: &mut bool) -> bool {
     *pending_spawns = pending_spawns.saturating_sub(1);
-    *pending_spawns <= hosting && std::mem::take(quit_pending)
-}
-
-/// The pending spawns a Quit waits for: every one but the holds of Close
-/// Session confirmations, whose windows host it instead.
-fn blocking_spawns(desktop: &Desktop) -> usize {
-    desktop
-        .pending_spawns
-        .saturating_sub(desktop.confirming_holds.len())
+    *pending_spawns == 0 && std::mem::take(quit_pending)
 }
 
 /// The window that hosts Quit's assessment: the active window, else the
@@ -2343,9 +2328,14 @@ fn observe_keystroke(
     }
 }
 
+/// Requests Quit, from any source: the menu, the shortcut, the Dock, and
+/// the Linux last window's Close Window or emptied close. It cancels every
+/// own-session Close Session that has not started committing, then waits
+/// for pending spawns, then asks in its host window.
 fn request_quit(cx: &mut App) {
+    cancel_own_session_closes(cx);
     let desktop = cx.global_mut::<Desktop>();
-    if !quit_now(blocking_spawns(desktop), &mut desktop.quit_pending) {
+    if !quit_now(desktop.pending_spawns, &mut desktop.quit_pending) {
         return;
     }
     let desktop = cx.global::<Desktop>();
@@ -2358,16 +2348,7 @@ fn request_quit(cx: &mut App) {
             .is_none_or(|record| record.closing)
     };
     let windows = cx.windows();
-    // A window whose Close Session confirmation held the Quit hosts it, so
-    // Quit's dialog replaces that one there.
-    let confirming: Vec<_> = windows
-        .iter()
-        .copied()
-        .filter(|handle| desktop.confirming_holds.contains(&handle.window_id()))
-        .collect();
-    let host = quit_host(cx.active_window(), &confirming, closing)
-        .or_else(|| quit_host(cx.active_window(), &windows, closing));
-    if let Some(handle) = host {
+    if let Some(handle) = quit_host(cx.active_window(), &windows, closing) {
         let _ = handle.update(cx, |root, window, cx| {
             if let Ok(view) = root.downcast::<WorkspaceView>() {
                 window.activate_window();
@@ -2393,6 +2374,43 @@ fn request_quit(cx: &mut App) {
             native_quit::cancel_request();
         }
     }
+}
+
+/// Cancels, in every window, the own-session Close Session a Quit would
+/// otherwise wait for or race. Runs outside any window update, so each
+/// window's view updates through its handle.
+fn cancel_own_session_closes(cx: &mut App) {
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |root, window, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                view.update(cx, |view, cx| {
+                    view.cancel_own_session_close(window, cx);
+                });
+            }
+        });
+    }
+}
+
+/// Moves the Linux last window whose emptied close became a now cancelled
+/// Quit to a session it can show, once the cancel's update returned.
+fn show_left_session_after_cancel(cx: &mut App) {
+    let Some(id) = cx.global_mut::<Desktop>().emptied_quit.take() else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let Some(handle) = cx
+            .windows()
+            .into_iter()
+            .find(|handle| handle.window_id() == id)
+        else {
+            return;
+        };
+        let _ = handle.update(cx, |root, window, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                view.update(cx, |view, cx| view.show_left_session(window, cx));
+            }
+        });
+    });
 }
 
 /// The saved layout of every open window, with the regular window used
@@ -3168,9 +3186,7 @@ fn open_window_with_profile(
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
                 let _ = weak.update(cx, |view, cx| {
-                    let target =
-                        view.window_close_target(Platform::current(), cx);
-                    view.request_close(target, window, cx);
+                    view.close_window(Platform::current(), window, cx);
                 });
                 false
             });
@@ -4895,6 +4911,18 @@ fn close_commit_retries(result: &Result<(), MuxError>) -> bool {
         result,
         Err(MuxError::StaleClose | MuxError::ConfirmationRequired)
     )
+}
+
+/// Starts committing the exit-close `window` took, if any, and returns its
+/// pane with the tab that holds it.
+fn begin_exit_commit(
+    cx: &mut App,
+    window: gpui::WindowId,
+) -> Option<(TabId, PaneId)> {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop.exit_closes.begin_commit(window).and_then(|pane| {
+        Some((desktop.hierarchy.state().pane_tab(pane)?, pane))
+    })
 }
 
 /// How a commit ended for the exit-close of `pane`, in `tab`, it carried.
@@ -8600,7 +8628,6 @@ impl WorkspaceView {
                 let desktop = cx.global_mut::<Desktop>();
                 if settle_spawn(
                     &mut desktop.pending_spawns,
-                    desktop.confirming_holds.len(),
                     &mut desktop.quit_pending,
                 ) {
                     cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
@@ -8867,7 +8894,6 @@ impl WorkspaceView {
                 let desktop = cx.global_mut::<Desktop>();
                 if settle_spawn(
                     &mut desktop.pending_spawns,
-                    desktop.confirming_holds.len(),
                     &mut desktop.quit_pending,
                 ) {
                     cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
@@ -10422,8 +10448,7 @@ impl WorkspaceView {
             }
             ids::CLOSE_WINDOW => {
                 self.check_close_window_available()?;
-                let target = self.window_close_target(Platform::current(), cx);
-                self.request_close(target, window, cx);
+                self.close_window(Platform::current(), window, cx);
                 Ok(CommandOutcome::Accepted)
             }
             ids::NEW_SESSION => {
@@ -10814,7 +10839,6 @@ impl WorkspaceView {
     /// such as on a terminal, stays. Every change of top dialog comes here,
     /// and each frame checks it.
     fn sync_dialog(&mut self, window: &mut Window, cx: &mut App) {
-        self.sync_quit_hold(cx);
         let top = self.top_dialog();
         if top == self.dialog_shown {
             return;
@@ -11589,15 +11613,14 @@ impl WorkspaceView {
             self.release_exit_close_if_idle(cx);
             return;
         };
-        if matches!(target, CloseTarget::Application) {
-            cx.global_mut::<Desktop>().quitting = true;
+        if !self.admit_close(&target, cx) {
+            return;
         }
         if self.busy {
             self.close.queue(target);
             return;
         }
         let target = self.close.begin_check(target);
-        self.hold_for_close_check(&target, cx);
         self.sync_dialog(window, cx);
         let Some(request) = self.close_request(&target, window, cx) else {
             self.release_exit_close_if_idle(cx);
@@ -11643,7 +11666,6 @@ impl WorkspaceView {
                 if resolution == Resolution::Cancelled {
                     // Teardown owns removal; decide nothing.
                     view.close.current = None;
-                    view.release_close_hold(cx);
                     return;
                 }
                 view.reconcile_own(window, cx);
@@ -11674,7 +11696,7 @@ impl WorkspaceView {
                     Some(CloseDecision::Close(target)) => {
                         view.finish_close(target, window, cx);
                     }
-                    None => view.release_close_hold(cx),
+                    None => {}
                 }
                 cx.notify();
             });
@@ -11954,6 +11976,7 @@ impl WorkspaceView {
             #[cfg(target_os = "macos")]
             native_quit::cancel_request();
             cx.global_mut::<Desktop>().quitting = false;
+            show_left_session_after_cancel(cx);
         }
         self.sync_dialog(window, cx);
         if let Some(tab) = self.active_view(cx) {
@@ -11992,7 +12015,6 @@ impl WorkspaceView {
             // Every tab or pane it asks about left the window, so its commit
             // could only go stale. Queued closes stay queued and run below.
             self.close.dismiss_confirmation();
-            self.release_close_hold(cx);
             self.sync_dialog(window, cx);
             self.release_exit_close_if_idle(cx);
             self.restore_tab_focus(window, cx);
@@ -12033,19 +12055,17 @@ impl WorkspaceView {
             })
             .filter(|target| can_take || *target != CloseTarget::Emptied);
         // On Linux the last window's emptied close becomes Quit while
-        // sessions no window shows remain. It is no longer owed, so a
-        // cancelled Quit leaves the window open for the session control
-        // rather than asking again.
-        let target = target.map(|target| {
-            if target != CloseTarget::Emptied {
-                return target;
-            }
-            let target = self.emptied_close_target(Platform::current(), cx);
-            if target == CloseTarget::Application {
-                self.close.emptied = EmptiedClose::None;
-            }
-            target
-        });
+        // sessions no window shows remain. It is no longer owed, and a
+        // cancelled Quit moves the window to the session left last.
+        if target == Some(CloseTarget::Emptied)
+            && self.emptied_close_target(Platform::current(), cx)
+                == CloseTarget::Application
+        {
+            self.close.emptied = EmptiedClose::None;
+            cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
+            cx.defer(request_quit);
+            return true;
+        }
         if let Some(target) = target {
             self.request_close(target, window, cx);
             true
@@ -12060,6 +12080,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.quit_refuses(&target, cx) {
+            self.refuse_own_session_close(window, cx);
+            return;
+        }
         let Some((assessment, confirmed)) = self.close.begin_commit(&target)
         else {
             self.request_close(target, window, cx);
@@ -12070,15 +12094,7 @@ impl WorkspaceView {
         let generation = self.close.generation;
         // From here the commit's result decides the exit-close, even if
         // this window closes first.
-        let exit = {
-            let desktop = cx.global_mut::<Desktop>();
-            desktop
-                .exit_closes
-                .begin_commit(self.window)
-                .and_then(|pane| {
-                    Some((desktop.hierarchy.state().pane_tab(pane)?, pane))
-                })
-        };
+        let exit = begin_exit_commit(cx, self.window);
         let id = self.window;
         self.publish_restorable_bounds(cx);
         let windows = if matches!(target, CloseTarget::Application) {
@@ -12087,7 +12103,7 @@ impl WorkspaceView {
         } else {
             None
         };
-        let (own_session, follow) = self.close_follow(&target, window, cx);
+        let (own_session, follow) = self.commit_follow(&target, window, cx);
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task =
             cx.background_executor().spawn(session_switch::commit_close(
@@ -12097,7 +12113,7 @@ impl WorkspaceView {
         cx.spawn_in(window, async move |view, cx| {
             let (Committed { result, seq }, followed) = task.await;
             let seq = followed.as_ref().map_or(seq, |followed| followed.seq);
-            let followed = followed.map(|followed| followed.result);
+            let mut followed = followed.map(|followed| followed.result);
             // Application close commits teardown itself, which cancels every
             // waiter, so it keeps today's flow without waiting.
             let resolution = if matches!(target, CloseTarget::Application) {
@@ -12112,11 +12128,14 @@ impl WorkspaceView {
             let _ = view.update_in(cx, |view, window, cx| {
                 if view.close.generation != generation {
                     session_switch::drop_followed(followed.as_ref(), cx);
+                    view.release_close_hold(cx);
                     return;
                 }
                 view.busy = false;
                 view.close.current = None;
                 if close_commit_retries(&result) {
+                    // The next commit attempt holds Quit again.
+                    view.release_close_hold(cx);
                     view.reconcile_own(window, cx);
                     view.request_close(target, window, cx);
                     return;
@@ -12155,7 +12174,7 @@ impl WorkspaceView {
                     }
                     CloseTarget::Session(_) => view.finish_session_close(
                         own_session,
-                        followed.as_ref(),
+                        followed.take(),
                         window,
                         cx,
                     ),

@@ -45,9 +45,10 @@ pub(super) enum Stage {
     /// Opening a session in a new window, before the worker takes the Mux
     /// lock. A failure fails the window's open.
     OpenSession,
-    /// A committed Close Session of the window's own session, before the
-    /// worker attaches the window to the session it moves to. A failure
-    /// fails that attach.
+    /// A committed Close Session of the window's own session, or a
+    /// cancelled Quit's emptied window, before the worker attaches the
+    /// window to the session it moves to. Each failure fails one attempt:
+    /// a candidate's attach, then the fresh session's shell.
     CloseFollow,
     /// The session menu's read of exited sessions, before it takes the Mux
     /// lock.
@@ -65,8 +66,9 @@ struct StageHooks {
     held: usize,
     /// Workers wait until the sender drops.
     gate: Option<(async_channel::Sender<()>, async_channel::Receiver<()>)>,
-    /// The next worker past the gate fails.
-    fail: bool,
+    /// How many of the next workers past the gate, or attempts that
+    /// [`WorkerHooks::take_fail`] asks about, fail.
+    fails: usize,
 }
 
 impl WorkerHooks {
@@ -92,7 +94,22 @@ impl WorkerHooks {
 
     /// Makes the next worker of `stage` to pass the gate fail.
     pub(super) fn fail(&self, stage: Stage) {
-        self.with(stage, |hooks| hooks.fail = true);
+        self.fail_times(stage, 1);
+    }
+
+    /// Makes the next `times` workers or attempts of `stage` fail.
+    pub(super) fn fail_times(&self, stage: Stage, times: usize) {
+        self.with(stage, |hooks| hooks.fails = times);
+    }
+
+    /// Whether a further attempt of a worker already past `stage` fails,
+    /// consuming one failure.
+    pub(super) fn take_fail(&self, stage: Stage) -> bool {
+        self.with(stage, |hooks| {
+            let fail = hooks.fails > 0;
+            hooks.fails = hooks.fails.saturating_sub(1);
+            fail
+        })
     }
 
     pub(super) fn entered(&self, stage: Stage) -> usize {
@@ -111,7 +128,7 @@ impl WorkerHooks {
             let _ = gate.recv().await;
             self.with(stage, |hooks| hooks.held -= 1);
         }
-        self.with(stage, |hooks| std::mem::take(&mut hooks.fail))
+        self.take_fail(stage)
     }
 
     /// [`Self::enter`] for a worker on its own thread, which blocks it.
@@ -120,7 +137,7 @@ impl WorkerHooks {
             let _ = gate.recv_blocking();
             self.with(stage, |hooks| hooks.held -= 1);
         }
-        self.with(stage, |hooks| std::mem::take(&mut hooks.fail))
+        self.take_fail(stage)
     }
 
     /// Counts a worker entering `stage`; returns the gate it must wait on.

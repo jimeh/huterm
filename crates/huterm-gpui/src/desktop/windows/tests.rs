@@ -51,23 +51,16 @@ fn quit_from_a_sibling_waits_for_a_spawn_still_waiting_on_the_projection() {
     assert!(!quit_now(pending_spawns, &mut quit_pending));
     assert!(quit_pending);
     assert!(!can_open_window(true, false, quit_pending));
-    assert!(settle_spawn(&mut pending_spawns, 0, &mut quit_pending));
+    assert!(settle_spawn(&mut pending_spawns, &mut quit_pending));
     assert_eq!((pending_spawns, quit_pending), (0, false));
 
     // With two spawns, Quit resumes only after the last settles.
     pending_spawns = 2;
     assert!(!quit_now(pending_spawns, &mut quit_pending));
-    assert!(!settle_spawn(&mut pending_spawns, 0, &mut quit_pending));
+    assert!(!settle_spawn(&mut pending_spawns, &mut quit_pending));
     assert!(quit_pending);
-    assert!(settle_spawn(&mut pending_spawns, 0, &mut quit_pending));
-    assert!(!settle_spawn(&mut pending_spawns, 0, &mut quit_pending));
-
-    // A spawn that hosts the Quit, a Close Session confirmation's hold,
-    // keeps it waiting no longer once the others settle.
-    pending_spawns = 2;
-    assert!(!quit_now(pending_spawns - 1, &mut quit_pending));
-    assert!(settle_spawn(&mut pending_spawns, 1, &mut quit_pending));
-    assert_eq!((pending_spawns, quit_pending), (1, false));
+    assert!(settle_spawn(&mut pending_spawns, &mut quit_pending));
+    assert!(!settle_spawn(&mut pending_spawns, &mut quit_pending));
 }
 
 #[test]

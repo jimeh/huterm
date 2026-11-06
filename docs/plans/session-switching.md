@@ -367,76 +367,89 @@ confirmation.
 ### Rules
 
 - **Q1. One Quit path.** Every Quit runs through `request_quit`: the menu,
-  the shortcut, the Dock, and the Linux last-window conversions of Close
-  Window and the emptied close.
+  the shortcut, the Dock, the Linux last-window conversions of Close
+  Window and the emptied close, and a Close Session follow-up that could
+  open nothing in the last Linux window. A conversion inside a window's
+  update defers it.
 - **Q2. Quit cancels uncommitted own-session closes.** When a Quit is
   requested, every own-session Close Session that has not started
   committing is cancelled in every window: a check still assessing, a
   confirmation showing (dismissed), and one queued behind a busy window
-  (dropped). Each releases its hold. Their sessions were never closed, so
-  Quit saves them and restore brings them back.
+  (dropped). None of them holds Quit (Q4). Their sessions were never
+  closed, so Quit saves them and restore brings them back. `request_quit`
+  runs outside any window update and reaches each window through its
+  handle, and only then evaluates its gate.
 - **Q3. Refusals while a Quit is underway** (`quitting || quit_pending`):
   switches, New Session, Open in New Window, and own-session Close Session
-  are refused as commands, and an own-session Close Session refuses to
-  commit. Other closes queue or run as before.
+  are refused as commands. An own-session Close Session that still reaches
+  the close pipeline (a merged check, a stale commit's retry) is dropped,
+  and one that reaches its commit aborts and releases its hold. Other
+  closes queue or run as before.
 - **Q4. What Quit waits for.** Quit waits while `pending_spawns` is above
   zero: a New Window spawn, a switch from its start until its navigation
   applies, and an own-session Close Session from the start of its commit
-  until its follow-up settles. It resumes when the last one settles and then
-  runs through its normal host and dialog.
+  until its follow-up settles. A stale commit that assesses again releases
+  the hold and takes it at its next commit. Quit resumes when the last one
+  settles and then runs through its normal host and dialog.
 - **Q5. A cancelled Quit** clears `quitting`; closes it cancelled stay
   cancelled, and every window keeps the session it showed. The Linux
   emptied last window whose close became the Quit then shows the session
-  viewed most recently that no window shows (pending maintainer
-  confirmation; see below), so it is never left with nothing to show.
+  viewed most recently that no window shows (confirmed by the maintainer
+  on 2026-11-06), so it is never left with nothing to show. It
+  attaches afresh, as a Close Session follow-up does, detaches its old
+  attachment, installs the session as a switch does, and falls back to a
+  fresh session the same way. The choice lives in
+  `WorkspaceView::left_sessions`. With no such session left, the window
+  takes its emptied close.
 - **Q6. Close Session follow-up.** After an own-session Close Session
   commits, the window tries each candidate in order (its navigation memory,
   then sessions no window shows) and moves past any candidate that cannot
   be attached or needs a shell that fails to start. With no candidate left
   it opens a fresh session in the window, with the notice "Cannot show
   session `name`: `error`. Opened a new session." when a candidate failed.
-  Only when that fails too does the window close by the last-window rule
-  (macOS: remove; Linux: Quit while sessions would be stranded), with a
-  notice.
+  A candidate that closed is passed over silently. With no candidate at
+  all, nothing follows and the window closes by the last-window rule, as
+  settled decision 5 says. Only when the fresh session fails too does a
+  window with failed candidates close by the last-window rule (macOS:
+  remove; Linux: Quit while sessions would be stranded), with the notice
+  "Cannot open a new session: `error`", shown in the window or, once it is
+  gone, in the next one.
 - **Q7. Checkpoints** defer while any window switches or installs a Close
-  Session follow-up, and a Quit's capture is final.
+  Session or cancelled-Quit follow-up, and a Quit's capture is final.
 
 ### Table
 
-| #   | State                                                           | Event                                               | Intended behavior                                                                            | Test                                                                                                                                          |
-| --- | --------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Switch preparing (worker held)                                  | Quit in the same window                             | Quit queues behind the busy window, runs after the switch settles, and saves both sessions   | `quit_waits_for_a_held_switch_and_saves_both_sessions`                                                                                        |
-| 2   | Switch installing (subscribe held)                              | Quit in another window                              | Quit waits (Q4) and saves the remembered tab, history, and pane                              | `quit_from_another_window_waits_for_a_switch_to_restore_its_navigation`                                                                       |
-| 3   | Switch in flight                                                | Checkpoint due                                      | Deferred until the switch settles (Q7)                                                       | `a_checkpoint_waits_for_a_held_switch`                                                                                                        |
-| 4   | Switch in flight                                                | Close Window in that window                         | Queued; runs once the switch settles                                                         | `a_window_close_queued_behind_a_switch_runs_once_it_settles`                                                                                  |
-| 5   | Quit requested or pending                                       | Switch, New Session, or Open in New Window          | Refused with "application is quitting" (Q3)                                                  | new: `session_changes_are_refused_while_a_quit_runs`                                                                                          |
-| 6   | Switch preparing                                                | Target closed, or its shell fails                   | Window unchanged, one notice, created resources closed                                       | `a_target_closed_before_the_commit_leaves_the_window_with_one_notice`, `a_failed_shell_closes_only_what_the_switch_created`                   |
-| 7   | Switch committed, installing                                    | Target closed                                       | Session-gone path: macOS removes the window; Linux quits while sessions would be stranded    | `a_target_closed_after_the_commit_removes_the_window_and_keeps_its_old_session`                                                               |
-| 8   | Own-session Close Session assessing (assess held)               | Quit in another window                              | The close is cancelled (Q2); Quit proceeds; the session survives and is saved                | new: `a_quit_cancels_an_assessing_own_session_close` (replaces `quit_from_another_window_waits_for_a_close_session_follow_up_from_its_check`) |
-| 9   | Own-session Close Session confirming                            | Quit in the same window                             | The dialog is dismissed and Quit's dialog shows (Q2)                                         | `a_quit_replaces_an_own_session_close_confirmation_in_its_window` (adapted)                                                                   |
-| 10  | Own-session Close Session confirming in windows A and B         | Quit                                                | Both dismissed; one Quit dialog in Quit's host; neither close can commit                     | new: `a_quit_dismisses_every_own_session_close_confirmation`                                                                                  |
-| 11  | Own-session Close Session queued behind a busy window           | Quit                                                | Dropped; its hold released; Quit waits only for the busy work                                | new: `a_quit_drops_a_queued_own_session_close`                                                                                                |
-| 12  | Own-session Close Session committing (commit held)              | Quit in another window                              | Quit waits for the follow-up to settle (Q4) and saves its navigation                         | new: `quit_waits_for_a_committing_own_session_close_and_its_follow_up`                                                                        |
-| 13  | Quit requested or pending                                       | Close Session of the window's own session           | Refused (Q3)                                                                                 | `closing_the_windows_own_session_is_refused_while_a_quit_runs`                                                                                |
-| 14  | Own-session confirmation drawn before Quit's dismissal          | Stale Confirm click                                 | No commit (the generation guard and Q3's commit-time refusal)                                | new: `an_own_session_close_refuses_to_commit_while_a_quit_runs`                                                                               |
-| 15  | Other-session Close Session confirming                          | Quit                                                | Behaves as any other close: it may commit; Quit's commit goes stale and assesses again       | `closing_another_session_removes_its_windows_and_keeps_this_one` plus new: `a_quit_reassesses_after_another_sessions_close_commits`           |
-| 16  | Own-session close committed                                     | First follow-up candidate closed                    | The next candidate                                                                           | `a_close_session_follow_up_whose_first_candidate_closed_lands_on_the_next`                                                                    |
-| 17  | Own-session close committed                                     | A live candidate fails to attach or start its shell | The next candidate; with none left, a fresh session and the notice (Q6)                      | new: `a_close_session_follow_up_that_cannot_attach_opens_a_fresh_session`                                                                     |
-| 18  | Own-session close committed                                     | Every candidate and the fresh session fail          | Notice; macOS removes the window; Linux quits while sessions would be stranded, else removes | `a_failed_close_session_follow_up_on_linux_quits_rather_than_strand_sessions` (adapted) plus new macOS case                                   |
-| 19  | Quit cancelled its own-session closes                           | User cancels Quit                                   | Those closes stay cancelled; each window keeps its session and works                         | new: `a_cancelled_quit_leaves_its_cancelled_closes_cancelled`                                                                                 |
-| 20  | Linux, last window, unviewed sessions, New Window spawn pending | Close Window or emptied close                       | Becomes Quit through `request_quit` (Q1), which waits for the spawn                          | new: `the_last_windows_close_on_linux_waits_for_a_pending_new_window`                                                                         |
-| 21  | Linux, last window emptied, unviewed sessions                   | Quit prompt cancelled                               | The window shows the session viewed most recently that no window shows (Q5)                  | new: `cancelling_the_emptied_windows_quit_on_linux_shows_the_session_left_last`                                                               |
-| 22  | Linux, last window, a Quit requested, queued, or running        | Close Window or emptied close                       | Stays a close; the Quit covers every session                                                 | `the_last_windows_close_on_linux_stays_a_close_while_a_quit_waits`                                                                            |
-| 23  | macOS, last window, unviewed sessions                           | Close Window or emptied close                       | The window closes; the app keeps running; a Dock reopen shows the session left last          | `a_reopen_after_the_last_window_returns_to_the_session_left_last`                                                                             |
-| 24  | New Window spawn pending                                        | Quit                                                | Quit waits for the spawn (existing rule)                                                     | the existing pending-spawn Quit test                                                                                                          |
-| 25  | Two windows on one session                                      | Close Window in one                                 | Detaches it without a prompt                                                                 | `closing_one_of_two_windows_detaches_it_without_a_prompt`                                                                                     |
-| 26  | Two windows on one session                                      | Close Session of it from window A                   | A follows to its next session (Q6); B takes the session-gone path                            | new: `closing_a_shared_session_moves_the_closing_window_and_closes_the_other`                                                                 |
-| 27  | Two windows on one session                                      | Quit                                                | Both windows saved with their own navigation and restored                                    | `two_saved_windows_on_one_session_come_back_with_their_own_navigation`                                                                        |
-| 28  | Two windows on one session                                      | Switch in one                                       | The other is unaffected                                                                      | `two_windows_on_one_session_switch_independently`                                                                                             |
-| 29  | Close Session follow-up installing                              | Checkpoint due                                      | Deferred until it settles (Q7)                                                               | new: `a_checkpoint_waits_for_a_close_session_follow_up`                                                                                       |
-
-Pending maintainer confirmation: row 21's behavior after a cancelled Linux
-Quit. The alternative is opening a fresh session in that window.
+| #   | State                                                           | Event                                               | Intended behavior                                                                            | Test                                                                                                                                                                                                                     |
+| --- | --------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Switch preparing (worker held)                                  | Quit in the same window                             | Quit queues behind the busy window, runs after the switch settles, and saves both sessions   | `quit_waits_for_a_held_switch_and_saves_both_sessions`                                                                                                                                                                   |
+| 2   | Switch installing (subscribe held)                              | Quit in another window                              | Quit waits (Q4) and saves the remembered tab, history, and pane                              | `quit_from_another_window_waits_for_a_switch_to_restore_its_navigation`                                                                                                                                                  |
+| 3   | Switch in flight                                                | Checkpoint due                                      | Deferred until the switch settles (Q7)                                                       | `a_checkpoint_waits_for_a_held_switch`                                                                                                                                                                                   |
+| 4   | Switch in flight                                                | Close Window in that window                         | Queued; runs once the switch settles                                                         | `a_window_close_queued_behind_a_switch_runs_once_it_settles`                                                                                                                                                             |
+| 5   | Quit requested or pending                                       | Switch, New Session, or Open in New Window          | Refused with "application is quitting" (Q3)                                                  | `session_changes_are_refused_while_a_quit_runs`                                                                                                                                                                          |
+| 6   | Switch preparing                                                | Target closed, or its shell fails                   | Window unchanged, one notice, created resources closed                                       | `a_target_closed_before_the_commit_leaves_the_window_with_one_notice`, `a_failed_shell_closes_only_what_the_switch_created`                                                                                              |
+| 7   | Switch committed, installing                                    | Target closed                                       | Session-gone path: macOS removes the window; Linux quits while sessions would be stranded    | `a_target_closed_after_the_commit_removes_the_window_and_keeps_its_old_session`                                                                                                                                          |
+| 8   | Own-session Close Session assessing (assess held)               | Quit in another window                              | The close is cancelled (Q2); Quit proceeds; the session survives and is saved                | `a_quit_cancels_an_assessing_own_session_close`                                                                                                                                                                          |
+| 9   | Own-session Close Session confirming                            | Quit in the same window                             | The dialog is dismissed and Quit's dialog shows (Q2)                                         | `a_quit_replaces_an_own_session_close_confirmation_in_its_window`                                                                                                                                                        |
+| 10  | Own-session Close Session confirming in windows A and B         | Quit                                                | Both dismissed; one Quit dialog in Quit's host; neither close can commit                     | `a_quit_dismisses_every_own_session_close_confirmation`                                                                                                                                                                  |
+| 11  | Own-session Close Session queued behind a busy window           | Quit                                                | Dropped, holding nothing (Q4); Quit waits only for the busy work                             | `a_quit_drops_a_queued_own_session_close`                                                                                                                                                                                |
+| 12  | Own-session Close Session committing (commit held)              | Quit in another window                              | Quit waits for the follow-up to settle (Q4) and saves its navigation                         | `quit_waits_for_a_committing_own_session_close_and_its_follow_up`, `an_own_session_close_confirmation_holds_no_quit`                                                                                                     |
+| 13  | Quit requested or pending                                       | Close Session of the window's own session           | Refused (Q3)                                                                                 | `closing_the_windows_own_session_is_refused_while_a_quit_runs`                                                                                                                                                           |
+| 14  | Own-session confirmation drawn before Quit's dismissal          | Stale Confirm click                                 | No commit (the generation guard and Q3's commit-time refusal)                                | `an_own_session_close_refuses_to_commit_while_a_quit_runs`                                                                                                                                                               |
+| 15  | Other-session Close Session confirming                          | Quit                                                | Behaves as any other close: it may commit; Quit's commit goes stale and assesses again       | `closing_another_session_removes_its_windows_and_keeps_this_one`, `a_quit_reassesses_after_another_sessions_close_commits`                                                                                               |
+| 16  | Own-session close committed                                     | First follow-up candidate closed                    | The next candidate                                                                           | `a_close_session_follow_up_whose_first_candidate_closed_lands_on_the_next`                                                                                                                                               |
+| 17  | Own-session close committed                                     | A live candidate fails to attach or start its shell | The next candidate; with none left, a fresh session and the notice (Q6)                      | `a_close_session_follow_up_that_cannot_attach_opens_a_fresh_session`                                                                                                                                                     |
+| 18  | Own-session close committed                                     | Every candidate and the fresh session fail          | Notice; macOS removes the window; Linux quits while sessions would be stranded, else removes | `a_close_session_follow_up_that_opens_nothing_follows_the_last_window_rule`                                                                                                                                              |
+| 19  | Quit cancelled its own-session closes                           | User cancels Quit                                   | Those closes stay cancelled; each window keeps its session and works                         | `a_cancelled_quit_leaves_its_cancelled_closes_cancelled`                                                                                                                                                                 |
+| 20  | Linux, last window, unviewed sessions, New Window spawn pending | Close Window or emptied close                       | Becomes Quit through `request_quit` (Q1), which waits for the spawn                          | `the_last_windows_close_on_linux_waits_for_a_pending_new_window`, `the_last_windows_close_on_linux_quits_while_unviewed_sessions_remain`, `the_last_windows_emptied_close_on_linux_quits_while_unviewed_sessions_remain` |
+| 21  | Linux, last window emptied, unviewed sessions                   | Quit prompt cancelled                               | The window shows the session viewed most recently that no window shows (Q5)                  | `cancelling_the_emptied_windows_quit_on_linux_shows_the_session_left_last`                                                                                                                                               |
+| 22  | Linux, last window, a Quit requested, queued, or running        | Close Window or emptied close                       | Stays a close; the Quit covers every session                                                 | `the_last_windows_close_on_linux_stays_a_close_while_a_quit_waits`                                                                                                                                                       |
+| 23  | macOS, last window, unviewed sessions                           | Close Window or emptied close                       | The window closes; the app keeps running; a Dock reopen shows the session left last          | `a_reopen_after_the_last_window_returns_to_the_session_left_last`, `the_last_windows_emptied_close_on_linux_quits_while_unviewed_sessions_remain`                                                                        |
+| 24  | New Window spawn pending                                        | Quit                                                | Quit waits for the spawn (existing rule)                                                     | `quit_waits_for_a_new_windows_pending_shell`, `quit_from_a_sibling_waits_for_a_spawn_still_waiting_on_the_projection`                                                                                                    |
+| 25  | Two windows on one session                                      | Close Window in one                                 | Detaches it without a prompt                                                                 | `closing_one_of_two_windows_detaches_it_without_a_prompt`                                                                                                                                                                |
+| 26  | Two windows on one session                                      | Close Session of it from window A                   | A follows to its next session (Q6); B takes the session-gone path                            | `closing_a_shared_session_moves_the_closing_window_and_closes_the_other`                                                                                                                                                 |
+| 27  | Two windows on one session                                      | Quit                                                | Both windows saved with their own navigation and restored                                    | `two_saved_windows_on_one_session_come_back_with_their_own_navigation`                                                                                                                                                   |
+| 28  | Two windows on one session                                      | Switch in one                                       | The other is unaffected                                                                      | `two_windows_on_one_session_switch_independently`                                                                                                                                                                        |
+| 29  | Close Session follow-up installing                              | Checkpoint due                                      | Deferred until it settles (Q7)                                                               | `a_checkpoint_waits_for_a_close_session_follow_up`                                                                                                                                                                       |
 
 ## Observable success
 
@@ -489,7 +502,7 @@ Please's commit override can split the changelog entry after merge.
 | Queued Close and Quit, checkpoints, transfers, arrangements against a held switch                                                                                                                          | Tier 2 tests                                                                                                                                                                                                                         |
 | Restore with two windows on one session, distinct navigation, the active window, one window failing to open                                                                                                | Tier 2 restore tests                                                                                                                                                                                                                 |
 | Saved navigation memory round-trips, older files without it load, bounds and dangling entries are refused or dropped, and a switch after restore lands on the remembered tab and pane                      | `huterm-state` schema tests; tier 2 restore test                                                                                                                                                                                     |
-| Close Session: consent, own-session switch-away, other windows removed, last session closes the window                                                                                                     | Tier 2 tests                                                                                                                                                                                                                         |
+| Close Session: consent, own-session switch-away, other windows removed, last session opens a fresh one                                                                                                     | Tier 2 tests                                                                                                                                                                                                                         |
 | Open in New Window: shares the session, failure detaches only its attachment                                                                                                                               | Tier 2 tests                                                                                                                                                                                                                         |
 | Last window close: macOS reopen lands on the most recent unviewed session; Linux close becomes Quit                                                                                                        | Tier 2 tests per platform cfg                                                                                                                                                                                                        |
 | Commands: availability, palette prompts, `clear_session_name` unavailable without a name                                                                                                                   | Catalog and palette tests                                                                                                                                                                                                            |
@@ -544,22 +557,19 @@ Recorded during implementation:
   consent, which would prompt a second time. When the window's memory
   holds no live session, it moves to the most recently viewed session no
   other window or Quake stash shows. The worker tries those candidates in
-  that order and passes over one that closed since the window chose it.
-  When none remains or the attach fails, the window closes; on Linux the
-  last window runs Quit instead while unviewed sessions remain, as its
-  Close Window does.
+  that order and passes over one that closed or cannot be shown. When a
+  live candidate failed and none is left, it opens a fresh session in the
+  window (Q6); with no candidate at all the window closes, as settled
+  decision 5 says.
 - Every switch counts in `pending_spawns`, not only one that opens a
   shell: the worker learns under the lock whether it needs one, and the
   cost is a Quit that waits slightly longer. The count holds until the
   switch settles, after `apply_reopen` restores the target's navigation,
   so a Quit from another window saves it. A Close Session of the window's
-  own session takes the same hold as its check begins, before the
-  assessment, and keeps it through any confirmation until the follow-up
-  settles, so a Quit requested meanwhile waits for it. While that close's
-  confirmation shows, a Quit moves into its window and replaces the
-  dialog, so it never waits unseen; a Quit requested during the
-  assessment does so once the dialog appears. Closing the window's own
-  session is refused while a Quit is requested or runs, as a switch is.
+  own session takes the same hold from its commit until its follow-up
+  settles (Q4); a Quit cancels one that has not started committing (Q2).
+  An earlier version held from the check and let a Quit take over the
+  close's confirmation; the interleavings section above replaced it.
 - A native session menu opens once its "exited" read answers, since a
   native menu cannot take tags later; Huterm's popover still opens at once
   and adds them. A dismissal, Escape, window deactivation, the palette, or
@@ -575,9 +585,10 @@ Recorded during implementation:
   width, and a name may take at most 35 % of the host.
 - On Linux, a last window that takes an emptied close while unviewed
   sessions remain runs Quit instead, as its Close Window does, so the
-  process never stays alive without a window. A cancelled Quit leaves the
-  window open. Neither close turns into Quit while a Quit is already
-  requested, queued, or running: that Quit covers every session.
+  process never stays alive without a window. A cancelled Quit moves that
+  window to the session left last (Q5). Neither close turns into Quit
+  while a Quit is already requested, queued, or running: that Quit covers
+  every session.
 - The macOS smoke opens the fullscreen hosts' menu by command: a
   synthetic click at the screen's top-right corner can reach the
   auto-hidden menu bar or the notification corner. A window test clicks

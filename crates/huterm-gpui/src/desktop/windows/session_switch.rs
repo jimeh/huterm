@@ -20,7 +20,8 @@
 //!
 //! The same workspace resolution opens a window on an existing session
 //! (`open_session_in_new_window`, and a reopen after the last window
-//! closed) and moves a window off a session Close Session closes.
+//! closed) and moves a window off a session Close Session closes, or off
+//! the emptied session of a last window whose Quit was cancelled.
 
 use super::model::SessionMemory;
 use super::*;
@@ -55,29 +56,44 @@ pub(super) enum SwitchError {
     Runtime(MuxError),
 }
 
-/// The sessions a Close Session of the window's own session may move the
-/// window to, in the order it tries them, each with its remembered
-/// workspace, and the shell the one it reaches may need.
+/// The sessions a follow-up may move a window to, in the order it tries
+/// them, each with its remembered workspace, and the shell the one it
+/// reaches, or a fresh session, may need.
 pub(super) type CloseFollow =
     (Vec<(SessionId, Option<WorkspaceId>)>, TerminalCommand);
 
-/// A Close Session follow-up's attach, with the sequence it read.
-pub(super) type Followed =
-    Committed<Result<(AttachmentId, Switched), SwitchError>>;
+/// When a follow-up falls back to a fresh session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Fresh {
+    /// Only when a live candidate could not be shown: with no candidate
+    /// left at all, nothing follows and the window closes, as settled
+    /// decision 5 says.
+    AfterFailure,
+    /// Whenever no candidate could be shown, so the window always has
+    /// something to show.
+    Always,
+}
+
+/// Where a follow-up moved its window: the new attachment and what it
+/// shows, or why nothing could be shown.
+#[derive(Debug)]
+pub(super) struct FollowUp {
+    pub(super) result: Result<(AttachmentId, Switched), SwitchError>,
+    /// The first candidate that could not be shown, by name, when the
+    /// follow-up fell back to a fresh session because of it.
+    pub(super) skipped: Option<(String, SwitchError)>,
+}
 
 /// Commits a close on its worker, then, when it succeeded and `follow`
-/// names candidates, attaches the window to the first that still exists.
-#[cfg_attr(
-    not(all(test, feature = "test-support")),
-    expect(clippy::unused_async, reason = "only the test hook awaits")
-)]
+/// holds the shell, moves the window to the first candidate it can show,
+/// or to a fresh session.
 pub(super) async fn commit_close(
     runtime: Arc<DesktopRuntime>,
     assessment: CloseAssessment,
     confirmed: bool,
     windows: Option<huterm_state::DesktopLayout>,
     follow: Option<CloseFollow>,
-) -> (Committed<Result<(), MuxError>>, Option<Followed>) {
+) -> (Committed<Result<(), MuxError>>, Option<Committed<FollowUp>>) {
     #[cfg(all(test, feature = "test-support"))]
     if runtime
         .worker_hooks
@@ -95,15 +111,38 @@ pub(super) async fn commit_close(
     else {
         return (committed, None);
     };
-    #[cfg(all(test, feature = "test-support"))]
-    let fail = runtime
-        .worker_hooks
-        .enter(worker_hooks::Stage::CloseFollow)
-        .await;
-    #[cfg(not(all(test, feature = "test-support")))]
-    let fail = false;
-    let followed = runtime.attach_first(&candidates, &command, fail);
+    let followed =
+        follow_up(&runtime, &candidates, &command, None, Fresh::AfterFailure)
+            .await;
     (committed, Some(followed))
+}
+
+/// Runs [`DesktopRuntime::follow_up`] on its worker; tier 2 tests hold it
+/// at `Stage::CloseFollow` and fail its attempts there.
+#[cfg_attr(
+    not(all(test, feature = "test-support")),
+    expect(clippy::unused_async, reason = "only the test hook awaits")
+)]
+pub(super) async fn follow_up(
+    runtime: &DesktopRuntime,
+    candidates: &[(SessionId, Option<WorkspaceId>)],
+    command: &TerminalCommand,
+    old: Option<AttachmentId>,
+    fresh: Fresh,
+) -> Committed<FollowUp> {
+    #[cfg(all(test, feature = "test-support"))]
+    let fail = {
+        let stage = worker_hooks::Stage::CloseFollow;
+        let mut first = Some(runtime.worker_hooks.enter(stage).await);
+        move || {
+            first
+                .take()
+                .unwrap_or_else(|| runtime.worker_hooks.take_fail(stage))
+        }
+    };
+    #[cfg(not(all(test, feature = "test-support")))]
+    let fail = || false;
+    runtime.follow_up(candidates, command, old, fresh, fail)
 }
 
 /// What a committed switch shows.
@@ -336,33 +375,86 @@ impl DesktopRuntime {
         }
     }
 
-    /// Attaches a new view to the first of `candidates` that still exists,
-    /// under one lock, as [`Self::attach_existing`] does for one; a
-    /// candidate that closed since the window chose it gives way to the
-    /// next. `fail` fails the first attempt.
-    fn attach_first(
+    /// Attaches a new view, under one lock, to the first of `candidates`
+    /// it can show, as [`Self::attach_existing`] does for one. It passes
+    /// over a candidate that closed since the window chose it, and one
+    /// that cannot be attached or needs a shell that fails to start. With
+    /// none left it attaches to a fresh session with a shell as `fresh`
+    /// allows; otherwise the result is `TargetGone` with nothing skipped.
+    /// Once it attached, it detaches `old`, the window's previous
+    /// attachment. `fail` says whether each attempt fails, for the test
+    /// hook.
+    fn follow_up(
         &self,
         candidates: &[(SessionId, Option<WorkspaceId>)],
         command: &TerminalCommand,
-        fail: bool,
-    ) -> Committed<Result<(AttachmentId, Switched), SwitchError>> {
+        old: Option<AttachmentId>,
+        fresh: Fresh,
+        mut fail: impl FnMut() -> bool,
+    ) -> Committed<FollowUp> {
         let mut mux = self.lock();
-        let mut result = Err(SwitchError::TargetGone);
-        for (index, (session, remembered)) in candidates.iter().enumerate() {
-            result = self.attach_locked(
+        let mut failed = None;
+        let mut attached = None;
+        for (session, remembered) in candidates {
+            let Some(name) = mux
+                .session(*session)
+                .map(|record| record.display_name().to_owned())
+            else {
+                continue;
+            };
+            match self.attach_locked(
                 &mut mux,
                 *session,
                 *remembered,
                 command,
-                fail && index == 0,
-            );
-            if !matches!(result, Err(SwitchError::TargetGone)) {
-                break;
+                fail(),
+            ) {
+                Ok(done) => {
+                    attached = Some(done);
+                    break;
+                }
+                Err(SwitchError::TargetGone) => {}
+                Err(error) => {
+                    failed.get_or_insert((name, error));
+                }
             }
         }
+        let (result, skipped) = match attached {
+            Some(done) => (Ok(done), None),
+            None if failed.is_none() && fresh == Fresh::AfterFailure => {
+                (Err(SwitchError::TargetGone), None)
+            }
+            None => (self.attach_fresh(&mut mux, command, fail()), failed),
+        };
+        if result.is_ok()
+            && let Some(old) = old
+        {
+            let _ = mux.detach_session(old);
+        }
         Committed {
-            result,
+            result: FollowUp { result, skipped },
             seq: mux.hierarchy_seq(),
+        }
+    }
+
+    /// Attaches a new view to a new session with one workspace and a
+    /// shell; closes that session again on failure.
+    fn attach_fresh(
+        &self,
+        mux: &mut Mux,
+        command: &TerminalCommand,
+        fail_spawn: bool,
+    ) -> Result<(AttachmentId, Switched), SwitchError> {
+        if self.terminating.load(Ordering::Acquire) {
+            return Err(SwitchError::Runtime(RuntimeError::Stopped.into()));
+        }
+        let switched = create_session(mux, None, command, fail_spawn)?;
+        match mux.attach_session(switched.session) {
+            Ok(attachment) => Ok((attachment, switched)),
+            Err(error) => {
+                let _ = mux.close_session(switched.session);
+                Err(SwitchError::Runtime(error))
+            }
         }
     }
 
@@ -403,6 +495,29 @@ fn remembered_focus(memory: Option<SessionMemory>) -> restore::Focus {
         history: memory.history,
         panes: memory.panes,
     })
+}
+
+/// What stopped a follow-up from showing a session, for its notices.
+fn follow_up_error(error: &SwitchError) -> String {
+    match error {
+        SwitchError::TargetGone => "the session no longer exists".to_owned(),
+        SwitchError::SourceGone => "the window has no session".to_owned(),
+        SwitchError::Spawn(error) | SwitchError::Runtime(error) => {
+            error.to_string()
+        }
+    }
+}
+
+/// The notice for a follow-up that opened a fresh session because it
+/// could not show `name`.
+fn fresh_session_notice(name: &str, error: &SwitchError) -> NoticeContent {
+    NoticeContent::command_failure(
+        "Cannot show session",
+        format!(
+            "Cannot show session \"{name}\": {}. Opened a new session.",
+            follow_up_error(error)
+        ),
+    )
 }
 
 /// The notice for a switch that changed nothing.
@@ -555,7 +670,7 @@ impl WorkspaceView {
 
     /// Ends a switch, settled or not, and releases the Quit that waited
     /// for it.
-    fn end_switch(&mut self, cx: &mut Context<'_, Self>) {
+    pub(super) fn end_switch(&mut self, cx: &mut Context<'_, Self>) {
         self.switch = None;
         self.busy = false;
         checkpoints::set_switching(cx, self.window, false);
@@ -706,14 +821,16 @@ impl WorkspaceView {
         candidates
     }
 
-    /// Whether `target` closes this window's own session, and then the
-    /// sessions the commit's worker tries to attach the window to right
-    /// after it, with the shell the one it reaches may need.
-    pub(super) fn close_follow(
-        &self,
+    /// As the commit of `target` starts: whether it closes this window's
+    /// own session, and then the sessions the commit's worker tries to
+    /// attach the window to right after it, with the shell the one it
+    /// reaches, or a fresh session, may need (`None` when no shell command
+    /// can be built). Such a close takes the window's switch hold here.
+    pub(super) fn commit_follow(
+        &mut self,
         target: &CloseTarget,
         window: &Window,
-        cx: &App,
+        cx: &mut App,
     ) -> (bool, Option<CloseFollow>) {
         let CloseTarget::Session(session) = target else {
             return (false, None);
@@ -721,15 +838,33 @@ impl WorkspaceView {
         if !self.closes_own_session(target, cx) {
             return (false, None);
         }
+        self.hold_for_close_commit(cx);
         let candidates = self.next_sessions(*session, cx);
-        if candidates.is_empty() {
-            return (true, None);
-        }
         let follow = self
             .session_shell(window, cx)
             .ok()
             .map(|command| (candidates, command));
         (true, follow)
+    }
+
+    /// Whether the close pipeline takes `target` at all: an own-session
+    /// Close Session is dropped while a Quit is under way, with what it
+    /// held, as when a stale commit retries or a check merges into it. A
+    /// Quit marks the application quitting from its request on.
+    pub(super) fn admit_close(
+        &mut self,
+        target: &CloseTarget,
+        cx: &mut App,
+    ) -> bool {
+        if self.quit_refuses(target, cx) {
+            self.release_close_hold(cx);
+            self.release_exit_close_if_idle(cx);
+            return false;
+        }
+        if matches!(target, CloseTarget::Application) {
+            cx.global_mut::<Desktop>().quitting = true;
+        }
+        true
     }
 
     /// Refuses Close Session of this window's own session while a Quit is
@@ -740,10 +875,7 @@ impl WorkspaceView {
         session: SessionId,
         cx: &App,
     ) -> Result<(), CommandError> {
-        let desktop = cx.global::<Desktop>();
-        if (desktop.quitting || desktop.quit_pending)
-            && Some(session) == self.attached_session(cx)
-        {
+        if quit_underway(cx) && Some(session) == self.attached_session(cx) {
             Err(CommandError::Unavailable(
                 "application is quitting".to_owned(),
             ))
@@ -753,25 +885,29 @@ impl WorkspaceView {
     }
 
     /// Whether `target` is a Close Session of this window's own session.
-    fn closes_own_session(&self, target: &CloseTarget, cx: &App) -> bool {
+    pub(super) fn closes_own_session(
+        &self,
+        target: &CloseTarget,
+        cx: &App,
+    ) -> bool {
         matches!(target, CloseTarget::Session(session)
             if Some(*session) == self.attached_session(cx))
     }
 
-    /// Takes this window's switch hold as the check of `target` begins,
-    /// when `target` closes the window's own session: its follow-up
-    /// restores remembered navigation, which a Quit from another window
-    /// must wait for, and that Quit could otherwise commit between this
-    /// close's assessment and the follow-up's settle. A check of any other
-    /// target ends a hold an earlier check took.
-    pub(super) fn hold_for_close_check(
-        &mut self,
-        target: &CloseTarget,
-        cx: &mut App,
-    ) {
-        if !self.closes_own_session(target, cx) {
-            self.release_close_hold(cx);
-        } else if !self.close_hold {
+    /// Whether `target` is an own-session Close Session that a Quit under
+    /// way refuses, as it refuses the command: such a close could move the
+    /// window to another session while the Quit captures it.
+    pub(super) fn quit_refuses(&self, target: &CloseTarget, cx: &App) -> bool {
+        quit_underway(cx) && self.closes_own_session(target, cx)
+    }
+
+    /// Takes this window's switch hold as an own-session Close Session
+    /// starts committing: its follow-up restores remembered navigation,
+    /// which a Quit must wait for. The hold lasts until the follow-up
+    /// settles; a close that has not started committing holds nothing,
+    /// since a Quit cancels it.
+    pub(super) fn hold_for_close_commit(&mut self, cx: &mut App) {
+        if !self.close_hold {
             self.close_hold = true;
             hold_switch_spawn(cx, self.window);
         }
@@ -781,63 +917,287 @@ impl WorkspaceView {
     /// that ends without a follow-up install.
     pub(super) fn release_close_hold(&mut self, cx: &mut App) {
         if std::mem::take(&mut self.close_hold) {
-            cx.global_mut::<Desktop>()
-                .confirming_holds
-                .remove(&self.window);
             release_switch_spawn(cx, self.window);
         }
     }
 
-    /// Records whether this window's Close Session hold shows its
-    /// confirmation, which hosts a Quit rather than keep it waiting. A
-    /// Quit that waits for pending spawns moves here once only such holds
-    /// remain, and its dialog replaces this one.
-    pub(super) fn sync_quit_hold(&self, cx: &mut App) {
-        let confirming = self.close_hold && self.close.confirmation.is_some();
-        let desktop = cx.global_mut::<Desktop>();
-        if !confirming {
-            desktop.confirming_holds.remove(&self.window);
-        } else if desktop.confirming_holds.insert(self.window)
-            && desktop.quit_pending
-            && blocking_spawns(desktop) == 0
-        {
-            desktop.quit_pending = false;
-            cx.defer(request_quit);
+    /// Cancels this window's own-session Close Session that has not
+    /// started committing, for a Quit: a check still assessing, whose
+    /// answer then finds a moved generation, a confirmation showing, or one
+    /// queued behind other work. Its session was never closed, so the
+    /// Quit saves it. A committing close keeps its hold, which the Quit
+    /// waits for. Queued closes of other targets stay.
+    pub(super) fn cancel_own_session_close(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(own) = self.attached_session(cx).map(CloseTarget::Session)
+        else {
+            return;
+        };
+        let mut cancelled = false;
+        if self.close.pending.as_ref() == Some(&own) {
+            self.close.pending = None;
+            cancelled = true;
         }
+        let assessing =
+            !self.close_hold && self.close.current.as_ref() == Some(&own);
+        if assessing || self.close.confirmation.as_ref() == Some(&own) {
+            self.close.dismiss_confirmation();
+            if assessing {
+                self.busy = false;
+            }
+            cancelled = true;
+        }
+        if !cancelled {
+            return;
+        }
+        self.sync_dialog(window, cx);
+        self.release_exit_close_if_idle(cx);
+        self.restore_tab_focus(window, cx);
+        // The notification resumes other queued closes.
+        cx.notify();
+    }
+
+    /// Ends an own-session Close Session that reached its commit while a
+    /// Quit is under way, as if it were cancelled; queued closes stay.
+    pub(super) fn refuse_own_session_close(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.close.dismiss_confirmation();
+        self.busy = false;
+        self.release_close_hold(cx);
+        self.sync_dialog(window, cx);
+        self.release_exit_close_if_idle(cx);
+        self.restore_tab_focus(window, cx);
+        cx.notify();
     }
 
     /// Ends a committed session close: a window whose own session closed
     /// installs the session the worker attached it to, whose switch takes
-    /// over the close's hold until the install settles, or closes when it
-    /// had none left or the attach failed; any other window carries on.
+    /// over the close's hold until the install settles; one the worker
+    /// could attach nowhere closes by the last-window rule; any other
+    /// window carries on.
     pub(super) fn finish_session_close(
         &mut self,
         own: bool,
-        followed: Option<&Result<(AttachmentId, Switched), SwitchError>>,
+        followed: Option<FollowUp>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if let Some(Ok((attachment, switched))) = followed {
-            // The install's `end_switch` releases the hold.
-            self.close_hold = false;
-            self.busy = true;
-            checkpoints::set_switching(cx, self.window, true);
-            self.install_session(*switched, Some(*attachment), window, cx);
-            return;
-        }
-        self.release_close_hold(cx);
         if !own {
+            self.release_close_hold(cx);
             self.reconcile_own(window, cx);
             self.resume_close(window, cx);
             cx.notify();
-        } else if self.window_close_target(Platform::current(), cx)
+            return;
+        }
+        match followed {
+            Some(FollowUp {
+                result: Ok((attachment, switched)),
+                skipped,
+            }) => {
+                if let Some((name, error)) = skipped {
+                    self.notify(fresh_session_notice(&name, &error), cx);
+                }
+                // The install's `end_switch` releases the hold.
+                self.close_hold = false;
+                self.busy = true;
+                checkpoints::set_switching(cx, self.window, true);
+                self.install_session(switched, Some(attachment), window, cx);
+            }
+            // No session was left to follow: the window closes.
+            None
+            | Some(FollowUp {
+                result: Err(SwitchError::TargetGone),
+                skipped: None,
+            }) => {
+                self.release_close_hold(cx);
+                self.close_by_last_window_rule(None, window, cx);
+            }
+            Some(FollowUp {
+                result: Err(error), ..
+            }) => {
+                self.release_close_hold(cx);
+                let message = format!(
+                    "Cannot open a new session: {}",
+                    follow_up_error(&error)
+                );
+                self.close_by_last_window_rule(Some(message), window, cx);
+            }
+        }
+    }
+
+    /// Closes a window that has nothing left to show: on Linux the last
+    /// window quits rather than leave sessions no window shows out of
+    /// reach, and otherwise the window goes. `failure` explains why, in
+    /// this window or, once it is gone, the next one.
+    fn close_by_last_window_rule(
+        &mut self,
+        failure: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.window_close_target(Platform::current(), cx)
             == CloseTarget::Application
         {
-            // On Linux the last window quits rather than leave sessions no
-            // window shows out of reach; a cancelled Quit keeps it open.
-            self.request_close(CloseTarget::Application, window, cx);
+            if let Some(message) = failure {
+                self.report_failure("Cannot show a session", message, cx);
+            }
+            cx.defer(request_quit);
         } else {
+            if let Some(message) = failure {
+                report_deferred_failure_with_global_latch(cx, None, message);
+            }
             self.remove_detached_window(window, cx);
+        }
+    }
+
+    /// The sessions a last window whose emptied close became a cancelled
+    /// Quit moves to: the ones no window shows, most recently viewed
+    /// first, as a reopen picks, each with the workspace this window
+    /// remembers. Kept apart so the choice can change in one place.
+    fn left_sessions(&self, cx: &App) -> Vec<(SessionId, Option<WorkspaceId>)> {
+        let desktop = cx.global::<Desktop>();
+        let own = self.attached_session(cx);
+        let stashed = stashed_sessions(desktop);
+        let memory = self.record(cx).map(|record| record.memory.as_slice());
+        desktop
+            .windows
+            .unviewed_sessions(
+                desktop.hierarchy.state(),
+                Some(self.window),
+                |session| Some(session) == own || stashed.contains(&session),
+            )
+            .into_iter()
+            .map(|session| {
+                let remembered = memory.and_then(|memory| {
+                    memory
+                        .iter()
+                        .find(|memory| memory.session == session)
+                        .map(|memory| memory.workspace)
+                });
+                (session, remembered)
+            })
+            .collect()
+    }
+
+    /// After a cancelled Quit that this last window's emptied close
+    /// became, shows the session the user left last that no window shows,
+    /// attached afresh and installed as a switch is, so the window is not
+    /// left with nothing to show. A window that shows something again
+    /// changes nothing; one with no such session takes its emptied close.
+    pub(super) fn show_left_session(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if !self.tabs.is_empty()
+            || self.busy
+            || terminating(cx)
+            || self.record(cx).is_none_or(|record| record.closing)
+            || !(self.attached_session_gone(cx)
+                || self.has_nothing_to_install(cx))
+        {
+            return;
+        }
+        let candidates = self.left_sessions(cx);
+        if candidates.is_empty() {
+            self.owe_emptied_close(cx);
+            return;
+        }
+        let command = match self.session_shell(window, cx) {
+            Ok(command) => command,
+            Err(error) => {
+                self.report_failure(
+                    "Cannot show session",
+                    format!("Cannot show session: {error}"),
+                    cx,
+                );
+                return;
+            }
+        };
+        let old = self.attachment_id(cx);
+        self.busy = true;
+        self.switch = Some(SwitchPhase::Preparing);
+        hold_switch_spawn(cx, self.window);
+        checkpoints::set_switching(cx, self.window, true);
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        let task = cx.background_executor().spawn(async move {
+            follow_up(&runtime, &candidates, &command, old, Fresh::Always).await
+        });
+        let id = self.window;
+        let app = cx.to_async();
+        cx.spawn_in(window, async move |view, cx| {
+            let Committed { result, seq } = task.await;
+            let resolution = projected(&app, seq).await;
+            let mut result = Some(result);
+            let _ = view.update_in(cx, |view, window, cx| {
+                let Some(FollowUp { result, skipped }) = result.take() else {
+                    return;
+                };
+                if resolution == Resolution::Cancelled || terminating(cx) {
+                    view.end_switch(cx);
+                    return;
+                }
+                match result {
+                    Ok((attachment, switched)) => {
+                        if let Some((name, error)) = skipped {
+                            view.notify(
+                                fresh_session_notice(&name, &error),
+                                cx,
+                            );
+                        }
+                        view.install_session(
+                            switched,
+                            Some(attachment),
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        view.end_switch(cx);
+                        view.report_failure(
+                            "Cannot show session",
+                            format!(
+                                "Cannot open a new session: {}",
+                                follow_up_error(&error)
+                            ),
+                            cx,
+                        );
+                        cx.notify();
+                    }
+                }
+            });
+            if let Some(followed) = result {
+                // The window went away first: its removal ended the hold,
+                // and the attachment it never took goes.
+                app.update(|cx| {
+                    drop_followed(Some(&followed), cx);
+                    checkpoints::set_switching(cx, id, false);
+                    release_switch_spawn(cx, id);
+                });
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Closes this window as Close Window does on `platform`. When the
+    /// last window on Linux would strand sessions no window shows, the
+    /// close becomes Quit, which runs through [`request_quit`].
+    pub(super) fn close_window(
+        &mut self,
+        platform: Platform,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match self.window_close_target(platform, cx) {
+            CloseTarget::Application => cx.defer(request_quit),
+            target => self.request_close(target, window, cx),
         }
     }
 
@@ -858,8 +1218,8 @@ impl WorkspaceView {
 
     /// The close an owed emptied close takes: on Linux, when this is the
     /// last window and other sessions no window shows would stay running
-    /// out of reach, Quit hosted by this window, as Close Window does
-    /// there; otherwise the emptied close itself.
+    /// out of reach, Quit, as Close Window does there; otherwise the
+    /// emptied close itself.
     pub(super) fn emptied_close_target(
         &self,
         platform: Platform,
@@ -878,8 +1238,7 @@ impl WorkspaceView {
     /// session, so the close stays a close and the Quit follows it.
     fn last_window_strands(&self, cx: &App) -> bool {
         let desktop = cx.global::<Desktop>();
-        let quit_requested = desktop.quitting
-            || desktop.quit_pending
+        let quit_requested = quit_underway(cx)
             || [&self.close.current, &self.close.pending]
                 .into_iter()
                 .any(|target| *target == Some(CloseTarget::Application));
@@ -905,6 +1264,13 @@ impl WorkspaceView {
     }
 }
 
+/// Whether a Quit is requested or runs: it waits for pending spawns, or
+/// it assesses, asks, or commits.
+pub(super) fn quit_underway(cx: &App) -> bool {
+    let desktop = cx.global::<Desktop>();
+    desktop.quitting || desktop.quit_pending
+}
+
 /// Holds one of `pending_spawns` for `window`'s session switch, or Close
 /// Session of its own session, at most one per window, until it settles.
 pub(super) fn hold_switch_spawn(cx: &mut App, window: gpui::WindowId) {
@@ -922,14 +1288,15 @@ pub(super) fn release_switch_spawn(cx: &mut App, window: gpui::WindowId) {
     }
 }
 
-/// Detaches the attachment a Close Session follow-up made for a window
-/// that moved on before its completion, on a worker; the session stays for
-/// the windows and menus that show it.
-pub(super) fn drop_followed(
-    followed: Option<&Result<(AttachmentId, Switched), SwitchError>>,
-    cx: &App,
-) {
-    let Some(Ok((attachment, _))) = followed else {
+/// Detaches the attachment a follow-up made for a window that moved on
+/// before its completion, on a worker; the session stays for the windows
+/// and menus that show it.
+pub(super) fn drop_followed(followed: Option<&FollowUp>, cx: &App) {
+    let Some(FollowUp {
+        result: Ok((attachment, _)),
+        ..
+    }) = followed
+    else {
         return;
     };
     let attachment = *attachment;
@@ -945,11 +1312,7 @@ pub(super) fn drop_followed(
 /// Quit that waited for it.
 pub(super) fn settle_session_spawn(cx: &mut App) {
     let desktop = cx.global_mut::<Desktop>();
-    if settle_spawn(
-        &mut desktop.pending_spawns,
-        desktop.confirming_holds.len(),
-        &mut desktop.quit_pending,
-    ) {
+    if settle_spawn(&mut desktop.pending_spawns, &mut desktop.quit_pending) {
         cx.defer(|cx| invoke(ids::QUIT).dispatch(cx));
     } else if desktop.pending_spawns == 0 {
         maybe_exit(cx);

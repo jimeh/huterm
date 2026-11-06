@@ -104,15 +104,15 @@ switch holds one of `pending_spawns` (`hold_switch_spawn`, at most one per
 window in `Desktop::switch_spawns`) until `end_switch`, so Quit from any
 window waits until `apply_reopen` published the target's navigation; the
 window's removal releases it too. A Close Session of the window's own
-session takes that hold as its check begins (`hold_for_close_check`,
-recorded in `WorkspaceView::close_hold`), because a Quit that assessed
-before the commit could otherwise commit after the follow-up attached and
-before its navigation applied. The follow-up's install takes the hold
-over; every other end of the close (a cancel, a failed assessment or
-commit, no follow-up, a check of another target, teardown) releases it
-through `release_close_hold`, which is idempotent. A stale commit that
-assesses again keeps it. A Quit requested while that close's confirmation
-shows waits for the answer. A switch also counts in
+session takes that hold as its commit starts (`commit_follow` through
+`hold_for_close_commit`, recorded in `WorkspaceView::close_hold`), because
+a Quit could otherwise commit after the follow-up attached and before its
+navigation applied. The follow-up's install takes the hold over; every
+other end of the commit (a failed commit, no follow-up, a moved
+generation, teardown, a stale commit that assesses again) releases it
+through `release_close_hold`, which is idempotent. The check and any
+confirmation hold nothing: a Quit cancels them instead (see Close and
+Quit). A switch also counts in
 `Checkpoints::switching`, which defers captures and moves
 `DesktopRuntime::transfers`. Tier 2 tests hold `Stage::Switch` before the
 lock (a failure there fails the shell the switch would spawn) and
@@ -361,33 +361,54 @@ window. It merges with no other target. When it closes the window's own
 session, the commit's worker attaches the window to its most recently left
 session that still exists right after the commit. `next_sessions` lists
 the candidates in order, its navigation memory first, then the sessions
-no other window or stash holds, most recently viewed first, and the worker
-(`attach_first`) takes the first that still exists under one lock, so a
-candidate that closed since the window chose it gives way to the next.
-Closing the window's own session holds one of `pending_spawns` from its
-check to its follow-up's settle (`close_hold`), so a Quit waits for it.
-While that close shows its confirmation, the hold is in
-`confirming_holds` and no longer holds Quit back: `request_quit` hosts the
-Quit in that window, whose `Application` check replaces the dialog and
-ends the hold, and a Quit already waiting moves there when the dialog
-appears (`sync_quit_hold`) or when only such holds remain. An own-session
-Close Session is refused while a Quit is requested or runs, as a switch
-is.
-The completion installs it as a switch does (`install_session` with the
-new attachment). With no candidate left, or when the attach fails for
-another reason, the window closes, except that on Linux the last window
-runs Quit instead when it would strand unviewed sessions
-(`window_close_target`). A completion whose close generation moved
-detaches the follow-up attachment it no longer takes. Tier 2 tests hold
-the attach at `Stage::CloseFollow` and fail its first attempt there.
+no other window or stash holds, most recently viewed first. The worker
+(`DesktopRuntime::follow_up`) takes, under one lock, the first it can
+show: it passes over one that closed since the window chose it, and one
+that cannot be attached or needs a shell that fails. When a live candidate
+failed and none is left it attaches to a fresh session (`attach_fresh`,
+`Fresh::AfterFailure`); with no candidate at all nothing follows and the
+window closes by the last-window rule. A cancelled emptied Quit's
+`show_left_session` uses `Fresh::Always`, so its window always shows
+something. `FollowUp::skipped` names the first live candidate that
+failed when the fresh session replaced it, for the "Cannot show session"
+notice. The completion installs the result as a switch does
+(`install_session` with the new attachment). When the fresh session fails
+too, the window also closes by the last-window rule
+(`close_by_last_window_rule`): on Linux the last window runs Quit through
+`request_quit` when it would strand unviewed sessions
+(`window_close_target`), else the window goes and its notice waits in the
+failure latch for the next window. A completion whose close generation
+moved detaches the follow-up attachment it no longer takes. Tier 2 tests
+hold the follow-up at `Stage::CloseFollow` and fail its attempts there
+with `fail_times`, one per candidate attach and one for the fresh shell.
 Other windows on the closed session take the session-gone path, and
 `reconcile` drops Quake stashes and navigation memory of closed sessions.
-Close Window resolves through `window_close_target`: on Linux, the last open
-window with no Quake shortcut quits instead while a session no window shows
-remains, so restore keeps it, unless a Quit is already requested, queued,
-or running (`last_window_strands`), since that Quit covers every session.
-An emptied close of that window turns into Quit by the same rule
-(`emptied_close_target`). macOS keeps running, and `on_reopen` calls
+
+Every Quit runs through `request_quit`, from outside any window update. It
+first cancels, in every window, each own-session Close Session that has not
+started committing (`cancel_own_session_close`): an assessing check (its
+generation moves and `busy` clears), a showing confirmation (dismissed), and
+one queued behind other work (dropped). Only then does it evaluate
+`quit_now` against `pending_spawns`, so a Quit waits only for switches, New
+Window spawns, and own-session closes that are committing. While a Quit is
+requested or runs (`quit_underway`), an own-session Close Session is refused
+as a command, dropped by `admit_close` if it still reaches `request_close`,
+and aborted at `finish_close` (`refuse_own_session_close`), as a switch is
+refused. Close Window resolves through `close_window` and
+`window_close_target`: on Linux, the last open window with no Quake
+shortcut quits instead while a session no window shows remains, so restore
+keeps it, unless a Quit is already requested, queued, or running
+(`last_window_strands`), since that Quit covers every session. An emptied
+close of that window turns into Quit by the same rule
+(`emptied_close_target`). Both conversions defer `request_quit` rather than
+run an `Application` close in place, so they cancel uncommitted closes and
+wait for a pending New Window spawn. The emptied conversion records its
+window in `Desktop::emptied_quit`; when that Quit is cancelled,
+`show_left_session` attaches the window afresh to the session viewed most
+recently that no window shows (`left_sessions`, the one place that
+choice lives), detaches its old attachment, and installs it as a switch
+does, through the same `follow_up` worker and its fresh-session fallback.
+macOS keeps running, and `on_reopen` calls
 `session_switch::reopen_window`, which opens a window on the most recently
 viewed session no window or stash holds (`WindowModel::unviewed_sessions`,
 whose viewed order survives window removal), else a fresh one; a session
