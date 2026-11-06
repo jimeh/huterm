@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
 use huterm_protocol::{
     AttachmentId, ClipboardDestination, ClipboardWrite, HostEffect,
@@ -194,11 +194,16 @@ impl Registration {
         }
     }
 
+    /// Drops every queued effect after releasing the queue, so freeing
+    /// their reservations never waits for a budget while holding it.
     fn clear_queue(&self) {
-        self.queue
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        let cleared = std::mem::take(
+            &mut *self
+                .queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        drop(cleared);
     }
 
     fn revoke_permission(&self) {
@@ -240,13 +245,22 @@ impl HostEffectRecipient {
     /// Removes and returns the next currently valid delivery without blocking.
     #[must_use]
     pub fn try_next(&self) -> Option<PendingHostEffect> {
+        // Stale deliveries are dropped after the queue is released, as in
+        // `clear_queue`.
+        let mut stale = Vec::new();
         let mut queue = self.registration.queue.try_lock().ok()?;
-        while let Some(pending) = queue.pop_front() {
-            if self.is_current(&pending) {
-                return Some(pending);
+        let next = loop {
+            match queue.pop_front() {
+                Some(pending) if self.is_current(&pending) => {
+                    break Some(pending);
+                }
+                Some(pending) => stale.push(pending),
+                None => break None,
             }
-        }
-        None
+        };
+        drop(queue);
+        drop(stale);
+        next
     }
 
     /// Rechecks that a popped delivery still belongs to this live generation.
@@ -283,6 +297,9 @@ struct SinkInner {
     terminal_budget: Arc<Budget>,
     next_sequence: AtomicU64,
     state: Mutex<SinkState>,
+    /// How often admission waited for a lock another thread held.
+    #[cfg(test)]
+    waits: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -291,11 +308,20 @@ pub(crate) enum HostEffectAdmission {
     NoRecipient,
     Denied,
     Full,
-    Contended,
     Closed,
 }
 
-/// Nonblocking terminal-side admission point for client-mediated host effects.
+/// Terminal-side admission point for client-mediated host effects.
+///
+/// Admission runs on the terminal's runtime thread and never waits for a
+/// client to act. When another thread holds one of its locks, admission
+/// waits instead of dropping the effect: a lost write is visible to the
+/// user, and every holder keeps these locks briefly. Admission releases
+/// the sink state before it takes the terminal budget, then the process
+/// budget, then the queue. Other threads may take the queue or a budget
+/// while holding the sink state, but never take another of these locks
+/// while holding the queue or a budget, so the waits cannot form a cycle.
+/// That is why reservations are freed after the queue is released.
 #[derive(Clone, Debug)]
 pub(crate) struct HostEffectSink {
     inner: Arc<SinkInner>,
@@ -316,6 +342,8 @@ impl HostEffectSink {
                     registrations: Vec::new(),
                     next_registration: 0,
                 }),
+                #[cfg(test)]
+                waits: AtomicU64::new(0),
             }),
         }
     }
@@ -344,16 +372,8 @@ impl HostEffectSink {
             Err(status) => return status,
         };
 
-        let Ok(mut terminal_budget) =
-            self.inner.terminal_budget.state.try_lock()
-        else {
-            return HostEffectAdmission::Contended;
-        };
-        let Ok(mut process_budget) =
-            registration.process_budget.state.try_lock()
-        else {
-            return HostEffectAdmission::Contended;
-        };
+        let mut terminal_budget = self.lock(&self.inner.terminal_budget.state);
+        let mut process_budget = self.lock(&registration.process_budget.state);
         if !self
             .inner
             .terminal_budget
@@ -364,9 +384,7 @@ impl HostEffectSink {
         {
             return HostEffectAdmission::Full;
         }
-        let Ok(mut queue) = registration.queue.try_lock() else {
-            return HostEffectAdmission::Contended;
-        };
+        let mut queue = self.lock(&registration.queue);
         if !registration.is_eligible()
             || registration.generation.load(Ordering::Acquire)
                 != selected_generation
@@ -428,9 +446,7 @@ impl HostEffectSink {
     fn select_recipient(
         &self,
     ) -> Result<(Arc<Registration>, u64), HostEffectAdmission> {
-        let Ok(mut state) = self.inner.state.try_lock() else {
-            return Err(HostEffectAdmission::Contended);
-        };
+        let mut state = self.lock(&self.inner.state);
         state.registrations.retain(|weak| weak.strong_count() != 0);
         if state.registrations.is_empty() {
             return Err(HostEffectAdmission::NoRecipient);
@@ -453,6 +469,24 @@ impl HostEffectSink {
         let selected_generation =
             registration.generation.load(Ordering::Acquire);
         Ok((registration, selected_generation))
+    }
+
+    /// Locks one of admission's mutexes, waiting while another thread
+    /// holds it.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "only tests count the waits")
+    )]
+    fn lock<'a, T>(&self, mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
+        match mutex.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                self.inner.waits.fetch_add(1, Ordering::AcqRel);
+                mutex.lock().unwrap_or_else(PoisonError::into_inner)
+            }
+        }
     }
 
     pub(crate) fn is_closed(&self) -> bool {
@@ -870,25 +904,38 @@ mod tests {
     }
 
     #[test]
-    fn admission_drops_on_queue_contention_while_capacity_is_reserved() {
+    fn admission_waits_for_a_held_queue_and_delivers_in_order() {
         let (sink, recipient) = test_fixture(TerminalId::new(7));
         assert_eq!(sink.admit_borrowed("held"), HostEffectAdmission::Accepted);
+        // The view holds its queue, as `try_next` does on the UI thread.
         let queue = recipient
             .registration
             .queue
             .lock()
             .expect("test queue should not be poisoned");
-
-        assert_eq!(
-            sink.admit_borrowed("contended"),
-            HostEffectAdmission::Contended
-        );
-
-        drop(queue);
-        assert_eq!(
-            text(&recipient.try_next().expect("held effect remains")),
-            "held"
-        );
+        std::thread::scope(|scope| {
+            let admission = scope.spawn(|| sink.admit_borrowed("contended"));
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while sink.inner.waits.load(Ordering::Acquire) == 0 {
+                assert!(
+                    !admission.is_finished(),
+                    "admission finished while the queue was held"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "admission never reached the held queue"
+                );
+                std::thread::yield_now();
+            }
+            drop(queue);
+            assert_eq!(
+                admission.join().unwrap(),
+                HostEffectAdmission::Accepted
+            );
+        });
+        assert_eq!(text(&recipient.try_next().unwrap()), "held");
+        assert_eq!(text(&recipient.try_next().unwrap()), "contended");
         assert!(recipient.try_next().is_none());
     }
 
