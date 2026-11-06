@@ -668,7 +668,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   5000ms with `exitCode` null where the test expects 0 (line 30).
 - **Occurrences:** once in the hosted `Checks (macOS arm64)` job on
   2026-10-27, for PR #283, which changes no script or idle code; the
-  rerun passed.
+  rerun passed. Once locally on 2026-11-06 during `mise run verify`, with
+  `test:rust` compiling in parallel, on a dependency-bump branch that
+  changes no script or idle code; the file alone passed in about 1 second.
 - **Evidence:** the test runs `xcrun clang` through `Bun.spawnSync` with no
   timeout option, and neither `bunfig.toml` nor the test overrides Bun's
   default 5,000ms test timeout. The null exit code at line 30 is the

@@ -13,6 +13,12 @@ tools for each job. `mise.lock` also records the Rust version, so run
 fails to resolve the tool. `scripts/policy-alignment.test.ts` checks that the
 three files agree.
 
+Mise 2026.10.19 and newer default to `lockfile_mode = "generate"`, so
+`mise install` downloads every platform already in `mise.lock`, Windows
+included, to record checksums, and fails when one URL is missing. Make each
+`http:` tool's URL template resolve on every locked platform, as elvish's
+`os()`-selected archive extension does.
+
 The dependency graph needs Rust 1.95 or newer: `gpui-pre` 0.3.10 uses
 `std::hint::cold_path`, and libghostty-vt 0.2.1 requires 1.90. Project tooling
 pins Rust 1.99.
