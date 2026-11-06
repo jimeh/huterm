@@ -854,8 +854,11 @@ impl MacWindowState {
             let occlusion = self.native_window().occlusionState();
             let is_visible: bool = unsafe { msg_send![self.native_window, isVisible] };
             let is_key: bool = unsafe { msg_send![self.native_window, isKeyWindow] };
+            if let Some(display_id) = display_id_for_screen(screen) {
+                crate::display_link::huterm_metal_diag_probe::start(display_id);
+            }
             metal_diag!(
-                "start_display_link window={:?} metal={} occlusion_visible={} is_visible={} is_key={} screen_null={} display={:?} max_fps={} layer={} drawable_size={:?}",
+                "start_display_link window={:?} metal={} occlusion_visible={} is_visible={} is_key={} screen_null={} display={:?} max_fps={} layer={} drawable_size={:?} max_drawables={:?}",
                 self.native_window,
                 matches!(self.frame_source, FrameSource::Metal(_)),
                 occlusion.contains(NSWindowOcclusionState::Visible),
@@ -866,6 +869,7 @@ impl MacWindowState {
                 max_fps,
                 self.renderer.layer().is_some(),
                 self.renderer.layer().map(|layer| layer.drawableSize()),
+                self.renderer.layer().map(|layer| layer.maximumDrawableCount()),
             );
         }
         if !self
@@ -3570,7 +3574,39 @@ fn metal_frame(
         }
         return;
     };
-    lock.renderer.set_frame_drawable(Some(update.drawable()));
+    // HUTERM_METAL_DIAG probe: track when each handed-out drawable returns.
+    let drawable = update.drawable();
+    {
+        use crate::display_link::huterm_metal_diag_probe as probe;
+        use std::sync::atomic::Ordering::Relaxed;
+        probe::CALLBACKS.fetch_add(1, Relaxed);
+        probe::OUTSTANDING.fetch_add(1, Relaxed);
+        let drawable_id: usize = unsafe { msg_send![&*drawable, drawableID] };
+        let handed_out = std::time::Instant::now();
+        let link = metal_frames.diag.link.get();
+        let handler = RcBlock::new(move |returned: NonNull<AnyObject>| {
+            let presented_time: f64 = unsafe { msg_send![returned.as_ref(), presentedTime] };
+            probe::OUTSTANDING.fetch_sub(1, Relaxed);
+            if presented_time > 0.0 {
+                probe::PRESENTED.fetch_add(1, Relaxed);
+            } else {
+                probe::DISCARDED.fetch_add(1, Relaxed);
+            }
+            let age = handed_out.elapsed().as_millis() as u64;
+            probe::MAX_RETURN_MS.fetch_max(age, Relaxed);
+            if age >= 250 {
+                metal_diag!(
+                    "link {} drawable {} returned after_ms={} presented={}",
+                    link,
+                    drawable_id,
+                    age,
+                    presented_time > 0.0
+                );
+            }
+        });
+        let () = unsafe { msg_send![&*drawable, addPresentedHandler: &*handler] };
+    }
+    lock.renderer.set_frame_drawable(Some(drawable));
     drop(lock);
     metal_frames.begin_frame();
     callback(RequestFrameOptions {

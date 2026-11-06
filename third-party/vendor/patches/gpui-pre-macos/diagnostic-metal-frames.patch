@@ -1,15 +1,15 @@
 diff --git a/src/display_link.rs b/src/display_link.rs
-index 90a25979a1e6a56f07cde1974d97c9e40600372f..6e24f8e500b39a5ce97f4f8191279499ace22b9c 100644
+index 90a25979a1e6a56f07cde1974d97c9e40600372f..56f2b0524599c17a24961138d4a7385e1415801e 100644
 --- a/src/display_link.rs
 +++ b/src/display_link.rs
-@@ -306,10 +306,65 @@ pub struct MetalFrames {
+@@ -306,10 +306,122 @@ pub struct MetalFrames {
      source: RefCell<Option<MetalFrameSource>>,
      /// Whether GPUI asked for a frame since the current update began.
      woken: Cell<bool>,
 +    // HUTERM_METAL_DIAG: temporary CI diagnostic state.
 +    pub diag: MetalDiag,
- }
- 
++}
++
 +// HUTERM_METAL_DIAG: temporary CI diagnostic state.
 +#[derive(Default)]
 +pub struct MetalDiag {
@@ -29,6 +29,63 @@ index 90a25979a1e6a56f07cde1974d97c9e40600372f..6e24f8e500b39a5ce97f4f8191279499
 +
 +static HUTERM_METAL_DIAG_LINKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 +
++// HUTERM_METAL_DIAG probe: counters shared with drawable presented handlers,
++// a side CVDisplayLink, and a watchdog thread.
++pub mod huterm_metal_diag_probe {
++    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
++    pub static CALLBACKS: AtomicU64 = AtomicU64::new(0);
++    pub static OUTSTANDING: AtomicI64 = AtomicI64::new(0);
++    pub static PRESENTED: AtomicU64 = AtomicU64::new(0);
++    pub static DISCARDED: AtomicU64 = AtomicU64::new(0);
++    pub static MAX_RETURN_MS: AtomicU64 = AtomicU64::new(0);
++    pub static CV_TICKS: AtomicU64 = AtomicU64::new(0);
++
++    unsafe extern "C" fn cv_tick(
++        _link: *mut super::sys::CVDisplayLink,
++        _now: *const super::sys::CVTimeStamp,
++        _output: *const super::sys::CVTimeStamp,
++        _flags_in: i64,
++        _flags_out: *mut i64,
++        _context: *mut std::ffi::c_void,
++    ) -> i32 {
++        CV_TICKS.fetch_add(1, Relaxed);
++        0
++    }
++
++    pub fn start(display_id: u32) {
++        static ONCE: std::sync::Once = std::sync::Once::new();
++        ONCE.call_once(|| {
++            match unsafe { super::sys::DisplayLink::new(display_id, cv_tick, std::ptr::null_mut()) } {
++                Ok(mut link) => {
++                    let started = unsafe { link.start() };
++                    metal_diag!("side cv link display={} started={:?}", display_id, started.is_ok());
++                    std::mem::forget(link);
++                }
++                Err(error) => metal_diag!("side cv link display={} failed: {:?}", display_id, error),
++            }
++            std::thread::spawn(|| {
++                let (mut last_callbacks, mut last_ticks) = (0, 0);
++                loop {
++                    std::thread::sleep(std::time::Duration::from_millis(500));
++                    let callbacks = CALLBACKS.load(Relaxed);
++                    let ticks = CV_TICKS.load(Relaxed);
++                    metal_diag!(
++                        "watch metal_callbacks=+{} cv_ticks=+{} outstanding={} presented={} discarded={} max_return_ms={}",
++                        callbacks - last_callbacks,
++                        ticks - last_ticks,
++                        OUTSTANDING.load(Relaxed),
++                        PRESENTED.load(Relaxed),
++                        DISCARDED.load(Relaxed),
++                        MAX_RETURN_MS.load(Relaxed),
++                    );
++                    last_callbacks = callbacks;
++                    last_ticks = ticks;
++                }
++            });
++        });
++    }
+ }
+ 
  impl MetalFrames {
      pub fn replace(&self, source: Option<MetalFrameSource>) {
 +        // HUTERM_METAL_DIAG
@@ -68,7 +125,7 @@ index 90a25979a1e6a56f07cde1974d97c9e40600372f..6e24f8e500b39a5ce97f4f8191279499
          *self.source.borrow_mut() = source;
      }
  
-@@ -320,10 +375,39 @@ impl MetalFrames {
+@@ -320,10 +432,39 @@ impl MetalFrames {
      pub fn wake(&self) {
          self.woken.set(true);
          // A source being replaced starts unpaused, so skipping it is safe.
@@ -112,7 +169,7 @@ index 90a25979a1e6a56f07cde1974d97c9e40600372f..6e24f8e500b39a5ce97f4f8191279499
          }
      }
  
-@@ -334,8 +418,18 @@ impl MetalFrames {
+@@ -334,8 +475,18 @@ impl MetalFrames {
      /// Ends an update, pausing the link if GPUI neither used its drawable nor
      /// asked for another frame while it ran. Returns whether it paused.
      pub fn end_frame(&self, used_drawable: bool) -> bool {
@@ -220,10 +277,10 @@ index 0000000000000000000000000000000000000000..d0b599bd743225b3b69b8bf7410e07c5
 +    };
 +}
 diff --git a/src/window.rs b/src/window.rs
-index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf186924a2 100644
+index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..be1d724ee482215df5907960beffd101662dd1fd 100644
 --- a/src/window.rs
 +++ b/src/window.rs
-@@ -843,6 +843,31 @@ impl MacWindowState {
+@@ -843,6 +843,35 @@ impl MacWindowState {
      /// weakly to deliver frames.
      fn start_display_link(&mut self, window_state: &Rc<Mutex<MacWindowState>>) {
          self.stop_display_link();
@@ -238,8 +295,11 @@ index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf
 +            let occlusion = self.native_window().occlusionState();
 +            let is_visible: bool = unsafe { msg_send![self.native_window, isVisible] };
 +            let is_key: bool = unsafe { msg_send![self.native_window, isKeyWindow] };
++            if let Some(display_id) = display_id_for_screen(screen) {
++                crate::display_link::huterm_metal_diag_probe::start(display_id);
++            }
 +            metal_diag!(
-+                "start_display_link window={:?} metal={} occlusion_visible={} is_visible={} is_key={} screen_null={} display={:?} max_fps={} layer={} drawable_size={:?}",
++                "start_display_link window={:?} metal={} occlusion_visible={} is_visible={} is_key={} screen_null={} display={:?} max_fps={} layer={} drawable_size={:?} max_drawables={:?}",
 +                self.native_window,
 +                matches!(self.frame_source, FrameSource::Metal(_)),
 +                occlusion.contains(NSWindowOcclusionState::Visible),
@@ -250,12 +310,13 @@ index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf
 +                max_fps,
 +                self.renderer.layer().is_some(),
 +                self.renderer.layer().map(|layer| layer.drawableSize()),
++                self.renderer.layer().map(|layer| layer.maximumDrawableCount()),
 +            );
 +        }
          if !self
              .native_window()
              .occlusionState()
-@@ -2160,6 +2185,25 @@ impl PlatformWindow for MacWindow {
+@@ -2160,6 +2189,25 @@ impl PlatformWindow for MacWindow {
  
      fn draw(&self, scene: &gpui::Scene) {
          let mut this = self.0.lock();
@@ -281,7 +342,7 @@ index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf
          this.renderer.draw(scene);
      }
  
-@@ -3093,6 +3137,14 @@ fn report_visibility(window_state: &Rc<Mutex<MacWindowState>>) {
+@@ -3093,6 +3141,14 @@ fn report_visibility(window_state: &Rc<Mutex<MacWindowState>>) {
  extern "C" fn window_did_change_occlusion_state(this: &AnyObject, _: Sel, _: *mut AnyObject) {
      let window_state = unsafe { get_window_state(this) };
      let mut lock = window_state.lock();
@@ -296,7 +357,7 @@ index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf
      if lock
          .native_window()
          .occlusionState()
-@@ -3429,6 +3481,8 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
+@@ -3429,6 +3485,8 @@ extern "C" fn display_layer(this: &AnyObject, _: Sel, _: *mut AnyObject) {
      let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
      let window_state = unsafe { get_window_state(this) };
      let mut lock = window_state.lock();
@@ -305,7 +366,7 @@ index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf
      if let Some(mut callback) = lock.request_frame_callback.take() {
          lock.renderer.set_presents_with_transaction(true);
          lock.stop_display_link();
-@@ -3480,7 +3534,40 @@ fn metal_frame(
+@@ -3480,10 +3538,75 @@ fn metal_frame(
          return;
      };
      let metal_frames = metal_frames.clone();
@@ -345,8 +406,44 @@ index 402fb61a6c78ae6503f5f6473ec601697ce4c2b4..489c5dbb6b3a0d010d96f7234e29d2cf
 +        }
          return;
      };
-     lock.renderer.set_frame_drawable(Some(update.drawable()));
-@@ -3496,6 +3583,12 @@ fn metal_frame(
+-    lock.renderer.set_frame_drawable(Some(update.drawable()));
++    // HUTERM_METAL_DIAG probe: track when each handed-out drawable returns.
++    let drawable = update.drawable();
++    {
++        use crate::display_link::huterm_metal_diag_probe as probe;
++        use std::sync::atomic::Ordering::Relaxed;
++        probe::CALLBACKS.fetch_add(1, Relaxed);
++        probe::OUTSTANDING.fetch_add(1, Relaxed);
++        let drawable_id: usize = unsafe { msg_send![&*drawable, drawableID] };
++        let handed_out = std::time::Instant::now();
++        let link = metal_frames.diag.link.get();
++        let handler = RcBlock::new(move |returned: NonNull<AnyObject>| {
++            let presented_time: f64 = unsafe { msg_send![returned.as_ref(), presentedTime] };
++            probe::OUTSTANDING.fetch_sub(1, Relaxed);
++            if presented_time > 0.0 {
++                probe::PRESENTED.fetch_add(1, Relaxed);
++            } else {
++                probe::DISCARDED.fetch_add(1, Relaxed);
++            }
++            let age = handed_out.elapsed().as_millis() as u64;
++            probe::MAX_RETURN_MS.fetch_max(age, Relaxed);
++            if age >= 250 {
++                metal_diag!(
++                    "link {} drawable {} returned after_ms={} presented={}",
++                    link,
++                    drawable_id,
++                    age,
++                    presented_time > 0.0
++                );
++            }
++        });
++        let () = unsafe { msg_send![&*drawable, addPresentedHandler: &*handler] };
++    }
++    lock.renderer.set_frame_drawable(Some(drawable));
+     drop(lock);
+     metal_frames.begin_frame();
+     callback(RequestFrameOptions {
+@@ -3496,6 +3619,12 @@ fn metal_frame(
      // A frame with nothing to draw leaves its drawable unused; releasing it
      // lets the link hand it out again.
      let used_drawable = lock.renderer.set_frame_drawable(None).is_none();

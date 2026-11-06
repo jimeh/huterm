@@ -329,6 +329,63 @@ pub struct MetalDiag {
 
 static HUTERM_METAL_DIAG_LINKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+// HUTERM_METAL_DIAG probe: counters shared with drawable presented handlers,
+// a side CVDisplayLink, and a watchdog thread.
+pub mod huterm_metal_diag_probe {
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
+    pub static CALLBACKS: AtomicU64 = AtomicU64::new(0);
+    pub static OUTSTANDING: AtomicI64 = AtomicI64::new(0);
+    pub static PRESENTED: AtomicU64 = AtomicU64::new(0);
+    pub static DISCARDED: AtomicU64 = AtomicU64::new(0);
+    pub static MAX_RETURN_MS: AtomicU64 = AtomicU64::new(0);
+    pub static CV_TICKS: AtomicU64 = AtomicU64::new(0);
+
+    unsafe extern "C" fn cv_tick(
+        _link: *mut super::sys::CVDisplayLink,
+        _now: *const super::sys::CVTimeStamp,
+        _output: *const super::sys::CVTimeStamp,
+        _flags_in: i64,
+        _flags_out: *mut i64,
+        _context: *mut std::ffi::c_void,
+    ) -> i32 {
+        CV_TICKS.fetch_add(1, Relaxed);
+        0
+    }
+
+    pub fn start(display_id: u32) {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            match unsafe { super::sys::DisplayLink::new(display_id, cv_tick, std::ptr::null_mut()) } {
+                Ok(mut link) => {
+                    let started = unsafe { link.start() };
+                    metal_diag!("side cv link display={} started={:?}", display_id, started.is_ok());
+                    std::mem::forget(link);
+                }
+                Err(error) => metal_diag!("side cv link display={} failed: {:?}", display_id, error),
+            }
+            std::thread::spawn(|| {
+                let (mut last_callbacks, mut last_ticks) = (0, 0);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let callbacks = CALLBACKS.load(Relaxed);
+                    let ticks = CV_TICKS.load(Relaxed);
+                    metal_diag!(
+                        "watch metal_callbacks=+{} cv_ticks=+{} outstanding={} presented={} discarded={} max_return_ms={}",
+                        callbacks - last_callbacks,
+                        ticks - last_ticks,
+                        OUTSTANDING.load(Relaxed),
+                        PRESENTED.load(Relaxed),
+                        DISCARDED.load(Relaxed),
+                        MAX_RETURN_MS.load(Relaxed),
+                    );
+                    last_callbacks = callbacks;
+                    last_ticks = ticks;
+                }
+            });
+        });
+    }
+}
+
 impl MetalFrames {
     pub fn replace(&self, source: Option<MetalFrameSource>) {
         // HUTERM_METAL_DIAG
