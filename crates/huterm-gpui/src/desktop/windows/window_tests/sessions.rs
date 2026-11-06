@@ -574,6 +574,79 @@ fn quit_waits_for_a_held_switch_and_saves_both_sessions(
 }
 
 #[gpui::test]
+fn quit_from_another_window_waits_for_a_switch_to_restore_its_navigation(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let split = harness.open_tab(ECHO);
+    let left = harness.first_pane(split);
+    let right = harness.split(split, left, SplitDirection::Right, ECHO);
+    let one = harness.attach_showing(&[first, split]);
+    harness.focus(one, split, right);
+    let other = harness.other_session("other", 1);
+    harness.switch_to(one, other.session, &other.tabs);
+    let two = harness.attach_showing(&[first, split]);
+    harness.switch_to(two, other.session, &other.tabs);
+    let runtime = Arc::clone(&harness.runtime);
+    // The switch back commits, then its views wait for their viewers.
+    runtime.worker_hooks.hold(Stage::Subscribe);
+    harness.select_session(one, harness.session).unwrap();
+    harness.wait_for("the switch to install its views", |cx| {
+        runtime.worker_hooks.held(Stage::Subscribe) > 0
+            && one
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>()
+                        .is_ok_and(|view| view.read(cx).switch_installing())
+                })
+                .unwrap_or(false)
+    });
+    harness.cx.update(|cx| {
+        cx.on_action(|action: &InvokeApp, cx| {
+            let _ = Desktop::invoke(cx, &action.0, None);
+        });
+        two.update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+    });
+    harness.cx.update(request_quit);
+    harness.cx.update(|cx| {
+        assert!(
+            cx.global::<Desktop>().quit_pending,
+            "Quit ran before the switch restored its navigation"
+        );
+        assert!(!terminating(cx));
+    });
+    runtime.worker_hooks.release(Stage::Subscribe);
+    harness.wait_quit(other.session);
+    let (_, layout) = harness.recorder.saved().remove(0);
+    let saved = layout
+        .windows
+        .iter()
+        .find(|saved| saved.session.get() == harness.session.get())
+        .expect("the switching window was not saved");
+    assert_eq!(
+        saved.active_tab.map(huterm_protocol::TabId::get),
+        Some(split.get())
+    );
+    assert_eq!(
+        saved
+            .tab_history
+            .iter()
+            .map(|tab| tab.get())
+            .collect::<Vec<_>>(),
+        [first.get(), split.get()]
+    );
+    assert!(
+        saved.focused_panes.iter().any(|focused| {
+            focused.tab.get() == split.get()
+                && focused.pane.get() == right.get()
+        }),
+        "{:?}",
+        saved.focused_panes
+    );
+}
+
+#[gpui::test]
 fn a_checkpoint_waits_for_a_held_switch(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
@@ -681,12 +754,45 @@ fn closing_the_windows_own_session_moves_it_to_the_session_it_left(
     });
     harness.answer(window, second, "moved");
 
-    // With no other session it showed, closing its session closes it.
+    // With no other session it showed, it moves to one no window shows.
     let unviewed = harness.other_session("unviewed", 1);
     harness.invoke(window, ids::CLOSE_SESSION).unwrap();
-    harness.wait_closed(window);
+    harness.wait_switched(window, unviewed.session, &unviewed.tabs);
     assert!(!session_exists(&harness));
-    assert!(harness.runtime.lock().session(unviewed.session).is_some());
+    harness.answer(window, unviewed.tabs[0], "unviewed");
+
+    // With no session left at all, closing its session closes it.
+    harness.invoke(window, ids::CLOSE_SESSION).unwrap();
+    harness.wait_closed(window);
+    assert_eq!(harness.runtime.lock().sessions(), []);
+}
+
+#[gpui::test]
+fn a_failed_close_session_follow_up_on_linux_quits_rather_than_strand_sessions(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let unviewed = harness.other_session("unviewed", 1);
+    harness.wait_projection();
+    let runtime = Arc::clone(&harness.runtime);
+    // The window follows to the unviewed session, but that attach fails.
+    runtime.worker_hooks.fail(Stage::CloseFollow);
+    harness.invoke(window, ids::CLOSE_SESSION).unwrap();
+    if cfg!(target_os = "linux") {
+        harness.wait_quit(unviewed.session);
+    } else {
+        harness.wait_closed(window);
+        assert!(
+            runtime.lock().session(unviewed.session).is_some(),
+            "macOS keeps the unviewed session for a Dock reopen"
+        );
+    }
+    assert!(!session_exists(&harness));
+    harness.cx.update(|cx| {
+        assert_eq!(cx.global::<Desktop>().pending_spawns, 0);
+    });
 }
 
 #[gpui::test]
@@ -821,6 +927,35 @@ fn a_reopen_after_the_last_window_returns_to_the_session_left_last(
                 .any(|handle| terminal(cx, handle, newer.tabs[0]).is_some())
     });
     assert_eq!(harness.runtime.lock().sessions().len(), 2);
+}
+
+#[gpui::test]
+fn a_reopen_whose_session_window_fails_opens_a_fresh_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let left = harness.other_session("left", 1);
+    harness.switch_to(window, left.session, &left.tabs);
+    harness.switch_to(window, harness.session, &[tab]);
+    harness.update_view(window, |view, window, cx| {
+        view.request_close(CloseTarget::Window, window, cx);
+    });
+    harness.wait_closed(window);
+    harness.runtime.worker_hooks.fail(Stage::OpenSession);
+    harness.cx.update(session_switch::reopen_window);
+    harness.wait_for("a window on a fresh session", |cx| {
+        cx.global::<Desktop>().windows.records().any(|record| {
+            record
+                .session
+                .is_some_and(|session| session != left.session)
+        })
+    });
+    // The session the reopen meant to show keeps running unviewed.
+    let mux = harness.runtime.lock();
+    assert!(mux.session(left.session).is_some());
+    assert_eq!(mux.sessions().len(), 2);
 }
 
 #[gpui::test]

@@ -196,7 +196,9 @@ Ctrl-Enter on Linux) shows it in a new window. The native macOS menu has no
 row buttons, so it lists Open Session in New Window… instead, and holding
 Command turns each row into its own Open in New Window. Close Session in the
 command palette asks which session to close, so one that no window shows
-can be ended without switching to it. Without a title bar, in
+can be ended without switching to it. Closing the window's own session moves
+the window to the session it showed most recently, else to one no window
+shows; with none left the window closes. Without a title bar, in
 fullscreen, Quake windows, and Linux without client-side decorations, the
 control ends a top or bottom tab bar, or sits icon-only beside `+` in a left
 or right column. A long name truncates, and a narrow window shows only the

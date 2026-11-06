@@ -73,6 +73,12 @@ pub(super) struct NativeMenuSession {
 }
 
 impl WorkspaceView {
+    /// Whether this window's menus open natively.
+    pub(super) fn uses_native_menus(&self, cx: &gpui::App) -> bool {
+        self.config.window.macos_native_menus
+            && cx.global::<Desktop>().menu_presenter.is_some()
+    }
+
     /// Opens `spec` as a native menu when this window uses them. `false`
     /// leaves the menu to Huterm's own popover.
     pub(super) fn open_native_menu(

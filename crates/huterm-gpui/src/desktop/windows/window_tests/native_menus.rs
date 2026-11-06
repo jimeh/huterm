@@ -377,6 +377,46 @@ fn the_native_session_menu_switches_or_opens_a_window_from_its_picks(
 }
 
 #[gpui::test]
+fn the_first_native_session_menu_after_every_shell_exited_tags_the_session(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _, presenter) = harness.native_window();
+    let gone = {
+        let mut mux = harness.runtime.lock();
+        let session = mux.create_session(Some("gone")).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        mux.open_tab(workspace, &fixture("exit 0")).unwrap();
+        session
+    };
+    let runtime = Arc::clone(&harness.runtime);
+    harness.wait_for("the session's shell to exit", |_| {
+        runtime.lock().exited_sessions().contains(&gone)
+    });
+    harness.wait_projection();
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.wait_shown(&presenter, 1);
+    let shown = presenter.shown.borrow();
+    let id = format!("session:{}", gone.get());
+    let subtitle =
+        shown[0]
+            .menu
+            .entries()
+            .into_iter()
+            .find_map(|item| match item {
+                NativeItem::Item {
+                    id: item, subtitle, ..
+                } if *item == id => Some(subtitle.clone()),
+                _ => None,
+            });
+    assert_eq!(
+        subtitle,
+        Some(Some("1 tab · Every shell exited".to_owned())),
+        "the menu used the exited read from before the shell exited"
+    );
+}
+
+#[gpui::test]
 fn menu_requests_while_a_native_menu_is_opening_are_dropped_quietly(
     cx: &mut TestAppContext,
 ) {

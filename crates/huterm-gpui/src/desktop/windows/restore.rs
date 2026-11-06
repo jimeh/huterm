@@ -783,8 +783,12 @@ fn finish(cx: &mut App, saved: &Saved, outcome: Outcome) {
     for error in errors {
         desktop.latched.push(warning(error));
     }
-    let (reopens, unused) =
-        plan(saved, &report, &attachments, &fallbacks, runtime, cx);
+    let Plan {
+        saved: reopens,
+        unshown,
+        mut unviewed_notices,
+        unused,
+    } = plan(saved, &report, &attachments, &fallbacks, runtime, cx);
     if !unused.is_empty() {
         detach_unused(cx, unused);
     }
@@ -803,19 +807,33 @@ fn finish(cx: &mut App, saved: &Saved, outcome: Outcome) {
             }
         }
     }
-    while let Some(reopen) = opens.pop_front() {
-        let (session, attachment) = (reopen.session, reopen.attachment);
-        let saved_index = reopen.saved_index;
-        let Some(id) = open_restored(cx, reopen) else {
-            let later = opens.iter().any(|other| other.session == session);
-            close_unopened(cx, session, attachment, later);
-            continue;
-        };
-        if let Some(bootstrap) = cx.global_mut::<Desktop>().restoring.as_mut() {
-            bootstrap.outstanding.insert(id);
-            if saved_index.is_some() && saved_index == active {
-                bootstrap.active = Some(id);
-            }
+    let mut opened = false;
+    while let Some(mut reopen) = opens.pop_front() {
+        // The unviewed sessions' notices ride with the first window that
+        // opens.
+        let carried = std::mem::take(&mut unviewed_notices);
+        reopen.notices.extend(carried.iter().cloned());
+        let later = opens.iter().any(|other| other.session == reopen.session);
+        if open_planned(cx, reopen, later, active) {
+            opened = true;
+        } else {
+            unviewed_notices = carried;
+        }
+    }
+    if opened {
+        // Sessions no saved window showed stay unviewed, reachable from
+        // the session menu, as they were before Quit.
+        let attachments: Vec<AttachmentId> =
+            unshown.iter().map(|reopen| reopen.attachment).collect();
+        if !attachments.is_empty() {
+            detach_unused(cx, attachments);
+        }
+    } else {
+        // No saved window came back, as after a lost or empty layout or
+        // when every one failed to open: each session opens in a window of
+        // its own, so the launch never ends with none.
+        for reopen in unshown {
+            open_planned(cx, reopen, false, active);
         }
     }
     if let Some(bootstrap) = cx.global_mut::<Desktop>().restoring.as_mut() {
@@ -825,6 +843,30 @@ fn finish(cx: &mut App, saved: &Saved, outcome: Outcome) {
         open_window(cx);
     }
     settle_if_done(cx);
+}
+
+/// Opens a planned window and counts it toward the bootstrap; one that
+/// fails to open is cleaned up. `later` says a window still to open shows
+/// its session. Returns whether it opened.
+fn open_planned(
+    cx: &mut App,
+    reopen: Reopen,
+    later: bool,
+    active: Option<usize>,
+) -> bool {
+    let (session, attachment) = (reopen.session, reopen.attachment);
+    let saved_index = reopen.saved_index;
+    let Some(id) = open_restored(cx, reopen) else {
+        close_unopened(cx, session, attachment, later);
+        return false;
+    };
+    if let Some(bootstrap) = cx.global_mut::<Desktop>().restoring.as_mut() {
+        bootstrap.outstanding.insert(id);
+        if saved_index.is_some() && saved_index == active {
+            bootstrap.active = Some(id);
+        }
+    }
+    true
 }
 
 /// Opens a restored window; returns its ID, or `None` when it did not
@@ -889,10 +931,23 @@ fn detach_unused(cx: &mut App, unused: Vec<AttachmentId>) {
         .detach();
 }
 
-/// The windows to reopen, in saved order and then one per session no
-/// saved window shows, and the sessions that wait for a Quake profile's
-/// first summon instead. Each saved window takes its own attachment of its
-/// session; the attachments no plan took are returned to detach.
+/// What a restore opens.
+struct Plan {
+    /// The saved windows to reopen, in saved order, and the sessions that
+    /// wait for a Quake profile's first summon instead.
+    saved: Vec<Planned>,
+    /// A window for each session no saved window shows, which opens only
+    /// when no saved window does.
+    unshown: Vec<Reopen>,
+    /// The restore notices of the sessions no saved window shows, named
+    /// after each, for the first window that opens.
+    unviewed_notices: Vec<NoticeContent>,
+    /// The attachments no window takes, to detach.
+    unused: Vec<AttachmentId>,
+}
+
+/// Plans the restore's windows. Each saved window takes its own attachment
+/// of its session.
 #[expect(
     clippy::too_many_lines,
     reason = "saved windows map onto the restored hierarchy in one pass"
@@ -904,7 +959,7 @@ fn plan(
     fallbacks: &HashMap<TerminalId, Fallback>,
     runtime: huterm_protocol::RuntimeId,
     cx: &App,
-) -> (Vec<Planned>, Vec<AttachmentId>) {
+) -> Plan {
     let desktop = cx.global::<Desktop>();
     let state = desktop.hierarchy.state();
     let scoped_session =
@@ -997,64 +1052,54 @@ fn plan(
             }),
         });
     }
-    let mut unused = Vec::new();
-    // A session no saved window showed stays unviewed, reachable from the
-    // session menu, as it was before Quit. Only when no saved window came
-    // back, as after a lost or empty layout, does each session open in a
-    // window of its own, so the launch never ends with none.
-    let open_unshown = !planned
-        .iter()
-        .any(|planned| matches!(planned, Planned::Open(_)));
-    // An unviewed session's restore notices go to the first window, named
-    // after the session, since no window of its own shows them.
-    let mut unviewed_notices = Vec::new();
-    for (session, attachment) in free {
-        let workspace = first_workspace(state, session)
-            .filter(|_| open_unshown && !shown.contains(&session));
-        let Some(workspace) = workspace else {
-            if !shown.contains(&session)
-                && let Some(info) = state.session(session)
-            {
-                let name = info.display_name().to_owned();
-                unviewed_notices.extend(
-                    window_notices(&saved.capture, report, fallbacks, session)
-                        .into_iter()
-                        .map(|mut notice| {
-                            notice.message =
-                                format!("In \"{name}\": {}", notice.message);
-                            notice
-                        }),
-                );
-                shown.insert(session);
-            }
-            unused.push(attachment);
-            continue;
-        };
-        shown.insert(session);
-        planned.push(Planned::Open(Reopen {
-            attachment,
-            session,
-            workspace,
-            placement: None,
-            focus: Focus::default(),
-            notices: Vec::new(),
-            stashed: None,
-            remembered: Vec::new(),
-            saved_index: None,
-        }));
-    }
     for planned in &mut planned {
         let reopen = planned.reopen_mut();
         reopen.notices =
             window_notices(&saved.capture, report, fallbacks, reopen.session);
     }
-    if let Some(first) = planned
-        .iter_mut()
-        .find(|planned| matches!(planned, Planned::Open(_)))
-    {
-        first.reopen_mut().notices.extend(unviewed_notices);
+    let mut unused = Vec::new();
+    let mut unshown = Vec::new();
+    // An unviewed session's restore notices go to the first window that
+    // opens, named after the session, since no window of its own shows
+    // them; a window that opens for it shows them as its own.
+    let mut unviewed_notices = Vec::new();
+    for (session, attachment) in free {
+        let Some(info) =
+            state.session(session).filter(|_| !shown.contains(&session))
+        else {
+            unused.push(attachment);
+            continue;
+        };
+        shown.insert(session);
+        let notices =
+            window_notices(&saved.capture, report, fallbacks, session);
+        let name = info.display_name().to_owned();
+        unviewed_notices.extend(notices.iter().cloned().map(|mut notice| {
+            notice.message = format!("In \"{name}\": {}", notice.message);
+            notice
+        }));
+        let Some(workspace) = first_workspace(state, session) else {
+            unused.push(attachment);
+            continue;
+        };
+        unshown.push(Reopen {
+            attachment,
+            session,
+            workspace,
+            placement: None,
+            focus: Focus::default(),
+            notices,
+            stashed: None,
+            remembered: Vec::new(),
+            saved_index: None,
+        });
     }
-    (planned, unused)
+    Plan {
+        saved: planned,
+        unshown,
+        unviewed_notices,
+        unused,
+    }
 }
 
 /// Saved navigation in one session scoped into `runtime`: the saved

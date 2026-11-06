@@ -8,7 +8,8 @@
 //! menu, a [`MenuSpec`] like the window menu's, so it honours
 //! `macos_native_menus`. Huterm's popover reads the projection, so names,
 //! counts, and window tags update while it is open; "exited" tags arrive
-//! from a worker read of terminal status started when the menu opens.
+//! from a worker read of terminal status started when the menu opens. A
+//! native menu is a snapshot, so it opens once that read answers.
 
 use gpui::{Hsla, TextRun};
 use huterm_ui::components::menu_trigger::{self, MenuTrigger};
@@ -52,12 +53,14 @@ pub(super) fn title_strip_corner(
 }
 
 impl WorkspaceView {
-    /// Whether the session menu is open, Huterm's or native.
+    /// Whether the session menu is open, Huterm's or native, or a native
+    /// one waits for its exited read.
     pub(super) fn session_menu_open(&self) -> bool {
         self.menu
             .as_ref()
             .is_some_and(|menu| menu.kind == MenuKind::Session)
             || self.native_menu_kind() == Some(&MenuKind::Session)
+            || self.native_session_pending.is_some()
     }
 
     /// What the control shows, or `None` while the projection does not
@@ -205,6 +208,7 @@ impl WorkspaceView {
             return None;
         }
         let state = self.session_control_state(cx)?;
+        self.session_control_drawn.set(true);
         let bounds_cell = Rc::clone(&self.session_button_bounds);
         let swatch = tokens(&self.config.theme);
         let accessible = state.accessible_name();
@@ -299,7 +303,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.session_menu_availability(cx)?;
-        if self.native_menu.is_some() {
+        if self.native_menu.is_some() || self.native_session_pending.is_some() {
             return Ok(CommandOutcome::Completed);
         }
         if let Some(menu) = &self.menu
@@ -318,14 +322,33 @@ impl WorkspaceView {
         if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
         }
-        self.read_exited_sessions(cx);
+        self.read_exited_sessions(window, cx);
+        if self.uses_native_menus(cx) {
+            // A native menu cannot take tags later; it opens once the read
+            // answers, and the control shows it open meanwhile.
+            self.native_session_pending = Some(from_keyboard);
+            cx.notify();
+            return Ok(CommandOutcome::Completed);
+        }
+        self.present_session_menu(from_keyboard, window, cx);
+        Ok(CommandOutcome::Completed)
+    }
+
+    /// Shows the session menu at the control: natively when this window
+    /// uses native menus and the presenter answers, else Huterm's popover.
+    fn present_session_menu(
+        &mut self,
+        from_keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let contexts = window.context_stack();
         let spec = self.session_menu_spec(cx);
         let anchor = MenuAnchor::Below(
             self.session_menu_anchor(&self.chrome_layout(window)),
         );
         if self.open_native_menu(MenuKind::Session, &spec, anchor, window, cx) {
-            return Ok(CommandOutcome::Completed);
+            return;
         }
         self.mount_menu(
             spec.to_listbox(Platform::current()),
@@ -336,7 +359,28 @@ impl WorkspaceView {
             window,
             cx,
         );
-        Ok(CommandOutcome::Completed)
+    }
+
+    /// Presents the native session menu that waited for the exited read,
+    /// unless the request went away: the control closed it, another menu
+    /// or the palette opened, or the window can no longer take it.
+    fn present_pending_session_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(from_keyboard) = self.native_session_pending.take() else {
+            return;
+        };
+        cx.notify();
+        if self.menu.is_some()
+            || self.native_menu.is_some()
+            || self.palette.is_some()
+            || self.session_menu_availability(cx).is_err()
+        {
+            return;
+        }
+        self.present_session_menu(from_keyboard, window, cx);
     }
 
     /// The control: closes an open session menu, otherwise opens it with
@@ -346,6 +390,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.native_session_pending.take().is_some() {
+            cx.notify();
+            return;
+        }
         if self
             .menu
             .as_ref()
@@ -389,18 +437,23 @@ impl WorkspaceView {
     }
 
     /// Reads which sessions' shells have all exited on a worker, from each
-    /// terminal's published status, and adds the tags to the open menu
-    /// when it answers. A later read supersedes an earlier one.
-    fn read_exited_sessions(&mut self, cx: &mut Context<'_, Self>) {
+    /// terminal's published status. When it answers, the tags go into the
+    /// open popover, or a native menu that waited for them opens. A later
+    /// read supersedes an earlier one.
+    fn read_exited_sessions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.exited_read = self.exited_read.wrapping_add(1);
         let generation = self.exited_read;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx
             .background_executor()
             .spawn(async move { runtime.lock().exited_sessions() });
-        cx.spawn(async move |view, cx| {
+        cx.spawn_in(window, async move |view, cx| {
             let exited = task.await;
-            let _ = view.update(cx, |view, cx| {
+            let _ = view.update_in(cx, |view, window, cx| {
                 if view.exited_read != generation {
                     return;
                 }
@@ -409,6 +462,7 @@ impl WorkspaceView {
                     view.exited_sessions = exited;
                     view.refresh_session_menu(cx);
                 }
+                view.present_pending_session_menu(window, cx);
             });
         })
         .detach();

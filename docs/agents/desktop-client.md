@@ -100,7 +100,10 @@ and calls `settle_switch`, which clears `busy`, owes the emptied close of a
 window left with nothing to show (the target closed after the commit), and
 resumes queued closes. A worker failure with an invalid attachment
 (`SourceGone`) takes the session-gone path once the phase clears. Every
-switch counts in `pending_spawns`, so Quit waits, and in
+switch holds one of `pending_spawns` (`hold_switch_spawn`, at most one per
+window in `Desktop::switch_spawns`) until `end_switch`, so Quit from any
+window waits until `apply_reopen` published the target's navigation; the
+window's removal releases it too. A switch also counts in
 `Checkpoints::switching`, which defers captures and moves
 `DesktopRuntime::transfers`. Tier 2 tests hold `Stage::Switch` before the
 lock (a failure there fails the shell the switch would spawn) and
@@ -347,9 +350,16 @@ recreation, and by application exit without global registrations.
 with consent as for any close; its dialog lists titles from every open
 window. It merges with no other target. When it closes the window's own
 session, the commit's worker attaches the window to its most recently left
-session that still exists (`next_session`, from its navigation memory) right
+session that still exists (`next_session`, from its navigation memory, else
+the most recently viewed session no other window or stash holds) right
 after the commit, and the completion installs it as a switch does
-(`install_session` with the new attachment); with none, the window closes.
+(`install_session` with the new attachment), holding the window's switch
+spawn until it settles. With no session to follow, or when that attach
+fails, the window closes, except that on Linux the last window runs Quit
+instead when it would strand unviewed sessions (`window_close_target`). A
+completion whose close generation moved detaches the follow-up attachment
+it no longer takes. Tier 2 tests fail that attach with
+`Stage::CloseFollow`.
 Other windows on the closed session take the session-gone path, and
 `reconcile` drops Quake stashes and navigation memory of closed sessions.
 Close Window resolves through `window_close_target`: on Linux, the last open
@@ -357,7 +367,8 @@ window with no Quake shortcut quits instead while a session no window shows
 remains, so restore keeps it; macOS keeps running, and `on_reopen` calls
 `session_switch::reopen_window`, which opens a window on the most recently
 viewed session no window or stash holds (`WindowModel::unviewed_sessions`,
-whose viewed order survives window removal), else a fresh one.
+whose viewed order survives window removal), else a fresh one; a session
+window that fails to open falls back to a fresh one too.
 `open_session_in_new_window` uses the same worker, `attach_existing`, and a
 window that fails to open detaches only its own attachment.
 
@@ -452,9 +463,11 @@ window did or went away. The worker takes one attachment per saved window
 and Quake stash of a session, so two windows on one session come back
 independent. A session no saved window showed comes back unviewed, with
 its attachment detached and its restore notices prefixed with its name in
-the first window; only when no saved window opens does each session get a
-window, so a launch never ends with none. `plan` hands attachments out per
-window, activates the saved active
+the first window that opens. `finish` decides that after the open loop:
+when no saved window opened, because the layout was lost or empty or every
+window failed to open, each session gets a window, so a launch never ends
+with none and never opens a fresh session over restored ones. `plan`
+hands attachments out per window, activates the saved active
 window by its index in the layout, scopes each window's `remembered`
 navigation into the runtime (dropping sessions that did not come back and
 filtering tabs and panes), and returns unused attachments to detach. A
@@ -795,9 +808,13 @@ and the menu counts other windows) and open session menus on any structural
 batch (tab counts). It refreshes through `Menu::set_model_keeping_place`,
 which moves a selection whose session closed elsewhere to the row that took
 its place. Its "exited" tags come from `Mux::exited_sessions`, read on a
-worker each time it opens; the menu opens first and a generation drops a
-superseded answer. Its native lowering puts each session's Open in New
-Window in an alternate item (`setAlternate:` with the Command mask and no
+worker each time it opens; a generation drops a superseded answer. Huterm's
+popover opens first and takes the tags when the read answers. A native menu
+is a snapshot, so it waits for the read (`native_session_pending`, which
+shows the control open) and presents nothing if the control closed it,
+another menu or the palette opened, or the window went away meanwhile.
+Its native lowering puts each session's Open in New Window in an
+alternate item (`setAlternate:` with the Command mask and no
 key), which AppKit swaps in while Command is held, and lists the
 `open_session_in_new_window` command as a visible item too
 (`menu_spec::Item::native_only`, which Huterm's popover leaves out), since

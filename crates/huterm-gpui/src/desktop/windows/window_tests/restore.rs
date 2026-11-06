@@ -1406,3 +1406,89 @@ fn without_a_saved_window_each_restored_session_opens_its_own(
     assert_ne!(work, other);
     harness.wait_text(other, TabId::in_runtime(runtime, 14), "READY");
 }
+
+/// [`capture`] with session 12's pane 15 started in an earlier folder, so
+/// that session raises a restore notice.
+fn capture_with_unviewed_notice(scratch: &Scratch) -> RuntimeCapture {
+    let mut saved = capture(scratch);
+    for terminal in &mut saved.terminals {
+        if terminal.id.get() == 16 {
+            terminal.directories =
+                vec![scratch.0.join("gone"), scratch.0.join("project")];
+        }
+    }
+    saved
+}
+
+#[gpui::test]
+fn when_every_saved_window_fails_to_open_the_unviewed_sessions_open_instead(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::installed(
+        cx,
+        |_| {},
+        persistence::State::Bootstrapping,
+    );
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().fail_window_opens = 1;
+        let saved = startup::Saved::new(
+            capture_with_unviewed_notice(&scratch),
+            Some(layout()),
+        );
+        startup::start_with(cx, saved, fixture(ECHO));
+    });
+    harness.wait_settled();
+    harness.wait_projection();
+    let runtime = harness.runtime_id();
+    let unviewed = SessionId::in_runtime(runtime, 12);
+    let window = harness.window_of(unviewed);
+    // No fresh session: the saved window's own session closed with it, and
+    // the unviewed one took the window.
+    assert_eq!(harness.runtime.lock().sessions().len(), 1);
+    harness.wait_text(window, TabId::in_runtime(runtime, 14), "READY");
+    let notices = restore_notices(&mut harness, window);
+    assert!(
+        notices.iter().any(|notice| notice
+            == "1 pane started in an earlier folder because its last folder no longer exists."),
+        "{notices:?}"
+    );
+    harness.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn unviewed_sessions_notices_go_to_the_first_window_that_opened(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut harness = DesktopHarness::installed(
+        cx,
+        |_| {},
+        persistence::State::Bootstrapping,
+    );
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().fail_window_opens = 1;
+        let saved = startup::Saved::new(
+            capture_with_unviewed_notice(&scratch),
+            Some(shared_layout()),
+        );
+        startup::start_with(cx, saved, fixture(ECHO));
+    });
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let windows = harness.windows_of(SessionId::in_runtime(runtime, 1));
+    assert_eq!(windows.len(), 1, "the second saved window opened");
+    // Session 12 stays unviewed, as it was before Quit.
+    let records = harness
+        .cx
+        .update(|cx| cx.global::<Desktop>().windows.records().count());
+    assert_eq!(records, 1);
+    let notices = restore_notices(&mut harness, windows[0]);
+    assert!(
+        notices.iter().any(|notice| notice.starts_with(
+            "In \"Session 2\": 1 pane started in an earlier folder"
+        )),
+        "{notices:?}"
+    );
+    harness.runtime.terminate().unwrap();
+}

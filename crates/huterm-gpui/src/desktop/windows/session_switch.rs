@@ -89,12 +89,20 @@ pub(super) async fn commit_close(
         return (committed, None);
     }
     let committed = runtime.commit(&assessment, confirmed, windows);
-    let followed = follow.filter(|_| committed.result.is_ok()).map(
-        |((session, workspace), command)| {
-            runtime.attach_existing(session, workspace, &command, false)
-        },
-    );
-    (committed, followed)
+    let Some(((session, workspace), command)) =
+        follow.filter(|_| committed.result.is_ok())
+    else {
+        return (committed, None);
+    };
+    #[cfg(all(test, feature = "test-support"))]
+    let fail = runtime
+        .worker_hooks
+        .enter(worker_hooks::Stage::CloseFollow)
+        .await;
+    #[cfg(not(all(test, feature = "test-support")))]
+    let fail = false;
+    let followed = runtime.attach_existing(session, workspace, &command, fail);
+    (committed, Some(followed))
 }
 
 /// What a committed switch shows.
@@ -468,7 +476,7 @@ impl WorkspaceView {
         let new = matches!(target, SwitchTarget::New(_));
         self.busy = true;
         self.switch = Some(SwitchPhase::Preparing);
-        cx.global_mut::<Desktop>().pending_spawns += 1;
+        hold_switch_spawn(cx, self.window);
         checkpoints::set_switching(cx, self.window, true);
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx.background_executor().spawn(async move {
@@ -500,25 +508,27 @@ impl WorkspaceView {
                     view.finish_switch(new, result, resolution, window, cx);
                 }
             });
-            app.update(|cx| {
-                // A window removed before its completion never ended the
-                // switch itself.
-                if result.is_some() {
+            // A window removed before its completion never ended the switch
+            // itself. Otherwise the switch holds its spawn until it settles.
+            if result.is_some() {
+                app.update(|cx| {
                     checkpoints::set_switching(cx, id, false);
-                }
-                settle_session_spawn(cx);
-            });
+                    release_switch_spawn(cx, id);
+                });
+            }
         })
         .detach();
         cx.notify();
         Ok(CommandOutcome::Accepted)
     }
 
-    /// Ends a switch that changed nothing and runs what waited for it.
+    /// Ends a switch, settled or not, and releases the Quit that waited
+    /// for it.
     fn end_switch(&mut self, cx: &mut Context<'_, Self>) {
         self.switch = None;
         self.busy = false;
         checkpoints::set_switching(cx, self.window, false);
+        release_switch_spawn(cx, self.window);
     }
 
     /// Phase 3, or the end of a switch that failed or met teardown.
@@ -629,27 +639,36 @@ impl WorkspaceView {
 
     /// The session Close Session moves this window to when it closes the
     /// window's own `closing` session: the most recently left one that
-    /// still exists.
+    /// still exists, else the session viewed most recently that no other
+    /// window or Quake stash shows, as a reopen picks.
     pub(super) fn next_session(
         &self,
         closing: SessionId,
         cx: &App,
     ) -> Option<(SessionId, Option<WorkspaceId>)> {
-        let state = cx.global::<Desktop>().hierarchy.state();
-        self.record(cx)?
-            .memory
-            .iter()
-            .find(|memory| {
-                memory.session != closing
-                    && state.session(memory.session).is_some()
+        let desktop = cx.global::<Desktop>();
+        let state = desktop.hierarchy.state();
+        let remembered = self.record(cx)?.memory.iter().find(|memory| {
+            memory.session != closing && state.session(memory.session).is_some()
+        });
+        if let Some(memory) = remembered {
+            return Some((memory.session, Some(memory.workspace)));
+        }
+        let stashed = stashed_sessions(desktop);
+        desktop
+            .windows
+            .unviewed_sessions(state, Some(self.window), |session| {
+                session == closing || stashed.contains(&session)
             })
-            .map(|memory| (memory.session, Some(memory.workspace)))
+            .first()
+            .map(|session| (*session, None))
     }
 
     /// Whether `target` closes this window's own session, and then the
     /// session the commit's worker attaches the window to right after it,
     /// with the shell it may need: the most recently left one that still
-    /// exists. A follow-up counts in `pending_spawns` until it settles.
+    /// exists. A follow-up holds a spawn in `pending_spawns` until its
+    /// install settles, so Quit waits for the navigation it restores.
     pub(super) fn close_follow(
         &self,
         target: &CloseTarget,
@@ -666,14 +685,15 @@ impl WorkspaceView {
             Some((next, self.session_shell(window, cx).ok()?))
         });
         if follow.is_some() {
-            cx.global_mut::<Desktop>().pending_spawns += 1;
+            hold_switch_spawn(cx, self.window);
         }
         (true, follow)
     }
 
     /// Ends a committed session close: a window whose own session closed
-    /// installs the session the worker attached it to, or closes when it
-    /// had none left; any other window carries on.
+    /// installs the session the worker attached it to, keeping its switch
+    /// hold until the install settles, or closes when it had none left or
+    /// the attach failed; any other window carries on.
     pub(super) fn finish_session_close(
         &mut self,
         own: bool,
@@ -681,18 +701,25 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        match followed {
-            Some(Ok((attachment, switched))) => {
-                self.busy = true;
-                checkpoints::set_switching(cx, self.window, true);
-                self.install_session(*switched, Some(*attachment), window, cx);
-            }
-            _ if own => self.remove_detached_window(window, cx),
-            _ => {
-                self.reconcile_own(window, cx);
-                self.resume_close(window, cx);
-                cx.notify();
-            }
+        if let Some(Ok((attachment, switched))) = followed {
+            self.busy = true;
+            checkpoints::set_switching(cx, self.window, true);
+            self.install_session(*switched, Some(*attachment), window, cx);
+            return;
+        }
+        release_switch_spawn(cx, self.window);
+        if !own {
+            self.reconcile_own(window, cx);
+            self.resume_close(window, cx);
+            cx.notify();
+        } else if self.window_close_target(Platform::current(), cx)
+            == CloseTarget::Application
+        {
+            // On Linux the last window quits rather than leave sessions no
+            // window shows out of reach; a cancelled Quit keeps it open.
+            self.request_close(CloseTarget::Application, window, cx);
+        } else {
+            self.remove_detached_window(window, cx);
         }
     }
 
@@ -752,6 +779,57 @@ impl WorkspaceView {
     }
 }
 
+/// Holds one of `pending_spawns` for `window`'s session switch or Close
+/// Session follow-up, at most one per window, until it settles.
+pub(super) fn hold_switch_spawn(cx: &mut App, window: gpui::WindowId) {
+    let desktop = cx.global_mut::<Desktop>();
+    if desktop.switch_spawns.insert(window) {
+        desktop.pending_spawns += 1;
+    }
+}
+
+/// Ends the switch hold of a Close Session follow-up once its completion
+/// ran: an install still in progress keeps it until `end_switch`; one that
+/// never started, because the close failed, moved on, or the window went
+/// away, releases it now.
+pub(super) fn settle_follow(cx: &mut App, window: gpui::WindowId) {
+    if !cx
+        .global::<Desktop>()
+        .checkpoints
+        .switching
+        .contains(&window)
+    {
+        release_switch_spawn(cx, window);
+    }
+}
+
+/// Releases `window`'s switch hold, if it has one: when its switch settled
+/// or failed, and when the window went away.
+pub(super) fn release_switch_spawn(cx: &mut App, window: gpui::WindowId) {
+    if cx.global_mut::<Desktop>().switch_spawns.remove(&window) {
+        settle_session_spawn(cx);
+    }
+}
+
+/// Detaches the attachment a Close Session follow-up made for a window
+/// that moved on before its completion, on a worker; the session stays for
+/// the windows and menus that show it.
+pub(super) fn drop_followed(
+    followed: Option<&Result<(AttachmentId, Switched), SwitchError>>,
+    cx: &App,
+) {
+    let Some(Ok((attachment, _))) = followed else {
+        return;
+    };
+    let attachment = *attachment;
+    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    cx.background_executor()
+        .spawn(async move {
+            let _ = runtime.lock().detach_session(attachment);
+        })
+        .detach();
+}
+
 /// Settles one switch or session window in `pending_spawns`, resuming a
 /// Quit that waited for it.
 pub(super) fn settle_session_spawn(cx: &mut App) {
@@ -764,11 +842,13 @@ pub(super) fn settle_session_spawn(cx: &mut App) {
 }
 
 /// Opens a window attached to the existing `session` without creating
-/// one. A window that fails to open detaches only its own attachment.
+/// one. A window that fails to open detaches only its own attachment, and
+/// with `fresh_on_failure` a window on a new session opens instead.
 pub(super) fn open_session_window(
     cx: &mut App,
     session: SessionId,
     reporter: Option<WeakEntity<WorkspaceView>>,
+    fresh_on_failure: bool,
 ) {
     let config = cx.global::<Desktop>().config.clone();
     let command = resolve_metrics(&config, cx)
@@ -791,6 +871,9 @@ pub(super) fn open_session_window(
                 reporter,
                 format!("Cannot open window: {error}"),
             );
+            if fresh_on_failure {
+                open_window(cx);
+            }
             return;
         }
     };
@@ -829,7 +912,7 @@ pub(super) fn open_session_window(
                     if let Some(notice) = switch_failure(false, &error) {
                         report_deferred_failure(cx, reporter, notice.message);
                     }
-                    true
+                    false
                 }
             }
         });
@@ -842,7 +925,12 @@ pub(super) fn open_session_window(
                 })
                 .await;
         }
-        cx.update(settle_session_spawn);
+        cx.update(|cx| {
+            if !opened && fresh_on_failure && !terminating(cx) {
+                open_window(cx);
+            }
+            settle_session_spawn(cx);
+        });
     })
     .detach();
 }
@@ -890,15 +978,20 @@ fn open_attached(
     opened
 }
 
+/// The sessions stashed Quake windows hold.
+fn stashed_sessions(desktop: &Desktop) -> Vec<SessionId> {
+    desktop
+        .quake_stash
+        .values()
+        .map(|reopen| reopen.session)
+        .collect()
+}
+
 /// What a reopen with no window open does: a window on the session the
 /// user left most recently that no window shows, or a fresh one.
 pub(super) fn reopen_window(cx: &mut App) {
     let desktop = cx.global::<Desktop>();
-    let stashed: Vec<SessionId> = desktop
-        .quake_stash
-        .values()
-        .map(|reopen| reopen.session)
-        .collect();
+    let stashed = stashed_sessions(desktop);
     let candidate = desktop
         .windows
         .unviewed_sessions(desktop.hierarchy.state(), None, |session| {
@@ -907,7 +1000,7 @@ pub(super) fn reopen_window(cx: &mut App) {
         .first()
         .copied();
     match candidate {
-        Some(session) => open_session_window(cx, session, None),
+        Some(session) => open_session_window(cx, session, None, true),
         None => open_window(cx),
     }
 }

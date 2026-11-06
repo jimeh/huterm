@@ -45,10 +45,14 @@ pub(super) enum Stage {
     /// Opening a session in a new window, before the worker takes the Mux
     /// lock. A failure fails the window's open.
     OpenSession,
+    /// A committed Close Session of the window's own session, before the
+    /// worker attaches the window to the session it moves to. A failure
+    /// fails that attach.
+    CloseFollow,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 15]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 16]>);
 
 #[derive(Default)]
 struct StageHooks {

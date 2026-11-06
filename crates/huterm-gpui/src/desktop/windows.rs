@@ -926,6 +926,9 @@ struct Desktop {
     /// nothing, so it cannot register global shortcuts again.
     quit_committed: bool,
     pending_spawns: usize,
+    /// Windows whose session switch, or Close Session follow-up, holds one
+    /// of `pending_spawns` until its navigation settles.
+    switch_spawns: std::collections::HashSet<gpui::WindowId>,
     quit_pending: bool,
     /// The Settings window, which is not in `windows`: it shows no session.
     settings: Option<gpui::WindowHandle<settings_window::SettingsView>>,
@@ -1188,7 +1191,9 @@ fn run_app_command(
             // Global actions run while the dispatching window is borrowed,
             // and opening a window updates others.
             cx.defer(move |cx| {
-                session_switch::open_session_window(cx, session, reporter);
+                session_switch::open_session_window(
+                    cx, session, reporter, false,
+                );
             });
             Ok(CommandOutcome::Accepted)
         }
@@ -1748,6 +1753,7 @@ fn install_desktop(
         quitting: false,
         quit_committed: false,
         pending_spawns: 0,
+        switch_spawns: std::collections::HashSet::new(),
         settings: None,
         quit_pending: false,
         unavailable_fonts: UnavailableFonts::default(),
@@ -1790,6 +1796,7 @@ fn install_desktop(
         desktop.cross.windows.retain(|(id, _)| *id != window);
         checkpoints::set_transfer_reserved(cx, window, false);
         checkpoints::set_switching(cx, window, false);
+        session_switch::release_switch_spawn(cx, window);
         restore::window_settled(cx, window);
         let desktop = cx.global_mut::<Desktop>();
         // A close the window took and had not started committing never
@@ -3011,9 +3018,11 @@ fn open_window_with_profile(
                 native_menu_token: 0,
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 session_button_bounds: Rc::new(Cell::new(None)),
+                session_control_drawn: Cell::new(false),
                 session_label: session_control::SessionLabel::default(),
                 exited_sessions: HashSet::new(),
                 exited_read: 0,
+                native_session_pending: None,
                 popover: Popover::new(),
                 window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
@@ -4512,6 +4521,9 @@ struct WorkspaceView {
     /// Where the session control was last painted, for anchoring the
     /// session menu and for smoke state; `None` while it is not drawn.
     session_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Whether this render built the session control; one that built none
+    /// clears `session_button_bounds`.
+    session_control_drawn: Cell<bool>,
     /// The session name the control last measured and its width, so the
     /// tab strip and title row reserve its slot between renders.
     session_label: session_control::SessionLabel,
@@ -4519,6 +4531,9 @@ struct WorkspaceView {
     /// menu found them, and that read's generation.
     exited_sessions: HashSet<SessionId>,
     exited_read: u64,
+    /// A native session menu waiting for its exited read, and whether the
+    /// keyboard asked for it.
+    native_session_pending: Option<bool>,
     /// The window controls' painted bounds in Huterm's own title row, for
     /// smoke pointer fixtures; `None` while the row is not drawn.
     /// The painted window buttons, by [`WindowButton::index`].
@@ -12040,6 +12055,7 @@ impl WorkspaceView {
             }
             let _ = view.update_in(cx, |view, window, cx| {
                 if view.close.generation != generation {
+                    session_switch::drop_followed(followed.as_ref(), cx);
                     return;
                 }
                 view.busy = false;
@@ -12089,7 +12105,7 @@ impl WorkspaceView {
                 }
             });
             if follows {
-                app.update(session_switch::settle_session_spawn);
+                app.update(|cx| session_switch::settle_follow(cx, id));
             }
         })
         .detach();
@@ -13274,9 +13290,8 @@ impl Render for WorkspaceView {
             self.menu_button_bounds.set(None);
         }
         let session_placement = self.session_control_placement(&layout);
-        if session_placement.host == SessionControlHost::Hidden {
-            self.session_button_bounds.set(None);
-        }
+        // Set again when a host builds the control; see the end of render.
+        self.session_control_drawn.set(false);
         // The menu button's slot, which the session control sits before.
         let menu_slot = if menu_placement == MenuButtonPlacement::Hidden {
             px(0.0)
@@ -14761,6 +14776,11 @@ impl Render for WorkspaceView {
             refresh::Animated::animation_schedule(self, Instant::now()),
             cx,
         );
+        // A frame that draws no control, because it is hidden, its host is
+        // not drawn, or the window shows no session, anchors nothing.
+        if !self.session_control_drawn.get() {
+            self.session_button_bounds.set(None);
+        }
         root
     }
 }
