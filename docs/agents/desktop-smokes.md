@@ -319,6 +319,17 @@ frame as `x,y,w,h` in `AppKit` coordinates, `none` without a window), and
 `w<i>.origin` is the content's top-left in screen coordinates, so a
 source-local point's screen point is `origin.x + x` and `origin.y - y` on
 macOS. Window indices count terminal windows only, never the preview.
+`w<i>.active_tab` is the active tab's index, which spring-load and spring-back
+steps read.
+
+`checkCrossWindowInput` runs the main transfer sequence. A second fixture
+session, `checkCrossWindowTargets`, covers destination targets in a fresh app:
+spring-loading another window's tab without taking focus and springing back on
+Escape, a refused pane centre, a lone pane into another window's bar, and, on
+macOS, the title row of a window whose bar is hidden. Its drags move through
+intermediate samples (`dragPath`) rather than one jump. Add a step to the
+session whose window and tab bookkeeping it fits, and give a new kind of
+target its own session rather than lengthening the main sequence.
 
 A torn-off window opens under the release point on macOS, so a later step
 that needs that empty space moves it aside with `place-window` first.
