@@ -727,6 +727,41 @@ impl<H> Terminal<H> {
         Ok(RowRef(self.native()?.as_ref().row_ref(point)?))
     }
 
+    /// The word a double-click drag from `start` toward `end` reaches first:
+    /// the nearest selectable word between the two points, both inclusive,
+    /// under Ghostty's default word boundaries. A word is a run of
+    /// non-boundary characters, or a run of boundary characters, and spans
+    /// soft wraps. The result is two screen points in reading order, or
+    /// `None` when only unwritten cells lie between the points.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidValue`] for a point outside its coordinate space.
+    pub fn select_word_between(
+        &self,
+        start: Point,
+        end: Point,
+    ) -> Result<Option<(Point, Point)>> {
+        let terminal = self.native()?.as_ref();
+        let start = terminal.grid_ref(start)?;
+        let end = terminal.grid_ref(end)?;
+        terminal.select_word_between(&start, &end)
+    }
+
+    /// The logical line under `point`, across soft wraps, trimmed of
+    /// leading and trailing whitespace and bounded by semantic prompt
+    /// changes, as two screen points in reading order. `None` when the
+    /// line has nothing to select.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidValue`] for a point outside its coordinate space.
+    pub fn select_line(&self, point: Point) -> Result<Option<(Point, Point)>> {
+        let terminal = self.native()?.as_ref();
+        let point = terminal.grid_ref(point)?;
+        terminal.select_line(&point)
+    }
+
     /// Formats the inclusive, linear selection between two screen points as
     /// plain text with soft wraps joined and trailing whitespace trimmed.
     ///

@@ -63,6 +63,7 @@ use huterm_ui::typography::{Typography, ui};
 use key_hint::KeyHint;
 use notices::Severity;
 use overlay::{badge, key_cap_on, mono_font_family, raised_panel, tokens};
+use selection::{Completion, Selection, Ticket, UnitGesture, unit_for_clicks};
 use size_indicator::SizeIndicatorVisibility;
 
 const INITIAL_COLUMNS: u16 = 100;
@@ -112,6 +113,7 @@ mod notices;
 mod overlay;
 pub(crate) mod palette;
 mod refresh;
+mod selection;
 mod settings;
 mod size_indicator;
 pub(crate) use windows::{
@@ -276,21 +278,6 @@ fn resolve_metrics(
     Ok((terminal_font, metrics, resolved))
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Selection {
-    generation: u64,
-    anchor: BufferPoint,
-    head: BufferPoint,
-}
-impl Selection {
-    fn range(self) -> Option<BufferRange> {
-        // Buffer ranges include both endpoints, so equal cells would select
-        // one character even though the pointer has not dragged across a cell.
-        (self.anchor != self.head)
-            .then(|| BufferRange::ordered(self.anchor, self.head))
-    }
-}
-
 /// How long a right-click waits for the link under the pointer before its
 /// context menu opens without link rows.
 const CONTEXT_LINK_TIMEOUT: Duration = Duration::from_millis(250);
@@ -321,8 +308,13 @@ pub(super) struct SyncedInput(pub(super) TerminalInput);
 
 impl EventEmitter<SyncedInput> for TerminalView {}
 
-fn copy_availability(selection: Option<Selection>) -> Result<(), CommandError> {
-    if selection.and_then(Selection::range).is_none() {
+/// Whether Copy has something to copy: a selected range, or a word or line
+/// the runtime is still expanding.
+fn copy_availability(
+    selection: Option<Selection>,
+    expanding: bool,
+) -> Result<(), CommandError> {
+    if selection.and_then(Selection::range).is_none() && !expanding {
         Err(CommandError::Unavailable("no selection".to_owned()))
     } else {
         Ok(())
@@ -502,6 +494,11 @@ struct TerminalView {
     failure_wake: async_channel::Sender<()>,
     failure_wakes: async_channel::Receiver<()>,
     selection: Option<Selection>,
+    /// The expansion of a word or line selection, while it has one.
+    unit_gesture: Option<UnitGesture>,
+    /// Numbers each word or line gesture, so replies to an older one are
+    /// ignored.
+    unit_gestures: u64,
     selected_text: Option<String>,
     selecting: bool,
     scrollbars: Scrollbars,
@@ -844,6 +841,8 @@ impl TerminalView {
             seen_running: false,
             visible: false,
             selection: None,
+            unit_gesture: None,
+            unit_gestures: 0,
             selected_text: None,
             selecting: false,
             scrollbars: Scrollbars::vertical(TERMINAL_SCROLLBAR),
@@ -984,6 +983,7 @@ impl TerminalView {
                         let hover_changed = view.links.hover() != hover.as_ref();
                         let changed =
                             view.apply_snapshot(reply.snapshot, cx) || hover_changed;
+                        view.request_expansion(cx);
                         view.renderer
                             .borrow_mut()
                             .record_output_applied(reply.invalidated_at, changed);
@@ -1057,6 +1057,10 @@ impl TerminalView {
             if let Some(selection) = &mut self.selection {
                 selection.head.rows_from_live_bottom =
                     snapshot.viewport.bottom_offset.saturating_add(row);
+            }
+            // The snapshot's completion sends the request.
+            if let Some(gesture) = &mut self.unit_gesture {
+                gesture.moved();
             }
             self.scroll.scroll_rows(self.selection_edge_direction);
             self.update_renderer_selection();
@@ -1233,6 +1237,7 @@ impl TerminalView {
         self.scroll.restart();
         self.scroll.invalidate();
         self.start_snapshot_if_needed(cx);
+        self.request_expansion(cx);
         cx.notify();
     }
 
@@ -1685,7 +1690,7 @@ impl TerminalView {
         command: huterm_protocol::CommandId,
     ) -> Result<(), CommandError> {
         match command {
-            ids::COPY => copy_availability(self.selection),
+            ids::COPY => copy_availability(self.selection, self.expanding()),
             ids::PASTE if self.exited => {
                 Err(CommandError::Unavailable("terminal has exited".to_owned()))
             }
@@ -1735,7 +1740,9 @@ impl TerminalView {
                 // The selection's text is still being extracted: copy it
                 // when it arrives rather than dropping the request.
                 (None, Some(selection)) => {
-                    if let Some(range) = selection.range() {
+                    if self.expanding() {
+                        self.copy_when_expanded(selection, cx);
+                    } else if let Some(range) = selection.range() {
                         self.extract_selection(selection, range, true, cx);
                     }
                 }
@@ -2114,14 +2121,16 @@ impl TerminalView {
         };
         let position = position - self.terminal_layout(window).bounds.origin;
         let point = point_for_position(position, snapshot, self.metrics);
-        self.selection = Some(Selection {
-            generation: snapshot.generation,
-            anchor: point,
-            head: point,
+        let unit = unit_for_clicks(event.click_count);
+        self.selection = Some(Selection::new(snapshot.generation, point, unit));
+        self.unit_gesture = unit.map(|_| {
+            self.unit_gestures += 1;
+            UnitGesture::new(self.unit_gestures)
         });
         self.selected_text = None;
         self.selecting = true;
         self.update_renderer_selection();
+        self.request_expansion(cx);
         cx.notify();
     }
 
@@ -2185,7 +2194,7 @@ impl TerminalView {
             config::RightClickAction::Ignore => return,
             config::RightClickAction::Paste => ids::PASTE,
             config::RightClickAction::CopyOrPaste => {
-                if copy_availability(self.selection).is_ok() {
+                if copy_availability(self.selection, self.expanding()).is_ok() {
                     ids::COPY
                 } else {
                     ids::PASTE
@@ -2352,12 +2361,18 @@ impl TerminalView {
                 return;
             }
             selection.head = head;
-            self.selected_text = None;
-            self.update_renderer_selection();
-            if self.selection.and_then(Selection::range).is_none() {
-                self.selection_edge_direction = 0;
-                cx.notify();
-                return;
+            if let Some(gesture) = &mut self.unit_gesture {
+                // The range changes only when the runtime answers.
+                gesture.moved();
+                self.request_expansion(cx);
+            } else {
+                self.selected_text = None;
+                self.update_renderer_selection();
+                if self.selection.and_then(Selection::range).is_none() {
+                    self.selection_edge_direction = 0;
+                    cx.notify();
+                    return;
+                }
             }
             self.selection_edge_direction = direction;
             if direction != 0 && self.scroll.scroll_rows(direction) {
@@ -2448,6 +2463,13 @@ impl TerminalView {
             return;
         }
         self.selecting = false;
+        if let Some(gesture) = &mut self.unit_gesture {
+            // A word or line still expanding caches its text once the
+            // runtime answers.
+            gesture.release();
+            self.settle_expansion(cx);
+            return;
+        }
         let Some(selection) = self.selection else {
             return;
         };
@@ -2469,18 +2491,19 @@ impl TerminalView {
         if rows == 0 || columns == 0 {
             return;
         }
-        let selection = Selection {
-            generation: snapshot.generation,
-            anchor: BufferPoint {
+        let selection = Selection::cells(
+            snapshot.generation,
+            BufferPoint {
                 rows_from_live_bottom: snapshot.history_size + rows - 1,
                 column: 0,
             },
-            head: BufferPoint {
+            BufferPoint {
                 rows_from_live_bottom: 0,
                 column: columns - 1,
             },
-        };
+        );
         self.selection = Some(selection);
+        self.unit_gesture = None;
         self.selected_text = None;
         self.selecting = false;
         self.update_renderer_selection();
@@ -2541,6 +2564,158 @@ impl TerminalView {
                     }
                 }
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Whether a word or line selection is waiting for the runtime.
+    fn expanding(&self) -> bool {
+        self.unit_gesture.is_some_and(|gesture| gesture.busy())
+    }
+
+    /// Sends the word or line selection's latest head to the runtime for
+    /// expansion, unless a request is already in flight; its completion
+    /// sends whatever the gesture wants by then. A revoked viewer sends
+    /// nothing, and its replacement sends what the gesture still wants.
+    fn request_expansion(&mut self, cx: &mut Context<'_, Self>) {
+        if self.revoked {
+            return;
+        }
+        let (Some(gesture), Some(selection)) =
+            (&mut self.unit_gesture, self.selection)
+        else {
+            return;
+        };
+        let Some(unit) = selection.unit.filter(|_| gesture.should_send())
+        else {
+            return;
+        };
+        let request = match self.viewer.request_select_units(
+            selection.generation,
+            selection.anchor,
+            selection.head,
+            unit,
+        ) {
+            Ok(request) => request,
+            // The selection waits for the viewer's replacement.
+            Err(RuntimeError::Revoked) => {
+                self.revoked = true;
+                return;
+            }
+            Err(error) => {
+                self.report_viewer_failure(&error);
+                self.clear_selection();
+                cx.notify();
+                return;
+            }
+        };
+        let ticket = gesture.sent(self.viewer_epoch);
+        cx.spawn(async move |view, cx| {
+            let result = request.recv().await;
+            let _ = view.update(cx, |view, cx| {
+                view.complete_expansion(ticket, result, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn complete_expansion(
+        &mut self,
+        ticket: Ticket,
+        result: Result<Option<BufferRange>, RuntimeError>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(gesture) = &mut self.unit_gesture else {
+            return;
+        };
+        match gesture.complete(ticket, self.viewer_epoch) {
+            Completion::Ignore => return,
+            Completion::Retry => {}
+            Completion::Apply => match result {
+                Ok(range) => {
+                    if let Some(selection) = &mut self.selection
+                        && selection.expand(range)
+                    {
+                        self.selected_text = None;
+                        self.update_renderer_selection();
+                        cx.notify();
+                    }
+                }
+                // Revoked before the view has its replacement viewer: the
+                // replacement asks again.
+                Err(RuntimeError::Revoked) => {
+                    self.revoked = true;
+                    gesture.moved();
+                }
+                Err(error) => {
+                    self.report_viewer_failure(&error);
+                    self.clear_selection();
+                    cx.notify();
+                    return;
+                }
+            },
+        }
+        self.request_expansion(cx);
+        self.settle_expansion(cx);
+    }
+
+    /// Ends a released word or line selection once the runtime has
+    /// answered its latest head: caches the text, or clears the selection
+    /// when there was nothing to select.
+    fn settle_expansion(&mut self, cx: &mut Context<'_, Self>) {
+        if !self.unit_gesture.is_some_and(|gesture| gesture.settled()) {
+            return;
+        }
+        self.unit_gesture = None;
+        let Some(selection) = self.selection else {
+            return;
+        };
+        if let Some(range) = selection.range() {
+            self.extract_selection(selection, range, false, cx);
+        } else {
+            self.clear_selection();
+        }
+        cx.notify();
+    }
+
+    /// Copies a word or line selection that is still expanding. The copy
+    /// asks the runtime for the range itself, so it completes even if the
+    /// selection is cleared meanwhile, as a right-click's copy does.
+    fn copy_when_expanded(
+        &mut self,
+        selection: Selection,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(unit) = selection.unit else {
+            return;
+        };
+        let request = match self.viewer.request_select_units(
+            selection.generation,
+            selection.anchor,
+            selection.head,
+            unit,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.report_viewer_failure(&error);
+                return;
+            }
+        };
+        let epoch = self.viewer_epoch;
+        cx.spawn(async move |view, cx| {
+            let result = request.recv().await;
+            let _ = view.update(cx, |view, cx| match result {
+                Ok(range) => {
+                    // A drag over nothing keeps the range already shown.
+                    if let Some(range) = range.or_else(|| selection.range()) {
+                        view.extract_selection(selection, range, true, cx);
+                    }
+                }
+                Err(_) if view.viewer_epoch != epoch => {}
+                Err(error) => {
+                    view.report_viewer_failure(&error);
+                }
             });
         })
         .detach();
@@ -2610,6 +2785,7 @@ impl TerminalView {
     }
     fn clear_selection(&mut self) {
         self.selection = None;
+        self.unit_gesture = None;
         self.selected_text = None;
         self.selecting = false;
         self.selection_edge_direction = 0;
@@ -4642,17 +4818,17 @@ mod tests {
     }
 
     fn selection(generation: u64, anchor: u16, head: u16) -> Selection {
-        Selection {
+        Selection::cells(
             generation,
-            anchor: BufferPoint {
+            BufferPoint {
                 rows_from_live_bottom: 0,
                 column: anchor,
             },
-            head: BufferPoint {
+            BufferPoint {
                 rows_from_live_bottom: 0,
                 column: head,
             },
-        }
+        )
     }
 }
 

@@ -37,8 +37,8 @@ pub use mux::{
     SpawnedTerminals, Tab, Workspace,
 };
 pub use terminal::{
-    RefusedInput, RuntimeError, SelectionRequest, SnapshotReply,
-    SnapshotRequest, TerminalRuntime,
+    RefusedInput, RuntimeError, SelectUnitsRequest, SelectionRequest,
+    SnapshotReply, SnapshotRequest, TerminalRuntime,
 };
 pub use viewer::{
     HostEffectViewerOptions, TerminalViewer, ViewerOptions, ViewerUpdate,

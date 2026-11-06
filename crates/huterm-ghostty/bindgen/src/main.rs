@@ -64,6 +64,9 @@ const FUNCTIONS: &[&str] = &[
     "ghostty_tracked_grid_ref_has_value",
     "ghostty_tracked_grid_ref_point",
     "ghostty_terminal_selection_format_alloc",
+    "ghostty_terminal_select_word_between",
+    "ghostty_terminal_select_line",
+    "ghostty_terminal_point_from_grid_ref",
     "ghostty_render_state_new",
     "ghostty_render_state_free",
     "ghostty_render_state_update",
@@ -1088,6 +1091,16 @@ fn emit_sized(out: &mut String, doc: &str, constant: &str, names: &[String]) {
     out.push_str("];\n");
 }
 
+/// The header's name for a struct field. Bindgen appends `_` to a field
+/// named after a Rust keyword, such as `ref`, and the library's ABI manifest
+/// keeps the C name.
+fn c_field_name(field: &str) -> &str {
+    field
+        .strip_suffix('_')
+        .filter(|stem| syn::parse_str::<syn::Ident>(stem).is_err())
+        .unwrap_or(field)
+}
+
 /// Emits size, alignment, field offsets, enum values, alias sizes, and
 /// handle sizes for every item in the bindings.
 fn generate_layout(file: &syn::File) -> Result<String, Error> {
@@ -1116,7 +1129,8 @@ fn generate_layout(file: &syn::File) -> Result<String, Error> {
         for field in fields {
             let _ = write!(
                 out,
-                "(\"{field}\", offset_of!(ffi::{name}, {field})), "
+                "(\"{}\", offset_of!(ffi::{name}, {field})), ",
+                c_field_name(field)
             );
         }
         out.push_str("],\n    },\n");

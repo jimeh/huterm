@@ -115,7 +115,7 @@ pub(super) fn post(command: &str) -> anyhow::Result<()> {
             fields[3].parse()?,
         );
     }
-    if fields[0] == "mouse" && matches!(fields.len(), 4 | 5) {
+    if fields[0] == "mouse" && (4..=6).contains(&fields.len()) {
         return post_mouse(&fields, None);
     }
     ensure!(
@@ -291,6 +291,8 @@ fn post_mouse(fields: &[&str], number: Option<isize>) -> anyhow::Result<()> {
     let x: f64 = fields[2].parse()?;
     let y: f64 = fields[3].parse()?;
     let flags: usize = fields.get(4).map_or(Ok(0), |value| value.parse())?;
+    // AppKit's clickCount, which GPUI forwards as `click_count`.
+    let clicks: isize = fields.get(5).map_or(Ok(1), |value| value.parse())?;
     // SAFETY: Main-thread AppKit objects; the queue retains the event.
     unsafe {
         let app: *mut Object = msg_send![
@@ -311,7 +313,7 @@ fn post_mouse(fields: &[&str], number: Option<isize>) -> anyhow::Result<()> {
             location: gpui::point(if fields[0] != "absolute" && x < 1.0 { x * bounds.size.width } else { x }, bounds.size.height - y)
             modifierFlags: flags timestamp: 0.0_f64 windowNumber: number
             context: std::ptr::null_mut::<Object>() eventNumber: 0_isize
-            clickCount: 1_isize pressure: 1.0_f32];
+            clickCount: clicks pressure: 1.0_f32];
         ensure!(!event.is_null(), "mouse NSEvent construction failed");
         if kind == NS_EVENT_TYPE_MOUSE_MOVED {
             // GPUI windows refuse window-level moved events and receive them

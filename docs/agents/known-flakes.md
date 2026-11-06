@@ -134,6 +134,13 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   event the main `renderer_smoke` thread (its thread ID equal to the process
   ID) was in state `D` in `folio_wait_bit_common` with syscall `-1`. The
   rerun passed. This is the first occurrence on aarch64 since 2026-10-26.
+- **Sixth thread dump:** on 2026-11-05 on x86_64 (PR #412 at `766d4bd9`,
+  run 42099318070, job 127498303513), which changes terminal selection and
+  not the renderer, stdout again stopped after `application started`, with
+  empty stderr and SIGTERM at 15.02 seconds. At the 15.01-second `threads`
+  event the main thread (the lowest thread ID) was in state `D` in
+  `folio_wait_bit_common` with syscall `-1`, and the other 11 threads were
+  sleeping.
 - **Triage:** download the `smoke-evidence-Linux-*` artifact and read
   `renderer-process/stdout.log` for the last marker and
   `renderer-process/events.jsonl` for the `threads` event. Record both here,
@@ -277,7 +284,10 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   at a load average near 6, and a `mux::` filtered run then failed the
   orphan test. It passed in 3 isolated reruns, the whole `huterm-core`
   suite passed with `--test-threads=4`, and a third full workspace run
-  passed it.
+  passed it. On 2026-11-05, during the word and line selection work, one
+  `mise run test:ghostty-releasesafe` run failed it with the same message,
+  although the change touches no job or close-assessment code; it passed in
+  3 isolated ReleaseSafe reruns.
 - **Cause:** the system shell's job control, not Huterm. These tests already
   poll their conditions. With the load average around 90 on a 16-core Mac
   (2026-10-26), four concurrent `huterm-core` lib runs failed 11 of 24 times.
@@ -536,6 +546,9 @@ Each entry names the failing label, the evidence so far, and how to triage it.
   which changes window chrome and not the palette, with the same state. It
   recurred on aarch64 on 2026-11-03 in the same PR #383 run as the extra
   tab above (job 126249669688), with the same state; the next head passed.
+  It recurred on x86_64 on 2026-11-05 (PR #412 at `179f5e2b`, run
+  42097959036, job 127493242342), which changes terminal selection and not
+  the palette or its smoke, with the same state and the same last bytes.
 - **Triage:** if it recurs, check that the extra tab's ID is below the
   `fixture-session` ID and that it is the active tab, record the run here,
   then rerun. A fix would need an observable sign that the window refused

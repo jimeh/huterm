@@ -110,14 +110,17 @@ fn read_state(cx: &mut gpui::App) -> String {
         .first()
         .and_then(gpui::AnyWindowHandle::downcast::<super::WorkspaceView>)
         .and_then(|handle| handle.read(cx).ok());
-    let (tabs, selection, exited, ready, active) =
-        view.map_or((0, false, false, false, 0), |view| {
+    let (tabs, selection, columns, exited, ready, active) =
+        view.map_or((0, false, None, false, false, 0), |view| {
             let terminal = view.active_view(cx);
             let terminal = terminal.as_ref().map(|tab| tab.read(cx));
-            let selected = terminal.is_some_and(|tab| {
-                tab.selection
-                    .and_then(super::super::Selection::range)
-                    .is_some()
+            let range = terminal.and_then(|tab| {
+                tab.selection.and_then(super::super::Selection::range)
+            });
+            let selected = range.is_some();
+            // The first and last selected columns tell a word from a line.
+            let columns = range.map(|range| {
+                format!("{}..{}", range.start.column, range.end.column)
             });
             let exited = terminal.is_some_and(|tab| tab.exited);
             let ready = terminal.is_some_and(|tab| {
@@ -134,7 +137,7 @@ fn read_state(cx: &mut gpui::App) -> String {
                 .iter()
                 .position(|tab| Some(tab.id) == view.active_tab(cx))
                 .unwrap_or(0);
-            (view.tabs.len(), selected, exited, ready, active)
+            (view.tabs.len(), selected, columns, exited, ready, active)
         });
     let pending = cx.windows().first().copied().is_some_and(|window| {
         window
@@ -149,7 +152,8 @@ fn read_state(cx: &mut gpui::App) -> String {
         .unwrap_or_default();
     let windows = super::cross_window::smoke_state(cx);
     format!(
-        "{windows}policy={policy} reloading={reloading} watching={watching} reconciliations={reconciliations} bindings={bindings} tabs={tabs} selection={selection} pending={pending} exited={exited} ready={ready} active={active} {panes}"
+        "{windows}policy={policy} reloading={reloading} watching={watching} reconciliations={reconciliations} bindings={bindings} tabs={tabs} selection={selection} selection_columns={} pending={pending} exited={exited} ready={ready} active={active} {panes}",
+        columns.as_deref().unwrap_or("none")
     )
 }
 

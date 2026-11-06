@@ -426,6 +426,103 @@ impl<'a> TerminalRef<'a> {
         })
     }
 
+    /// The nearest word from `start` toward `end`, both inclusive, under
+    /// Ghostty's default word boundaries, as screen points in reading
+    /// order. `None` when no selectable word lies between them.
+    pub(crate) fn select_word_between(
+        self,
+        start: &GridRef<'a>,
+        end: &GridRef<'a>,
+    ) -> Result<Option<(Point, Point)>> {
+        let mut options: ffi::GhosttyTerminalSelectWordBetweenOptions =
+            ffi::sized();
+        options.start = start.raw;
+        options.end = end.raw;
+        let mut selection: ffi::GhosttySelection = ffi::sized();
+        // SAFETY: selection.h `ghostty_terminal_select_word_between` reads
+        // the options (whose grid refs are current because `'a` excludes
+        // mutation; a NULL boundary list selects the defaults) and writes
+        // the exclusive `selection`.
+        let code = unsafe {
+            ffi::ghostty_terminal_select_word_between(
+                self.ptr.as_ptr(),
+                &raw const options,
+                &raw mut selection,
+            )
+        };
+        self.selection_points(code, &selection)
+    }
+
+    /// The logical line under `point`, across soft wraps, without its
+    /// leading and trailing whitespace and bounded by semantic prompt
+    /// changes, as screen points in reading order. `None` when the line
+    /// has no selectable content.
+    pub(crate) fn select_line(
+        self,
+        point: &GridRef<'a>,
+    ) -> Result<Option<(Point, Point)>> {
+        let mut options: ffi::GhosttyTerminalSelectLineOptions = ffi::sized();
+        options.ref_ = point.raw;
+        // Ghostty's own line selection stops at prompt changes; the zeroed
+        // struct would not.
+        options.semantic_prompt_boundary = true;
+        let mut selection: ffi::GhosttySelection = ffi::sized();
+        // SAFETY: selection.h `ghostty_terminal_select_line` reads the
+        // options (a current grid ref; a NULL whitespace list selects the
+        // default trim set) and writes the exclusive `selection`.
+        let code = unsafe {
+            ffi::ghostty_terminal_select_line(
+                self.ptr.as_ptr(),
+                &raw const options,
+                &raw mut selection,
+            )
+        };
+        self.selection_points(code, &selection)
+    }
+
+    /// Converts a derived selection's endpoints to screen points in
+    /// reading order, after `code` reported success.
+    fn selection_points(
+        self,
+        code: ffi::GhosttyResult,
+        selection: &ffi::GhosttySelection,
+    ) -> Result<Option<(Point, Point)>> {
+        match Error::from_code(code) {
+            Ok(()) => {}
+            Err(Error::NoValue) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let start = self.screen_point(&selection.start)?;
+        let end = self.screen_point(&selection.end)?;
+        Ok(Some(if (end.y, end.x) < (start.y, start.x) {
+            (end, start)
+        } else {
+            (start, end)
+        }))
+    }
+
+    /// The screen point a current grid reference addresses.
+    fn screen_point(self, raw: &ffi::GhosttyGridRef) -> Result<Point> {
+        let mut coordinate = ffi::GhosttyPointCoordinate::default();
+        // SAFETY: terminal.h `ghostty_terminal_point_from_grid_ref` reads a
+        // grid ref the library just wrote for this terminal, which no
+        // mutation has invalidated during `'a`, and writes the coordinate.
+        let code = unsafe {
+            ffi::ghostty_terminal_point_from_grid_ref(
+                self.ptr.as_ptr(),
+                raw,
+                ffi::GHOSTTY_POINT_TAG_SCREEN,
+                &raw mut coordinate,
+            )
+        };
+        Error::from_code(code)?;
+        Ok(Point {
+            space: PointSpace::Screen,
+            x: coordinate.x,
+            y: coordinate.y,
+        })
+    }
+
     /// Formats an inclusive, linear selection as unwrapped, trimmed text.
     pub(crate) fn format_plain(
         self,

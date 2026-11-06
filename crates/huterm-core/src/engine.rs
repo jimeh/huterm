@@ -9,9 +9,9 @@ mod row_matcher;
 use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
-    BufferRange, CellSize, CommandRecord, GridSize, ScrollCommand,
-    ScrollbackLimit, TerminalDirectory, TerminalId, TerminalModes,
-    TerminalPresentation, TerminalSnapshot,
+    BufferPoint, BufferRange, CellSize, CommandRecord, GridSize, ScrollCommand,
+    ScrollbackLimit, SelectionUnit, TerminalDirectory, TerminalId,
+    TerminalModes, TerminalPresentation, TerminalSnapshot,
 };
 use std::sync::Arc;
 
@@ -363,6 +363,16 @@ impl TerminalEngine {
     ) -> Result<Option<String>, RuntimeError> {
         self.inner.extract_text(generation, range)
     }
+
+    pub(crate) fn select_units(
+        &self,
+        generation: u64,
+        anchor: BufferPoint,
+        head: BufferPoint,
+        unit: SelectionUnit,
+    ) -> Result<Option<BufferRange>, RuntimeError> {
+        self.inner.select_units(generation, anchor, head, unit)
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +392,9 @@ mod benchmark;
 
 #[cfg(test)]
 mod contract_tests;
+
+#[cfg(test)]
+mod selection_tests;
 
 #[cfg(test)]
 mod link_contract_tests;

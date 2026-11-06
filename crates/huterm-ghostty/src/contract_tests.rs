@@ -139,6 +139,43 @@ fn formatter_joins_soft_wraps_and_trims_trailing_whitespace() {
 }
 
 #[test]
+fn word_selection_stops_at_boundaries_and_spans_soft_wraps() {
+    let mut terminal = terminal();
+    // Row 0 soft-wraps into row 1; row 2 stays unwritten.
+    terminal.write(b"a:bcdefghij").unwrap();
+    let word = |start, end| terminal.select_word_between(start, end).unwrap();
+    assert_eq!(
+        word(Point::screen(3, 0), Point::screen(3, 0)),
+        Some((Point::screen(2, 0), Point::screen(2, 1))),
+        "the word stops at the colon and continues across the wrap"
+    );
+    assert_eq!(
+        word(Point::screen(1, 0), Point::screen(1, 0)),
+        Some((Point::screen(1, 0), Point::screen(1, 0))),
+        "a boundary character selects its own run"
+    );
+    assert_eq!(
+        word(Point::screen(5, 1), Point::screen(0, 0)),
+        Some((Point::screen(2, 0), Point::screen(2, 1))),
+        "from unwritten cells the search moves toward the other point"
+    );
+    assert_eq!(word(Point::screen(0, 2), Point::screen(7, 2)), None);
+}
+
+#[test]
+fn line_selection_trims_whitespace_and_spans_soft_wraps() {
+    let mut terminal = terminal();
+    // "  abcdef" soft-wraps into "gh  ", then a hard line break leaves a
+    // row of spaces.
+    terminal.write(b"  abcdefgh  \r\n    ").unwrap();
+    let line = |point| terminal.select_line(point).unwrap();
+    let wrapped = Some((Point::screen(2, 0), Point::screen(1, 1)));
+    assert_eq!(line(Point::screen(0, 0)), wrapped);
+    assert_eq!(line(Point::screen(6, 1)), wrapped);
+    assert_eq!(line(Point::screen(1, 2)), None, "spaces only");
+}
+
+#[test]
 fn ground_state_covers_escape_osc_and_utf8_fragments() {
     for (partial, rest) in [
         (&b"\x1b"[..], &b"[m"[..]),
