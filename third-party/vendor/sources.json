@@ -105,6 +105,11 @@
           "name": "native-key-identity",
           "file": "patches/gpui-pre-macos/native-key-identity.patch",
           "description": "Preserve native layout, raw Shift, and US physical key identity for terminal keyboard encoding without changing Keystroke binding equality."
+        },
+        {
+          "name": "experiment-cvdisplaylink",
+          "file": "patches/gpui-pre-macos/experiment-cvdisplaylink.patch",
+          "description": "TEMPORARY CI experiment: always use CVDisplayLink."
         }
       ]
     },
