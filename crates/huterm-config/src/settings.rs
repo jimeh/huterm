@@ -938,6 +938,19 @@ mod tests {
     }
 
     #[test]
+    fn the_drag_preview_is_an_advanced_live_macos_window_setting() {
+        let model = SettingsModel::load().unwrap();
+        let preview = model.setting("window.macos_drag_preview").unwrap();
+        assert_eq!(preview.kind, SettingKind::Bool);
+        assert_eq!(preview.section, SectionId::Windows);
+        assert_eq!(preview.label, "Floating drag preview");
+        assert_eq!(preview.default, Some(toml::Value::Boolean(true)));
+        assert_eq!(preview.apply, Apply::Live);
+        assert_eq!(preview.platform, Some(Platform::Macos));
+        assert!(preview.advanced);
+    }
+
+    #[test]
     fn the_committed_schema_lists_every_setting_by_section() {
         let model = SettingsModel::load().unwrap();
         let sections: Vec<_> =

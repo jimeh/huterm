@@ -120,6 +120,9 @@ shortcut_hints = false
 # Open the window, tab, pane, and terminal menus as native macOS menus. Linux
 # ignores it and always draws them in Huterm's style.
 macos_native_menus = true
+# Show a preview window under the pointer while a tab or pane is dragged
+# outside its window on macOS. Off uses the in-window cues. Linux ignores it.
+macos_drag_preview = true
 
 [tabs]
 # Automatic label: smart, title, process, directory, or process_and_directory.

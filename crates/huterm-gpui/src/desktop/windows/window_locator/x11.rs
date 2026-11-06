@@ -106,6 +106,8 @@ pub(super) fn locate(
     source: &Window,
     pointer: gpui::Point<Pixels>,
     windows: &[(gpui::WindowId, u64)],
+    // X11 has no drag preview window to search below.
+    _below: Option<u64>,
 ) -> anyhow::Result<Located> {
     with_connection(|platform| platform.locate(source, pointer, windows))
 }

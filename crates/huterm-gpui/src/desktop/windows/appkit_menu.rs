@@ -639,6 +639,7 @@ pub(in crate::desktop) fn check_terminal_menu(
             super::pane_menu::PaneMenuInput {
                 platform: Platform::MacOs,
                 panes: 2,
+                tabs: 1,
                 title_bar: mode,
                 zoomed: false,
                 input_sync: false,

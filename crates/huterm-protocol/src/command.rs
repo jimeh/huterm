@@ -807,6 +807,10 @@ pub mod ids {
     /// Moves the focused pane into a new tab.
     pub const MOVE_PANE_TO_NEW_TAB: CommandId =
         CommandId::new("move_pane_to_new_tab");
+    /// Moves the focused pane into a new desktop window without restarting
+    /// it.
+    pub const MOVE_PANE_TO_NEW_WINDOW: CommandId =
+        CommandId::new("move_pane_to_new_window");
     /// Moves a whole tab beside a chosen pane of another tab.
     pub const MOVE_TAB_TO_PANE: CommandId = CommandId::new("move_tab_to_pane");
     /// Moves a tab into a new desktop window without restarting it.
@@ -1657,6 +1661,14 @@ const CATALOG: &[CommandSpec] = &[
             required: Requirement::Optional,
             prompt: true,
         }],
+    ),
+    spec(
+        ids::MOVE_PANE_TO_NEW_WINDOW,
+        CommandScope::Window,
+        "Move Pane to New Window",
+        "Move the focused pane into a new window, keeping its terminal \
+         running.",
+        &[],
     ),
     spec(
         ids::MOVE_TAB_TO_NEW_WINDOW,
