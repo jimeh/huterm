@@ -2672,6 +2672,59 @@ fn cross_window_pane_tear_off_failures_restore_spring_back_and_scroll(
 }
 
 #[gpui::test]
+fn cross_window_a_spring_loaded_pane_drag_keeps_a_tear_off_cue(
+    cx: &mut TestAppContext,
+) {
+    let mut h = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    });
+    let tab = h.open_tab(ECHO);
+    let other = h.open_tab(ECHO);
+    let source = h.attach_window();
+    h.activate(source, tab);
+    let first = h.first_pane(tab);
+    let pane = h.split(tab, first, SplitDirection::Right, ECHO);
+    h.wait_for("source split installs", |cx| {
+        pane_view(cx, source, tab, pane).is_some()
+    });
+    h.cx.run_until_parked();
+    let locator = h.cross_locator();
+    let label = h.update_view(source, |view, window, _| {
+        view.tab_strip(window).label(1).center()
+    });
+    locator.0.set(Located::Window(source.window_id(), label));
+    h.update_view(source, |view, window, cx| {
+        let at = view.drawn_frame(pane).unwrap().center();
+        view.begin_pane_drag(tab, pane, at, false, window, cx);
+        view.update_pane_drag(label, window, cx);
+        view.advance_spring(Instant::now() + SPRING_LOAD_DELAY, window, cx);
+    });
+    h.cx.run_until_parked();
+    assert_eq!(
+        h.update_view(source, |view, _, cx| view.active_tab(cx)),
+        Some(other),
+        "the drag spring-loaded the other tab"
+    );
+    locator.0.set(Located::Outside);
+    h.update_view(source, |view, window, cx| {
+        view.update_pane_drag(point(px(-50.0), px(-50.0)), window, cx);
+    });
+    h.cx.run_until_parked();
+    h.update_view(source, |view, _, cx| {
+        assert!(view.tear_off_cue(cx), "a release still tears off");
+        assert_eq!(
+            *view.drawn_pane_tear_off.borrow(),
+            None,
+            "the dragged pane is hidden, so no S1"
+        );
+        assert!(
+            view.drawn_tear_off.borrow().is_some(),
+            "the bar pill stands in for S1"
+        );
+    });
+}
+
+#[gpui::test]
 fn cross_window_move_pane_to_new_window_command(cx: &mut TestAppContext) {
     let mut h = DesktopHarness::with_config(cx, |config| {
         config.tabs.always_show = true;
