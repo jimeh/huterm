@@ -129,10 +129,13 @@ doctests, which nextest cannot run. Its two modes keep the earlier
 `HUTERM_GHOSTTY_OPTIMIZE` overrides, or `.cargo/config.toml` silently
 restores ReleaseFast. `scripts/test-rust.test.ts` checks both argument lists.
 
-Nextest runs every binary's tests at once, where `cargo test` ran one binary
-at a time. Its test groups cap the GPUI window tests and the PTY-heavy
-`huterm-core` suites, whose wall-clock waits failed on hosted runners that ran
-the GPUI suite 6 to 12 times slower than a developer machine.
+Nextest runs every binary's tests at once, one process per test, where
+`cargo test` ran one binary at a time. The config sets no test groups: on a
+16-core Mac, capping the GPUI window tests at 4 and the PTY-heavy core suites
+at 8 doubled the run to about 120 seconds against 55 without them, and hosted
+runners have only 3 or 4 CPUs, so those caps never bind there. Nextest's
+JUnit report records each test's duration; add a group only if those show
+that concurrency, not runner speed, slows the wall-clock tests.
 
 Nextest's own `retries` stay at 0. The wrapper reads nextest's JUnit report
 and reruns, by exact name, only failures that match a registered

@@ -13,18 +13,3 @@ store-failure-output = true
 [profile.ci]
 # A hung test fails after 10 minutes instead of consuming the job's limit.
 slow-timeout = { period = "60s", terminate-after = 10 }
-
-# Nextest runs every binary's tests at once, where cargo test ran one binary
-# at a time. These suites start real PTYs or GPUI windows and wait on
-# wall-clock deadlines, so cap how many run together.
-[test-groups]
-gpui-windows = { max-threads = 4 }
-core-pty = { max-threads = 8 }
-
-[[profile.default.overrides]]
-filter = 'binary_id(huterm-gpui) & test(/^desktop::windows::window_tests::/)'
-test-group = 'gpui-windows'
-
-[[profile.default.overrides]]
-filter = 'binary_id(huterm-core) & test(/^(terminal::tests|mux::|pty::)/)'
-test-group = 'core-pty'
