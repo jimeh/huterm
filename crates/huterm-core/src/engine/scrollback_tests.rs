@@ -71,7 +71,7 @@ fn rows_text(snapshot: &TerminalSnapshot) -> Vec<String> {
         .map(|row| {
             row.cells
                 .iter()
-                .map(|cell| cell.text.as_str())
+                .map(|cell| cell.text.displayed())
                 .collect::<String>()
                 .trim_end()
                 .to_owned()

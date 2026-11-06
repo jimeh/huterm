@@ -316,6 +316,7 @@ fn grid(cell: impl Fn(usize, usize) -> Cell) -> Vec<Arc<TerminalRow>> {
 fn terminal_row(cell: impl Fn(usize) -> Cell) -> Arc<TerminalRow> {
     Arc::new(TerminalRow {
         cells: (0..usize::from(COLUMNS)).map(cell).collect(),
+        ..TerminalRow::default()
     })
 }
 

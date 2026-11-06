@@ -34,8 +34,8 @@ use crate::ffi::{
     TerminalOption, TerminalPointer,
 };
 use crate::types::{
-    Cell, CellContent, CellWidth, Fill, Point, PointSpace, Rgb, Row, Scroll,
-    Style, StyleColor,
+    Cell, CellContent, CellWidth, Fill, Point, PointSpace, Rgb, Row,
+    RowSemanticPrompt, Scroll, Style, StyleColor,
 };
 
 /// An allocator that outlives every object created with it. `None` selects
@@ -948,6 +948,17 @@ impl Row {
         self.get::<ffi::keys::row_data::Wrap>()
     }
 
+    /// Whether the row continues a soft-wrapped row. Line insertion and
+    /// deletion clear it on the rows they move without changing the
+    /// previous row's [`Self::wrapped`].
+    ///
+    /// # Errors
+    ///
+    /// Fails if the library rejects the key.
+    pub fn wrap_continuation(self) -> Result<bool> {
+        self.get::<ffi::keys::row_data::WrapContinuation>()
+    }
+
     /// Whether any cell may carry grapheme clusters.
     ///
     /// # Errors
@@ -964,6 +975,16 @@ impl Row {
     /// Fails if the library rejects the key.
     pub fn has_styles(self) -> Result<bool> {
         self.get::<ffi::keys::row_data::Styled>()
+    }
+
+    /// The row's OSC 133 prompt mark.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the library rejects the key.
+    pub fn semantic_prompt(self) -> Result<RowSemanticPrompt> {
+        self.get::<ffi::keys::row_data::SemanticPrompt>()
+            .map(RowSemanticPrompt::from_ffi)
     }
 }
 

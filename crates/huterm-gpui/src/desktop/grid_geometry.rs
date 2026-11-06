@@ -32,6 +32,11 @@ impl GridGeometry {
         }
     }
 
+    /// The size of one cell.
+    pub(super) fn cell_size(&self) -> Size<Pixels> {
+        self.cell
+    }
+
     /// The grid that cell coordinates refer to: the displayed one, or the
     /// requested one before the first snapshot.
     pub(super) fn grid(&self) -> GridSize {

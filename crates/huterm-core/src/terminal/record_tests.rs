@@ -302,7 +302,7 @@ fn wait_for_ready(
     loop {
         let snapshot = client.read_snapshot().unwrap();
         let text: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         if text.contains("READY") {
             return snapshot;
         }
@@ -358,7 +358,7 @@ fn a_hidden_viewer_sees_a_start_and_its_end_as_separate_status_changes() {
     let text = |snapshot: &huterm_protocol::TerminalSnapshot| {
         snapshot
             .cells()
-            .map(|cell| cell.text.as_str())
+            .map(|cell| cell.text.displayed())
             .collect::<String>()
             .trim_end()
             .to_owned()

@@ -1,0 +1,92 @@
+diff --git a/src/event.rs b/src/event.rs
+index 5a1cdc41ce4837218a81faa5423a491806fca199..c4aecc8eeb91924368e8b58bd8a618daea656391 100644
+--- a/src/event.rs
++++ b/src/event.rs
+@@ -141,6 +141,7 @@ pub(crate) struct EventGenerator {
+     context: Rc<Context>,
+     events: Vec<QueuedEvent>,
+     text_changed: HashSet<NodeId>,
++    selected_text_changed: HashSet<NodeId>,
+     selected_rows_changed: HashSet<NodeId>,
+ }
+ 
+@@ -150,6 +151,7 @@ impl EventGenerator {
+             context,
+             events: Vec::new(),
+             text_changed: HashSet::new(),
++            selected_text_changed: HashSet::new(),
+             selected_rows_changed: HashSet::new(),
+         }
+     }
+@@ -190,6 +192,38 @@ impl EventGenerator {
+             },
+         );
+         self.text_changed.insert(id);
++        // A terminal's selection is usually a collapsed caret whose raw
++        // position stays on the same run and character while the rows
++        // before it change, so its UTF-16 offset moves without a
++        // selection change. Report one, as Terminal.app and iTerm2 do.
++        if node.role() == Role::Terminal && node.has_text_selection() {
++            self.enqueue_selected_text_change(id);
++        }
++    }
++
++    fn enqueue_selected_text_change(&mut self, node_id: NodeId) {
++        if self.selected_text_changed.insert(node_id) {
++            self.events.push(QueuedEvent::Generic {
++                node_id,
++                notification: unsafe { NSAccessibilitySelectedTextChangedNotification },
++            });
++        }
++    }
++
++    /// A terminal's caret child moving, such as a cursor shape change,
++    /// moves the insertion point that bounds queries report.
++    fn enqueue_caret_move_if_needed(&mut self, old_node: &Node, new_node: &Node) {
++        if new_node.role() != Role::Caret || old_node.raw_bounds() == new_node.raw_bounds() {
++            return;
++        }
++        if let Some(parent) = new_node.parent() {
++            if parent.role() == Role::Terminal
++                && parent.supports_text_ranges()
++                && parent.has_text_selection()
++            {
++                self.enqueue_selected_text_change(parent.id());
++            }
++        }
+     }
+ 
+     fn insert_text_change_if_needed(&mut self, node: &Node) {
+@@ -243,6 +277,7 @@ impl TreeChangeHandler for EventGenerator {
+         if old_node.raw_value() != new_node.raw_value() {
+             self.insert_text_change_if_needed(new_node);
+         }
++        self.enqueue_caret_move_if_needed(old_node, new_node);
+         let old_filter_result = filter(old_node);
+         let new_filter_result = filter(new_node);
+         if new_filter_result != FilterResult::Include {
+@@ -266,7 +301,11 @@ impl TreeChangeHandler for EventGenerator {
+             });
+         }
+         let new_value = new_wrapper.value();
+-        if old_wrapper.value() != new_value {
++        if old_wrapper.value() != new_value && new_node.role() == Role::Terminal {
++            // A terminal's value is its runs' text, whose change already
++            // posts one value change for it, then the selection change.
++            self.insert_text_change_if_needed_parent(*new_node);
++        } else if old_wrapper.value() != new_value {
+             if !new_node.is_focused() && new_value.is_some_and(|v| matches!(v, Value::Bool(_))) {
+                 // Bool value changed event for the focused node must come last
+                 // in order for VoiceOver to announce it. Otherwise, if we raise
+@@ -290,10 +329,7 @@ impl TreeChangeHandler for EventGenerator {
+             && new_wrapper.supports_text_ranges()
+             && old_wrapper.raw_text_selection() != new_wrapper.raw_text_selection()
+         {
+-            self.events.push(QueuedEvent::Generic {
+-                node_id,
+-                notification: unsafe { NSAccessibilitySelectedTextChangedNotification },
+-            });
++            self.enqueue_selected_text_change(node_id);
+         }
+         if new_node.value().is_some()
+             && new_node.live() != Live::Off

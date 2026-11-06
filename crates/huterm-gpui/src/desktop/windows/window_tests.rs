@@ -563,7 +563,7 @@ fn received(
 /// The text `window`'s view of `tab` shows, if it has a snapshot.
 fn screen(cx: &mut App, window: AnyWindowHandle, tab: TabId) -> Option<String> {
     let snapshot = terminal(cx, window, tab)?.read(cx).snapshot.clone()?;
-    Some(snapshot.cells().map(|cell| cell.text.as_str()).collect())
+    Some(snapshot.cells().map(|cell| cell.text.displayed()).collect())
 }
 
 /// Whether the projection still holds `tab`, so it was not closed.
@@ -653,7 +653,7 @@ fn describe(cx: &App) -> String {
 /// fixture prints after a host effect shows whether the terminal parsed it.
 fn describe_view(tab: TabId, view: &TerminalView) -> String {
     let text = view.snapshot.as_ref().map_or_else(String::new, |snapshot| {
-        snapshot.cells().map(|cell| cell.text.as_str()).collect()
+        snapshot.cells().map(|cell| cell.text.displayed()).collect()
     });
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let tail = text
@@ -1445,7 +1445,7 @@ fn a_revoked_view_is_replaced_in_place_and_keeps_focus_and_control(
         "the revoked viewer's focus to end",
         |snapshot| {
             let text: String =
-                snapshot.cells().map(|cell| cell.text.as_str()).collect();
+                snapshot.cells().map(|cell| cell.text.displayed()).collect();
             text.trim_end().ends_with("1b5b4f")
         },
     );
@@ -1681,7 +1681,7 @@ fn replacing_the_controlling_viewer_beside_another_size_resizes_twice(
 /// its `GO`.
 fn canonical_bytes(snapshot: &TerminalSnapshot) -> String {
     let text: String =
-        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        snapshot.cells().map(|cell| cell.text.displayed()).collect();
     text.split_once("GO")
         .map(|(_, echoed)| {
             echoed.chars().filter(char::is_ascii_hexdigit).collect()
@@ -2456,7 +2456,7 @@ fn moving_the_last_tab_to_a_sibling_workspace_detaches_the_window(
     let _client = harness.send_line(tab, "moved");
     harness.wait_canonical(tab, "the moved child to answer", |snapshot| {
         let text: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         text.contains("got:moved")
     });
 }
@@ -3143,7 +3143,7 @@ fn pane_screen(
         .read(cx)
         .snapshot
         .clone()?;
-    Some(snapshot.cells().map(|cell| cell.text.as_str()).collect())
+    Some(snapshot.cells().map(|cell| cell.text.displayed()).collect())
 }
 
 /// `window`'s pane views of `tab`, and the one it focuses.
@@ -5356,6 +5356,7 @@ fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
 }
 
+mod a11y;
 mod buttons;
 mod chrome;
 mod cross_window;

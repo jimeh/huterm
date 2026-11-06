@@ -33,7 +33,7 @@ async fn acknowledge(
             let text: String = reply
                 .snapshot
                 .cells()
-                .map(|cell| cell.text.as_str())
+                .map(|cell| cell.text.displayed())
                 .collect();
             if text.contains(&expected) {
                 return;

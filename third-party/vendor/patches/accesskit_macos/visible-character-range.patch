@@ -1,0 +1,32 @@
+diff --git a/src/node.rs b/src/node.rs
+index 16314b5b47ac91369e405adbea2161de9ecd2ec6..9c63a8f12f2430bd5c2c3438c37fa78c5ee60a2b 100644
+--- a/src/node.rs
++++ b/src/node.rs
+@@ -766,6 +766,19 @@ declare_class!(
+             .unwrap_or_else(|| NSRange::new(0, 0))
+         }
+ 
++        // A text node's document is the text it exposes, such as the
++        // rows a terminal displays, so all of it is visible.
++        #[method(accessibilityVisibleCharacterRange)]
++        fn visible_character_range(&self) -> NSRange {
++            self.resolve(|node| {
++                if node.supports_text_ranges() {
++                    return to_ns_range(&node.document_range());
++                }
++                NSRange::new(0, 0)
++            })
++            .unwrap_or_else(|| NSRange::new(0, 0))
++        }
++
+         #[method(accessibilityInsertionPointLineNumber)]
+         fn insertion_point_line_number(&self) -> NSInteger {
+             self.resolve(|node| {
+@@ -1222,6 +1235,7 @@ declare_class!(
+                 if selector == sel!(accessibilityNumberOfCharacters)
+                     || selector == sel!(accessibilitySelectedText)
+                     || selector == sel!(accessibilitySelectedTextRange)
++                    || selector == sel!(accessibilityVisibleCharacterRange)
+                     || selector == sel!(accessibilityInsertionPointLineNumber)
+                     || selector == sel!(accessibilityRangeForLine:)
+                     || selector == sel!(accessibilityRangeForPosition:)

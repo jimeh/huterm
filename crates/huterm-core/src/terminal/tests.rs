@@ -63,7 +63,7 @@ fn meta_roundtrip() {
         .unwrap();
     let snapshot = wait_for_text(&client, ":DONE");
     let text: String =
-        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        snapshot.cells().map(|cell| cell.text.displayed()).collect();
     let mut hex = String::new();
     for byte in expected {
         write!(hex, "{byte:02x}").unwrap();
@@ -531,7 +531,7 @@ fn lookup_only_failure_preserves_snapshot_runtime_pty_and_exited_history() {
             failed
                 .snapshot
                 .cells()
-                .map(|cell| cell.text.as_str())
+                .map(|cell| cell.text.displayed())
                 .collect::<String>()
                 .contains("READY")
         );
@@ -657,7 +657,7 @@ fn a_hangup_before_root_exit_ends_input_and_the_exit_completes_normally() {
     let client = test_client(&runtime);
     let snapshot = wait_for_text(&client, ";");
     let text: String =
-        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        snapshot.cells().map(|cell| cell.text.displayed()).collect();
     let tty = text
         .split_once("READY:")
         .and_then(|(_, rest)| rest.split_once(';'))
@@ -902,7 +902,7 @@ fn exited_history() {
     assert!(
         history
             .cells()
-            .map(|cell| cell.text.as_str())
+            .map(|cell| cell.text.displayed())
             .collect::<String>()
             .contains("history")
     );
@@ -982,7 +982,7 @@ fn ghostty_live_child_queries_seeded_presentation_before_first_snapshot() {
     assert_eq!(wait_for_exit(&client).code, Some(0));
     let snapshot = wait_for_text(&client, ":DONE");
     let text: String =
-        snapshot.cells().map(|cell| cell.text.as_str()).collect();
+        snapshot.cells().map(|cell| cell.text.displayed()).collect();
     assert!(
         text.contains(concat!(
             "QUERY:1b5d31303b7267623a653565352f653565352f653565351b5c",
@@ -1072,7 +1072,7 @@ fn mouse_reports_roundtrip() {
     assert_eq!(disabled.modes.mouse_tracking, MouseTracking::Disabled);
     let hex = "1b5b3c303b323b334d4b1b5b3c303b323b336d";
     let text: String =
-        disabled.cells().map(|cell| cell.text.as_str()).collect();
+        disabled.cells().map(|cell| cell.text.displayed()).collect();
     assert!(text.contains(&format!("HEX:{hex}:DONE")), "{text:?}");
     client
         .send_input(mouse(MouseAction::Press(MouseButton::Left)))
@@ -1625,7 +1625,7 @@ fn wait_for_text(client: &TestClient, needle: &str) -> Arc<TerminalSnapshot> {
     loop {
         let snapshot = client.read_snapshot().expect("snapshot should work");
         let text: String =
-            snapshot.cells().map(|cell| cell.text.as_str()).collect();
+            snapshot.cells().map(|cell| cell.text.displayed()).collect();
         if text.contains(needle) {
             return snapshot;
         }

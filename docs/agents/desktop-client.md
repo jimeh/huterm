@@ -1411,6 +1411,118 @@ mark (`tab_bar::mark_elements`, an `Image` named by `TabMark::name`), sits in a
 `div` that carries the id and role. Pane title bars are `Group`s named by the
 pane's title.
 
+### Terminal accessibility
+
+Each shown terminal's root `div().id("terminal")` is a read-only
+`Role::Terminal` node (an `AXTextArea` on macOS), named by its pane's title,
+which `WorkspaceView::configure_pane` pushes while assistive technology is
+active. GPUI keeps one `a11y_synthetic_children` closure per element, so that
+closure writes the states through `States::write` and pushes the published
+`desktop/terminal_a11y.rs` model: text runs for the displayed rows, a hidden
+`Role::Caret` child, and the selection. `States::apply` there would replace
+the text. A synthetic child carries its creator's element id in
+`debug_a11y_tree_json`, so tests skip `synthetic` nodes to find the element.
+
+A hidden tab's terminals leave the tree, and AccessKit's AT-SPI adapter
+reports each removed node's object `defunct`, which Orca then ignores for
+good. GPUI derives a node's ID from its element id path, so a terminal shown
+again would come back as that defunct object. The element id is therefore
+`("terminal", a11y_shows)`: `WorkspaceView::pane_elements` keeps the views
+the last frame drew and calls `TerminalView::a11y_shown` for a view drawn
+after a frame without it. Bump it only then, never per frame, since each new
+identity removes the node and adds another; synthetic children's IDs derive
+from the parent's, so they follow it. On macOS a re-shown terminal is a new
+element too.
+
+The model reads only the snapshot the frame paints, `GridGeometry` (the
+displayed grid clipped to the painted bounds), `Selection::range()`, the
+metrics, and the scale; it never calls the runtime or takes the Mux lock.
+Its text is Copy's text of the whole displayed grid, and a selection inside
+the grid reads Copy's text of that selection. `terminal_a11y::Document` runs
+Ghostty's plain formatter with `unwrap` and `trim`
+(`PageFormatter.formatWithStateEmit` in `formatter.zig`) over the displayed
+cells, step by step: an empty cell or a space is a blank, written only once
+text on its logical line follows; a line break is written only once text
+follows it; a row part with no text at all, which a written space is not, is
+a line break of its own. A row keeps the blanks pending before it only when
+its own wrap-continuation flag is set, whatever the row above says, as Copy
+reads it; core keeps that flag fresh (see
+[snapshot row flags](terminal-engines.md#runtime-behavior)). Selection ends
+move as Ghostty moves them: a start on a spacer to its wide character, a
+start on a spacer head past its row, and an end on a spacer head onto the
+wide character that wrapped. Concealed text
+stays, because Copy keeps it. Each character sits on the row that draws it,
+a grapheme cell is one character, and spacers add none. A row with no
+characters has no run, because AccessKit misbehaves next to an empty one
+(AccessKit #836 and #837). A displayed grid whose Copy text is empty, such as
+one `CSI 2J` cleared, would then have no runs: macOS would lose its text-range
+attributes and caret frame, and AT-SPI its Text interface. So its document is
+one line break, one cell wide, in the cursor's cell, or in the first cell when
+no cursor is displayed, and the caret is collapsed on it. This empty-document
+rule is the one place the document's text is not Copy's. A view that displays
+no rows or columns still has no runs and no selection. A run holds at most
+255 characters, because word starts are `u8`, and continues through
+`next_on_line`. The caret is the painter's `cursor_bounds`, clipped to
+the grid, with a hidden cursor's cell. macOS reads the caret's frame from that
+node, but AT-SPI clients read `getCharacterExtents(caretOffset)`, the
+character at the caret. So a cursor past its row's trimmed text moves that
+row's line break, or the document's last character, in geometry only: the
+line break takes the cursor's cell, and the last character, after which
+AccessKit draws the document's end with no width, stretches to the cursor's
+cell. The text never changes for it, since it must stay Copy's. A cursor on a
+row with no characters has no character there, so AT-SPI still places the
+caret on the row its offset falls on. With no selection, a word or line still
+expanding, or a selection Copy would copy nothing from, the caret is a
+collapsed selection where a selection starting at the cursor would start.
+Accessibility writes are ignored.
+
+`view_tests::a11y::the_accessible_text_matches_copy_for_random_selections`
+is the parity check: over real terminals whose screens hold written spaces,
+empty cells, wraps, wide characters, blank rows, IL and DL, ED 1 above a
+continuation, and EL above one after a snapshot, it compares the document and
+over a thousand seeded random selections with the runtime's Copy text.
+Change Copy and the model together, and extend its fixtures when a mismatch
+turns up. Its whole-grid comparison expects `"\n"` where Copy is
+empty, by the empty-document rule, and its fixtures include a cleared screen.
+One selection case cannot match, and the check exempts exactly it: Ghostty
+writes a selected row part with no text as a line break even when the row
+soft-wraps, such as the empty cells before a spacer head, and writes the
+blanks pending before such a row after that break. No range of a document
+holding the grid's Copy text reads that, so a selection that passes such a
+part before its last row reads the row's blanks as spaces instead. The
+check exempts a part whose row soft-wraps, for its line break, or whose next
+row continues it by its own flag, for the blanks that pend after that break.
+The two flags agree except below rows ED 1 reset, where only the next row's
+continuation remains, and on rows IL and DL move, where the row above still
+wraps but the moved row's continuation is cleared, so no blanks pend.
+
+GPUI rebuilds and sends the whole tree every frame, and AccessKit diffs it into
+notifications, so the pushed model must stay identical between publications.
+`terminal_a11y::Publisher` builds only while `window.is_a11y_active()`. Content
+alone republishes at most every 100 ms through one deferred wake, an executor
+timer rather than the frame clock, whose `Instant::now()` deadlines test
+executors cannot advance. Selection, geometry, metrics, scale, viewport, and
+grid size publish at once, an equal model publishes nothing, and nothing
+requests a frame for accessibility otherwise. A row's cells are cached by its
+`Arc<TerminalRow>`, displayed columns, cell width, and clip, and its runs by
+those and which of its characters the document holds; the formatter pass,
+placement, node IDs (keyed by displayed row and run), and the selection are
+rebuilt each time, since rows move between indices. The vendored
+`accesskit_macos` patches report the visible range, the caret's frame while the
+selection is collapsed (never at the focus of a selection with extent), and one
+`AXValueChanged` then `AXSelectedTextChanged` per terminal text change; see
+[the vendor README](../../third-party/vendor/README.md). The terminal must
+never post `AXLayoutChanged`.
+
+GPUI's macOS view is a subview of the window's content view and the window's
+first responder. AppKit resolves the application's `AXFocusedUIElement` from
+the first responder, so the AccessKit adapter must subclass GPUI's own view;
+upstream GPUI's `SubclassingAdapter::for_window` subclasses the content view,
+and the focused element stopped at the window even though the terminal node
+reported `AXFocused`. The vendored `accessibility-view-adapter` patch fixes
+it, and `smoke:macos-accessibility` fails if the focused element is anything
+but the terminal's `AXTextArea`.
+
 ## Tab bar layout
 
 The README describes the tab bar's options. These are the layout mechanics

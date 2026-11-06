@@ -6,13 +6,15 @@
 //! onto the element's own AccessKit node through
 //! `a11y_synthetic_children`, which hands the closure that node while it is
 //! being built. An element takes one such closure, so a component that
-//! needs these states sets them all through one [`States`].
+//! needs these states sets them all through one [`States`], and an element
+//! whose closure also adds children writes them there with
+//! [`States::write`].
 //!
 //! GPUI reports a node only for an element with an id and a role, so apply
 //! the states after `id` and `role`.
 
 use gpui::StatefulInteractiveElement;
-use gpui::accesskit::{Invalid, Live};
+use gpui::accesskit::{Invalid, Live, Node};
 
 /// The states one element reports beyond GPUI's setters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,23 +50,29 @@ impl States {
             return element;
         }
         element.a11y_synthetic_children(move |builder| {
-            let node = builder.parent_node();
-            if self.disabled {
-                node.set_disabled();
-            }
-            if self.read_only {
-                node.set_read_only();
-            }
-            if self.invalid {
-                node.set_invalid(Invalid::True);
-            }
-            if self.modal {
-                node.set_modal();
-            }
-            if self.live {
-                node.set_live(Live::Polite);
-            }
+            self.write(builder.parent_node());
         })
+    }
+
+    /// Writes these states onto an element's node from inside the
+    /// element's own `a11y_synthetic_children` closure, which can then add
+    /// children too.
+    pub fn write(self, node: &mut Node) {
+        if self.disabled {
+            node.set_disabled();
+        }
+        if self.read_only {
+            node.set_read_only();
+        }
+        if self.invalid {
+            node.set_invalid(Invalid::True);
+        }
+        if self.modal {
+            node.set_modal();
+        }
+        if self.live {
+            node.set_live(Live::Polite);
+        }
     }
 }
 
@@ -128,6 +136,33 @@ mod tests {
             assert_eq!(aria["invalid"], "True");
             assert_eq!(aria["modal"], true);
             assert_eq!(aria["live"], "Polite");
+        });
+    }
+
+    #[gpui::test]
+    fn written_states_share_the_closure_with_children(cx: &mut TestAppContext) {
+        let (_, cx) = host(cx, |_, _| {
+            div()
+                .id("text")
+                .role(gpui::Role::Terminal)
+                .a11y_synthetic_children(|builder| {
+                    States {
+                        read_only: true,
+                        ..States::default()
+                    }
+                    .write(builder.parent_node());
+                    let id = builder.synthetic_node_id("run");
+                    let mut run =
+                        gpui::accesskit::Node::new(gpui::Role::TextRun);
+                    run.set_value("text");
+                    builder.push_child(id, run);
+                })
+                .into_any_element()
+        });
+        cx.update(|window, _| {
+            let node = a11y_node(window, "text");
+            assert_eq!(node["aria"]["read_only"], true, "{node}");
+            assert_eq!(node["children"].as_array().map(Vec::len), Some(1));
         });
     }
 

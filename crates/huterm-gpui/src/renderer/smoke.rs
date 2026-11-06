@@ -393,7 +393,10 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
                 populate_wide(&mut cells);
             }
             style_row(row, &mut cells);
-            Arc::new(TerminalRow { cells })
+            Arc::new(TerminalRow {
+                cells,
+                ..TerminalRow::default()
+            })
         })
         .collect();
     TerminalSnapshot {

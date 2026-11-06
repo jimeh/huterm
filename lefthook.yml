@@ -28,6 +28,7 @@ pre-commit:
       exclude:
         # Release Please writes the changelog in its own format.
         - "CHANGELOG.md"
+        - "third-party/vendor/accesskit_macos-0.26.3/**"
         - "third-party/vendor/gpui-pre-0.3.11/**"
         - "third-party/vendor/global-hotkey-0.9.0/**"
         - "third-party/vendor/portable-pty-0.9.0/**"

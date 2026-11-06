@@ -148,6 +148,34 @@
           "description": "Let callers set the child's RLIMIT_NOFILE between fork and exec, so a parent that raised its own soft limit can restore the original for children."
         }
       ]
+    },
+    {
+      "name": "accesskit_macos",
+      "version": "0.26.3",
+      "url": "https://static.crates.io/crates/accesskit_macos/accesskit_macos-0.26.3.crate",
+      "sha256": "ce02dc63b43f0c9296af9ac946312a2dc8814427d7a64d2d600971dac55b6076",
+      "upstream": {
+        "repository": "https://github.com/AccessKit/accesskit",
+        "revision": "c88605b96d04431f9c3c792464a0f2f253480e94",
+        "path": "platforms/macos"
+      },
+      "patches": [
+        {
+          "name": "visible-character-range",
+          "file": "patches/accesskit_macos/visible-character-range.patch",
+          "description": "Answer accessibilityVisibleCharacterRange with the whole document range for nodes that support text ranges, and allow the selector for them, so AX clients can read the range a viewport-only terminal shows."
+        },
+        {
+          "name": "caret-frame",
+          "file": "patches/accesskit_macos/caret-frame.patch",
+          "description": "While the selection is collapsed, answer accessibilityFrameForRange: for a zero-length range at it with the bounds of the node's Role::Caret child when it has one, so the caret reports a non-empty rectangle; a selection with extent, and every other range, keeps AccessKit's answer."
+        },
+        {
+          "name": "terminal-selection-with-text",
+          "file": "patches/accesskit_macos/terminal-selection-with-text.patch",
+          "description": "For a Role::Terminal node, post one ValueChanged per text change, from its runs or its own value, then SelectedTextChanged when it has a selection; also post SelectedTextChanged when its caret child's bounds change. A collapsed caret's UTF-16 offset can move while its raw position does not. Never post LayoutChanged."
+        }
+      ]
     }
   ]
 }

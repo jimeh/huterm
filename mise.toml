@@ -909,6 +909,7 @@ mkdir -p target/debug
 xcrun swiftc scripts/quake-witness.swift -o target/debug/quake-witness
 xcrun swiftc scripts/clipboard-witness.swift -o target/debug/clipboard-witness
 xcrun swiftc scripts/hid-pointer.swift -o target/debug/hid-pointer
+xcrun swiftc scripts/ax-probe.swift -o target/debug/ax-probe
 '''
 
 [tasks."smoke:macos-quake"]
@@ -946,6 +947,19 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example native_input_smoke
 bun scripts/host-smoke-lock.ts bun scripts/check-native-input.ts target/debug/examples/native_input_smoke
+'''
+
+[tasks."smoke:macos-accessibility"]
+depends = ["ghostty:prepare"]
+description = "Verify the terminal's macOS Accessibility text, caret geometry, and notifications with an external AX client"
+run = '''
+if [ "$(uname -s)" != Darwin ]; then
+  echo "Accessibility smoke skipped: NSAccessibility requires macOS"
+  exit 0
+fi
+bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example accessibility_smoke
+mise run build:swift
+bun scripts/host-smoke-lock.ts bun scripts/check-accessibility.ts target/debug/examples/accessibility_smoke target/debug/ax-probe
 '''
 
 [tasks."smoke:macos-clipboard"]

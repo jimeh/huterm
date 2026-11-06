@@ -64,7 +64,9 @@ workflow below. So are the font crates `huterm-gpui` pins to GPUI's versions:
 moves those pins to the versions it resolves, along with the `gpui-pre-apple`
 and `gpui-pre-wgpu` dev-dependencies that the font registration tests use.
 A bump that changes lint behavior, such as `syn`, may also need code changes
-before Clippy passes.
+before Clippy passes. AccessKit's macOS adapter, `accesskit_macos`, is vendored
+at the version GPUI resolves with Huterm's terminal accessibility patches, so a
+GPUI upgrade that moves AccessKit migrates those patches too.
 
 ## Bundled terminal font
 
