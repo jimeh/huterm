@@ -108,6 +108,13 @@ one. Do not fold a check into a preparation step: `terminfo:check`
 once ran inside the smoke dependency step, where its failure blocked every smoke
 and read as a preparation failure.
 
+The `PR description` workflow stays out of `ci.yml`. It needs the
+`pull_request` `edited` activity type, and adding that to CI would restart and
+cancel every CI job whenever someone edits a title or description. Its script
+reads the title and description from the event payload file at
+`GITHUB_EVENT_PATH`; never interpolate either into a `run:` script. See
+[release notes](releases.md#release-notes).
+
 Keep the final `Verify Linux x86_64` and `Verify macOS arm64` check names aligned
 with the repository ruleset. These gates require every validation job and disable
 matrix fail-fast so each reports its own failure instead of cancelling its sibling.

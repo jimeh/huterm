@@ -694,6 +694,12 @@ description = "Run Sparkle's generate_appcast on a stub app and validate its sig
 depends = ["sparkle:prepare"]
 run = "bun scripts/release-macos.ts check-embedded-notes"
 
+[tasks."release:check-pr-description"]
+description = "Check that Release Please can parse a pull request's squash commit; pass --event <json> or --title with --body-file"
+depends = ["scripts:install"]
+# Mise appends task arguments to the command.
+run = "bun scripts/pr-description.ts"
+
 [tasks."release-notes:preview"]
 description = "Write Sparkle's HTML release notes from CHANGELOG.md; accepts --version, --installed, and --output"
 run = "bun scripts/release-notes.ts"

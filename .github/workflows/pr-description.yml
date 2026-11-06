@@ -1,0 +1,40 @@
+name: PR description
+
+# Separate from CI so that editing a description reruns only this check.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: pr-description-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  MISE_AUTO_INSTALL: 'false'
+
+jobs:
+  check:
+    name: PR description
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Bun with Mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          cache: false
+          install_args: bun
+          version: 2026.10.25
+
+      # The script reads the title and description from the event payload at
+      # GITHUB_EVENT_PATH, so neither passes through an expression.
+      - name: Check that Release Please can parse the squash commit
+        run: mise run release:check-pr-description
