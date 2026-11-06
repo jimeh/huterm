@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.30.0](https://github.com/jimeh/huterm/compare/v0.29.0...v0.30.0) (2026-11-06)
+
+
+### Features
+
+* let VoiceOver and other accessibility tools read terminal text and the cursor position ([#415](https://github.com/jimeh/huterm/issues/415)) ([05ec060](https://github.com/jimeh/huterm/commit/05ec0601d06d1042c434b120f4269db3c8d84a57))
+* tear panes off into new windows, and show a drag preview outside Huterm's windows on macOS ([#416](https://github.com/jimeh/huterm/issues/416)) ([8f8934c](https://github.com/jimeh/huterm/commit/8f8934cddee5806091772f5be4d760c252d30074))
+
 ## [0.29.0](https://github.com/jimeh/huterm/compare/v0.28.0...v0.29.0) (2026-11-06)
 
 
