@@ -14007,7 +14007,7 @@ impl Render for WorkspaceView {
             }
         }
         *self.drawn_tear_off.borrow_mut() = None;
-        if self.tear_off_pill(cx) {
+        if self.bar_tear_off_pill(cx) {
             let bounds = self.tear_off_pill_bounds(&strip, &layout);
             let floating = self.floating_colors();
             *self.drawn_tear_off.borrow_mut() = Some(bounds);

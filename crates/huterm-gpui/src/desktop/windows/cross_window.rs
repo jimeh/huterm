@@ -316,6 +316,18 @@ impl WorkspaceView {
         self.tear_off_cue(cx) && !drag_preview::visible(cx)
     }
 
+    /// The tab bar's pill marks a tab tear-off only; a pane's cue is S1 on
+    /// the pane itself.
+    pub(super) fn bar_tear_off_pill(&self, cx: &App) -> bool {
+        self.tear_off_pill(cx)
+            && cx
+                .global::<Desktop>()
+                .cross
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.payload.pane.is_none())
+    }
+
     /// Whether `payload` can leave this window for a new one: a tab when
     /// the window has others, a pane unless it is alone in the only tab.
     pub(super) fn tears_off(&self, payload: &Payload) -> bool {
