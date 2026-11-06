@@ -9,7 +9,8 @@ Keep each coherent fix together. GPUI's core crate has hidden-window creation,
 file-drop pointer-modality, test-window accessibility, keystroke held-flag, and
 App-free keybinding loader patches, its Linux crate has X11 file-drop,
 fullscreen-state, and key-repeat patches, and its macOS crate has
-offscreen-screen and per-window frame-constraint patches.
+offscreen-screen and per-window frame-constraint patches. AccessKit's macOS
+adapter has the terminal text patches described below.
 
 Normal Cargo builds use the fully patched vendored source through
 `[patch.crates-io]`. They do not apply patches. Verify the recipe with:
@@ -324,3 +325,40 @@ both platforms' physical maps on either host; native input smokes exercise the
 real event paths. Drop each patch when a reviewed GPUI snapshot exposes and
 populates equivalent identity without changing binding equality. Rerun both
 platforms' input smokes when removing them.
+
+## AccessKit macOS terminal text
+
+`accesskit_macos-0.26.3` is the published MIT OR Apache-2.0 crate from
+AccessKit's `platforms/macos` directory, the version GPUI 0.3.10 resolves. The
+archive SHA-256 is
+`ce02dc63b43f0c9296af9ac946312a2dc8814427d7a64d2d600971dac55b6076`; its
+upstream revision is `c88605b96d04431f9c3c792464a0f2f253480e94`. All other
+published files are unchanged. Huterm's terminal node is a `Role::Terminal`
+whose text runs are the displayed rows (see the terminal accessibility rules
+in [the desktop client guide](../../docs/agents/desktop-client.md#terminal-accessibility)).
+Three patches complete what assistive technology needs from it:
+
+- `visible-character-range`: `accessibilityVisibleCharacterRange` returns the
+  document range of a node that supports text ranges, and the selector is
+  allowed for it. The terminal's document is the displayed grid, so all of it
+  is visible.
+- `caret-frame`: `accessibilityFrameForRange:` for a zero-length range at the
+  selection focus returns the bounds of the node's `Role::Caret` child, through
+  the usual `to_ns_rect` conversion, when it has one. Upstream answers a
+  zero-width rectangle that `NSIsEmptyRect` rejects, so clients that place UI
+  at the caret found nothing. Every other range, and every node without a
+  caret child, keeps AccessKit's answer.
+- `terminal-selection-with-text`: for a `Role::Terminal` node, a text change
+  posts one `AXValueChanged`, whether its runs or its own value changed, then
+  `AXSelectedTextChanged` when it has a selection, as Terminal.app and iTerm2
+  do; a change to the caret child's bounds posts `AXSelectedTextChanged` too.
+  A collapsed caret keeps its raw run position while earlier rows change, so
+  its UTF-16 offset moves without a selection change. Upstream also posted a
+  second `AXValueChanged` from the node's own value. No path posts
+  `AXLayoutChanged`. Other roles keep upstream behavior.
+
+The crate's behavior needs AppKit, so `smoke:macos-accessibility` is its check
+(see [the smokes guide](../../docs/agents/desktop-smokes.md#accessibility-smoke)).
+Propose the patches upstream once confirmed, and drop each when a reviewed
+release, or a GPUI snapshot that moves to a newer AccessKit, supplies the
+behavior; a GPUI snapshot that bumps AccessKit needs this vendoring revisited.

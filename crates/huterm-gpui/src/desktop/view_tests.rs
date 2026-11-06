@@ -1185,3 +1185,5 @@ fn a_word_expanding_when_its_viewer_is_revoked_completes_through_the_replacement
     });
     harness.wait_for_selected("beta.gamma");
 }
+
+mod a11y;

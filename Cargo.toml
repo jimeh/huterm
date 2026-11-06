@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-ipc-sim", "crates/huterm-procinfo", "crates/huterm-protocol", "crates/huterm-state", "crates/huterm-ui"]
-exclude = ["third-party/vendor/global-hotkey-0.9.0", "third-party/vendor/gpui-pre-0.3.10", "third-party/vendor/gpui-pre-linux-0.3.10", "third-party/vendor/gpui-pre-macos-0.3.10", "third-party/vendor/portable-pty-0.9.0"]
+exclude = ["third-party/vendor/accesskit_macos-0.26.3", "third-party/vendor/global-hotkey-0.9.0", "third-party/vendor/gpui-pre-0.3.10", "third-party/vendor/gpui-pre-linux-0.3.10", "third-party/vendor/gpui-pre-macos-0.3.10", "third-party/vendor/portable-pty-0.9.0"]
 resolver = "2"
 
 [workspace.package]
@@ -85,6 +85,7 @@ main = true
 workspace = true
 
 [patch.crates-io]
+accesskit_macos = { path = "third-party/vendor/accesskit_macos-0.26.3" }
 global-hotkey = { path = "third-party/vendor/global-hotkey-0.9.0" }
 gpui-pre = { path = "third-party/vendor/gpui-pre-0.3.10" }
 gpui-pre-linux = { path = "third-party/vendor/gpui-pre-linux-0.3.10" }

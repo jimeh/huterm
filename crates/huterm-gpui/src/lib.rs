@@ -146,6 +146,13 @@ pub fn run_presentation_query_smoke() -> anyhow::Result<()> {
     desktop::presentation_query_smoke::run()
 }
 
+/// Runs the production desktop with the terminal accessibility smoke probe.
+#[doc(hidden)]
+#[cfg(target_os = "macos")]
+pub fn run_accessibility_smoke() -> anyhow::Result<()> {
+    desktop::accessibility_smoke::run()
+}
+
 /// Runs the production desktop with the command-palette smoke probe.
 #[doc(hidden)]
 #[cfg(any(target_os = "macos", target_os = "linux"))]

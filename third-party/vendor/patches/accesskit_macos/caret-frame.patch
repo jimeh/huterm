@@ -1,0 +1,36 @@
+diff --git a/src/node.rs b/src/node.rs
+index 9c63a8f12f2430bd5c2c3438c37fa78c5ee60a2b..51db2f14e73714678e21954e6486016b5362b552 100644
+--- a/src/node.rs
++++ b/src/node.rs
+@@ -956,6 +956,11 @@ declare_class!(
+                 };
+ 
+                 if node.supports_text_ranges() {
++                    if range.length == 0 {
++                        if let Some(rect) = caret_bounds(node, range.location) {
++                            return to_ns_rect(&view, rect);
++                        }
++                    }
+                     if let Some(range) = from_ns_range(node, range) {
+                         let rects = range.bounding_boxes();
+                         if let Some(rect) =
+@@ -1315,6 +1320,19 @@ declare_class!(
+     }
+ );
+ 
++/// The bounds of `node`'s caret child when `index` is the selection focus.
++/// A collapsed range has no width of its own, so the caret child, when
++/// the provider supplies one, says where the insertion point is drawn.
++fn caret_bounds(node: &Node, index: usize) -> Option<accesskit::Rect> {
++    let focus = node.text_selection_focus()?;
++    if focus.to_global_utf16_index() != index {
++        return None;
++    }
++    node.children()
++        .find(|child| child.role() == Role::Caret)?
++        .bounding_box()
++}
++
+ impl PlatformNode {
+     pub(crate) fn new(context: Weak<Context>, node_id: NodeId) -> Id<Self> {
+         let this = Self::alloc().set_ivars(PlatformNodeIvars { context, node_id });

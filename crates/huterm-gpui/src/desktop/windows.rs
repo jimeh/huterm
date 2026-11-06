@@ -1,4 +1,7 @@
 #[cfg(target_os = "macos")]
+#[path = "accessibility_smoke.rs"]
+pub(crate) mod accessibility_smoke;
+#[cfg(target_os = "macos")]
 #[path = "clipboard_smoke.rs"]
 pub(crate) mod clipboard_smoke;
 #[path = "fullscreen_smoke.rs"]
@@ -5305,7 +5308,7 @@ impl WorkspaceView {
             };
             let terminal = rect.map_or(bounds, |rect| rect.terminal);
             let id = pane.pane;
-            self.configure_pane_paint(&pane.view, id == focused, shown, cx);
+            self.configure_pane(tab, pane, id == focused, shown, window, cx);
             let grab = grabs.then(|| self.grab_layer(tab, pane, terminal, cx));
             elements.push(
                 div()
@@ -5481,6 +5484,25 @@ impl WorkspaceView {
     /// any background opacity.
     fn floating_colors(&self) -> TabColors {
         TabColors::new(&self.config.theme)
+    }
+
+    /// Sets how `pane` paints, and, while assistive technology is active,
+    /// names its accessibility node like its title bar. The view renders
+    /// after this.
+    fn configure_pane(
+        &self,
+        tab: &TabView,
+        pane: &PaneView,
+        focused: bool,
+        shown: usize,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if window.is_a11y_active() {
+            let label = tab.pane_label(pane, self.config.tabs, cx);
+            pane.view.update(cx, |view, _| view.a11y_label = label);
+        }
+        self.configure_pane_paint(&pane.view, focused, shown, cx);
     }
 
     fn configure_pane_paint(

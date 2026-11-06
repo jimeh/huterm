@@ -1388,6 +1388,57 @@ mark (`tab_bar::mark_elements`, an `Image` named by `TabMark::name`), sits in a
 `div` that carries the id and role. Pane title bars are `Group`s named by the
 pane's title.
 
+### Terminal accessibility
+
+Each shown terminal's root `div().id("terminal")` is a read-only
+`Role::Terminal` node (an `AXTextArea` on macOS), named by its pane's title,
+which `WorkspaceView::configure_pane` pushes while assistive technology is
+active. GPUI keeps one `a11y_synthetic_children` closure per element, so that
+closure writes the states through `States::write` and pushes the published
+`desktop/terminal_a11y.rs` model: text runs for the displayed rows, a hidden
+`Role::Caret` child, and the selection. `States::apply` there would replace
+the text. A synthetic child carries its creator's element id in
+`debug_a11y_tree_json`, so tests skip `synthetic` nodes to find the element.
+
+The model reads only the snapshot the frame paints, `GridGeometry` (the
+displayed grid clipped to the painted bounds), `Selection::range()`, the
+metrics, and the scale; it never calls the runtime or takes the Mux lock.
+Each grapheme cell is one character and spacers add none. Rows lose trailing
+blanks as Copy trims them, a hard row ends in its own `\n`, and a soft-wrapped
+row has none. No run may be empty (AccessKit #836 and #837), so the last row
+has no `\n` and an empty last row is one space. A run holds at most 255
+characters, because word starts are `u8`, and continues through
+`next_on_line`. Concealed text stays, because Copy keeps it;
+`view_tests::a11y::the_accessible_selection_reads_what_copy_copies` pins that
+agreement, so change Copy and the model together. The caret is the painter's
+`cursor_bounds`, clipped to the grid, with a hidden cursor's cell; the selection
+is the pointer selection clipped to the displayed rows, else the caret, and a
+word or line still expanding counts as none. Accessibility writes are ignored.
+
+GPUI rebuilds and sends the whole tree every frame, and AccessKit diffs it into
+notifications, so the pushed model must stay identical between publications.
+`terminal_a11y::Publisher` builds only while `window.is_a11y_active()`. Content
+alone republishes at most every 100 ms through one deferred wake, an executor
+timer rather than the frame clock, whose `Instant::now()` deadlines test
+executors cannot advance. Selection, geometry, metrics, scale, viewport, and
+grid size publish at once, an equal model publishes nothing, and nothing
+requests a frame for accessibility otherwise. Rows are cached by their
+`Arc<TerminalRow>`, displayed columns, cell width, clip, and last-row flag;
+placement, node IDs (keyed by displayed row and run), and the selection are
+rebuilt each time, since rows move between indices. The vendored
+`accesskit_macos` patches report the visible range, the caret's frame, and one
+`AXValueChanged` then `AXSelectedTextChanged` per terminal text change; see
+[the vendor README](../../third-party/vendor/README.md). The terminal must
+never post `AXLayoutChanged`.
+
+GPUI's macOS view is a subview of the window's content view and its first
+responder, while GPUI gives AccessKit's `SubclassingAdapter::for_window` the
+window, which subclasses the content view. AppKit resolves the application's
+`AXFocusedUIElement` from the first responder, so it stops at the window even
+though the terminal node reports `AXFocused`. Subclassing GPUI's own view
+fixes it; until that GPUI change lands, `smoke:macos-accessibility` reports
+the gap and fails.
+
 ## Tab bar layout
 
 The README describes the tab bar's options. These are the layout mechanics

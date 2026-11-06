@@ -339,6 +339,40 @@ and the step passed with the search starting at the top. Window tests drive
 the preview through `DragPreview::hooks`, since test windows have no `AppKit`
 window.
 
+## Accessibility smoke
+
+`mise run smoke:macos-accessibility` checks the terminal's macOS Accessibility
+surface from outside the app, as VoiceOver and voice-control tools read it. It
+runs on the host only, under the host smoke lock, and stays out of CI, whose
+runners grant no Accessibility permission; the process running it, such as
+the agent's terminal host, needs Accessibility trust. `scripts/ax-probe.swift`
+(built by `build:swift`) is the client: `read` reports the focused element's
+role, `AXValue`, `AXVisibleCharacterRange` and its string, the zero-length
+`AXSelectedTextRange` and its `AXBoundsForRange`, and `AXRangeForPosition` and
+`AXRangeForLine` for given points and lines; `observe` prints each
+`AXValueChanged`, `AXSelectedTextChanged`, focus, and `AXLayoutChanged`
+notification; `tree` dumps the elements for diagnosis. The
+`accessibility_smoke` example publishes, in global screen points with a
+top-left origin, the grid and the painted cursor rectangle (from `AppKit`'s
+view-to-screen conversion, independent of AccessKit's), each displayed row's
+cells, and the published model's text, and takes `activate:`, `input:`,
+`select:`, `scroll:`, and `resize:` commands through the file protocol.
+
+`scripts/check-accessibility.ts` activates the window first: the application's
+focused element, which wakes AccessKit, is answered only by its key window. Its
+fixture shell runs `cat` in raw mode, so input draws text and moves the cursor,
+and it ends that child before quitting, since a live child makes Quit ask for
+confirmation. Steps that must post no notification wait 400 ms after the frame
+that would have posted one, because notifications cross processes without a
+completion signal. The check compares the caret's bounds with the painted
+cursor for block and beam cursors on ASCII and wide characters, checks edge
+queries before and after scrolling and resizing, counts notifications for
+output, cursor movement, selection, scrolling, resizing, and an equivalent
+snapshot (which must post none), and bounds a 20 ms output flood to one
+publication per 100 ms plus one. It fails while the application's
+`AXFocusedUIElement` stops at the window; see the terminal accessibility rules
+in [the desktop client guide](desktop-client.md#terminal-accessibility).
+
 ## AppKit fixtures
 
 `smoke:macos-palette` drives the title strip with real HID events from

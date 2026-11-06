@@ -1269,7 +1269,7 @@ fn cursor_fill(color: Rgb, shape: CursorShape) -> Hsla {
     })
 }
 
-fn cursor_bounds(
+pub(super) fn cursor_bounds(
     grid_origin: Point<Pixels>,
     cursor: Cursor,
     metrics: GridMetrics,

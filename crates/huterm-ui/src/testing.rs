@@ -172,13 +172,17 @@ pub(crate) fn a11y_nodes(window: &Window) -> Vec<Value> {
 }
 
 /// The node the element named `id` reported, panicking with the tree when
-/// it reported none. The dump spells element ids in their `Debug` form.
+/// it reported none. The dump spells element ids in their `Debug` form, and
+/// gives the element's synthetic children its id too.
 pub(crate) fn a11y_node(window: &Window, id: &str) -> Value {
     let nodes = a11y_nodes(window);
     let spelled = format!("{:?}", gpui::ElementId::Name(id.to_owned().into()));
     nodes
         .iter()
-        .find(|node| node["element_id"].as_str() == Some(spelled.as_str()))
+        .find(|node| {
+            node["element_id"].as_str() == Some(spelled.as_str())
+                && node["synthetic"] != true
+        })
         .cloned()
         .unwrap_or_else(|| {
             panic!("no accessibility node for `{id}` in {nodes:#?}")
