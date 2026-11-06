@@ -72,8 +72,8 @@ export async function runSmokeProcess(command: string[], options: {
       // not yet reaped. Treat only that as finished; a live member still fails.
       if (code === "EPERM" && process.platform !== "win32") {
         const members = processGroupMembers(child.pid);
-        event("signal-failed", { signal: value, code, members });
-        if (members.every((member) => member.state.startsWith("Z"))) return;
+        event("signal-failed", { signal: value, code, members: members ?? "ps failed" });
+        if (members?.length && members.every((member) => member.state.startsWith("Z"))) return;
       }
       throw error;
     }
@@ -240,9 +240,13 @@ export function processGroupThreads(group: number): ThreadState[] {
   });
 }
 
-/** Every process in `group` with its `ps` state, such as `S`, `R`, or `Z`. */
-export function processGroupMembers(group: number): { pid: number; state: string }[] {
+/**
+ * Every process in `group` with its `ps` state, such as `S`, `R`, or `Z`, or
+ * undefined when `ps` fails, so a caller never mistakes no answer for no members.
+ */
+export function processGroupMembers(group: number): { pid: number; state: string }[] | undefined {
   const result = Bun.spawnSync(["ps", "-A", "-o", "pid=,pgid=,stat="], { stdout: "pipe", stderr: "ignore", timeout: 5_000 });
+  if (result.exitCode !== 0) return undefined;
   return result.stdout.toString().split("\n").flatMap((line) => {
     const [pid, pgid, state] = line.trim().split(/\s+/);
     return Number(pgid) === group && pid && state ? [{ pid: Number(pid), state }] : [];

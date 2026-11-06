@@ -25,21 +25,20 @@ import {
 export type Mode = "workspace" | "releasesafe";
 
 const RELEASESAFE_TARGET = "target/ghostty-releasesafe";
+export const RELEASESAFE_CONFIG = ".config/releasesafe.toml";
 
 /** The nextest arguments for `mode`, before the profile and any filters. */
 export function nextestArgs(mode: Mode): string[] {
   if (mode === "workspace") {
     return ["nextest", "run", "--workspace", "--all-targets", "--features", "huterm-gpui/test-support", "--locked", "--no-fail-fast"];
   }
-  // ReleaseSafe keeps Zig's bounds, overflow, and tag checks, which ReleaseFast
-  // turns into undefined behavior. `.cargo/config.toml` forces ReleaseFast, so
-  // both overrides are required; dropping one silently restores ReleaseFast.
+  // `.config/releasesafe.toml` forces ReleaseSafe over `.cargo/config.toml`'s
+  // forced ReleaseFast; without it these tests silently run ReleaseFast.
   return [
     "nextest", "run", "--locked", "--no-fail-fast", "--all-targets",
     "-p", "huterm-ghostty", "-p", "huterm-core",
     "--target-dir", RELEASESAFE_TARGET,
-    "--config", 'env.HUTERM_GHOSTTY_OPTIMIZE.value="ReleaseSafe"',
-    "--config", "env.HUTERM_GHOSTTY_OPTIMIZE.force=true",
+    "--config", RELEASESAFE_CONFIG,
   ];
 }
 
@@ -178,6 +177,11 @@ export async function runWithRetries(options: {
       if (!passed) next.push(result);
     }
     if (!next.length) {
+      // Passing cases do not outweigh a failed process, such as an interrupted rerun.
+      if (rerun.exitCode !== 0) {
+        console.error(`test-rust: the rerun exited ${rerun.exitCode} although its tests passed; failing`);
+        return rerun.exitCode;
+      }
       console.error(`test-rust: every failure passed on rerun; see the known-flake annotations`);
       return 0;
     }

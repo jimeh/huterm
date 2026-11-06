@@ -72,10 +72,16 @@ pub(crate) fn snapshot_text(snapshot: &TerminalSnapshot) -> String {
 /// does not make a name unique.
 pub(crate) fn scratch_dir(prefix: &str) -> std::path::PathBuf {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    // Nextest runs each test in its own process, so the sequence alone
+    // repeats across processes; the clock keeps a reused PID from meeting
+    // a directory a killed test left behind.
     let directory = std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}",
+        "{prefix}-{}-{}-{}",
         std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
     ));
     std::fs::create_dir(&directory).unwrap();
     directory

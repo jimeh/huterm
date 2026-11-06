@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFlake, readReport, type Flake } from "./flakes.ts";
-import { filterset, followUpCommands, nextestArgs, parseJunit, runWithRetries, type RunResult, type TestCase } from "./test-rust.ts";
+import { filterset, followUpCommands, nextestArgs, parseJunit, RELEASESAFE_CONFIG, runWithRetries, type RunResult, type TestCase } from "./test-rust.ts";
 
 function rust(id: string, test: string, match: string, status = "open"): Flake {
   const text = [
@@ -93,6 +93,14 @@ describe("nextest retries", () => {
     expect(readReport(env)[0]!.reason).toContain("recurred after its fix");
   });
 
+  test("a rerun whose process fails does not count as a pass", async () => {
+    const { status } = await run([
+      { exitCode: 100, cases: [closeTimeout] },
+      { exitCode: 130, cases: [passed("window_tests::close")] },
+    ]);
+    expect(status).toBe(130);
+  });
+
   test("build failures, missing reports, and empty runs never rerun", async () => {
     expect((await run([{ exitCode: 101 }])).calls).toHaveLength(1);
     expect((await run([{ exitCode: 4, cases: [] }])).status).toBe(4);
@@ -123,11 +131,12 @@ describe("command modes", () => {
     expect(followUpCommands("workspace")).toEqual([["cargo", "test", "--locked", "-p", "huterm-ghostty", "--doc"]]);
   });
 
-  test("releasesafe mode keeps both optimize overrides and its target directory", () => {
+  test("releasesafe mode forces ReleaseSafe through its config file and keeps its target directory", () => {
     const args = nextestArgs("releasesafe");
-    expect(args).toContain('env.HUTERM_GHOSTTY_OPTIMIZE.value="ReleaseSafe"');
-    expect(args).toContain("env.HUTERM_GHOSTTY_OPTIMIZE.force=true");
-    expect(args.join(" ")).toContain("-p huterm-ghostty -p huterm-core --target-dir target/ghostty-releasesafe");
+    expect(args.join(" ")).toContain(`-p huterm-ghostty -p huterm-core --target-dir target/ghostty-releasesafe --config ${RELEASESAFE_CONFIG}`);
+    // Cargo applies this file over .cargo/config.toml's forced ReleaseFast.
+    const config = Bun.TOML.parse(readFileSync(join(import.meta.dir, "..", RELEASESAFE_CONFIG), "utf8")) as { env: Record<string, unknown> };
+    expect(config.env.HUTERM_GHOSTTY_OPTIMIZE).toEqual({ value: "ReleaseSafe", force: true });
     expect(followUpCommands("releasesafe")).toEqual([]);
   });
 });

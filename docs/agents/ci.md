@@ -125,9 +125,12 @@ matrix fail-fast so each reports its own failure instead of cancelling its sibli
 `scripts/test-rust.ts`, which runs cargo-nextest with the profile in
 `.config/nextest.toml` (`ci` when `CI` is set) and then huterm-ghostty's
 doctests, which nextest cannot run. Its two modes keep the earlier
-`cargo test` arguments; the ReleaseSafe mode must keep both
-`HUTERM_GHOSTTY_OPTIMIZE` overrides, or `.cargo/config.toml` silently
-restores ReleaseFast. `scripts/test-rust.test.ts` checks both argument lists.
+`cargo test` arguments. The ReleaseSafe mode passes `.config/releasesafe.toml`
+with `--config`, which forces `HUTERM_GHOSTTY_OPTIMIZE=ReleaseSafe` over
+`.cargo/config.toml`'s forced ReleaseFast; without it the tests silently run
+ReleaseFast. Nextest rejects the dotted `--config 'env.…'` flags that
+`cargo test` accepted, so the override lives in that file.
+`scripts/test-rust.test.ts` checks both modes' arguments and the file.
 
 Nextest runs every binary's tests at once, one process per test, where
 `cargo test` ran one binary at a time. The config sets no test groups: on a

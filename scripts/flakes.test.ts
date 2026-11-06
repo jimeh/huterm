@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   appendOccurrence, checkRegistry, classify, classifyLog, decideRetry, loadFlakes, longestLiteral, parseFlake,
-  renderIndex, withIndex, type Flake,
+  renderIndex, reportOccurrences, tableCell, withIndex, type Flake,
 } from "./flakes.ts";
 
 const NOW = "2026-11-06";
@@ -79,6 +79,11 @@ describe("classify", () => {
     expect(classify([renderer], { ...failure, step: "linux-input" })).toBeUndefined();
     expect(classify([renderer], { ...failure, platform: "linux-aarch64" })).toBeUndefined();
     expect(classify([renderer], { ...failure, text: "renderer exited 1" })).toBeUndefined();
+  });
+
+  test("a fixed entry wins over an open one that also matches", () => {
+    const fixed = flake({ id: '"renderer-fixed"', status: '"fixed"', retries: "0" });
+    expect(classify([renderer, fixed], failure)?.id).toBe("renderer-fixed");
   });
 
   test("rust entries select by binary and exact test name", () => {
@@ -178,6 +183,17 @@ describe("recording", () => {
     expect(classifyLog([flake()], step("renderer", "renderer smoke timed out after 15000ms") + step("linux-input", "##[error]exit 1"), "linux-x86_64")).toEqual([]);
   });
 
+  test("an infrastructure entry needs one of its steps to have failed", () => {
+    const infra = flake({
+      id: '"api-403"', kind: '"infra"', retries: "0",
+      selector: 'step_names = ["Install job tools with Mise"]',
+      signature: 'match = ["API rate limit exceeded"]',
+    });
+    const log = "##[group]Run mise run audit:scripts\nerror: API rate limit exceeded\n##[error]Process completed with exit code 1.\n";
+    expect(classifyLog([infra], log, "linux-x86_64", ["Audit scripting dependencies"])).toEqual([]);
+    expect(classifyLog([infra], log, "linux-x86_64", ["Install job tools with Mise"]).map((item) => item.id)).toEqual(["api-403"]);
+  });
+
   test("a job log matches a Rust test only inside its failure block", () => {
     const rust = flake({
       id: '"close"', kind: '"rust"', retries: "2",
@@ -189,6 +205,23 @@ describe("recording", () => {
     expect(classifyLog([rust], passing + other, "linux-x86_64")).toEqual([]);
     const failing = "        FAIL [  10.1s] (3/3) huterm-gpui window_tests::close\n  stderr: timed out waiting for the click to close\n     Summary [ 12s]\n";
     expect(classifyLog([rust], passing + failing, "linux-x86_64").map((item) => item.id)).toEqual(["close"]);
+  });
+});
+
+describe("report records", () => {
+  const job = { name: "Rust smoke (Linux x86_64)", html_url: "https://github.com/jimeh/huterm/actions/runs/9/job/1", run_attempt: 1 };
+  const record = (passed: boolean) => ({
+    event: "retried" as const, flake: "renderer-hang", kind: "smoke" as const, selector: "smoke:renderer", platform: "linux-x86_64" as const,
+    attempt: 1, passed, run: { id: "9", attempt: "1", job: "smoke" },
+  });
+
+  test("a failure whose later rerun passed is one retried occurrence", () => {
+    const occurrences = reportOccurrences([record(false), record(true)], [job], [flake()], { repository: "jimeh/huterm", runId: "9", date: "2026-11-06" });
+    expect(occurrences.map(({ flake: entry, occurrence }) => [entry.id, occurrence.url, occurrence.retried])).toEqual([["renderer-hang", job.html_url, true]]);
+  });
+
+  test("summary cells escape backslashes and pipes", () => {
+    expect(tableCell("a\\|b|c\nd")).toBe("a\\\\\\|b\\|c d");
   });
 });
 

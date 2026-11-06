@@ -1,0 +1,7 @@
+# Cargo configuration for `mise run test:ghostty-releasesafe`, passed with
+# `--config`. ReleaseSafe keeps Zig's bounds, overflow, and tag checks, which
+# ReleaseFast turns into undefined behavior; `force` overrides the forced
+# ReleaseFast in `.cargo/config.toml`. Nextest rejects these as separate
+# `--config 'env.…'` flags, so they live in a file.
+[env]
+HUTERM_GHOSTTY_OPTIMIZE = { value = "ReleaseSafe", force = true }

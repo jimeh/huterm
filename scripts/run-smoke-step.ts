@@ -67,6 +67,7 @@ export async function superviseSmokeStep(options: {
   const started = clock();
   const label = `smoke step ${options.step}`;
   let retried: string | undefined;
+  let overdue = false;
   for (let attempt = 1; ; attempt++) {
     const remaining = budget - (clock() - started) - GRACE_MS - RESERVE_MS;
     const timeoutMs = Math.min(ATTEMPT_TIMEOUT_MS, remaining);
@@ -87,7 +88,7 @@ export async function superviseSmokeStep(options: {
       const again = error && options.platform
         ? classify(options.flakes, { kind: "smoke", platform: options.platform, step: options.step, text: failureText(error, outcome) })
         : undefined;
-      reportRetry({ event: "retried", flake: retried, kind: "smoke", selector, platform: options.platform ?? "linux-x86_64", attempt: attempt - 1, passed: !error }, env);
+      reportRetry({ event: "retried", flake: retried, kind: "smoke", selector, platform: options.platform ?? "linux-x86_64", attempt: attempt - 1, passed: !error, overdue }, env);
       if (!error) return { attempts: attempt, retried };
       if (again?.id !== retried) throw new Error(`${error} (rerun of known flake ${retried} failed with a different signature)`);
     } else if (!error) {
@@ -109,6 +110,7 @@ export async function superviseSmokeStep(options: {
     }
     console.error(`flakes: ${label} failed with the signature of known flake ${decision.flake.id}${decision.overdue ? " (review overdue)" : ""}; retrying once (docs/agents/flakes/${decision.flake.id}.md)`);
     retried = decision.flake.id;
+    overdue = decision.overdue;
   }
 }
 

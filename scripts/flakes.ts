@@ -307,10 +307,13 @@ export function signatureMatches(flake: Flake, text: string): boolean {
 
 /** The entry that explains `failure`, if any. */
 export function classify(flakes: Flake[], failure: Failure): Flake | undefined {
-  return flakes.find((flake) => flake.kind === failure.kind
+  const matches = flakes.filter((flake) => flake.kind === failure.kind
     && flake.platforms.includes(failure.platform)
     && selectorMatches(flake, failure)
     && signatureMatches(flake, failure.text));
+  // When a fixed entry also matches, the failure may be its recurrence, which
+  // must fail rather than pass on another entry's retry.
+  return matches.find((flake) => flake.status === "fixed") ?? matches[0];
 }
 
 export type RetryDecision =
@@ -408,15 +411,25 @@ export function annotate(level: "warning" | "error" | "notice", title: string, m
 }
 
 /** Add a row to this step's summary table of flake retries. */
+/** Step summary files that already have this process's table header. */
+const summaryHeaders = new Set<string>();
+
+/** Escape text for one Markdown table cell. */
+export function tableCell(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
 export function summarize(record: ReportRecord, env: NodeJS.ProcessEnv = process.env): void {
   const path = env.GITHUB_STEP_SUMMARY;
   if (!path) return;
-  const header = existsSync(path) && readFileSync(path, "utf8").includes("| Flake | Selector |")
+  // Actions gives every step its own summary file, so one header per process and file suffices.
+  const header = summaryHeaders.has(path)
     ? ""
     : "\n### Known flake retries\n\n| Flake | Selector | Attempt | Result | Note |\n| --- | --- | --- | --- | --- |\n";
+  summaryHeaders.add(path);
   const result = record.event === "retried" ? (record.passed ? "rerun passed" : "rerun failed") : "failed";
-  const note = [record.overdue ? "review overdue" : "", record.reason ?? ""].filter(Boolean).join("; ").replace(/\|/g, "\\|");
-  appendFileSync(path, `${header}| ${record.flake ?? "none"} | \`${record.selector}\` | ${record.attempt} | ${result} | ${note} |\n`);
+  const note = [record.overdue ? "review overdue" : "", record.reason ?? ""].filter(Boolean).join("; ");
+  appendFileSync(path, `${header}| ${tableCell(record.flake ?? "none")} | \`${tableCell(record.selector)}\` | ${record.attempt} | ${result} | ${tableCell(note)} |\n`);
 }
 
 /** Report a rerun of a matched failure in every channel: annotation, summary, and report. */
@@ -597,7 +610,7 @@ export function failureBlocks(log: string): { name: string; text: string }[] {
  * matches a failure block that names its selector, and its signature must fit
  * that block alone.
  */
-export function classifyLog(flakes: Flake[], log: string, platform: Platform): Flake[] {
+export function classifyLog(flakes: Flake[], log: string, platform: Platform, failedSteps: readonly string[] = []): Flake[] {
   const blocks = failureBlocks(log);
   return flakes.filter((flake) => {
     if (!flake.platforms.includes(platform)) return false;
@@ -605,7 +618,8 @@ export function classifyLog(flakes: Flake[], log: string, platform: Platform): F
       const named = flake.kind === "rust" ? (flake.selector.tests ?? []).some((test) => block.name === `${flake.selector.binary} ${test}` || block.name === test)
         : flake.kind === "smoke" ? (flake.selector.steps ?? []).some((step) => block.name.includes(`HUTERM_CI_SMOKE_STEP=${step} `))
           : flake.kind === "bun" ? (flake.selector.tests ?? []).some((test) => block.name.includes(test))
-            : true;
+            // Logs do not name `uses:` steps, so infrastructure entries rely on the job's failed step names.
+            : (flake.selector.step_names ?? []).some((name) => failedSteps.includes(name));
       return named && signatureMatches(flake, block.text);
     });
   });
@@ -631,13 +645,44 @@ export function appendOccurrence(text: string, occurrence: Occurrence): string {
 /** Workflow job keys (GITHUB_JOB) and the start of their display names. */
 const JOB_NAMES: Record<string, string> = { checks: "Checks", smoke: "Rust smoke", releasesafe: "Ghostty ReleaseSafe" };
 
-type GhJob = { id: number; name: string; conclusion: string | null; html_url: string; head_sha: string; started_at: string; run_attempt: number };
+export type GhJob = {
+  id: number; name: string; conclusion: string | null; html_url: string; head_sha: string; started_at: string; run_attempt: number;
+  steps?: { name: string; conclusion: string | null }[];
+};
 
 async function gh(args: string[]): Promise<string> {
   const proc = Bun.spawn(["gh", ...args], { stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (code !== 0) throw new Error(`gh ${args.join(" ")}: ${stderr.trim()}`);
   return stdout;
+}
+
+/**
+ * One occurrence per flake and job from a run's flake report records. A
+ * failure that failed one rerun and passed the next counts as retried.
+ */
+export function reportOccurrences(
+  records: ReportRecord[],
+  jobs: Pick<GhJob, "name" | "html_url" | "run_attempt">[],
+  flakes: Flake[],
+  context: { repository: string; runId: string; date: string; pr?: number; sha?: string; onlyJob?: boolean },
+): { flake: Flake; occurrence: Occurrence }[] {
+  const byKey = new Map<string, { flake: Flake; occurrence: Occurrence }>();
+  for (const item of records) {
+    const flake = flakes.find((candidate) => candidate.id === item.flake);
+    if (!flake) continue;
+    const prefix = JOB_NAMES[item.run?.job ?? ""];
+    const job = jobs.find((candidate) => !!prefix && candidate.name.startsWith(prefix)
+      && platformFromJobName(candidate.name) === item.platform && String(candidate.run_attempt) === item.run?.attempt);
+    if (context.onlyJob && !job) continue;
+    const url = job?.html_url ?? `https://github.com/${context.repository}/actions/runs/${context.runId}`;
+    const passed = item.event === "retried" && item.passed === true;
+    const key = `${flake.id} ${url}`;
+    const existing = byKey.get(key);
+    if (existing) existing.occurrence.retried ||= passed;
+    else byKey.set(key, { flake, occurrence: { date: context.date, url, pr: context.pr, sha: context.sha, platform: item.platform, retried: passed } });
+  }
+  return [...byKey.values()];
 }
 
 /** Record every flake a CI run hit, from its flake reports or else its failed job logs. */
@@ -677,25 +722,17 @@ export async function record(url: string, root = repositoryRoot): Promise<string
   } catch (error) {
     if (!/no valid artifacts|no artifact matches/i.test((error as Error).message)) notes.push(`no flake reports downloaded: ${(error as Error).message}`);
   }
-  const reported = new Set<string>();
+  const records: ReportRecord[] = [];
   if (existsSync(reports)) {
     for (const artifact of readdirSync(reports)) {
       const path = join(reports, artifact, "flake-report.jsonl");
       if (!existsSync(path)) continue;
-      for (const line of readFileSync(path, "utf8").split("\n").filter(Boolean)) {
-        const item = JSON.parse(line) as ReportRecord;
-        const flake = flakes.find((candidate) => candidate.id === item.flake);
-        if (!flake) continue;
-        const prefix = JOB_NAMES[item.run?.job ?? ""];
-        const job = jobs.find((candidate) => !!prefix && candidate.name.startsWith(prefix)
-          && platformFromJobName(candidate.name) === item.platform && String(candidate.run_attempt) === item.run?.attempt);
-        if (jobId && !job) continue;
-        const occurrenceUrl = job?.html_url ?? `https://github.com/${repository}/actions/runs/${runId}`;
-        reported.add(`${flake.id} ${occurrenceUrl}`);
-        add(flake, { date, url: occurrenceUrl, pr, sha, platform: item.platform, retried: item.event === "retried" && item.passed === true });
-      }
+      records.push(...readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as ReportRecord));
     }
   }
+  const fromReports = reportOccurrences(records, jobs, flakes, { repository, runId, date, pr, sha, onlyJob: !!jobId });
+  const reported = new Set(fromReports.map(({ flake, occurrence }) => `${flake.id} ${occurrence.url}`));
+  for (const { flake, occurrence } of fromReports) add(flake, occurrence);
 
   for (const job of jobs.filter((candidate) => candidate.conclusion === "failure")) {
     const platform = platformFromJobName(job.name);
@@ -705,7 +742,8 @@ export async function record(url: string, root = repositoryRoot): Promise<string
     }
     // Job logs carry the runner's color codes; failureBlocks strips them.
     const log = await gh(["api", "--allow-escape-sequences", `repos/${repository}/actions/jobs/${job.id}/logs`]);
-    const matches = classifyLog(flakes, log, platform).filter((flake) => !reported.has(`${flake.id} ${job.html_url}`));
+    const failedSteps = (job.steps ?? []).filter((step) => step.conclusion === "failure").map((step) => step.name);
+    const matches = classifyLog(flakes, log, platform, failedSteps).filter((flake) => !reported.has(`${flake.id} ${job.html_url}`));
     if (!matches.length && ![...reported].some((key) => key.endsWith(` ${job.html_url}`))) {
       notes.push(`${job.name}: no registered flake matches; if it is a new flake, add an entry under ${flakeDirectory}`);
     }

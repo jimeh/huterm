@@ -75,10 +75,10 @@ test.skipIf(process.platform === "win32")("process group members report unreaped
   const group = leader.pid!;
   try {
     const deadline = Date.now() + 5_000;
-    let members = processGroupMembers(group);
+    let members = processGroupMembers(group) ?? [];
     while (!members.some((member) => member.state.startsWith("Z")) && Date.now() < deadline) {
       await Bun.sleep(10);
-      members = processGroupMembers(group);
+      members = processGroupMembers(group) ?? [];
     }
     expect(members.find((member) => member.pid === group)?.state).not.toStartWith("Z");
     expect(members.filter((member) => member.pid !== group).map((member) => member.state[0])).toEqual(["Z"]);

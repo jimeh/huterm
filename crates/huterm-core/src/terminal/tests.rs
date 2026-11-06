@@ -11,7 +11,7 @@ use super::*;
 
 use crate::test_support::{
     HELD, TestClient, foreground_job, held_pid, job_name, snapshot_text,
-    wait_for_exit, wait_for_text,
+    wait_for_exit, wait_for_text, wait_until,
 };
 
 /// An upper bound on a shutdown that signals its child instead of waiting
@@ -2552,9 +2552,15 @@ fn shutdown_should_terminate_a_distinct_foreground_process_group() {
     let runtime =
         TerminalRuntime::spawn(TerminalId::new(17), &command(&script))
             .expect("runtime should start");
-    let held = wait_for_text(&test_client(&runtime), HELD);
-    let foreground_pid =
-        held_pid(&snapshot_text(&held)).expect("the job should print its PID");
+    // The marker's prefix can reach the screen before its PID, so wait for
+    // the whole `HELD:<pid>;`.
+    let client = test_client(&runtime);
+    let foreground_pid = wait_until("the job's PID on screen", || {
+        let text = snapshot_text(
+            &client.read_snapshot().expect("snapshot should work"),
+        );
+        held_pid(&text).ok_or(text)
+    });
 
     runtime.shutdown().expect("runtime should stop cleanly");
     let deadline = Instant::now() + Duration::from_secs(2);

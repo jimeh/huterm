@@ -117,6 +117,14 @@ describe("smoke step retries", () => {
     expect(interrupted.calls).toHaveLength(1);
   });
 
+  test("a retry on an overdue entry says so in its report", async () => {
+    const overdue = entry("renderer-hang", "renderer", "renderer smoke timed out after \\d+ms");
+    overdue.review_by = "2000-01-01";
+    const { result, env } = await supervise([hang, pass], environment(), [overdue]);
+    await result;
+    expect(readReport(env)).toMatchObject([{ event: "retried", passed: true, overdue: true }]);
+  });
+
   test("a retried pass is annotated and summarized in Actions", async () => {
     const summary = join(mkdtempSync(join(tmpdir(), "summary-")), "summary.md");
     const lines: string[] = [];
