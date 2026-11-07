@@ -119,6 +119,13 @@ checkpoints. Nothing saved is executed.
 **Reconnection**:
 Attaching to a surviving runtime and its existing terminal processes.
 
+**Server incarnation**:
+One lifetime of a server's terminals, named by 16 random bytes. A live
+handover to a newer server version keeps it, so every identity it scopes stays
+valid; a crash, a stop, or a restore from saved state starts a new one. It is
+not a process: a handover replaces the process under the same incarnation.
+_Avoid_: Server instance, server session.
+
 **Command**:
 A catalog definition with a stable ID, a scope, and named typed arguments. The
 catalog is the single source for menus, shortcuts, and programmatic callers.
