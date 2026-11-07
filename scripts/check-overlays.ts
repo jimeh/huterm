@@ -1104,7 +1104,18 @@ command = "open_context_menu"
     await keeps("expanded");
     await writeFile(config, `${configDocument}\n[workspaces]\nposition = "right"\n`);
     await command("invoke-reload");
-    const right = await stateWhere((text) => chromeIs(text, "panel_right") && field(text, "workspace_rows") !== "none", "the right workspace panel");
+    // Rows report where they last painted, so wait until they sit in the
+    // moved panel before clicking one.
+    const rowsInBand = (text: string) => {
+      const band = parseRect(field(text, "workspace_band"));
+      const rows = field(text, "workspace_rows");
+      return rows !== "none" && rows.split(";").every((value) => {
+        if (value === "none") return false;
+        const row = parseRect(value);
+        return row.x >= band.x && row.x + row.w <= band.x + band.w;
+      });
+    };
+    const right = await stateWhere((text) => chromeIs(text, "panel_right") && rowsInBand(text), "the right workspace panel's rows");
     await keeps("moved");
     const shown = field(right, "workspace_shown");
     const firstRow = rectCentre(field(right, "workspace_rows").split(";")[0]!);
