@@ -1,0 +1,16 @@
+diff --git a/src/text_system.rs b/src/text_system.rs
+index 74cd7cc7ce0fcae2990ea9e8fd1d3f78af5014cf..62f984fea3888c74ae0b0147a88ccac16a6e881b 100644
+--- a/src/text_system.rs
++++ b/src/text_system.rs
+@@ -314,7 +314,10 @@ impl AppleTextSystemState {
+                 // the Storybook (on macOS).
+                 let is_segoe_fluent_icons = font.full_name() == "Segoe Fluent Icons";
+ 
+-                if !has_m_glyph && !is_segoe_fluent_icons {
++                // Huterm draws Nerd Font icons from this face and never measures it by 'm'.
++                let is_nerd_font_symbols = font.full_name() == "Symbols Nerd Font Mono";
++
++                if !has_m_glyph && !is_segoe_fluent_icons && !is_nerd_font_symbols {
+                     // I spent far too long trying to track down why a font missing the 'm'
+                     // character wasn't loading. This log statement will hopefully save
+                     // someone else from suffering the same fate.

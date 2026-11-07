@@ -134,6 +134,44 @@
       ]
     },
     {
+      "name": "gpui-pre-apple",
+      "version": "0.3.11",
+      "url": "https://static.crates.io/crates/gpui-pre-apple/gpui-pre-apple-0.3.11.crate",
+      "sha256": "8c0bea8ffa563d3a1ada533e148bb55be7fb873c178979e889a3d1204f8e1b91",
+      "upstream": {
+        "repository": "https://github.com/zed-industries/zed",
+        "revision": "f816e1f9263e3a8ef63c4baaa02e1441ce1c6038",
+        "path": "crates/gpui_apple",
+        "snapshot": "gpui-pre"
+      },
+      "patches": [
+        {
+          "name": "nerd-font-symbols",
+          "file": "patches/gpui-pre-apple/nerd-font-symbols.patch",
+          "description": "Load Symbols Nerd Font Mono, which has no 'm' glyph, as a primary font: add it to the icon-font exception that already admits Segoe Fluent Icons. Huterm draws Nerd Font icons from that face and never measures it by its 'm'."
+        }
+      ]
+    },
+    {
+      "name": "gpui-pre-wgpu",
+      "version": "0.3.11",
+      "url": "https://static.crates.io/crates/gpui-pre-wgpu/gpui-pre-wgpu-0.3.11.crate",
+      "sha256": "211cf352de1a0b0c9bea3f105df5572ce1d2c899389b924a888e5af36b50f93d",
+      "upstream": {
+        "repository": "https://github.com/zed-industries/zed",
+        "revision": "f816e1f9263e3a8ef63c4baaa02e1441ce1c6038",
+        "path": "crates/gpui_wgpu",
+        "snapshot": "gpui-pre"
+      },
+      "patches": [
+        {
+          "name": "nerd-font-symbols",
+          "file": "patches/gpui-pre-wgpu/nerd-font-symbols.patch",
+          "description": "Load Symbols Nerd Font Mono (PostScript name SymbolsNFM), which has no 'm' glyph, as a primary font: add it to the icon-font exception that already admits Segoe Fluent Icons. Huterm draws Nerd Font icons from that face and never measures it by its 'm'."
+        }
+      ]
+    },
+    {
       "name": "global-hotkey",
       "version": "0.9.0",
       "url": "https://static.crates.io/crates/global-hotkey/global-hotkey-0.9.0.crate",
