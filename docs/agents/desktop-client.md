@@ -627,7 +627,7 @@ patched families keep their icons. The choice runs on a layout-cache miss and
 is cached with the layout. Each icon takes its Nerd Fonts patcher rule from
 the generated `symbols/constraint/table.rs`, a port of Ghostty's constraints
 credited in `third-party/nerd-font-constraints/`: measure its ink with
-`ttf-parser`, constrain it against the terminal face's metrics and cap height,
+`skrifa`, constrain it against the terminal face's metrics and cap height,
 and lay it out at the resulting size. The size and origin differ from the
 grid's and travel in `GlyphContent::Symbol`, one layout per cell width. GPUI
 scales glyphs only uniformly, so stretch rules size like fit. Never edit the

@@ -142,13 +142,14 @@ fn table_ranges_are_sorted_disjoint_and_index_constraints() {
 
 #[test]
 fn table_matches_the_bundled_font_release() {
+    use skrifa::MetadataProvider as _;
+
     let version = super::super::face()
         .expect("bundled face")
-        .names()
-        .into_iter()
-        .filter(|name| name.name_id == ttf_parser::name_id::VERSION)
-        .find_map(|name| name.to_string())
-        .expect("a Unicode version name");
+        .localized_strings(skrifa::string::StringId::VERSION_STRING)
+        .english_or_first()
+        .map(|name| name.to_string())
+        .expect("a version name");
     assert!(
         version.contains(&format!("Nerd Fonts {}", table::NERD_FONTS_VERSION)),
         "run `mise run nerd-fonts:constraints` for {version:?}"

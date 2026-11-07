@@ -35,9 +35,9 @@ serde_json = "=1.0.154"
 async-channel.workspace = true
 nix.workspace = true
 notify = "=8.2.1"
-# Reads the bundled symbols font's glyph bounds; GPUI's Linux text system
-# reports advances instead. The version GPUI's fontdb already resolves.
-ttf-parser = { version = "=0.25.1", default-features = false, features = ["std"] }
+# Reads the bundled fonts' glyph bounds; GPUI's Linux text system reports
+# advances instead. The version GPUI's Linux text stack already resolves.
+skrifa = { version = "=0.44.0", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "=0.2.7"

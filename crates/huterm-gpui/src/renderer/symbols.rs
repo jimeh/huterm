@@ -10,9 +10,9 @@
 
 mod constraint;
 
-use std::sync::OnceLock;
-
 use gpui::{Font, FontId, Pixels, Point, TextSystem, font, point, px};
+use skrifa::instance::{LocationRef, Size as FontSize};
+use skrifa::{FontRef, MetadataProvider as _};
 
 use self::constraint::{Constraint, GlyphBox, Metrics, Size};
 use super::GridMetrics;
@@ -58,37 +58,40 @@ pub(super) fn face_for(
     (loaded && has_glyph(id)).then_some((symbols, id))
 }
 
-/// The bundled face, parsed once to read glyph outlines' bounds. GPUI's
+/// The bundled symbols face, for glyph bounds and its character map. GPUI's
 /// Linux text system reports advances, not ink bounds.
-fn face() -> Option<&'static ttf_parser::Face<'static>> {
-    static FACE: OnceLock<Option<ttf_parser::Face<'static>>> = OnceLock::new();
-    FACE.get_or_init(|| ttf_parser::Face::parse(SYMBOLS_FACE, 0).ok())
-        .as_ref()
+fn face() -> Option<FontRef<'static>> {
+    FontRef::new(SYMBOLS_FACE).ok()
 }
 
-/// Ignores outline segments; only the returned bounds are needed.
-struct Bounds;
-
-impl ttf_parser::OutlineBuilder for Bounds {
-    fn move_to(&mut self, _: f32, _: f32) {}
-    fn line_to(&mut self, _: f32, _: f32) {}
-    fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {}
-    fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {}
-    fn close(&mut self) {}
+/// A glyph's ink box in font units, and the font's units per em.
+fn glyph_bounds(face: &FontRef<'_>, ch: char) -> Option<(GlyphBox, f64)> {
+    let glyph = face.charmap().map(ch)?;
+    let bounds = face
+        .glyph_metrics(FontSize::unscaled(), LocationRef::default())
+        .bounds(glyph)?;
+    let units_per_em = face
+        .metrics(FontSize::unscaled(), LocationRef::default())
+        .units_per_em;
+    let ink = GlyphBox {
+        width: f64::from(bounds.x_max - bounds.x_min),
+        height: f64::from(bounds.y_max - bounds.y_min),
+        x: f64::from(bounds.x_min),
+        y: f64::from(bounds.y_min),
+    };
+    Some((ink, f64::from(units_per_em)))
 }
 
 /// `ch`'s ink box at `font_size`, in logical pixels with y up from the
 /// baseline and x from the pen position.
 pub(super) fn ink_box(ch: char, font_size: Pixels) -> Option<GlyphBox> {
-    let face = face()?;
-    let rect = face.outline_glyph(face.glyph_index(ch)?, &mut Bounds)?;
-    let scale =
-        f64::from(f32::from(font_size)) / f64::from(face.units_per_em());
+    let (ink, units_per_em) = glyph_bounds(&face()?, ch)?;
+    let scale = f64::from(f32::from(font_size)) / units_per_em;
     let ink = GlyphBox {
-        width: f64::from(rect.width()) * scale,
-        height: f64::from(rect.height()) * scale,
-        x: f64::from(rect.x_min) * scale,
-        y: f64::from(rect.y_min) * scale,
+        width: ink.width * scale,
+        height: ink.height * scale,
+        x: ink.x * scale,
+        y: ink.y * scale,
     };
     (ink.width > 0.0 && ink.height > 0.0).then_some(ink)
 }
@@ -145,15 +148,14 @@ fn measured_cap_height(
     if family != crate::terminal_font::BUNDLED_FAMILY {
         return None;
     }
-    let face = ttf_parser::Face::parse(
-        crate::terminal_font::bundled_regular_face(),
-        0,
-    )
-    .ok()?;
-    let rect = face.glyph_bounding_box(face.glyph_index('H')?)?;
-    Some(
-        font_size * (f32::from(rect.height()) / f32::from(face.units_per_em())),
-    )
+    let face =
+        FontRef::new(crate::terminal_font::bundled_regular_face()).ok()?;
+    let (ink, units_per_em) = glyph_bounds(&face, 'H')?;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a cap height in ems fits f32"
+    )]
+    Some(font_size * (ink.height / units_per_em) as f32)
 }
 
 /// The grid measurements the patcher's rules size icons against.
@@ -389,12 +391,8 @@ mod tests {
         // past each edge, and origins round by up to half a device pixel.
         let slack = 0.03 * grid.face_width + 0.5;
         let mut code_points = Vec::new();
-        let cmap = face().expect("bundled face").tables().cmap.expect("cmap");
-        for subtable in cmap.subtables {
-            if subtable.is_unicode() {
-                subtable.codepoints(|code| code_points.push(code));
-            }
-        }
+        let face = face().expect("bundled face");
+        code_points.extend(face.charmap().mappings().map(|(code, _)| code));
         let mut placed = 0;
         for ch in code_points.into_iter().filter_map(char::from_u32) {
             for columns in [1_u8, 2] {
