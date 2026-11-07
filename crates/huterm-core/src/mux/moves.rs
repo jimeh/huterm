@@ -20,7 +20,7 @@ use huterm_protocol::{
     TabSnapshot, WorkspaceId,
 };
 
-use super::{Mux, MuxError, Tab, layout_error, position};
+use super::{Mux, MuxError, Tab, layout_error, layout_items, position};
 
 /// A pane to move, with the tab and workspace it is expected in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -156,6 +156,12 @@ impl Mux {
         }
         let (layout, allocates) = self.inserted(target, to.side, node)?;
         self.preflight(allocates)?;
+        let target_layout =
+            &self.tab_record(target.workspace, target.tab)?.layout;
+        self.admit_items(
+            2 + layout_items(&source.layout) + layout_items(target_layout),
+            1 + layout_items(&layout),
+        )?;
         let terminals = source.terminals();
         self.revoke_if_session_changes(workspace, target.workspace, &terminals);
         let before = vec![self.snapshot(tab), self.snapshot(target.tab)];
@@ -207,6 +213,7 @@ impl Mux {
             return Ok(LayoutChange::default());
         }
         self.preflight(allocates)?;
+        self.admit_items(layout_items(&current), layout_items(&layout))?;
         let before = vec![self.snapshot(from.tab)];
         self.allocate_if(allocates)?;
         self.changed();
@@ -240,6 +247,16 @@ impl Mux {
         let (layout, allocates) =
             self.inserted(to.target, to.side, PaneNode::Pane(pane))?;
         self.preflight(allocates)?;
+        let target_layout =
+            &self.tab_record(to.target.workspace, to.target.tab)?.layout;
+        self.admit_items(
+            2 + layout_items(&source.layout) + layout_items(target_layout),
+            remaining
+                .as_ref()
+                .map_or(0, |layout| 1 + layout_items(layout))
+                + 1
+                + layout_items(&layout),
+        )?;
         self.revoke_if_session_changes(
             from.workspace,
             to.target.workspace,
@@ -301,6 +318,11 @@ impl Mux {
             .without_pane(from.pane)
             .map_err(|error| layout_error(error, from.pane))?;
         self.preflight(true)?;
+        // The new tab and its one pane.
+        self.admit_items(
+            layout_items(&source.layout),
+            layout_items(&remaining) + 2,
+        )?;
         self.revoke_if_session_changes(
             from.workspace,
             workspace,

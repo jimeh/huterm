@@ -42,7 +42,7 @@ fn pane_id(value: u64) -> PaneId {
 fn pane(value: u64) -> PaneInfo {
     PaneInfo {
         id: pane_id(value),
-        terminal_id: TerminalId::new(value + 100),
+        terminal_id: TerminalId::in_runtime(RUNTIME, value + 100),
         fallback_name: "sh".into(),
         custom_name: None,
     }
@@ -551,7 +551,10 @@ fn two_panes(axis: SplitAxis, panes: [u64; 2], weight: u32) -> PaneLayout {
 fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
     let mut state = seeded(1);
     assert_eq!(state.pane_tab(pane_id(120)), Some(tab_id(20)));
-    assert_eq!(state.terminal_tab(TerminalId::new(220)), Some(tab_id(20)));
+    assert_eq!(
+        state.terminal_tab(TerminalId::in_runtime(RUNTIME, 220)),
+        Some(tab_id(20))
+    );
     assert_eq!(
         apply(
             &mut state,
@@ -561,7 +564,10 @@ fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
     );
     assert_eq!(state.tab(tab_id(20)).unwrap().layout.pane_count(), 2);
     assert_eq!(state.pane_tab(pane_id(130)), Some(tab_id(20)));
-    assert_eq!(state.terminal_tab(TerminalId::new(230)), Some(tab_id(20)));
+    assert_eq!(
+        state.terminal_tab(TerminalId::in_runtime(RUNTIME, 230)),
+        Some(tab_id(20))
+    );
     assert_eq!(
         apply(
             &mut state,
@@ -598,7 +604,10 @@ fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
         touched_layouts(false, &[10], &[20], &[20])
     );
     assert_eq!(state.pane_tab(pane_id(120)), None);
-    assert_eq!(state.terminal_tab(TerminalId::new(220)), None);
+    assert_eq!(
+        state.terminal_tab(TerminalId::in_runtime(RUNTIME, 220)),
+        None
+    );
     assert_eq!(state.tab(tab_id(20)).unwrap().fallback_name(), "sh");
     assert_eq!(
         apply(&mut state, HierarchyEvent::TabClosed { tab: tab_id(20) }),
@@ -702,12 +711,21 @@ fn layouts_that_reuse_another_tabs_panes_or_name_foreign_zoom_are_inconsistent()
         .unwrap(),
         zoomed: None,
     };
+    let foreign_terminal = HierarchyEvent::PaneLayoutChanged {
+        tab: tab_id(20),
+        layout: PaneLayout::single(PaneInfo {
+            terminal_id: TerminalId::in_runtime(RuntimeId::new(8), 220),
+            ..pane(120)
+        }),
+        zoomed: None,
+    };
     for event in [
         reused_pane,
         reused_pane_only,
         foreign_split,
         reused_terminal,
         foreign_pane,
+        foreign_terminal,
         split_tab(SplitAxis::Columns, [120, 130], HALF, Some(pane_id(140))),
         HierarchyEvent::PaneLayoutChanged {
             tab: tab_id(20),
@@ -767,6 +785,55 @@ fn layouts_that_reuse_another_tabs_panes_or_name_foreign_zoom_are_inconsistent()
 }
 
 #[test]
+fn skipped_events_advance_the_sequence_and_change_nothing() {
+    let mut state = seeded(4);
+    let before = state.clone();
+    assert_eq!(
+        apply(&mut state, HierarchyEvent::Skipped),
+        ApplyOutcome::Applied(Touched::default())
+    );
+    assert_eq!(state.seq(), 5);
+    assert_eq!(state.digest(), before.digest());
+    let gap = HierarchyEnvelope {
+        stream: STREAM,
+        seq: 7,
+        event: HierarchyEvent::Skipped,
+    };
+    assert_eq!(
+        state.apply(gap),
+        ApplyOutcome::ResyncRequired(ResyncReason::Gap)
+    );
+}
+
+#[test]
+fn a_changed_server_incarnation_is_a_foreign_stream() {
+    let first = ServerIncarnation::from_bytes([1; 16]);
+    let second = ServerIncarnation::from_bytes([2; 16]);
+    let remote = StreamId::remote(RUNTIME, first);
+    assert_eq!(remote.runtime(), RUNTIME);
+    assert_eq!(remote.incarnation(), Some(first));
+    assert_eq!(STREAM.incarnation(), None);
+    let mut state = HierarchyState::new(remote);
+    for stream in [STREAM, StreamId::remote(RUNTIME, second)] {
+        let envelope = HierarchyEnvelope {
+            stream,
+            seq: 1,
+            event: HierarchyEvent::Skipped,
+        };
+        assert_eq!(
+            state.apply(envelope),
+            ApplyOutcome::ResyncRequired(ResyncReason::ForeignStream)
+        );
+    }
+    let same = HierarchyEnvelope {
+        stream: StreamId::remote(RUNTIME, first),
+        seq: 1,
+        event: HierarchyEvent::Skipped,
+    };
+    assert!(matches!(state.apply(same), ApplyOutcome::Applied(_)));
+}
+
+#[test]
 fn layout_events_follow_the_stale_and_gap_rules() {
     let mut state = seeded(4);
     let event = split_tab(SplitAxis::Columns, [120, 130], HALF, None);
@@ -796,6 +863,7 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
     assert_eq!(state.digest(), 0x19d9_e102_069d_102e);
     assert_eq!(seeded(9).digest(), state.digest());
     assert_eq!(HierarchyState::new(STREAM).digest(), FNV_OFFSET);
+    assert_eq!(state.digest_for(DigestProfile::Base), state.digest());
 
     let variant = |event| {
         let mut changed = state.clone();
@@ -1136,7 +1204,10 @@ fn rearrangements_move_panes_between_tabs_atomically() {
         touched_layouts(false, &[10], &[20, 21], &[20, 21])
     );
     assert_eq!(state.pane_tab(pane_id(130)), Some(tab_id(21)));
-    assert_eq!(state.terminal_tab(TerminalId::new(230)), Some(tab_id(21)));
+    assert_eq!(
+        state.terminal_tab(TerminalId::in_runtime(RUNTIME, 230)),
+        Some(tab_id(21))
+    );
     assert_eq!(state.pane_tab(pane_id(120)), Some(tab_id(20)));
     // It leaves for a new tab 23 at the front of workspace 11.
     assert_eq!(
@@ -1315,7 +1386,7 @@ fn rearrangements_that_break_conservation_or_structure_change_nothing() {
         vec![layout_change(
             20,
             PaneLayout::single(PaneInfo {
-                terminal_id: TerminalId::new(999),
+                terminal_id: TerminalId::in_runtime(RUNTIME, 999),
                 ..pane(120)
             }),
         )],

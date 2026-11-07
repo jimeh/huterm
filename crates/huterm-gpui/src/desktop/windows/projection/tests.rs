@@ -81,7 +81,7 @@ impl Feed {
                 custom_name: None,
                 layout: PaneLayout::single(PaneInfo {
                     id: PaneId::in_runtime(RUNTIME, value),
-                    terminal_id: TerminalId::new(value),
+                    terminal_id: TerminalId::in_runtime(RUNTIME, value),
                     fallback_name: "sh".into(),
                     custom_name: None,
                 }),
@@ -327,7 +327,7 @@ fn push(
         TabEntry {
             id: tab(value),
             panes: vec![PaneTitle {
-                terminal: TerminalId::new(value),
+                terminal: TerminalId::in_runtime(RUNTIME, value),
                 title: format!("title {value}"),
             }],
             title: format!("title {value}"),
@@ -1323,7 +1323,7 @@ fn a_failed_install_waits_for_a_batch_that_touches_its_workspace() {
             custom_name: None,
             layout: PaneLayout::single(PaneInfo {
                 id: PaneId::in_runtime(RUNTIME, 2),
-                terminal_id: TerminalId::new(2),
+                terminal_id: TerminalId::in_runtime(RUNTIME, 2),
                 fallback_name: "sh".into(),
                 custom_name: None,
             }),

@@ -1277,3 +1277,20 @@ pub fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
         .run()
         .map_err(|error| format!("{} seed {seed}: {error}", scenario.name))
 }
+
+/// Runs a scenario whose scheduler draws its choices from `schedule` before
+/// falling back to `seed`, so a fuzzer's input steers the run.
+///
+/// # Errors
+/// Returns the first invariant the run breaks.
+pub fn run_scheduled(
+    scenario: &Scenario,
+    seed: u64,
+    schedule: &[u8],
+) -> Result<Report, String> {
+    let mut world = World::new(scenario, seed);
+    world.rng = Rng::from_tape(seed, schedule);
+    world.run().map_err(|error| {
+        format!("{} scheduled seed {seed}: {error}", scenario.name)
+    })
+}

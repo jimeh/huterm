@@ -338,13 +338,29 @@ normal shutdown bound. Deferred cleanup cannot outlive OS application terminatio
 
 ## Mux, IDs, and hierarchy
 
-SessionId, WorkspaceId, and TabId carry a RuntimeId as well as a numeric ID.
-Validate the runtime scope on every structural target, including move anchors;
-matching socket names do not permit transfers between Mux instances. The numeric
-`new` constructors create unscoped IDs for fixtures/restoration input and are
-rejected by structural APIs. RuntimeId is unique only within this process; future
-IPC needs incarnation identity across processes/restarts. Scope checks prevent
+SessionId, WorkspaceId, TabId, PaneId, SplitId, AttachmentId, ViewerId, and
+TerminalId carry a RuntimeId as well as a numeric ID. Validate the runtime scope
+on every structural target, including move anchors; matching socket names do
+not permit transfers between Mux instances, and the hierarchy reducer refuses a
+layout whose pane, split, or terminal is another runtime's. The numeric `new`
+constructors create unscoped IDs for fixtures/restoration input and are
+rejected by structural APIs; captures stay unscoped and a restore scopes them,
+terminals included. `RuntimeId::allocate` in `huterm-protocol` hands out every
+RuntimeId in the process, so an embedded Mux and a remote connection never
+share one. Across processes, a `ServerIncarnation` names one lifetime of a
+server's terminals, and a remote `StreamId` carries it. Scope checks prevent
 accidental aliasing, not deliberately fabricated IDs.
+Every hierarchy state stays encodable because core holds three invariants on
+every path, embedded mode included: custom names of at most `MAX_NAME_BYTES`
+(256; longer is `InvalidName`, fallback names truncate at a character
+boundary), at most `MAX_HIERARCHY_ITEMS` (16,384) sessions, workspaces, tabs,
+panes, splits, and attachments together, and layouts at most
+`MAX_LAYOUT_DEPTH` (64) nodes deep, which `PaneLayout::new` enforces. A
+structural operation checks the item count through `Mux::admit_items` before
+it allocates, so a refusal leaves the revision and close tickets alone; a new
+operation that adds items must call it too. A restore checks names and items
+in `within_limits` before it spawns anything, not in `RuntimeCapture::validate`,
+whose looser bounds `huterm-state` shares.
 A session or workspace takes its automatic name's number when it is created
 and keeps it, never from its membership position. `Mux::set_automatic_numbering`
 picks the number: the lowest one no live record of the kind holds (the default,
@@ -451,6 +467,40 @@ Moves retain empty workspaces and sessions and never change terminal lifetime.
 Desktop windows retain their attachment identity for assessed close. Orphaned
 spawn cleanup must preserve resources adopted by another attachment or moved
 elsewhere. Roll back newly created sessions on initial workspace/tab failure.
+
+## The wire contract
+
+`huterm-wire` encodes and decodes protocol types for the runtime IPC (see
+[the plan](../plans/runtime-ipc.md)). It depends only on `huterm-protocol`,
+builds for `wasm32-unknown-unknown` with its vectors (`mise run check:wasm`),
+and holds no sockets or threads. `mise run architecture` checks the
+dependency rule.
+
+- Encoders destructure each protocol struct exhaustively, so a new field
+  fails to compile until its wire form is decided. `HierarchyEvent` is
+  `non_exhaustive`, so a new variant compiles but encodes as `Unsupported`:
+  give it the next tag, an encoding, a decoder arm, and a golden vector.
+- Decoders check every length and count against a field maximum before they
+  allocate, count hierarchy items, refuse layouts past `MAX_LAYOUT_DEPTH`
+  before recursing, and build values through the protocol's validating
+  constructors.
+- A minor version only appends record fields, adds variants and message
+  kinds, and adds codes. Senders always write appended fields and older
+  decoders skip them, so an appended field must be safe to ignore and must
+  fit the older version's cap; the cap formulas reserve headroom per record
+  and per hierarchy item for this. A newer variant that a server can send
+  defines its downgrade: `Skipped`, one older event, or a projected resync.
+  A change an older peer cannot do without is a major version bump.
+- Golden vectors in `vectors.rs` pin each released minor version's bytes.
+  Never edit an existing vector's bytes; a new minor version adds vectors.
+  Minor version 0 is unreleased until a server ships (#45), so slices may
+  still change its records until then.
+- `test_minor.rs`, behind the `test-minor` feature, is `MINOR + 1` and
+  exercises the downgrade rules; shipping code never enables it.
+- `fuzz/` holds cargo-fuzz targets outside the workspace;
+  `mise run fuzz:wire` runs them (see
+  [the dependencies guide](dependencies.md#fuzzing-toolchain)). Turn a crash
+  into a regression test in the normal suite.
 
 ## Attachments, close consent, and exit
 

@@ -411,7 +411,7 @@ impl TerminalRuntime {
         terminal_id: TerminalId,
         command: &TerminalCommand,
     ) -> Result<Self, RuntimeError> {
-        Self::spawn_in(RuntimeId::new(0), terminal_id, command)
+        Self::spawn_in(terminal_id.runtime(), terminal_id, command)
     }
 
     /// Starts a terminal whose viewer IDs are scoped to `runtime`.

@@ -1299,15 +1299,21 @@ fn window_notices(
         .flat_map(|tab| tab.layout.panes())
         .map(|pane| pane.terminal_id)
         .collect();
+    // The report names terminals in the restored runtime's scope; the
+    // capture's, like the fallbacks', are unscoped.
     let failed: Vec<_> = report
         .failed
         .iter()
-        .filter(|failed| terminals.contains(&failed.terminal))
+        .filter(|failed| {
+            terminals.contains(&TerminalId::new(failed.terminal.get()))
+        })
         .collect();
     let elsewhere: Vec<Fallback> = terminals
         .iter()
         .filter(|terminal| {
-            !failed.iter().any(|failed| failed.terminal == **terminal)
+            !failed
+                .iter()
+                .any(|failed| failed.terminal.get() == terminal.get())
         })
         .filter_map(|terminal| fallbacks.get(terminal).copied())
         .collect();

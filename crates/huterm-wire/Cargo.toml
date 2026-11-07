@@ -1,0 +1,26 @@
+[package]
+name = "huterm-wire"
+description = "Wire contract for Huterm's runtime IPC: framing, codec, and negotiation"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "0.31.0"
+
+[features]
+default = []
+# Canonical values and their bytes for every minor version, compiled into the
+# library so the wasm32 check covers them.
+vectors = []
+# The test-only minor version that exercises downgrade rules before a real
+# minor version 1 exists. Never enabled by a shipping client or server.
+test-minor = []
+
+[dependencies]
+huterm-protocol.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

@@ -16,7 +16,7 @@ bun = "1.4.4"
 lefthook = "2.2.2"
 markdownlint-cli2 = "0.24.0"
 pinact = "5.0.2"
-rust = { version = "1.99.1", components = ["clippy", "rustfmt"], profile = "minimal" }
+rust = { version = "1.99.1", components = ["clippy", "rustfmt"], profile = "minimal", targets = ["wasm32-unknown-unknown"] }
 "pipx:spdx-tools" = "0.8.5"
 syft = "1.56.0"
 taplo = "0.10.0"
@@ -139,7 +139,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, process-info, UI component, state, Ghostty binding, and IPC simulation boundaries"
+description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, and IPC simulation boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -184,6 +184,13 @@ if echo "$ghostty_dependents" | rg -v '^huterm-core '; then
   echo "only huterm-core may depend on huterm-ghostty" >&2
   exit 1
 fi
+# huterm-wire is the wire contract: it builds for browsers and depends on
+# nothing but the protocol.
+wire_dependencies="$(cargo tree --locked -p huterm-wire --target all --all-features --depth 1 --edges normal,build --prefix none | tail -n +2)"
+if echo "$wire_dependencies" | rg -v '^huterm-protocol '; then
+  echo "huterm-wire may depend only on huterm-protocol" >&2
+  exit 1
+fi
 # huterm-ipc-sim is a standalone design simulation, not product code.
 sim_dependencies="$(cargo tree --locked -p huterm-ipc-sim --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$sim_dependencies" ]; then
@@ -199,21 +206,30 @@ if [ -n "$sim_dependents" ]; then
 fi
 '''
 
+[tasks."check:wasm"]
+description = "Check that huterm-protocol and huterm-wire with its golden vectors build for wasm32-unknown-unknown"
+run = "cargo check --locked --target wasm32-unknown-unknown -p huterm-protocol -p huterm-wire --features huterm-wire/vectors"
+
+[tasks."fuzz:wire"]
+description = "Fuzz the wire decoders and the IPC simulation's schedule on the pinned nightly (optional target and libFuzzer flags)"
+tools = { "cargo:cargo-fuzz" = "0.13.2" }
+run = "bash scripts/fuzz-wire.sh"
+
 [tasks."sim:ipc"]
 description = "Run the runtime IPC design simulation over many seeds per scenario"
 run = "cargo run --quiet --locked --release -p huterm-ipc-sim --"
 
 [tasks.check]
 description = "Run fast deterministic local checks"
-depends = ["format:check", "lint", "lint:test-order", "lint:docs", "lint:agents", "flakes:check", "architecture", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
+depends = ["format:check", "lint", "lint:test-order", "lint:docs", "lint:agents", "flakes:check", "architecture", "check:wasm", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
 
 [tasks."check:rust"]
-description = "Run Rust formatting, Clippy compilation, test-order, and architecture checks"
-depends = ["format:check", "lint", "lint:test-order", "architecture"]
+description = "Run Rust formatting, Clippy compilation, test-order, architecture, and wasm32 checks"
+depends = ["format:check", "lint", "lint:test-order", "architecture", "check:wasm"]
 
 [tasks."check:rust:analysis"]
 hide = true
-depends = ["lint", "lint:test-order", "architecture"]
+depends = ["lint", "lint:test-order", "architecture", "check:wasm"]
 
 [tasks.test]
 description = "Run workspace and scripting tests"
