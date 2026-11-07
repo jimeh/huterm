@@ -356,6 +356,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        if self.empty_state_focused(window)
+            && let Some(result) =
+                self.run_empty_state_command(command, window, cx)
+        {
+            return result;
+        }
         self.panel_availability()?;
         let controls = self.panel_controls(cx);
         let focused = self

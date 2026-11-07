@@ -45,6 +45,7 @@ export const iconNames = [
   "pencil",
   "eraser",
   "trash-2",
+  "layout-grid",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

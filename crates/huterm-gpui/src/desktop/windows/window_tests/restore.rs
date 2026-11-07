@@ -1492,3 +1492,308 @@ fn unviewed_sessions_notices_go_to_the_first_window_that_opened(
     );
     harness.runtime.terminate().unwrap();
 }
+
+/// [`capture`] with a second workspace in session 1: workspace 17 with tab
+/// 18, whose pane 19 runs terminal 20.
+fn two_workspace_capture(scratch: &Scratch) -> RuntimeCapture {
+    let mut saved = capture(scratch);
+    saved.next_id = 21;
+    saved.workspace_ordinal = 3;
+    saved.sessions[0].workspaces.push(WorkspaceCapture {
+        info: WorkspaceInfo {
+            id: WorkspaceId::new(17),
+            custom_name: None,
+            automatic_name: "Workspace 3".into(),
+        },
+        tabs: vec![TabInfo {
+            id: TabId::new(18),
+            custom_name: None,
+            layout: PaneLayout::new(pane(19, 20, None)).unwrap(),
+            zoomed: None,
+            input_sync: false,
+        }],
+    });
+    saved
+        .terminals
+        .push(terminal_record(20, &scratch.0.join("project")));
+    saved
+}
+
+/// A saved navigation entry for `workspace` of `session`.
+fn navigation(
+    session: u64,
+    workspace: u64,
+    active: Option<u64>,
+) -> huterm_state::SessionNavigation {
+    huterm_state::SessionNavigation {
+        session: SessionId::new(session),
+        workspace: WorkspaceId::new(workspace),
+        active_tab: active.map(TabId::new),
+        tab_history: active.map(TabId::new).into_iter().collect(),
+        focused_panes: Vec::new(),
+    }
+}
+
+#[gpui::test]
+fn restore_drops_stale_workspace_memory(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let mut saved = layout();
+    saved.windows[0].remembered = vec![
+        navigation(1, 17, Some(18)),
+        // A workspace that did not come back.
+        navigation(1, 99, None),
+        // A workspace saved under a session it does not belong to.
+        navigation(12, 17, None),
+        // An older entry for a workspace already remembered.
+        navigation(1, 17, None),
+        // The workspace the window shows, whose own navigation applies.
+        navigation(1, 2, Some(9)),
+    ];
+    // A second window whose shown workspace is gone falls back to the
+    // session's first.
+    let mut fallback = saved.windows[0].clone();
+    fallback.workspace = WorkspaceId::new(99);
+    fallback.remembered = Vec::new();
+    saved.windows.push(fallback);
+    let mut harness = DesktopHarness::restoring(
+        cx,
+        |_| {},
+        two_workspace_capture(&scratch),
+        Some(saved),
+        ECHO,
+    );
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let work = SessionId::in_runtime(runtime, 1);
+    let windows = harness.windows_of(work);
+    assert_eq!(windows.len(), 2);
+    harness.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        let first = desktop.windows.record(windows[0].window_id()).unwrap();
+        let remembered: Vec<_> = first
+            .memory
+            .iter()
+            .map(|memory| (memory.session, memory.workspace, memory.active))
+            .collect();
+        assert_eq!(
+            remembered,
+            [(
+                work,
+                WorkspaceId::in_runtime(runtime, 17),
+                Some(TabId::in_runtime(runtime, 18))
+            )]
+        );
+        let second = desktop.windows.record(windows[1].window_id()).unwrap();
+        assert_eq!(second.workspace, Some(WorkspaceId::in_runtime(runtime, 2)));
+        assert_eq!(second.active, Some(TabId::in_runtime(runtime, 3)));
+    });
+    // The capture writes back only what applied.
+    let saved = harness.saved_work_window().unwrap();
+    assert_eq!(saved.remembered, [navigation(1, 17, Some(18))]);
+    harness.runtime.terminate().unwrap();
+}
+
+impl DesktopHarness {
+    /// Switches `window` to `workspace` and selects `active` there once it
+    /// shows.
+    fn show_selecting(
+        &mut self,
+        window: AnyWindowHandle,
+        workspace: WorkspaceId,
+        active: TabId,
+    ) {
+        self.wait_projection();
+        self.invoke_with(
+            window,
+            &CommandInvocation::new(
+                ids::SELECT_WORKSPACE,
+                vec![CommandArgument::new(
+                    "workspace",
+                    CommandValue::Workspace(workspace),
+                )],
+            ),
+        )
+        .unwrap();
+        self.wait_for("the workspace to show", |cx| {
+            cx.global::<Desktop>()
+                .windows
+                .record(window.window_id())
+                .is_some_and(|record| record.workspace == Some(workspace))
+                && terminal(cx, window, active).is_some()
+                && !busy(cx, window)
+        });
+        self.update_view(window, |view, window, cx| {
+            view.select(active, window, cx);
+        });
+    }
+
+    /// The workspace `window` shows, its active tab, and each remembered
+    /// workspace with its active tab.
+    #[expect(
+        clippy::type_complexity,
+        reason = "a test's view of one window's navigation"
+    )]
+    fn navigation_of(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> (
+        Option<WorkspaceId>,
+        Option<TabId>,
+        Vec<(WorkspaceId, Option<TabId>)>,
+    ) {
+        self.cx.update(|cx| {
+            let record = cx
+                .global::<Desktop>()
+                .windows
+                .record(window.window_id())
+                .unwrap();
+            (
+                record.workspace,
+                record.active,
+                record
+                    .memory
+                    .iter()
+                    .map(|memory| (memory.workspace, memory.active))
+                    .collect(),
+            )
+        })
+    }
+}
+
+#[gpui::test]
+fn two_windows_on_two_workspaces_restore_their_workspaces(
+    cx: &mut TestAppContext,
+    relaunched: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (a, b) = (harness.open_tab(ECHO), harness.open_tab(ECHO));
+    let (second, c, d) = {
+        let mut mux = harness.runtime.lock();
+        let second = mux.create_workspace(harness.session, None).unwrap();
+        let c = mux.open_tab(second, &fixture(ECHO)).unwrap().tab.id;
+        let d = mux.open_tab(second, &fixture(ECHO)).unwrap().tab.id;
+        (second, c, d)
+    };
+    // Window one ends on the first workspace at b, remembering c in the
+    // second; window two ends on the second at d, remembering a.
+    let one = harness.attach_showing(&[a, b]);
+    harness.show_selecting(one, second, c);
+    let first_workspace = harness.workspace;
+    harness.show_selecting(one, first_workspace, b);
+    let two = harness.attach_showing(&[a, b]);
+    harness.show_selecting(two, second, d);
+    harness.resume_quits();
+    harness.cx.update(request_quit);
+    harness.wait_quit(harness.session);
+    let (capture, saved) = harness.recorder.saved().remove(0);
+
+    let mut relaunch = DesktopHarness::restoring(
+        relaunched,
+        |_| {},
+        capture,
+        Some(saved),
+        ECHO,
+    );
+    relaunch.wait_settled();
+    let runtime = relaunch.runtime_id();
+    let tab = |id: TabId| TabId::in_runtime(runtime, id.get());
+    let workspace =
+        |id: WorkspaceId| WorkspaceId::in_runtime(runtime, id.get());
+    let windows = relaunch
+        .windows_of(SessionId::in_runtime(runtime, harness.session.get()));
+    assert_eq!(windows.len(), 2);
+    let (first, other) = if relaunch.navigation_of(windows[0]).0
+        == Some(workspace(harness.workspace))
+    {
+        (windows[0], windows[1])
+    } else {
+        (windows[1], windows[0])
+    };
+    assert_eq!(
+        relaunch.navigation_of(first),
+        (
+            Some(workspace(harness.workspace)),
+            Some(tab(b)),
+            vec![(workspace(second), Some(tab(c)))]
+        )
+    );
+    assert_eq!(
+        relaunch.navigation_of(other),
+        (
+            Some(workspace(second)),
+            Some(tab(d)),
+            vec![(workspace(harness.workspace), Some(tab(a)))]
+        )
+    );
+    // Each lands on its own remembered tab when it switches.
+    relaunch.show_selecting(first, workspace(second), tab(c));
+    relaunch.show_selecting(other, workspace(harness.workspace), tab(a));
+    relaunch.cx.update(|cx| {
+        let records = &cx.global::<Desktop>().windows;
+        assert_eq!(
+            records.record(first.window_id()).unwrap().active,
+            Some(tab(c))
+        );
+        assert_eq!(
+            records.record(other.window_id()).unwrap().active,
+            Some(tab(a))
+        );
+    });
+    relaunch.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
+fn a_quake_stash_on_a_closed_workspace_shows_another(cx: &mut TestAppContext) {
+    let scratch = Scratch::new();
+    let mut saved = quake_layout();
+    saved.windows[0].remembered = vec![navigation(1, 17, Some(18))];
+    let mut harness = DesktopHarness::restoring_quake(
+        cx,
+        two_workspace_capture(&scratch),
+        saved,
+    );
+    assert_eq!(harness.stashed(), [DROP]);
+    let runtime = harness.runtime_id();
+    let kept = WorkspaceId::in_runtime(runtime, 17);
+    harness
+        .runtime
+        .lock()
+        .close_workspace(WorkspaceId::in_runtime(runtime, 2))
+        .unwrap();
+    harness.wait_projection();
+    // The stash now names the workspace it remembers, and a checkpoint
+    // saves that.
+    assert_eq!(harness.stashed(), [DROP]);
+    let recorder = harness.recorder.clone();
+    harness.wait_for("a checkpoint naming the kept workspace", |_| {
+        recorder.saved().last().is_some_and(|(_, layout)| {
+            layout.windows.iter().any(|window| {
+                window.quake_profile.as_deref() == Some(DROP)
+                    && window.workspace == WorkspaceId::new(17)
+            })
+        })
+    });
+    // The summon takes the stash and shows the remembered workspace.
+    let before = harness.cx.update(|cx| cx.windows());
+    harness.cx.update(|cx| {
+        let reopen = quake_windows::take_stash(cx, DROP).unwrap();
+        assert_eq!(reopen.workspace, kept);
+        assert_eq!(reopen.focus.active, Some(TabId::in_runtime(runtime, 18)));
+        open_window_with_profile(cx, false, None, None, Some(reopen));
+    });
+    let window = harness.cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .find(|handle| !before.contains(handle))
+            .unwrap()
+    });
+    let shown = TabId::in_runtime(runtime, 18);
+    harness.wait_for("the kept workspace to show", |cx| {
+        terminal(cx, window, shown).is_some()
+    });
+    harness.cx.update(|cx| {
+        let record = cx.global::<Desktop>().windows.record(window.window_id());
+        assert_eq!(record.unwrap().workspace, Some(kept));
+    });
+    harness.runtime.terminate().unwrap();
+}

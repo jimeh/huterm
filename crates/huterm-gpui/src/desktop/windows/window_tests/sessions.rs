@@ -24,7 +24,7 @@ impl DesktopHarness {
     }
 
     /// [`Self::other_session`] with tabs that run `command`.
-    fn other_session_running(
+    pub(super) fn other_session_running(
         &self,
         name: &str,
         command: &str,
@@ -44,7 +44,7 @@ impl DesktopHarness {
     }
 
     /// Runs `select_session` for `session` in `window`.
-    fn select_session(
+    pub(super) fn select_session(
         &mut self,
         window: AnyWindowHandle,
         session: SessionId,
@@ -85,7 +85,7 @@ impl DesktopHarness {
 
     /// Registers the application action a Quit that waited resumes
     /// through, as the production startup does.
-    fn resume_quits(&mut self) {
+    pub(super) fn resume_quits(&mut self) {
         self.cx.update(|cx| {
             cx.on_action(|action: &InvokeApp, cx| {
                 let _ = Desktop::invoke(cx, &action.0, None);
@@ -93,7 +93,7 @@ impl DesktopHarness {
         });
     }
 
-    fn activate_window(&mut self, window: AnyWindowHandle) {
+    pub(super) fn activate_window(&mut self, window: AnyWindowHandle) {
         self.cx.update(|cx| {
             window
                 .update(cx, |_, window, _| window.activate_window())
@@ -102,7 +102,7 @@ impl DesktopHarness {
     }
 
     /// The session's attachments, as the projection holds them.
-    fn attachments_of(&mut self, session: SessionId) -> usize {
+    pub(super) fn attachments_of(&mut self, session: SessionId) -> usize {
         self.cx.update(|cx| {
             cx.global::<Desktop>()
                 .hierarchy
@@ -113,7 +113,7 @@ impl DesktopHarness {
     }
 }
 
-fn pick(
+pub(super) fn pick(
     command: huterm_protocol::CommandId,
     session: SessionId,
 ) -> CommandInvocation {
@@ -138,7 +138,7 @@ pub(super) fn shown_session(
 }
 
 /// Whether `window` is between a switch's guard and its settle.
-fn switching(cx: &mut App, window: AnyWindowHandle) -> bool {
+pub(super) fn switching(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>()
@@ -148,7 +148,7 @@ fn switching(cx: &mut App, window: AnyWindowHandle) -> bool {
 }
 
 /// The tabs `window` has views for, in order.
-fn shown_tabs(cx: &mut App, window: AnyWindowHandle) -> Vec<TabId> {
+pub(super) fn shown_tabs(cx: &mut App, window: AnyWindowHandle) -> Vec<TabId> {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>()
@@ -161,7 +161,7 @@ fn shown_tabs(cx: &mut App, window: AnyWindowHandle) -> Vec<TabId> {
 }
 
 /// What `window` would undo next.
-fn undo_label(
+pub(super) fn undo_label(
     cx: &mut App,
     window: AnyWindowHandle,
 ) -> Option<gpui::SharedString> {
@@ -1225,7 +1225,7 @@ fn own_session_close_windows(
 }
 
 /// The confirmation `window` shows, if any.
-fn confirmation(
+pub(super) fn confirmation(
     harness: &mut DesktopHarness,
     window: AnyWindowHandle,
 ) -> Option<CloseTarget> {
@@ -1233,7 +1233,10 @@ fn confirmation(
 }
 
 /// Waits until `window` shows Quit's confirmation.
-fn wait_quit_dialog(harness: &mut DesktopHarness, window: AnyWindowHandle) {
+pub(super) fn wait_quit_dialog(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) {
     harness.wait_for("the Quit dialog", |cx| {
         window
             .update(cx, |root, _, cx| {
@@ -2117,7 +2120,7 @@ fn memory_is_pruned_when_its_session_closes_and_counts_other_windows(
 }
 
 /// Whether `window` is installing a switch or follow-up.
-fn installing(cx: &mut App, window: AnyWindowHandle) -> bool {
+pub(super) fn installing(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>()
@@ -2141,7 +2144,10 @@ fn any_confirmation(cx: &mut App) -> Option<(AnyWindowHandle, CloseTarget)> {
 }
 
 /// Confirms the Quit `window` asks about.
-fn confirm_quit(harness: &mut DesktopHarness, window: AnyWindowHandle) {
+pub(super) fn confirm_quit(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) {
     harness.update_view(window, |view, window, cx| {
         let generation = view.close.generation;
         view.confirm_confirmation(

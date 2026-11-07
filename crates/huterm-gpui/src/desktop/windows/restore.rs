@@ -13,7 +13,7 @@
 //! so termination waits for it through [`Worker`].
 
 use super::layout_history::LayoutHistory;
-use super::model::SessionMemory;
+use super::model::NavigationMemory;
 use super::persistence::{Persistence, State};
 use super::*;
 use huterm_core::{RestoreReport, SpawnedTerminals};
@@ -326,11 +326,59 @@ pub(super) struct Reopen {
     /// The saved window layout of a session waiting in `quake_stash`, which
     /// captures write while it waits, so a relaunch stashes it again.
     pub(super) stashed: Option<huterm_state::WindowLayout>,
-    /// Where the window was in the other sessions it showed, scoped into
+    /// Where the window was in the other workspaces it showed, scoped into
     /// this runtime and filtered to what came back.
-    pub(super) remembered: Vec<SessionMemory>,
+    pub(super) remembered: Vec<NavigationMemory>,
     /// The saved window this reopens, by its index in the saved layout.
     pub(super) saved_index: Option<usize>,
+}
+
+impl Reopen {
+    /// Moves a Quake stash whose workspace closed or moved to another
+    /// session to the workspace its window would follow to, as a session
+    /// switch resolves one: the one it remembers in the session, else the
+    /// first that holds tabs, else the first, taking that workspace's
+    /// remembered navigation. Returns whether it moved.
+    pub(super) fn follow_workspace(&mut self, state: &HierarchyState) -> bool {
+        if state.workspace_session(self.workspace) == Some(self.session) {
+            return false;
+        }
+        self.remembered.retain(|memory| {
+            state.workspace_session(memory.workspace) == Some(memory.session)
+        });
+        let remembered: Vec<WorkspaceId> = self
+            .remembered
+            .iter()
+            .filter(|memory| memory.session == self.session)
+            .map(|memory| memory.workspace)
+            .collect();
+        let Some((workspace, _)) = super::workspace_switch::follow_target(
+            state,
+            self.session,
+            Some(self.workspace),
+            remembered,
+        ) else {
+            return false;
+        };
+        self.workspace = workspace;
+        self.focus = self
+            .remembered
+            .iter()
+            .position(|memory| memory.workspace == workspace)
+            .map(|index| {
+                let memory = self.remembered.remove(index);
+                Focus {
+                    active: memory.active,
+                    history: memory.history,
+                    panes: memory.panes,
+                }
+            })
+            .unwrap_or_default();
+        if let Some(layout) = &mut self.stashed {
+            layout.workspace = WorkspaceId::new(workspace.get());
+        }
+        true
+    }
 }
 
 /// Bootstrap progress, on `Desktop` until it settles.
@@ -986,6 +1034,7 @@ fn plan(
             window.active_tab,
             &window.tab_history,
             &window.focused_panes,
+            Workspace::FirstIfMissing,
         ) else {
             continue;
         };
@@ -993,30 +1042,12 @@ fn plan(
             continue;
         };
         shown.insert(session);
-        let remembered = window
-            .remembered
-            .iter()
-            .filter_map(|memory| {
-                let session = scoped_session(memory.session);
-                let (workspace, focus) = scoped_navigation(
-                    state,
-                    runtime,
-                    session,
-                    memory.workspace,
-                    memory.active_tab,
-                    &memory.tab_history,
-                    &memory.focused_panes,
-                )?;
-                Some(SessionMemory {
-                    session,
-                    workspace,
-                    active: focus.active,
-                    history: focus.history,
-                    panes: focus.panes,
-                    layout_history: LayoutHistory::default(),
-                })
-            })
-            .collect();
+        let remembered = remembered_navigation(
+            state,
+            runtime,
+            workspace,
+            &window.remembered,
+        );
         let profile = window.quake_profile.clone().filter(|name| {
             desktop.config.quake.profiles.contains_key(name)
                 && quake_windows::summons(cx, name)
@@ -1102,10 +1133,69 @@ fn plan(
     }
 }
 
+/// A window's saved navigation memory scoped into `runtime`, strictly: an
+/// entry whose workspace did not come back in its session is dropped, the
+/// workspace the window shows (`shown`) is left out, since its own
+/// navigation applies there, and entries are deduplicated by workspace,
+/// the most recent winning.
+fn remembered_navigation(
+    state: &HierarchyState,
+    runtime: huterm_protocol::RuntimeId,
+    shown: WorkspaceId,
+    saved: &[huterm_state::SessionNavigation],
+) -> Vec<NavigationMemory> {
+    let mut remembered: Vec<NavigationMemory> = Vec::new();
+    for memory in saved {
+        let session = SessionId::in_runtime(runtime, memory.session.get());
+        let Some((workspace, focus)) = scoped_navigation(
+            state,
+            runtime,
+            session,
+            memory.workspace,
+            memory.active_tab,
+            &memory.tab_history,
+            &memory.focused_panes,
+            Workspace::Strict,
+        ) else {
+            continue;
+        };
+        if workspace == shown
+            || remembered.iter().any(|kept| kept.workspace == workspace)
+        {
+            continue;
+        }
+        remembered.push(NavigationMemory {
+            session,
+            workspace,
+            active: focus.active,
+            history: focus.history,
+            panes: focus.panes,
+            layout_history: LayoutHistory::default(),
+        });
+    }
+    remembered
+}
+
+/// What scoping does with a saved workspace that did not come back in its
+/// session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Workspace {
+    /// The navigation applies to the session's first workspace, as the
+    /// workspace a window shows does.
+    FirstIfMissing,
+    /// The navigation is dropped, as a remembered entry is.
+    Strict,
+}
+
 /// Saved navigation in one session scoped into `runtime`: the saved
-/// workspace when it still belongs to the session, else the session's
-/// first, and the tabs and panes the projection holds there. `None` when
-/// the session did not come back or has no workspace.
+/// workspace when it still belongs to the session, else, as `missing`
+/// says, the session's first or nothing, and the tabs and panes the
+/// projection holds there. `None` when the session did not come back or
+/// has no workspace.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one saved navigation's fields, scoped together"
+)]
 fn scoped_navigation(
     state: &HierarchyState,
     runtime: huterm_protocol::RuntimeId,
@@ -1114,13 +1204,16 @@ fn scoped_navigation(
     active_tab: Option<TabId>,
     tab_history: &[TabId],
     focused_panes: &[huterm_state::FocusedPane],
+    missing: Workspace,
 ) -> Option<(WorkspaceId, Focus)> {
     state.session(session)?;
     let workspace = WorkspaceId::in_runtime(runtime, workspace.get());
     let workspace = if state.workspace_session(workspace) == Some(session) {
         workspace
-    } else {
+    } else if missing == Workspace::FirstIfMissing {
         first_workspace(state, session)?
+    } else {
+        return None;
     };
     let tab = |id: TabId| TabId::in_runtime(runtime, id.get());
     let in_workspace = |tab: &TabId| {

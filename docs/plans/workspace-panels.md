@@ -1,8 +1,9 @@
 # Workspace panels
 
-Status: approved. Plans [issue #27][issue-27] (parent [#11][issue-11]).
+Status: in progress. Plans [issue #27][issue-27] (parent [#11][issue-11]).
 The maintainer picked the mockups and settled the open questions on
-2026-11-07; see [Settled decisions](#settled-decisions).
+2026-11-07; see [Settled decisions](#settled-decisions). PR A is
+implemented; see [Deviations](#deviations). PR B and PR C remain.
 
 A window can show any workspace of its session, switch between them from
 a panel at any window edge or a dropdown in the tab bar, and create,
@@ -573,6 +574,49 @@ follow-up settles; an emptied close converts to Quit only after a fresh
 
 None. The three questions raised after review were settled on
 2026-11-07 (settled decisions 9 to 11).
+
+## Deviations
+
+Recorded while implementing PR A:
+
+- The Quit conversion's freshness check runs on the emptied close's commit
+  worker rather than as a separate round trip: `finish_close` decides that
+  a `Detach` or `Session` assessment would become Quit, and the worker then
+  only calls the new check-only `Mux::validate_close_scope` under the lock
+  and commits nothing. A fresh ticket becomes Quit; a stale one assesses
+  again. The UI thread never takes the Mux lock for it.
+- A Quit confirmed while a `LeaveWorkspace` follow-up holds
+  `pending_spawns` (W35) dismisses its dialog and waits as a Quit requested
+  then would (`quit_waits_for_holds`); once the hold settles it assesses
+  again and asks again only when jobs still run. The leave's commit already
+  moved the revision, so the old consent could not have committed anyway.
+- The empty state's buttons take the existing `Panel` key context, so Tab,
+  Shift-Tab, Enter, and Space reuse the `panel_*` commands instead of new
+  catalog commands; the commands reach the empty state when one of its
+  buttons holds focus.
+- The workspace icon is Lucide's `layout-grid`, added to the pinned UI
+  icons, on the empty state and the session menu's New Workspace row. PR B
+  can reuse it for the dropdown and panel.
+- The follow-up's fallback, "else the first workspace", is the session's
+  first workspace other than the one the window left.
+- Restore also drops a remembered entry that names the workspace the window
+  shows, since that workspace's own navigation applies there.
+- The picker filter applies to `select_workspace` only. Other window
+  commands that take a workspace, such as `move_pane_to_new_tab`, still
+  list every session's workspaces, as before.
+- `rename_workspace` already defaulted to the window's workspace in the
+  desktop, so it is unchanged.
+- The new commands join the Settings keybindings page's existing Sessions
+  group, which every command must belong to; no Settings section changed.
+- While Quit asks in a window, that window's dialog refuses the workspace
+  commands first ("close confirmation pending"), as it does for every
+  command; W5's "application is quitting" applies while Quit waits and in
+  other windows.
+- Tier 2 tests exercise the Linux last-window conversions on macOS through
+  a test-only platform override on the view (`test_platform`).
+- W29's test takes the stash and opens a regular window from it, since a
+  tier 2 test cannot place a Quake window; the summon path runs the same
+  `take_stash`.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-26]: https://github.com/jimeh/huterm/issues/26

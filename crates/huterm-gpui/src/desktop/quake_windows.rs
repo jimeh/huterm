@@ -656,15 +656,16 @@ fn invoke_now(
     Ok(())
 }
 
-/// Takes profile `name`'s stashed session, dropping one that closed.
-fn take_stash(cx: &mut App, name: &str) -> Option<restore::Reopen> {
-    let reopen = cx.global_mut::<Desktop>().quake_stash.remove(name)?;
-    cx.global::<Desktop>()
-        .hierarchy
-        .state()
-        .session(reopen.session)
-        .is_some()
-        .then_some(reopen)
+/// Takes profile `name`'s stashed session, dropping one that closed and
+/// moving one whose workspace went to another of its session, as a session
+/// switch resolves it.
+pub(super) fn take_stash(cx: &mut App, name: &str) -> Option<restore::Reopen> {
+    let desktop = cx.global_mut::<Desktop>();
+    let mut reopen = desktop.quake_stash.remove(name)?;
+    let state = desktop.hierarchy.state();
+    state.session(reopen.session)?;
+    reopen.follow_workspace(state);
+    Some(reopen)
 }
 
 /// The display a show from hidden uses, from the displays connected now.

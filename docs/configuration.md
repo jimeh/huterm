@@ -136,8 +136,10 @@ bad setting starts with the defaults, shows the error, and still honors its
 ## Restoring sessions
 
 Quitting Huterm and starting it again reopens every session that was open,
-with its windows, tabs, split panes and their sizes, custom names, focused
-panes, window positions, and per-window transparency. Each pane starts a
+with its windows, workspaces, tabs, split panes and their sizes, custom
+names, focused panes, window positions, and per-window transparency. Each
+window reopens on the workspace it showed and remembers the tab and pane it
+last showed in every other workspace. Each pane starts a
 fresh shell in the folder it last reported; nothing that ran before is
 started again. A pane whose last folder no longer exists starts in an
 earlier folder it used, or failing that in your home folder on macOS or

@@ -64,8 +64,10 @@ the window instead, only that close ends, without a notice: an exit-close
 returns to owed, and closes queued behind it still run.
 
 Layout history (`windows/layout_history.rs`) lives in the window record, for
-the session the window shows, so it dies with the window and needs no view to
-prune it; a session switch moves it into that session's navigation memory.
+the workspace the window shows, so it dies with the window and needs no view
+to prune it; a session or workspace switch moves it into the left workspace's
+navigation memory (`NavigationMemory`, one entry per workspace, keyed by
+session and workspace, pruned when the workspace closes or moves away).
 Every rearrangement completion records through `record_layout_change`, which
 keeps the commit's hierarchy sequence and ignores a completion older than the
 newest entry. `reconcile` prunes every window's entries, those in navigation
@@ -119,6 +121,19 @@ lock (a failure there fails the shell the switch would spawn) and
 `Stage::Switched` after the commit. A tab whose shell exits while no window
 shows it records no exit-close, since only a view's exit transition does,
 and a view installed later keeps the exited tab.
+
+A workspace switch (`windows/workspace_switch.rs`) runs the same phases
+without the worker: the guard, then `install_session` with a target in the
+shown session, holding the spawn and the checkpoint deferral from the
+install, then the settle. New Workspace keeps the worker, which runs
+`Mux::create_workspace_with_tab` under one lock so a failed shell leaves no
+workspace. `install_session` takes `recovers`: a session switch and a
+follow-up that chose its target for its tabs pass true, a workspace the user
+selected false. `settle_switch` owes the emptied close only when the session
+or workspace went (`shown_workspace_gone`), or when a recovering target holds
+no tab any more; a selected empty workspace stays and draws the empty state
+(`windows/empty_state.rs`), whose buttons take the `Panel` key context and
+reach `run_empty_state_command` before the transparency panel.
 
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it
@@ -309,10 +324,22 @@ Exited tabs retain history and local selection/scrolling;
 close their input queue and reset mouse ownership without emitting releases.
 
 A window whose last tab view goes away takes an emptied close
-(`CloseTarget::Emptied`, core `CloseRequest::EmptiedWindow`) on three edges:
+(`CloseTarget::Emptied`, core `CloseRequest::EmptiedWindow`) on four edges:
 reconcile removed its last view, its own tab close or exit-close removed its
 last tab (`remove_closed_tabs`), or a batch that touched its workspace found
-its attached session gone. Reconcile only marks the window
+its attached session gone or the workspace no longer in that session, which
+needs no removed view (a window on the empty state whose workspace another
+window closed). Core answers, under its lock and scoped to the attachment's
+session, `ViewNotEmpty`, then `CloseEffect::LeaveWorkspace` while another
+workspace of the session holds tabs or the workspace left the session that
+keeps a workspace, else `Detach` or `Session`. `LeaveWorkspace` stops no
+terminal, closes the workspace only if it is still an empty member, and
+keeps the attachment. The completion dispatches by the effect the
+assessment committed (`closes_window`): only `Detach` and `Session` remove
+the window; `LeaveWorkspace` follows on the same attachment
+(`follow_left_workspace`) to the window's most recent remembered workspace,
+else the first in session order with tabs, else the first, holding the
+commit's switch hold until that install settles. Reconcile only marks the window
 (`EmptiedClose::Owed`) and never removes it, so no assessment or commit
 continuation runs after its window is gone. Core decides under its lock and
 refuses with `ViewNotEmpty` while the workspace holds tabs, so a tab that is
@@ -355,6 +382,16 @@ removes the window. The
 quake smoke covers a final-window close followed by zero-window keepalive and
 recreation, and by application exit without global registrations.
 
+`CloseTarget::Workspace` closes one workspace through
+`CloseRequest::Workspace`, which core refuses with `LastWorkspace` for a
+session's only one. It merges with no other target. An own-workspace close
+takes the hold at its commit (`commit_follow`) and, once core removed the
+workspace, even with a teardown failure, follows directly as a
+`LeaveWorkspace` does (`finish_workspace_close`); a stale commit releases the
+hold and assesses again. Other windows on the workspace take the emptied
+path. Quit cancels and refuses an own-workspace close as it does an
+own-session one (`closes_own`).
+
 `CloseTarget::Session` closes a whole session through `CloseRequest::Session`,
 with consent as for any close; its dialog lists titles from every open
 window. It merges with no other target. When it closes the window's own
@@ -389,7 +426,9 @@ moved detaches the follow-up attachment it no longer takes. Tier 2 tests
 hold the follow-up at `Stage::CloseFollow` and fail its attempts there
 with `fail_times`, one per candidate attach and one for the fresh shell.
 Other windows on the closed session take the session-gone path, and
-`reconcile` drops Quake stashes and navigation memory of closed sessions.
+`reconcile` drops Quake stashes and navigation memory of closed sessions. A
+stash whose workspace went moves to another of its session
+(`Reopen::follow_workspace`), in reconcile and again at its summon.
 
 Every Quit runs through `request_quit`, from outside any window update. It
 first cancels, in every window, each own-session Close Session that has not
@@ -409,13 +448,23 @@ resolves through `close_window` and `window_close_target`: on Linux, the
 last open window with no Quake shortcut quits instead while a session no
 window shows remains, so restore keeps it, unless a Quit is already
 requested, queued, or running (`last_window_strands`), since that Quit
-covers every session. `finish_close` applies the rule again as a Window or
-emptied close begins committing (`close_becomes_quit`), and a window whose
-such close is committing (`WindowRecord::close_committing`) counts as gone:
-closes requested in two windows each saw the other open, and a close
-queued behind a switch can become the last while it waits. An emptied
-close of that window turns into Quit by the same rule
-(`emptied_close_target`). Both conversions defer `request_quit` rather than
+covers every session. `finish_close` applies the rule again as a Window close
+begins committing (`close_becomes_quit`), and a window whose Window close, or
+emptied close that removes it, is committing
+(`WindowRecord::close_committing`, set by `note_close_commit` only for
+effects that remove the window) counts as gone: closes requested in two
+windows each saw the other open, and a close queued behind a switch can
+become the last while it waits. A window that only leaves a workspace still
+counts as open. An emptied close is always assessed first; it turns into Quit
+by the same rule (`emptied_close_target`) only for a `Detach` or `Session`
+assessment, and only after its commit worker found the ticket still fresh
+under the Mux lock (`Mux::validate_close_scope`, the `quit_check` of
+`session_switch::commit_close`), which then commits nothing. A stale ticket
+assesses again, so a sibling that gained a tab turns it into
+`LeaveWorkspace`. `LeaveWorkspace` never becomes Quit, and commits even while
+a Quit asks: a Quit confirmed while such a hold is held
+(`quit_waits_for_holds`) waits for it as one requested then would and asks
+again once it settles. Both conversions defer `request_quit` rather than
 run an `Application` close in place, so they cancel uncommitted closes and
 wait for a pending New Window spawn. The emptied conversion records its
 window in `Desktop::emptied_quit`; when that Quit is cancelled,

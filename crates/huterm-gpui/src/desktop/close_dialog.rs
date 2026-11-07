@@ -35,6 +35,10 @@ pub(crate) enum CloseDialogTarget {
     Session {
         name: String,
     },
+    /// A whole workspace, whichever windows show it.
+    Workspace {
+        name: String,
+    },
 }
 
 /// One process the close would end.
@@ -187,19 +191,20 @@ fn dialog_copy(
             sentences.extend(unknown_sentence(unknown_tabs, ""));
             ("Close this window?".to_owned(), "Close Window")
         }
-        CloseDialogTarget::Session { name } => {
-            if processes > 0 {
-                sentences.push(format!(
-                    "This ends {} and closes every tab in the session.",
-                    plural(processes, "running process", "running processes")
-                ));
-            } else {
-                sentences
-                    .push("This closes every tab in the session.".to_owned());
-            }
-            sentences.extend(unknown_sentence(unknown_tabs, ""));
-            (format!("Close session \"{name}\"?"), "Close Session")
-        }
+        CloseDialogTarget::Session { name } => scope_copy(
+            &mut sentences,
+            ("session", "Close Session"),
+            name,
+            processes,
+            unknown_tabs,
+        ),
+        CloseDialogTarget::Workspace { name } => scope_copy(
+            &mut sentences,
+            ("workspace", "Close Workspace"),
+            name,
+            processes,
+            unknown_tabs,
+        ),
         CloseDialogTarget::Application => {
             if processes > 0 {
                 sentences.push(format!(
@@ -215,6 +220,28 @@ fn dialog_copy(
         }
     };
     (title, sentences.join(" "), primary_label)
+}
+
+/// The copy of a close that ends a whole session or workspace, named
+/// `name`: `kind` is its noun and primary label, such as `("session",
+/// "Close Session")`.
+fn scope_copy(
+    sentences: &mut Vec<String>,
+    (noun, label): (&str, &'static str),
+    name: &str,
+    processes: usize,
+    unknown_tabs: usize,
+) -> (String, &'static str) {
+    if processes > 0 {
+        sentences.push(format!(
+            "This ends {} and closes every tab in the {noun}.",
+            plural(processes, "running process", "running processes")
+        ));
+    } else {
+        sentences.push(format!("This closes every tab in the {noun}."));
+    }
+    sentences.extend(unknown_sentence(unknown_tabs, ""));
+    (format!("Close {noun} \"{name}\"?"), label)
 }
 
 /// Headings and at most [`MAX_PROCESS_ROWS`] process or unknown rows, then
@@ -726,6 +753,23 @@ mod tests {
         assert_eq!(
             model.subtitle,
             "This ends 1 running process and closes every tab in the session."
+        );
+    }
+
+    #[test]
+    fn a_workspace_close_names_the_workspace() {
+        let model = build(
+            CloseDialogTarget::Workspace {
+                name: "build".to_owned(),
+            },
+            vec![known(Some("cargo build"), vec![process("cargo", 1, true)])],
+        );
+        assert_eq!(model.title, "Close workspace \"build\"?");
+        assert_eq!(model.primary_label, "Close Workspace");
+        assert_eq!(
+            model.subtitle,
+            "This ends 1 running process and closes every tab in the \
+             workspace."
         );
     }
 

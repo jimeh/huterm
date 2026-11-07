@@ -579,7 +579,7 @@ fn a_switch_files_the_session_left_and_hands_back_the_targets_memory() {
     model.set_focused_pane(window(1), TabId::new(1), PaneId::new(5));
     let revision = model.revision();
     assert_eq!(
-        model.switch_session(window(1), SessionId::new(2), WorkspaceId::new(4)),
+        model.switch_to(window(1), SessionId::new(2), WorkspaceId::new(4)),
         None
     );
     assert!(model.revision() > revision, "memory is a saved fact");
@@ -600,7 +600,7 @@ fn a_switch_files_the_session_left_and_hands_back_the_targets_memory() {
     assert_eq!(saved[0].tab_history, [TabId::new(1), TabId::new(2)]);
 
     let back = model
-        .switch_session(window(1), SessionId::new(1), WorkspaceId::new(1))
+        .switch_to(window(1), SessionId::new(1), WorkspaceId::new(1))
         .unwrap();
     assert_eq!(back.active, Some(TabId::new(2)));
     let record = model.record(window(1)).unwrap();
@@ -620,7 +620,7 @@ fn memory_keeps_the_most_recently_left_sessions_within_the_saved_bound() {
     let bound = huterm_state::bounds::MAX_SESSIONS;
     let last = u64::try_from(bound).unwrap() + 10;
     for session in 2..=last {
-        model.switch_session(
+        model.switch_to(
             window(1),
             SessionId::new(session),
             WorkspaceId::new(session),
@@ -630,4 +630,74 @@ fn memory_keeps_the_most_recently_left_sessions_within_the_saved_bound() {
     assert_eq!(record.memory.len(), bound);
     assert_eq!(record.memory[0].session, SessionId::new(last - 1));
     assert!(model.desktop_layout(None).validate().is_ok());
+}
+
+#[test]
+fn memory_is_kept_per_workspace_and_saved_once_per_workspace() {
+    let mut model = attached(2);
+    let session = SessionId::new(1);
+    // Workspace 1 to 2 of the same session files workspace 1.
+    assert_eq!(
+        model.switch_to(window(1), session, WorkspaceId::new(2)),
+        None
+    );
+    model.open_tab(window(1), entry(3));
+    // Then 2 to 3 files workspace 2, most recent first.
+    assert_eq!(
+        model.switch_to(window(1), session, WorkspaceId::new(3)),
+        None
+    );
+    let record = model.record(window(1)).unwrap();
+    let remembered: Vec<_> = record
+        .memory
+        .iter()
+        .map(|memory| (memory.session, memory.workspace, memory.active))
+        .collect();
+    assert_eq!(
+        remembered,
+        [
+            (session, WorkspaceId::new(2), Some(TabId::new(3))),
+            (session, WorkspaceId::new(1), Some(TabId::new(2))),
+        ]
+    );
+    // A session switch back resolves the workspace the window left last.
+    assert_eq!(
+        model.remembered_workspace(window(1), session),
+        Some(WorkspaceId::new(2))
+    );
+    assert_eq!(
+        model.remembered_workspace(window(1), SessionId::new(9)),
+        None
+    );
+    // Saved as one entry per workspace, so the session appears twice.
+    let saved = model.desktop_layout(None).windows.remove(0).remembered;
+    assert_eq!(
+        saved
+            .iter()
+            .map(|memory| (memory.session.get(), memory.workspace.get()))
+            .collect::<Vec<_>>(),
+        [(1, 2), (1, 1)]
+    );
+    // Returning to a workspace takes its entry back, with its history.
+    let back = model
+        .switch_to(window(1), session, WorkspaceId::new(1))
+        .unwrap();
+    assert_eq!(back.active, Some(TabId::new(2)));
+    assert_eq!(back.history, [TabId::new(2), TabId::new(1)]);
+    let record = model.record(window(1)).unwrap();
+    assert_eq!(
+        record
+            .memory
+            .iter()
+            .map(|memory| memory.workspace)
+            .collect::<Vec<_>>(),
+        [WorkspaceId::new(3), WorkspaceId::new(2)]
+    );
+    // Showing the current workspace again files nothing.
+    let before = record.memory.clone();
+    assert_eq!(
+        model.switch_to(window(1), session, WorkspaceId::new(1)),
+        None
+    );
+    assert_eq!(model.record(window(1)).unwrap().memory, before);
 }

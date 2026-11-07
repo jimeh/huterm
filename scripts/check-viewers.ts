@@ -337,6 +337,37 @@ always_show = true
     await send(0, "ack after-switch", "ACK:after-switch");
     await stateWhere((state) => text(state, 1).includes("ACK:after-switch"), "window 1 to follow the shared session");
 
+    // Two windows on one session switch workspaces independently: window 1
+    // creates a workspace and comes back through select_workspace, while
+    // window 0 keeps its workspace, tab, and pane, and its shell answers.
+    const home = windowField(await current(), 1, "workspace");
+    const homeTabs = windowField(await current(), 1, "tabs");
+    const kept = (state: string) => ["workspace", "session", "tabs", "active_index", "panes", "pane_focus"]
+      .map((field) => `${field}=${windowField(state, 0, field)}`).join(" ");
+    const keptBefore = kept(await current());
+    await command("invoke-in\t1\tnew_workspace");
+    const opened = await stateWhere((state) => {
+      const workspace = windowField(state, 1, "workspace");
+      return workspace !== undefined && workspace !== "none" && workspace !== home
+        && windowField(state, 1, "session") === shared && windowField(state, 1, "busy") === "false"
+        && windowField(state, 1, "tabs") === "1" && windowField(state, 1, "workspaces") === "2"
+        && text(state, 1).includes("READY");
+    }, "window 1 to show a new workspace");
+    const createdWorkspace = windowField(opened, 1, "workspace")!;
+    if (kept(opened) !== keptBefore) throw new Error(`window 0 changed with window 1's workspace: ${kept(opened)} vs ${keptBefore}`);
+    await send(0, "ack while-workspace", "ACK:while-workspace");
+    await command(`invoke-in\t1\tselect_workspace\tworkspace=${home}`);
+    const back = await stateWhere((state) => windowField(state, 1, "workspace") === home
+      && windowField(state, 1, "busy") === "false" && windowField(state, 1, "tabs") === homeTabs
+      && text(state, 1).includes("ACK:while-workspace"),
+    "window 1 to switch back to its workspace");
+    if (kept(back) !== keptBefore) throw new Error(`window 0 changed with window 1's switch back: ${kept(back)} vs ${keptBefore}`);
+    await command(`invoke-in\t1\tclose_workspace\tworkspace=${createdWorkspace}`);
+    await stateWhere((state) => windowField(state, 0, "workspaces") === "1" && windowField(state, 1, "workspaces") === "1"
+      && windowField(state, 1, "workspace") === home, "the created workspace to close");
+    await send(0, "ack after-workspace", "ACK:after-workspace");
+    report.push(`workspaces=${home}+${createdWorkspace}`);
+
     // 7. Closing window 1 through the platform's close path detaches it;
     // window 0's shell still answers.
     await command("native-close\t1");

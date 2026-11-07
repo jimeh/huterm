@@ -19,6 +19,7 @@ fn row(
         name: name.to_owned(),
         automatic,
         tabs,
+        workspaces: 1,
         windows,
         exited,
     }
@@ -93,6 +94,7 @@ fn the_menu_lists_every_session_then_the_session_actions() {
             "session:4 Session 4~ [1 tab] <exited!>",
             "-",
             "new_session New Session",
+            "new_workspace New Workspace",
             "rename_session Rename Session…",
             "clear_session_name Clear Name",
             "-",
@@ -143,22 +145,50 @@ fn an_automatic_name_offers_no_clear_and_a_lone_session_shows_a_hint() {
             "(No other sessions)",
             "-",
             "new_session New Session",
+            "new_workspace New Workspace",
             "rename_session Rename Session…",
             "clear_session_name Clear Name",
             "-",
             "close_session Close Session…",
         ]
     );
-    // Nothing in the menu mentions workspaces.
+    // With one workspace per session, only New Workspace mentions
+    // workspaces.
     for spec in [automatic, lone] {
-        assert!(
-            drawn(&spec)
-                .iter()
-                .all(|row| !row.to_lowercase().contains("workspace")),
-            "{:?}",
-            drawn(&spec)
-        );
+        let mentions: Vec<String> = drawn(&spec)
+            .into_iter()
+            .filter(|row| row.to_lowercase().contains("workspace"))
+            .collect();
+        assert_eq!(mentions, ["new_workspace New Workspace"]);
     }
+}
+
+#[test]
+fn a_session_with_several_workspaces_counts_them_and_new_workspace_follows_new_session()
+ {
+    let mut rows = four();
+    rows[0].workspaces = 3;
+    let spec = session_menu(&input(rows, 1));
+    let drawn = drawn(&spec);
+    assert_eq!(drawn[0], "session:1 huterm* [3 workspaces · 3 tabs]");
+    assert_eq!(drawn[1], "session:2 Session 2~ [1 tab]");
+    let new = drawn
+        .iter()
+        .position(|row| row == "new_session New Session")
+        .unwrap();
+    assert_eq!(drawn[new + 1], "new_workspace New Workspace");
+    let model = spec.to_listbox(Platform::MacOs);
+    let ListRow::Item(item) = &model.rows[new + 1] else {
+        panic!("New Workspace");
+    };
+    assert_eq!(item.icon.as_deref(), Some(Icon::LayoutGrid.asset_path()));
+    // The native menu keeps the count as the row's subtitle.
+    let native = spec.to_native(true);
+    assert!(native.items.iter().any(|item| matches!(
+        item,
+        NativeItem::Item { subtitle: Some(subtitle), .. }
+            if subtitle == "3 workspaces · 3 tabs"
+    )));
 }
 
 #[test]
@@ -170,6 +200,7 @@ fn picks_name_a_session_by_its_raw_identity_or_a_session_command() {
     );
     for command in [
         ids::NEW_SESSION,
+        ids::NEW_WORKSPACE,
         ids::OPEN_SESSION_IN_NEW_WINDOW,
         ids::RENAME_SESSION,
         ids::CLEAR_SESSION_NAME,
@@ -226,6 +257,7 @@ fn the_native_menu_keeps_check_and_name_with_the_detail_as_a_subtitle() {
             "~session-window:4=Open \"Session 4\" in New Window",
             "-",
             "new_session=New Session",
+            "new_workspace=New Workspace",
             "open_session_in_new_window=Open Session in New Window…",
             "rename_session=Rename Session…",
             "clear_session_name=Clear Name",

@@ -2456,29 +2456,33 @@ fn a_refused_emptied_close_runs_again_once_the_installing_tab_goes(
 }
 
 #[gpui::test]
-fn moving_the_last_tab_to_a_sibling_workspace_detaches_the_window(
+fn moving_the_last_tab_to_a_sibling_workspace_moves_the_window_with_it(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    {
+    let sibling = {
         let mut mux = harness.runtime.lock();
         let sibling = mux.create_workspace(harness.session, None).unwrap();
         mux.move_tab(harness.workspace, tab, sibling, None).unwrap();
-    }
-    harness.wait_closed(window);
+        sibling
+    };
+    // The window leaves the emptied workspace, which closes, and shows
+    // the tab in its new workspace on the same attachment.
+    harness.wait_for("the window to follow its tab", |cx| {
+        cx.global::<Desktop>()
+            .windows
+            .record(window.window_id())
+            .is_some_and(|record| record.workspace == Some(sibling))
+            && terminal(cx, window, tab).is_some()
+    });
     {
         let mux = harness.runtime.lock();
-        assert!(mux.session(harness.session).is_some());
-        assert!(!mux.session_attached(harness.session));
+        assert_eq!(mux.session(harness.session).unwrap().workspaces, [sibling]);
+        assert!(mux.session_attached(harness.session));
     }
-    let _client = harness.send_line(tab, "moved");
-    harness.wait_canonical(tab, "the moved child to answer", |snapshot| {
-        let text: String =
-            snapshot.cells().map(|cell| cell.text.displayed()).collect();
-        text.contains("got:moved")
-    });
+    harness.answers(window, tab, "moved");
 }
 
 #[gpui::test]
@@ -5472,3 +5476,4 @@ mod terminal_notifications;
 
 mod transparency;
 mod transparency_panel;
+mod workspaces;

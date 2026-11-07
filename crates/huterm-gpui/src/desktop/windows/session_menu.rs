@@ -2,10 +2,10 @@
 //!
 //! The control and the menu read the projection and the window model and
 //! never depend on where the control is drawn, so a second host, such as
-//! #27's workspace sidebar, reuses both unchanged. Nothing here mentions
-//! workspaces: with one workspace per session the UI talks only about
-//! sessions, tabs, and windows. Everything here is pure so the rows can be
-//! tested without a window.
+//! #27's workspace sidebar, reuses both unchanged. Workspaces appear only
+//! as the New Workspace action and, for a session with more than one, its
+//! workspace count. Everything here is pure so the rows can be tested
+//! without a window.
 
 use std::collections::HashSet;
 
@@ -60,6 +60,7 @@ pub(super) struct SessionRow {
     pub(super) name: String,
     pub(super) automatic: bool,
     pub(super) tabs: usize,
+    pub(super) workspaces: usize,
     /// Open windows other than this one that show the session.
     pub(super) windows: usize,
     /// Every terminal in the session has exited.
@@ -79,9 +80,9 @@ pub(super) fn session_rows(
         .iter()
         .filter_map(|&session| {
             let info = state.session(session)?;
-            let tabs = state
-                .session_workspaces(session)
-                .unwrap_or_default()
+            let workspaces =
+                state.session_workspaces(session).unwrap_or_default();
+            let tabs = workspaces
                 .iter()
                 .filter_map(|workspace| state.workspace_tabs(*workspace))
                 .map(<[_]>::len)
@@ -91,6 +92,7 @@ pub(super) fn session_rows(
                 name: info.display_name().to_owned(),
                 automatic: info.custom_name.is_none(),
                 tabs,
+                workspaces: workspaces.len(),
                 windows: windows.other_windows_showing(session, window),
                 exited: exited.contains(&session),
             })
@@ -132,6 +134,7 @@ pub(super) fn parse_pick(id: &str) -> Option<SessionPick> {
     }
     [
         ids::NEW_SESSION,
+        ids::NEW_WORKSPACE,
         ids::OPEN_SESSION_IN_NEW_WINDOW,
         ids::RENAME_SESSION,
         ids::CLEAR_SESSION_NAME,
@@ -159,6 +162,16 @@ fn tabs_text(count: usize) -> String {
     }
 }
 
+/// A row's detail: its tab count, after its workspace count when it has
+/// more than one workspace.
+fn detail_text(row: &SessionRow) -> String {
+    if row.workspaces > 1 {
+        format!("{} workspaces · {}", row.workspaces, tabs_text(row.tabs))
+    } else {
+        tabs_text(row.tabs)
+    }
+}
+
 fn windows_text(count: usize) -> String {
     if count == 1 {
         "Shown in 1 other window".to_owned()
@@ -170,10 +183,11 @@ fn windows_text(count: usize) -> String {
 /// The session menu: one row per session in runtime order, a check on the
 /// window's own, the name muted when automatic, the tab count, a window
 /// tag for sessions other windows show, and an "exited" tag; a hint while
-/// the window's session is the only one; then New Session, in native menus
-/// Open Session in New Window…, Rename Session…, Clear Name while the
-/// window's session has a custom name, and Close Session…. The selected
-/// row offers Open in New Window.
+/// the window's session is the only one; then New Session, New Workspace,
+/// in native menus Open Session in New Window…, Rename Session…, Clear
+/// Name while the window's session has a custom name, and Close Session….
+/// A session with more than one workspace counts them before its tabs. The
+/// selected row offers Open in New Window.
 pub(super) fn session_menu(input: &SessionMenuInput) -> MenuSpec {
     let mut rows: Vec<MenuRow> = input
         .rows
@@ -184,7 +198,7 @@ pub(super) fn session_menu(input: &SessionMenuInput) -> MenuSpec {
                 MenuItem::new(format!("{SESSION_PREFIX}{raw}"), &row.name)
                     .checked(input.current == Some(row.session))
                     .muted(row.automatic)
-                    .detail(tabs_text(row.tabs))
+                    .detail(detail_text(row))
                     .action(MenuAction {
                         id: format!("{WINDOW_PREFIX}{raw}").into(),
                         label: "Open in New Window".to_owned(),
@@ -230,6 +244,11 @@ pub(super) fn session_menu(input: &SessionMenuInput) -> MenuSpec {
     };
     rows.push(MenuRow::Separator);
     rows.push(action(ids::NEW_SESSION, "New Session", Icon::Plus));
+    rows.push(action(
+        ids::NEW_WORKSPACE,
+        "New Workspace",
+        Icon::LayoutGrid,
+    ));
     // A native menu has no inline buttons and hides each row's Open in New
     // Window behind Command, so it also lists the command, which asks for
     // the session.

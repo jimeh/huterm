@@ -651,6 +651,41 @@ fn failed_spawn_does_not_publish_a_tab_or_replace_siblings() {
 }
 
 #[test]
+fn a_workspace_whose_tab_fails_to_open_is_closed_again() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let first = mux.create_workspace(session, None).unwrap();
+    let events = mux.subscribe_hierarchy().1;
+    let mut invalid = command("");
+    invalid.program = "/huterm-nonexistent-shell".into();
+    assert!(
+        mux.create_workspace_with_tab(session, Some("build"), &invalid)
+            .is_err()
+    );
+    assert_eq!(mux.session(session).unwrap().workspaces, [first]);
+    assert_eq!(mux.terminal_count(), 0);
+    let mut closed = false;
+    while let Ok(envelope) = events.try_recv() {
+        closed |=
+            matches!(envelope.event, HierarchyEvent::WorkspaceClosed { .. });
+    }
+    assert!(closed, "the created workspace was not closed again");
+
+    let (workspace, opened) = mux
+        .create_workspace_with_tab(
+            session,
+            Some("build"),
+            &command("printf READY; read value"),
+        )
+        .unwrap();
+    assert_eq!(mux.session(session).unwrap().workspaces, [first, workspace]);
+    let record = mux.workspace(workspace).unwrap();
+    assert_eq!(record.display_name(), "build");
+    assert_eq!(record.tabs, [opened.tab]);
+    mux.shutdown().unwrap();
+}
+
+#[test]
 fn closing_tabs_preserves_order_and_other_workspace_processes() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();
