@@ -52,11 +52,13 @@ pub(super) fn font_size(metrics: GridMetrics) -> Pixels {
     metrics.cell_width.min(metrics.cell_height)
 }
 
-/// The glyph origin, relative to a one-column cell's origin, that centres a
-/// symbol of `advance` and the given ascent and descent in the cell, in whole
-/// device pixels. Descent is a distance below the baseline, of either sign.
+/// The glyph origin, relative to the cell origin, that centres a symbol of
+/// `advance` and the given ascent and descent in a span of `columns` cells,
+/// in whole device pixels. Descent is a distance below the baseline, of
+/// either sign.
 pub(super) fn origin(
     metrics: GridMetrics,
+    columns: u16,
     advance: Pixels,
     ascent: Pixels,
     descent: Pixels,
@@ -65,7 +67,7 @@ pub(super) fn origin(
     let align = |value: Pixels| (value * scale).round() / scale;
     let height = ascent + descent.abs();
     point(
-        align((metrics.cell_width - advance) / 2.0),
+        align((metrics.cell_width * f32::from(columns) - advance) / 2.0),
         align((metrics.cell_height - height) / 2.0 + ascent),
     )
 }
@@ -123,7 +125,7 @@ mod tests {
         assert_eq!(size, metrics.cell_width);
         let ascent = size * 0.8;
         let descent = size * 0.2;
-        let origin = origin(metrics, size, ascent, -descent);
+        let origin = origin(metrics, 1, size, ascent, -descent);
         assert_eq!(origin.x, px(0.0));
         // Equal space above the ascent and below the descent, within the
         // half device pixel that rounding may move it.
@@ -203,8 +205,22 @@ mod tests {
         let metrics = GridMetrics::fixed(20.0, 10.0);
         let size = font_size(metrics);
         assert_eq!(size, metrics.cell_height);
-        let origin = origin(metrics, size, size * 0.8, size * 0.2);
+        let origin = origin(metrics, 1, size, size * 0.8, size * 0.2);
         assert_eq!(origin.x, px(5.0));
         assert_eq!(origin.y, size * 0.8);
+    }
+
+    #[test]
+    fn wide_symbols_centre_on_whole_device_pixels() {
+        // An odd device-pixel cell width at 1x puts the two-column centre
+        // on a half pixel unless the shifted origin is aligned again.
+        let metrics = GridMetrics::fixed(7.0, 14.0);
+        let size = font_size(metrics);
+        let narrow = origin(metrics, 1, size, size * 0.8, size * 0.2);
+        let wide = origin(metrics, 2, size, size * 0.8, size * 0.2);
+        assert_eq!(narrow.x, px(0.0));
+        assert_eq!(wide.x, wide.x.round());
+        assert!((wide.x - px(3.5)).abs() <= px(0.5));
+        assert_eq!(wide.y, narrow.y);
     }
 }

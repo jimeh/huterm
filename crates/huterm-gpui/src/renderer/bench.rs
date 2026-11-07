@@ -773,7 +773,9 @@ impl Primitives {
             counts.decorations += row.underlines.len() + row.strikeouts.len();
             for glyph in &row.glyphs {
                 match &glyph.content {
-                    GlyphContent::Font(_) | GlyphContent::Symbol(..) => {
+                    GlyphContent::Font(_)
+                    | GlyphContent::Symbol(_)
+                    | GlyphContent::WideSymbol(_) => {
                         counts.glyphs += 1;
                     }
                     GlyphContent::Builtin(geometry) => {

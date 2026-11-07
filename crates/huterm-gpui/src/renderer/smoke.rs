@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, canvas,
-    div, point, prelude::*, px, size,
+    App, Bounds, Context, Pixels, Render, Window, WindowBounds, WindowOptions,
+    canvas, div, point, prelude::*, px, size,
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellStyle, Cursor, CursorShape,
@@ -338,33 +338,51 @@ fn check_icons(panel: &Panel, window: &Window) {
     let glyphs = &renderer.rows[ICON_ROW].glyphs;
     assert_eq!(glyphs.len(), 8, "seven icons and one letter");
     let size = super::symbols::font_size(metrics);
+    let ascent = text_system.ascent(symbols, size);
+    let descent = text_system.descent(symbols, size).abs();
+    let whole = |value: Pixels| {
+        let device = value * metrics.scale_factor;
+        (device - device.round()).abs() < px(0.001)
+    };
     for glyph in &glyphs[..7] {
-        let GlyphContent::Symbol(symbol) = &glyph.content else {
-            panic!("icon at column {} must use the symbols font", glyph.column)
+        let wide = usize::from(glyph.column) == ICON_WIDE;
+        let (symbol, x) = match &glyph.content {
+            GlyphContent::Symbol(symbol) if !wide => (symbol, symbol.origin.x),
+            GlyphContent::WideSymbol(symbol) if wide => (symbol, symbol.wide_x),
+            _ => panic!(
+                "icon at column {} must use the symbols font at its width",
+                glyph.column
+            ),
         };
-        let (layout, origin) = (&symbol.layout, symbol.origin);
+        let (layout, y) = (&symbol.layout, symbol.origin.y);
         assert_eq!(layout.runs.len(), 1);
         assert_eq!(layout.runs[0].font_id, symbols);
         assert_eq!(layout.font_size, size);
-        let columns = if usize::from(glyph.column) == ICON_WIDE {
-            2.0
-        } else {
-            1.0
-        };
-        let span = metrics.cell_width * columns;
-        let left = origin.x;
-        let right = origin.x + layout.width;
+        let span = metrics.cell_width * if wide { 2.0 } else { 1.0 };
+        let right = x + layout.width;
         assert!(
-            left >= px(0.0) && right <= span + px(0.5),
-            "icon at column {} spans {left:?}..{right:?} of {span:?}",
+            x >= px(0.0) && right <= span + px(0.5),
+            "icon at column {} spans {x:?}..{right:?} of {span:?}",
             glyph.column
         );
+        // Equal space on both sides and above and below, within the device
+        // pixel that alignment may move each origin.
+        let pixel = px(1.0 / metrics.scale_factor);
         assert!(
-            (left - (span - right)).abs() <= px(1.0),
+            (x - (span - right)).abs() <= pixel,
             "icon at column {} must centre horizontally",
             glyph.column
         );
-        assert!(origin.y > px(0.0) && origin.y < metrics.cell_height);
+        assert!(
+            ((y - ascent) - (metrics.cell_height - y - descent)).abs() <= pixel,
+            "icon at column {} must centre vertically",
+            glyph.column
+        );
+        assert!(
+            whole(x) && whole(y),
+            "icon at column {} must sit on whole device pixels",
+            glyph.column
+        );
     }
     assert!(matches!(&glyphs[7].content, GlyphContent::Font(_)));
 }

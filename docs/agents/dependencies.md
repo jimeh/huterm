@@ -111,8 +111,9 @@ as resources; the fonts themselves are embedded and registered before lookup.
 3. Refresh every URL and hash in `third-party/nerd-fonts/provenance.json` and
    the Linux notice list in `assets/linux/package-policy.json`.
 4. Check that the family is still `Symbols Nerd Font Mono` with PostScript
-   name `SymbolsNFM`, which the `nerd-font-symbols` vendor patches name, and
-   that every glyph still has a one-em advance.
+   name `SymbolsNFM`, which the `nerd-font-symbols` vendor patches name, that
+   every glyph still has a one-em advance, and that hhea ascent plus descent
+   still equals one em, which vertical centring assumes.
 
 Run `mise run licenses:generate`, `mise run licenses:check`, the
 `renderer::symbols` tests, `mise run smoke:renderer` on macOS and in the Linux
