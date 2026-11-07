@@ -1380,10 +1380,9 @@ impl WorkspaceView {
         layout: &ChromeLayout,
     ) -> Bounds<Pixels> {
         let mut area = layout.strip_bounds(self.layout_tabs());
-        if !strip.vertical
-            && self.bar_menu_placement() == MenuButtonPlacement::BarEnd
-        {
-            area.size.width = (area.size.width - CONTROL_SLOT).max(px(0.0));
+        if !strip.vertical {
+            area.size.width =
+                (area.size.width - self.bar_trailing(layout)).max(px(0.0));
         }
         let gap = px(6.0);
         let width =

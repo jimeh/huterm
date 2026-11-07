@@ -15,6 +15,12 @@
 //! runtime state on the projection. [`WindowModel::desktop_layout`] turns the
 //! records into the saved layout that session restore reopens.
 //!
+//! A window that switches sessions keeps a [`SessionMemory`] for each
+//! session it showed and left, so switching back returns to the same
+//! workspace, tab, panes, and layout history. The model also keeps the order
+//! sessions were last viewed in, across window removal, so a reopen can
+//! return to the session the user left most recently.
+//!
 //! Every change to a saved fact moves [`WindowModel::revision`], which
 //! schedules a checkpoint.
 //!
@@ -70,6 +76,41 @@ pub(super) struct WindowLayout {
     pub(super) fullscreen: bool,
 }
 
+/// Where a window was in a session it showed and left. View state: never
+/// shared with other windows, and pruned when the session closes.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SessionMemory {
+    pub(super) session: SessionId,
+    pub(super) workspace: WorkspaceId,
+    pub(super) active: Option<TabId>,
+    /// Activated tabs, most recent first.
+    pub(super) history: Vec<TabId>,
+    /// Each tab's focused pane.
+    pub(super) panes: Vec<(TabId, PaneId)>,
+    /// The window's layout history for the session, so undo never reaches a
+    /// session the window no longer shows. Not saved.
+    pub(super) layout_history: LayoutHistory,
+}
+
+impl SessionMemory {
+    /// Drops the tabs and panes the projection no longer holds in the
+    /// remembered workspace; returns whether anything went.
+    fn prune(&mut self, state: &HierarchyState) -> bool {
+        let tabs = state.workspace_tabs(self.workspace).unwrap_or_default();
+        let held = |tab: &TabId| tabs.contains(tab);
+        let before = (self.active, self.history.len(), self.panes.len());
+        self.active = self.active.filter(held);
+        self.history.retain(held);
+        self.panes.retain(|(tab, pane)| {
+            held(tab)
+                && state
+                    .tab(*tab)
+                    .is_some_and(|info| info.layout.pane(*pane).is_some())
+        });
+        before != (self.active, self.history.len(), self.panes.len())
+    }
+}
+
 /// Everything the client knows about one window.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct WindowRecord {
@@ -84,11 +125,18 @@ pub(super) struct WindowRecord {
     pub(super) history: Vec<TabId>,
     pub(super) quake: Option<QuakeRecord>,
     pub(super) layout: WindowLayout,
-    /// The window's own layout changes that undo and redo restore.
+    /// The window's own layout changes that undo and redo restore, for the
+    /// session it shows.
     pub(super) layout_history: LayoutHistory,
+    /// The sessions the window showed and left, most recently left first.
+    pub(super) memory: Vec<SessionMemory>,
     /// The window is being removed. Its own view can still read the record,
     /// but profile rows, Quit dialog titles, and Quit capture skip it.
     pub(super) closing: bool,
+    /// A Window or emptied close of this window started committing. The
+    /// last-window rule counts the window as going, though it becomes
+    /// `closing` only once the commit's completion removes it.
+    pub(super) close_committing: bool,
     /// The window's own transparency overrides, runtime state over the
     /// configured defaults and its Quake profile.
     pub(super) transparency: crate::transparency::Layer,
@@ -143,6 +191,10 @@ pub(super) struct WindowModel {
     renames_started: u64,
     /// Moves with every change to a fact the saved layout records.
     revision: u64,
+    /// Sessions in the order a window last showed or left them, most recent
+    /// first. Kept across window removal, so a reopen after the last window
+    /// closed can return to the session the user left last.
+    viewed: Vec<SessionId>,
 }
 
 impl WindowModel {
@@ -187,7 +239,9 @@ impl WindowModel {
             quake,
             layout,
             layout_history: LayoutHistory::default(),
+            memory: Vec::new(),
             closing: false,
+            close_committing: false,
             transparency: crate::transparency::Layer::default(),
         });
     }
@@ -209,6 +263,168 @@ impl WindowModel {
         }
         record.session = Some(session);
         record.workspace = Some(workspace);
+        self.note_viewed(session);
+    }
+
+    /// Moves `session` to the front of the viewed order.
+    fn note_viewed(&mut self, session: SessionId) {
+        self.viewed.retain(|viewed| *viewed != session);
+        self.viewed.insert(0, session);
+    }
+
+    /// Switches a window to `session` in `workspace`: remembers where it
+    /// was in the session it leaves, starts the target's layout history
+    /// from its memory, and returns that memory, which the window applies
+    /// once its views install. The window's tab entries stay until
+    /// reconcile drops their views. Returns `None` when the window had no
+    /// memory of the target.
+    pub(super) fn switch_session(
+        &mut self,
+        id: WindowId,
+        session: SessionId,
+        workspace: WorkspaceId,
+    ) -> Option<SessionMemory> {
+        let record = self.saved_mut(id)?;
+        let left = record.session.zip(record.workspace);
+        if let Some((left, left_workspace)) = left
+            && left != session
+        {
+            let memory = SessionMemory {
+                session: left,
+                workspace: left_workspace,
+                active: record.active,
+                history: record.history.clone(),
+                panes: record
+                    .tabs
+                    .iter()
+                    .filter_map(|entry| Some((entry.id, entry.focused?)))
+                    .collect(),
+                layout_history: std::mem::take(&mut record.layout_history),
+            };
+            record.memory.retain(|memory| memory.session != left);
+            record.memory.insert(0, memory);
+            record.memory.truncate(huterm_state::bounds::MAX_SESSIONS);
+        }
+        let target = record
+            .memory
+            .iter()
+            .position(|memory| memory.session == session)
+            .map(|index| record.memory.remove(index));
+        record.layout_history = target
+            .as_ref()
+            .map(|memory| memory.layout_history.clone())
+            .unwrap_or_default();
+        record.session = Some(session);
+        record.workspace = Some(workspace);
+        if let Some((left, _)) = left {
+            self.note_viewed(left);
+        }
+        self.note_viewed(session);
+        target
+    }
+
+    /// Records the attachment that replaced a window's own, after the
+    /// runtime invalidated the old one.
+    pub(super) fn set_attachment(
+        &mut self,
+        id: WindowId,
+        attachment: AttachmentId,
+    ) {
+        if let Some(record) = self.record_mut(id) {
+            record.attachment = Some(attachment);
+        }
+    }
+
+    /// Replaces a restored window's memory of the sessions it left.
+    pub(super) fn restore_memory(
+        &mut self,
+        id: WindowId,
+        memory: Vec<SessionMemory>,
+    ) {
+        if let Some(record) = self.saved_mut(id) {
+            record.memory = memory;
+        }
+    }
+
+    /// Forgets the sessions the projection no longer holds, in every
+    /// window's memory and in the viewed order, and the tabs and panes a
+    /// remembered workspace lost.
+    pub(super) fn prune_sessions(&mut self, state: &HierarchyState) {
+        let mut changed = false;
+        for record in &mut self.records {
+            let before = record.memory.len();
+            record
+                .memory
+                .retain(|memory| state.session(memory.session).is_some());
+            changed |= record.memory.len() != before;
+            for memory in &mut record.memory {
+                changed |= memory.prune(state);
+            }
+        }
+        self.viewed
+            .retain(|session| state.session(*session).is_some());
+        if changed {
+            self.revision += 1;
+        }
+    }
+
+    /// How many open windows other than `except` show `session`. Counts
+    /// window records, not attachments: a Quake stash holds an attachment
+    /// with no window.
+    pub(super) fn other_windows_showing(
+        &self,
+        session: SessionId,
+        except: WindowId,
+    ) -> usize {
+        self.open_records()
+            .filter(|record| {
+                record.id != except
+                    && record.attachment.is_some()
+                    && record.session == Some(session)
+            })
+            .count()
+    }
+
+    /// Whether an open window other than `except` shows `session`.
+    pub(super) fn shown_elsewhere(
+        &self,
+        session: SessionId,
+        except: Option<WindowId>,
+    ) -> bool {
+        self.open_records().any(|record| {
+            Some(record.id) != except
+                && record.attachment.is_some()
+                && record.session == Some(session)
+        })
+    }
+
+    /// The sessions the projection holds that no open window other than
+    /// `except` shows, most recently viewed first, then the never-viewed
+    /// ones in runtime order. `held` names sessions that have another way
+    /// back, such as a Quake stash, which are left out.
+    pub(super) fn unviewed_sessions(
+        &self,
+        state: &HierarchyState,
+        except: Option<WindowId>,
+        held: impl Fn(SessionId) -> bool,
+    ) -> Vec<SessionId> {
+        let eligible = |session: SessionId| {
+            state.session(session).is_some()
+                && !held(session)
+                && !self.shown_elsewhere(session, except)
+        };
+        let mut sessions: Vec<SessionId> = self
+            .viewed
+            .iter()
+            .copied()
+            .filter(|session| eligible(*session))
+            .collect();
+        for &session in state.sessions() {
+            if eligible(session) && !sessions.contains(&session) {
+                sessions.push(session);
+            }
+        }
+        sessions
     }
 
     /// Clears the attachment and session after the runtime detached the
@@ -570,11 +786,26 @@ impl WindowModel {
         }
     }
 
+    /// Notes whether a Window or emptied close of `id` is committing.
+    pub(super) fn set_close_committing(
+        &mut self,
+        id: WindowId,
+        committing: bool,
+    ) {
+        if let Some(record) = self.record_mut(id) {
+            record.close_committing = committing;
+        }
+    }
+
     /// Marks a window as being removed and ends its profile association.
     pub(super) fn begin_close(&mut self, id: WindowId) {
-        if let Some(record) = self.saved_mut(id) {
-            record.closing = true;
-            record.quake = None;
+        let Some(record) = self.saved_mut(id) else {
+            return;
+        };
+        record.closing = true;
+        record.quake = None;
+        if let Some(session) = record.session {
+            self.note_viewed(session);
         }
     }
 
@@ -605,7 +836,11 @@ impl WindowModel {
         self.records
             .iter_mut()
             .filter_map(|record| {
-                record.layout_history.prune(state).then_some(record.id)
+                let mut pruned = record.layout_history.prune(state);
+                for memory in &mut record.memory {
+                    pruned |= memory.layout_history.prune(state);
+                }
+                pruned.then_some(record.id)
             })
             .collect()
     }
@@ -815,7 +1050,32 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
                 blur: transparency.blur.map(u32::from),
             }
         }),
+        remembered: record.memory.iter().map(saved_memory).collect(),
     })
+}
+
+/// One remembered session's saved navigation, unscoped like the window's.
+fn saved_memory(memory: &SessionMemory) -> huterm_state::SessionNavigation {
+    huterm_state::SessionNavigation {
+        session: SessionId::new(memory.session.get()),
+        workspace: WorkspaceId::new(memory.workspace.get()),
+        active_tab: memory.active.map(|tab| TabId::new(tab.get())),
+        // Saved most recent last.
+        tab_history: memory
+            .history
+            .iter()
+            .rev()
+            .map(|tab| TabId::new(tab.get()))
+            .collect(),
+        focused_panes: memory
+            .panes
+            .iter()
+            .map(|(tab, pane)| huterm_state::FocusedPane {
+                tab: TabId::new(tab.get()),
+                pane: PaneId::new(pane.get()),
+            })
+            .collect(),
+    }
 }
 
 /// Sorts `tabs` into canonical `order`; returns false and leaves `tabs`

@@ -21,13 +21,7 @@ fn menu_kind(cx: &mut App, window: AnyWindowHandle) -> Option<&'static str> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
-            Some(match view.read(cx).menu.as_ref()?.kind {
-                MenuKind::Window => "window",
-                MenuKind::Tab(_) => "tab",
-                MenuKind::Terminal { .. } => "terminal",
-                MenuKind::Pane { .. } => "pane",
-                MenuKind::Field(_) => "field",
-            })
+            Some(view.read(cx).menu.as_ref()?.kind.name())
         })
         .ok()
         .flatten()

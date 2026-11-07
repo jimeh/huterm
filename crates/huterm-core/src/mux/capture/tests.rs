@@ -2,7 +2,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::*;
 use crate::mux::tests::{command, shell_pid, wait_for_text};
-use crate::mux::{HierarchyRecvError, HierarchySubscription};
+use crate::mux::{
+    AutomaticNumbering, HierarchyRecvError, HierarchySubscription,
+};
 use crate::test_support::TestClient;
 use huterm_protocol::{
     ApplyOutcome, CaptureError, HierarchyState, NodeId, PaneInfo,
@@ -162,6 +164,7 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 4));
 
     let mut restored = Mux::default();
+    restored.set_automatic_numbering(AutomaticNumbering::Increasing);
     let (mut state, subscription) = restored.subscribe_hierarchy();
     let spawned = spawn_all(&restored, &capture);
     let report = restored.restore(&capture, spawned).unwrap();
@@ -197,8 +200,15 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
             .is_ok()
     );
 
-    // A subscriber that saw the empty runtime follows the restore.
+    // A subscriber that saw the empty runtime follows the restore and the
+    // attachment a restored window makes.
     drain(&subscription, &mut state);
+    let (fresh, _) = restored.subscribe_hierarchy();
+    assert_eq!(state, fresh);
+    let main = SessionId::in_runtime(runtime, fixture.main.get());
+    let viewer = restored.attach_session(main).unwrap();
+    drain(&subscription, &mut state);
+    assert_eq!(state.attachment_session(viewer), Some(main));
     let (fresh, _) = restored.subscribe_hierarchy();
     assert_eq!(state, fresh);
 
@@ -238,6 +248,40 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     }
     restored.shutdown().unwrap();
     fixture.mux.shutdown().unwrap();
+}
+
+#[test]
+fn increasing_names_resume_after_the_highest_one_restored() {
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let first_workspace = mux.create_workspace(first, None).unwrap();
+    mux.open_tab(first_workspace, &idle()).unwrap();
+    // A custom name keeps its automatic one for Clear Name, so it counts.
+    let named = mux.create_session(Some("work")).unwrap();
+    let named_workspace = mux.create_workspace(named, Some("code")).unwrap();
+    mux.open_tab(named_workspace, &idle()).unwrap();
+    // Holding no tab, the highest of each kind is left out of the capture.
+    let gone = mux.create_session(None).unwrap();
+    mux.create_workspace(gone, None).unwrap();
+    let capture = mux.capture_runtime();
+    assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 3));
+
+    let mut restored = Mux::default();
+    restored.set_automatic_numbering(AutomaticNumbering::Increasing);
+    let spawned = spawn_all(&restored, &capture);
+    restored.restore(&capture, spawned).unwrap();
+    let session = restored.create_session(None).unwrap();
+    assert_eq!(
+        restored.session(session).unwrap().display_name(),
+        "Session 3"
+    );
+    let workspace = restored.create_workspace(session, None).unwrap();
+    assert_eq!(
+        restored.workspace(workspace).unwrap().display_name(),
+        "Workspace 3"
+    );
+    restored.shutdown().unwrap();
+    mux.shutdown().unwrap();
 }
 
 #[test]

@@ -732,6 +732,18 @@ pub mod ids {
     pub const RENAME_WORKSPACE: CommandId = CommandId::new("rename_workspace");
     /// Renames a session.
     pub const RENAME_SESSION: CommandId = CommandId::new("rename_session");
+    /// Creates a session with a new tab and switches the window to it.
+    pub const NEW_SESSION: CommandId = CommandId::new("new_session");
+    /// Switches the window to another session.
+    pub const SELECT_SESSION: CommandId = CommandId::new("select_session");
+    /// Clears a session's custom name.
+    pub const CLEAR_SESSION_NAME: CommandId =
+        CommandId::new("clear_session_name");
+    /// Opens a new window showing an existing session.
+    pub const OPEN_SESSION_IN_NEW_WINDOW: CommandId =
+        CommandId::new("open_session_in_new_window");
+    /// Closes a session after assessment.
+    pub const CLOSE_SESSION: CommandId = CommandId::new("close_session");
     /// Renames a pane.
     pub const RENAME_PANE: CommandId = CommandId::new("rename_pane");
     /// Activates the most recently used tab.
@@ -832,6 +844,9 @@ pub mod ids {
     pub const REDO: CommandId = CommandId::new("redo");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
+    /// Opens the window's session menu.
+    pub const OPEN_SESSION_MENU: CommandId =
+        CommandId::new("open_session_menu");
     /// Focuses the window's notice list.
     pub const FOCUS_NOTICES: CommandId = CommandId::new("focus_notices");
     /// Dismisses every notice in the window.
@@ -876,6 +891,9 @@ pub mod ids {
     pub const MENU_SELECT_LEFT: CommandId = CommandId::new("menu_select_left");
     /// Runs the selected menu item.
     pub const MENU_CONFIRM: CommandId = CommandId::new("menu_confirm");
+    /// Runs the selected menu row's alternate action.
+    pub const MENU_CONFIRM_ALTERNATE: CommandId =
+        CommandId::new("menu_confirm_alternate");
     /// Closes the open menu.
     pub const MENU_CLOSE: CommandId = CommandId::new("menu_close");
     /// Closes the open panel.
@@ -1114,6 +1132,25 @@ const TAB: &[ArgumentSpec] = &[ArgumentSpec {
     kind: ArgumentKind::Tab,
     required: Requirement::Optional,
     prompt: false,
+}];
+
+/// Session-targeted commands default to the window's session. The argument
+/// is not prompted so the palette runs them at once; menus and
+/// programmatic callers supply another session.
+const OWN_SESSION: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "session",
+    kind: ArgumentKind::Session,
+    required: Requirement::Optional,
+    prompt: false,
+}];
+
+/// Close Session's target: the window's session by default, prompted so
+/// the palette can pick a session no window shows.
+const PICKED_SESSION: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "session",
+    kind: ArgumentKind::Session,
+    required: Requirement::Optional,
+    prompt: true,
 }];
 
 const CATALOG: &[CommandSpec] = &[
@@ -1417,6 +1454,56 @@ const CATALOG: &[CommandSpec] = &[
                 prompt: true,
             },
         ],
+    ),
+    spec(
+        ids::NEW_SESSION,
+        CommandScope::Window,
+        "New Session",
+        "Create a session with a new tab and switch this window to it.",
+        &[ArgumentSpec {
+            name: "name",
+            kind: ArgumentKind::Text,
+            required: Requirement::Optional,
+            prompt: false,
+        }],
+    ),
+    spec(
+        ids::SELECT_SESSION,
+        CommandScope::Window,
+        "Switch Session",
+        "Show another session in this window; both sessions keep running.",
+        &[ArgumentSpec {
+            name: "session",
+            kind: ArgumentKind::Session,
+            required: Requirement::Always,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::CLEAR_SESSION_NAME,
+        CommandScope::Runtime,
+        "Clear Session Name",
+        "Remove a session's custom name, restoring its automatic one.",
+        OWN_SESSION,
+    ),
+    spec(
+        ids::OPEN_SESSION_IN_NEW_WINDOW,
+        CommandScope::Application,
+        "Open Session in New Window",
+        "Open a new window showing an existing session.",
+        &[ArgumentSpec {
+            name: "session",
+            kind: ArgumentKind::Session,
+            required: Requirement::Always,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::CLOSE_SESSION,
+        CommandScope::Runtime,
+        "Close Session",
+        "Close a session and every tab in it after assessing its terminals.",
+        PICKED_SESSION,
     ),
     spec(
         ids::RENAME_PANE,
@@ -1761,6 +1848,13 @@ const CATALOG: &[CommandSpec] = &[
         &[],
     ),
     spec(
+        ids::OPEN_SESSION_MENU,
+        CommandScope::Window,
+        "Open Session Menu",
+        "Open this window's session menu to switch, create, or rename sessions.",
+        &[],
+    ),
+    spec(
         ids::FOCUS_NOTICES,
         CommandScope::Window,
         "Focus Notices",
@@ -1899,6 +1993,15 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Menu: Run Item",
         "Run the selected menu item.",
+        &[],
+    ),
+    spec_in(
+        "menu",
+        ids::MENU_CONFIRM_ALTERNATE,
+        CommandScope::Window,
+        "Menu: Run Alternate Action",
+        "Run the selected row's alternate action, such as a session row's \
+         Open in New Window.",
         &[],
     ),
     spec_in(

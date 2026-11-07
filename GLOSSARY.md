@@ -68,7 +68,7 @@ A desktop, TUI, or command-line connection to the runtime.
 
 **Window**:
 A desktop view with its own selected workspace. A workspace can appear in more
-than one window, and a window can switch between workspaces.
+than one window, and a window can switch between sessions.
 
 **Attachment**:
 A view's connection to a workspace, with independent workspace/tab selection and
@@ -90,9 +90,23 @@ preferences.
 
 **Window record**:
 A client's facts about one of its windows: its attachment, session, workspace,
-tabs, active tab, activation history, quake profile, and restorable layout.
+tabs, active tab, activation history, quake profile, restorable layout, and
+navigation memory.
 Client layouts are built from window records; pane layouts and panel placement
 are not part of them yet.
+
+**Navigation memory**:
+Where a window was in each session it showed and left: the workspace, active
+tab, activation history, each tab's focused pane, and its layout history.
+Switching back applies it. It belongs to its window, is saved without the
+layout history, and goes when its session closes.
+
+**Session control**:
+The control that names a window's session and opens the session menu, which
+switches, creates, renames, and closes sessions and opens one in a new window.
+Its state and commands do not depend on where it is drawn; #26 draws it in the
+title bar beside the window menu button.
+_Avoid_: Session switcher, session picker.
 
 **Restoration**:
 Recreating saved workspace structure and client layout after a restart, with

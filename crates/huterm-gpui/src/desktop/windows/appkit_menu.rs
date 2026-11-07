@@ -360,11 +360,19 @@ unsafe fn build_menu(
                     enabled,
                     badge,
                     checked,
+                    subtitle,
+                    alternate,
                     ..
                 } => {
-                    let (equivalent, mask) = key
-                        .as_ref()
-                        .map_or(("", 0), |key| (key.key.as_str(), mask(key)));
+                    // An alternate has no key of its own: AppKit shows it in
+                    // place of the item before it while Command is held.
+                    let (equivalent, mask) = if *alternate {
+                        ("", COMMAND_MASK)
+                    } else {
+                        key.as_ref().map_or(("", 0), |key| {
+                            (key.key.as_str(), mask(key))
+                        })
+                    };
                     let item: *mut Object = msg_send![item_class, alloc];
                     let item: *mut Object = msg_send![
                         item,
@@ -383,6 +391,11 @@ unsafe fn build_menu(
                     let _: () =
                         msg_send![item, setKeyEquivalentModifierMask: mask];
                     let _: () = msg_send![item, setAllowsAutomaticKeyEquivalentLocalization: NO];
+                    set_alternate_and_subtitle(
+                        item,
+                        *alternate,
+                        subtitle.as_deref(),
+                    )?;
                     if let (Some(count), Some(class)) = (badge, badge_class) {
                         let badge: *mut Object = msg_send![class, alloc];
                         let badge: *mut Object = msg_send![badge, initWithCount: isize::try_from(*count).unwrap_or(isize::MAX)];
@@ -398,6 +411,31 @@ unsafe fn build_menu(
         }
         Ok(native)
     }
+}
+
+/// Marks `item` as the alternate of the item before it, shown while
+/// Command is held, and gives it `subtitle` where `AppKit` has one:
+/// `subtitle` arrived in macOS 14.4, so earlier systems drop the detail.
+///
+/// # Safety
+/// Main thread only, with `item` a live `NSMenuItem`.
+unsafe fn set_alternate_and_subtitle(
+    item: *mut Object,
+    alternate: bool,
+    subtitle: Option<&str>,
+) -> anyhow::Result<()> {
+    // SAFETY: The caller guarantees the main thread and a live item.
+    unsafe {
+        if alternate {
+            let _: () = msg_send![item, setAlternate: YES];
+        }
+        let subtitled: BOOL =
+            msg_send![item, respondsToSelector: sel!(setSubtitle:)];
+        if let Some(subtitle) = subtitle.filter(|_| subtitled == YES) {
+            let _: () = msg_send![item, setSubtitle: ns_string(subtitle)?];
+        }
+    }
+    Ok(())
 }
 
 /// A retained, empty `NSMenu` that never enables items itself, in the dark
@@ -670,7 +708,8 @@ fn built_items(native: &NativeMenu) -> anyhow::Result<Vec<String>> {
 /// Checks a menu built from `native`, its submenus included, and returns
 /// each entry depth-first: `-` for a separator, a submenu's title and `>`
 /// before its own entries, and an item's title, `!` when disabled, its
-/// shortcut after `@`, and its badge after `#`.
+/// shortcut after `@`, and its badge after `#`, with `~` before an
+/// alternate's title.
 ///
 /// # Safety
 /// Main thread only, with `menu` built from `native`.
@@ -778,8 +817,13 @@ unsafe fn read_menu(
                 .collect();
                 format!("@{modifiers}{key}")
             };
-            entries
-                .push(format!("{}{disabled}{shortcut}{badge}", string(title)?));
+            // An alternate shows in place of the item before it.
+            let alternate: BOOL = msg_send![item, isAlternate];
+            let alternate = if alternate == YES { "~" } else { "" };
+            entries.push(format!(
+                "{alternate}{}{disabled}{shortcut}{badge}",
+                string(title)?
+            ));
         }
         Ok(())
     }

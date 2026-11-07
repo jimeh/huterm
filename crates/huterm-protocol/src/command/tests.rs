@@ -492,6 +492,7 @@ fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
         ("menu", ids::MENU_SELECT_RIGHT),
         ("menu", ids::MENU_SELECT_LEFT),
         ("menu", ids::MENU_CONFIRM),
+        ("menu", ids::MENU_CONFIRM_ALTERNATE),
         ("menu", ids::MENU_CLOSE),
         ("notices", ids::NOTICE_NEXT),
         ("notices", ids::NOTICE_PREVIOUS),
@@ -520,12 +521,85 @@ fn dialog_menu_and_notice_commands_are_window_scoped_and_context_bound() {
     }
     // Entry points into those contexts are unconditional so they can be
     // bound and listed anywhere.
-    for id in [ids::OPEN_MENU, ids::FOCUS_NOTICES, ids::DISMISS_ALL_NOTICES] {
+    for id in [
+        ids::OPEN_MENU,
+        ids::OPEN_SESSION_MENU,
+        ids::FOCUS_NOTICES,
+        ids::DISMISS_ALL_NOTICES,
+    ] {
         let spec = validate(&CommandInvocation::new(id, Vec::new())).unwrap();
         assert_eq!(spec.scope, CommandScope::Window, "{id}");
         assert_eq!(spec.context, None, "{id}");
         assert!(spec.args.is_empty(), "{id}");
     }
+}
+
+#[test]
+fn session_commands_prompt_for_the_session_they_switch_to_or_close() {
+    let session = SessionId::new(3);
+    let bare = |id| CommandInvocation::new(id, Vec::new());
+    let picked = |id| {
+        CommandInvocation::new(
+            id,
+            vec![CommandArgument::new(
+                "session",
+                CommandValue::Session(session),
+            )],
+        )
+    };
+    // The palette asks which session to switch to or open.
+    for (id, scope) in [
+        (ids::SELECT_SESSION, CommandScope::Window),
+        (ids::OPEN_SESSION_IN_NEW_WINDOW, CommandScope::Application),
+    ] {
+        let spec = validate_supplied(&bare(id)).unwrap();
+        assert_eq!(spec.scope, scope, "{id}");
+        assert_eq!(
+            spec.missing_prompted(&bare(id))
+                .iter()
+                .map(|arg| arg.name)
+                .collect::<Vec<_>>(),
+            ["session"],
+            "{id}"
+        );
+        assert_eq!(
+            validate(&bare(id)),
+            Err(CommandError::MissingArgument {
+                command: id,
+                name: "session",
+            }),
+            "{id}"
+        );
+        assert!(validate(&picked(id)).is_ok(), "{id}");
+    }
+    // These default to the window's session. Clear Name runs at once;
+    // Close Session offers a session slot, so the palette can end a session
+    // no window shows.
+    for (id, prompted) in
+        [(ids::CLEAR_SESSION_NAME, false), (ids::CLOSE_SESSION, true)]
+    {
+        let spec = validate(&bare(id)).unwrap();
+        assert_eq!(spec.scope, CommandScope::Runtime, "{id}");
+        assert!(spec.missing_prompted(&bare(id)).is_empty(), "{id}");
+        assert_eq!(
+            spec.args.iter().map(|arg| arg.prompt).collect::<Vec<_>>(),
+            [prompted],
+            "{id}"
+        );
+        assert_eq!(picked(id).session("session"), Some(session));
+        assert!(validate(&picked(id)).is_ok(), "{id}");
+    }
+    // A new session takes an optional name, never prompted.
+    let spec = validate(&bare(ids::NEW_SESSION)).unwrap();
+    assert_eq!(spec.scope, CommandScope::Window);
+    assert_eq!(spec.missing_prompted(&bare(ids::NEW_SESSION)).len(), 0);
+    assert!(
+        validate(&CommandInvocation::new(
+            ids::NEW_SESSION,
+            vec![text("name", "build")]
+        ))
+        .is_ok()
+    );
 }
 
 #[test]

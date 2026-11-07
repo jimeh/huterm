@@ -250,6 +250,7 @@ pub(crate) fn layout_for(capture: &RuntimeCapture) -> DesktopLayout {
                         blur: Some(12),
                         ..crate::WindowAppearance::default()
                     }),
+                    remembered: Vec::new(),
                 }
             })
             .collect(),

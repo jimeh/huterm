@@ -24,8 +24,8 @@ mod schema;
 mod store;
 
 pub use desktop::{
-    DesktopLayout, FocusedPane, WindowAppearance, WindowBounds, WindowLayout,
-    WindowMode,
+    DesktopLayout, FocusedPane, SessionNavigation, WindowAppearance,
+    WindowBounds, WindowLayout, WindowMode,
 };
 pub use error::{InvalidState, OpenError, SaveError};
 pub use lock::{LockError, ScopeLock};

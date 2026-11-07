@@ -278,6 +278,15 @@ impl DesktopHarness {
         });
     }
 
+    /// Waits until the projection applied every hierarchy event the
+    /// runtime emitted so far.
+    fn wait_projection(&mut self) {
+        let seq = self.runtime.lock().hierarchy_seq();
+        self.wait_for("the projection to reach the runtime", |cx| {
+            cx.global::<Desktop>().hierarchy.state().seq() >= seq
+        });
+    }
+
     /// The canonical snapshot of `tab`'s terminal, read through a fresh
     /// observing viewer that neither sizes nor focuses it.
     fn canonical(&mut self, tab: TabId) -> Arc<TerminalSnapshot> {
@@ -312,10 +321,13 @@ impl DesktopHarness {
     }
 
     /// Opens a window without a shell and attaches it to the session, as
-    /// the smoke fixture's `attach-window` does.
+    /// the smoke fixture's `attach-window` does. Like production attaches,
+    /// it waits for the projection first: a window that adopts a session
+    /// the projection does not hold yet owes an emptied close.
     fn attach_window(&mut self) -> AnyWindowHandle {
         let attachment =
             self.runtime.lock().attach_session(self.session).unwrap();
+        self.wait_projection();
         let (session, workspace) = (self.session, self.workspace);
         self.cx.update(|cx| {
             let existing = cx.windows();
@@ -1248,6 +1260,9 @@ fn closing_the_claiming_window_during_its_assessment_hands_the_close_on(
     let exits = harness.open_tab(EXITS);
     let stays = harness.open_tab(ECHO);
     let claimer = harness.attach_window();
+    // The claimer must see the shell running, or the exit is no
+    // transition for it and nothing is owed.
+    harness.wait_text(claimer, exits, "READY");
     let runtime = Arc::clone(&harness.runtime);
     let hooks = &runtime.worker_hooks;
     hooks.hold(Stage::Assess);
@@ -1437,6 +1452,10 @@ fn a_revoked_view_is_replaced_in_place_and_keeps_focus_and_control(
         .unwrap();
     let digest =
         |cx: &mut App| cx.global::<Desktop>().hierarchy.state().digest();
+    // The observer attachment `wait_canonical` reads through is part of the
+    // hierarchy, so it exists before the structure is recorded.
+    harness.canonical(tab);
+    harness.wait_projection();
     let structure = harness.cx.update(digest);
     harness.hold_replacements(window, true);
     harness.revoke(window);
@@ -1465,6 +1484,7 @@ fn a_revoked_view_is_replaced_in_place_and_keeps_focus_and_control(
         "1b5b4f1b5b49",
         "the revoked viewer's focus ends, then the replacement's begins"
     );
+    harness.wait_projection();
     harness.cx.update(|cx| {
         let view = terminal(cx, window, tab).unwrap();
         assert_eq!(view.entity_id(), original.entity_id(), "replaced in place");
@@ -2901,6 +2921,37 @@ fn hold_the_emptied_close_at(
     });
 }
 
+/// Starts the emptied close of `tab`, `window`'s only view, as
+/// [`hold_the_emptied_close_at`] does, and only then creates a session no
+/// window shows, which keeps the application running once the window is
+/// gone; returns it. The emptied close waits at `stage`, which is
+/// `Stage::Assess` or a later stage.
+///
+/// On Linux the last window's emptied close turns into Quit when such a
+/// session exists as the close begins (`emptied_close_target`), so the
+/// session comes after that decision; it also comes before the assessment,
+/// so a commit does not go stale on it. The rule applies again as the
+/// close commits (`close_becomes_quit`), so at a later stage on Linux the
+/// close has become Quit, unless a Quit was queued first.
+fn hold_an_emptied_close_then_leave_a_session(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    tab: TabId,
+    stage: Stage,
+) -> SessionId {
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hold_the_emptied_close_at(harness, window, tab, Stage::Assess);
+    let unviewed = harness.unviewed_session();
+    if stage != Stage::Assess {
+        hooks.hold(stage);
+        hooks.release(Stage::Assess);
+        harness
+            .wait_for("the emptied close to wait", |_| hooks.held(stage) == 1);
+    }
+    unviewed
+}
+
 #[gpui::test]
 fn a_session_closed_while_an_emptied_close_commits_removes_the_window_silently(
     cx: &mut TestAppContext,
@@ -2925,10 +2976,14 @@ fn a_quit_queued_behind_an_emptied_close_of_a_closed_session_still_quits(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
-    let unviewed = harness.unviewed_session();
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Assess);
+    let unviewed = hold_an_emptied_close_then_leave_a_session(
+        &mut harness,
+        window,
+        tab,
+        Stage::Assess,
+    );
     harness.queue_quit(window);
     harness.close_session();
     harness.runtime.worker_hooks.release(Stage::Assess);
@@ -2942,10 +2997,22 @@ fn a_quit_queued_behind_a_committing_emptied_close_still_quits(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
-    let unviewed = harness.unviewed_session();
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Commit);
+    let unviewed = hold_an_emptied_close_then_leave_a_session(
+        &mut harness,
+        window,
+        tab,
+        Stage::Commit,
+    );
+    if Platform::current() == Platform::Linux {
+        // The last window would strand the session, so the close became
+        // Quit as it began committing; that Quit's commit is what waits.
+        harness.runtime.worker_hooks.release(Stage::Commit);
+        harness.wait_quit(unviewed);
+        assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 1);
+        return;
+    }
     harness.queue_quit(window);
     harness.runtime.worker_hooks.release(Stage::Commit);
     harness.wait_closed(window);
@@ -2965,6 +3032,14 @@ fn a_quit_queued_behind_a_window_close_still_quits(cx: &mut TestAppContext) {
     harness.update_view(window, |view, window, cx| {
         view.request_close(CloseTarget::Window, window, cx);
     });
+    if Platform::current() == Platform::Linux {
+        // The last window would strand the unviewed session, so the close
+        // becomes Quit as it begins committing; only the Quit commits.
+        hooks.release(Stage::Commit);
+        harness.wait_quit(unviewed);
+        assert_eq!(hooks.entered(Stage::Commit), 1);
+        return;
+    }
     harness.wait_for("the window close to commit", |_| {
         hooks.held(Stage::Commit) == 1
     });
@@ -3040,10 +3115,14 @@ fn a_failed_emptied_close_assessment_keeps_a_queued_quit(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
-    let unviewed = harness.unviewed_session();
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    hold_the_emptied_close_at(&mut harness, window, tab, Stage::Assess);
+    let unviewed = hold_an_emptied_close_then_leave_a_session(
+        &mut harness,
+        window,
+        tab,
+        Stage::Assess,
+    );
     harness.queue_quit(window);
     let runtime = Arc::clone(&harness.runtime);
     let hooks = &runtime.worker_hooks;
@@ -5373,6 +5452,8 @@ mod pane_layouts;
 mod pane_moves;
 mod pane_names;
 mod restore;
+mod session_control;
+mod sessions;
 mod settings;
 mod settings_controls;
 mod settings_dialog;

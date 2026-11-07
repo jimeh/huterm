@@ -31,6 +31,10 @@ pub(crate) enum CloseDialogTarget {
     },
     Window,
     Application,
+    /// A whole session, whichever windows show it.
+    Session {
+        name: String,
+    },
 }
 
 /// One process the close would end.
@@ -182,6 +186,19 @@ fn dialog_copy(
             }
             sentences.extend(unknown_sentence(unknown_tabs, ""));
             ("Close this window?".to_owned(), "Close Window")
+        }
+        CloseDialogTarget::Session { name } => {
+            if processes > 0 {
+                sentences.push(format!(
+                    "This ends {} and closes every tab in the session.",
+                    plural(processes, "running process", "running processes")
+                ));
+            } else {
+                sentences
+                    .push("This closes every tab in the session.".to_owned());
+            }
+            sentences.extend(unknown_sentence(unknown_tabs, ""));
+            (format!("Close session \"{name}\"?"), "Close Session")
         }
         CloseDialogTarget::Application => {
             if processes > 0 {
@@ -693,6 +710,22 @@ mod tests {
                 .contains("process state is unavailable"),
             "{}",
             unknown_only.subtitle
+        );
+    }
+
+    #[test]
+    fn a_session_close_names_the_session() {
+        let model = build(
+            CloseDialogTarget::Session {
+                name: "build".to_owned(),
+            },
+            vec![known(Some("cargo build"), vec![process("cargo", 1, true)])],
+        );
+        assert_eq!(model.title, "Close session \"build\"?");
+        assert_eq!(model.primary_label, "Close Session");
+        assert_eq!(
+            model.subtitle,
+            "This ends 1 running process and closes every tab in the session."
         );
     }
 

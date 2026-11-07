@@ -455,6 +455,40 @@ fn session_close_stops_its_workers_and_preserves_sibling_input() {
 }
 
 #[test]
+fn lowest_unused_numbering_reuses_closed_numbers_and_skips_custom_named_ones() {
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let second = mux.create_session(None).unwrap();
+    // A custom name keeps its automatic one for Clear Name, so 3 stays used.
+    mux.create_session(Some("work")).unwrap();
+    let alpha = mux.create_workspace(first, None).unwrap();
+    mux.create_workspace(first, None).unwrap();
+    mux.close_session(second).unwrap();
+    mux.close_workspace(alpha).unwrap();
+    let session = mux.create_session(None).unwrap();
+    assert_eq!(mux.session(session).unwrap().display_name(), "Session 2");
+    let next = mux.create_session(None).unwrap();
+    assert_eq!(mux.session(next).unwrap().display_name(), "Session 4");
+    let workspace = mux.create_workspace(session, None).unwrap();
+    assert_eq!(
+        mux.workspace(workspace).unwrap().display_name(),
+        "Workspace 1"
+    );
+
+    // Switching to increasing numbering continues above every number
+    // handed out, so no live name repeats.
+    mux.set_automatic_numbering(AutomaticNumbering::Increasing);
+    mux.close_session(next).unwrap();
+    let after = mux.create_session(None).unwrap();
+    assert_eq!(mux.session(after).unwrap().display_name(), "Session 5");
+    let workspace = mux.create_workspace(after, None).unwrap();
+    assert_eq!(
+        mux.workspace(workspace).unwrap().display_name(),
+        "Workspace 3"
+    );
+}
+
+#[test]
 fn exhausted_creation_does_not_publish_partial_structure() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();
@@ -476,6 +510,8 @@ fn exhausted_creation_does_not_publish_partial_structure() {
     ));
     assert_eq!(mux.sessions().len(), 1);
     assert_eq!(mux.session(session).unwrap().workspaces, [workspace]);
+    // Only increasing numbering can run out of numbers.
+    mux.set_automatic_numbering(AutomaticNumbering::Increasing);
     mux.session_ordinal = u64::MAX;
     mux.workspace_ordinal = u64::MAX;
     mux.next_id = 5;
@@ -1089,6 +1125,47 @@ fn detaching_preserves_terminal_and_unobserved_output_and_exit() {
         assert!(Instant::now() < deadline, "missing BACKGROUND");
         std::thread::sleep(Duration::from_millis(10));
     }
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_session_counts_as_exited_once_every_terminal_in_it_exited() {
+    let mut mux = Mux::default();
+    let exiting = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(exiting, None).unwrap();
+    let first = mux.open_test_tab(workspace, &command("exit 0")).unwrap();
+    let second = mux
+        .open_test_tab(workspace, &command("read value; exit 0"))
+        .unwrap();
+    let running = mux.create_session(None).unwrap();
+    let other = mux.create_workspace(running, None).unwrap();
+    let _kept = mux.open_test_tab(other, &command("read value")).unwrap();
+    let empty = mux.create_session(None).unwrap();
+    let exited = |mux: &Mux, terminal: TerminalId| {
+        matches!(
+            mux.terminals[&terminal].registry().status().lifecycle,
+            TerminalLifecycle::Exited(_)
+        )
+    };
+    let wait = |mux: &Mux, terminal: TerminalId| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !exited(mux, terminal) {
+            assert!(Instant::now() < deadline, "the shell did not exit");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait(&mux, first.tab.first_pane().terminal_id);
+    // One shell still runs, so the session has not exited.
+    assert!(!exited(&mux, second.tab.first_pane().terminal_id));
+    assert_eq!(mux.exited_sessions(), Vec::<SessionId>::new());
+    second
+        .client
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    wait(&mux, second.tab.first_pane().terminal_id);
+    // A session with no terminal never counts as exited.
+    assert_eq!(mux.exited_sessions(), vec![exiting]);
+    assert!(mux.session(empty).is_some());
     mux.shutdown().unwrap();
 }
 

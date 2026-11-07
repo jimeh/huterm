@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 33] = [
+const ASSETS: [(&str, &[u8]); 40] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -110,6 +110,34 @@ const ASSETS: [(&str, &[u8]); 33] = [
         "icons/check.svg",
         include_bytes!("../assets/icons/check.svg"),
     ),
+    (
+        "icons/layers.svg",
+        include_bytes!("../assets/icons/layers.svg"),
+    ),
+    (
+        "icons/chevron-down.svg",
+        include_bytes!("../assets/icons/chevron-down.svg"),
+    ),
+    (
+        "icons/app-window.svg",
+        include_bytes!("../assets/icons/app-window.svg"),
+    ),
+    (
+        "icons/external-link.svg",
+        include_bytes!("../assets/icons/external-link.svg"),
+    ),
+    (
+        "icons/pencil.svg",
+        include_bytes!("../assets/icons/pencil.svg"),
+    ),
+    (
+        "icons/eraser.svg",
+        include_bytes!("../assets/icons/eraser.svg"),
+    ),
+    (
+        "icons/trash-2.svg",
+        include_bytes!("../assets/icons/trash-2.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -147,11 +175,18 @@ pub(crate) enum Icon {
     Columns,
     Rows,
     Check,
+    Layers,
+    ChevronDown,
+    AppWindow,
+    ExternalLink,
+    Pencil,
+    Eraser,
+    Trash,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 32] = [
+    const ALL: [Self; 39] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -184,6 +219,13 @@ impl Icon {
         Self::Columns,
         Self::Rows,
         Self::Check,
+        Self::Layers,
+        Self::ChevronDown,
+        Self::AppWindow,
+        Self::ExternalLink,
+        Self::Pencil,
+        Self::Eraser,
+        Self::Trash,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -220,6 +262,13 @@ impl Icon {
             Self::Columns => "icons/columns-2.svg",
             Self::Rows => "icons/rows-2.svg",
             Self::Check => "icons/check.svg",
+            Self::Layers => "icons/layers.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::AppWindow => "icons/app-window.svg",
+            Self::ExternalLink => "icons/external-link.svg",
+            Self::Pencil => "icons/pencil.svg",
+            Self::Eraser => "icons/eraser.svg",
+            Self::Trash => "icons/trash-2.svg",
         }
     }
 }

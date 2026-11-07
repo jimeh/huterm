@@ -228,6 +228,18 @@
     "theme": false
   },
   {
+    "name": "window session button off",
+    "toml": "[window]\nsession_button = false",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "window session button string",
+    "toml": "[window]\nsession_button = \"yes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "window shortcut hints on",
     "toml": "[window]\nshortcut_hints = true",
     "valid": true,

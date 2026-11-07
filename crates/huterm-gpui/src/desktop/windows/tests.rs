@@ -659,7 +659,7 @@ fn reorder_projection_and_preview_stay_in_bar_for_all_four_placements() {
             position.vertical(),
             TabExtents::Uniform(8),
             px(0.0),
-            false,
+            px(0.0),
         );
         let extent = strip.tab_extent(0);
         let pointer = if strip.vertical {
@@ -1150,6 +1150,31 @@ fn orphaned_publication_spares_a_pane_moved_into_its_tab() {
     runtime.terminate().unwrap();
 }
 
+#[test]
+fn every_runtime_lock_applies_the_session_numbering_last_set() {
+    use huterm_config::SessionNumbering;
+    let runtime = DesktopRuntime::default();
+    // Creates and closes one session, returning its automatic name.
+    let next = |runtime: &DesktopRuntime| {
+        let mut mux = runtime.lock();
+        let session = mux.create_session(None).unwrap();
+        let name = mux.session(session).unwrap().display_name().to_owned();
+        mux.close_session(session).unwrap();
+        name
+    };
+    runtime.lock().create_session(None).unwrap();
+    assert_eq!(next(&runtime), "Session 2");
+    assert_eq!(next(&runtime), "Session 2", "the default reuses 2");
+    // Reloads apply in the order the UI thread made them.
+    runtime.set_session_numbering(SessionNumbering::Increasing);
+    runtime.set_session_numbering(SessionNumbering::LowestUnused);
+    runtime.set_session_numbering(SessionNumbering::Increasing);
+    assert_eq!(next(&runtime), "Session 3");
+    runtime.set_session_numbering(SessionNumbering::LowestUnused);
+    assert_eq!(next(&runtime), "Session 2");
+    runtime.terminate().unwrap();
+}
+
 /// A runtime whose saves land in memory, with checkpoints running.
 fn recording_runtime() -> (DesktopRuntime, persistence::Recorder) {
     let recorder = persistence::Recorder::default();
@@ -1191,6 +1216,7 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
             display: None,
             quake_profile: None,
             appearance: None,
+            remembered: Vec::new(),
         }],
         active_window: Some(0),
     };
@@ -2159,7 +2185,7 @@ fn the_title_bar_row_holds_tabs_after_the_traffic_lights() {
         false,
         TabExtents::Uniform(3),
         px(0.0),
-        true,
+        CONTROL_SLOT,
     );
     assert_eq!(
         strip_geometry.available(),

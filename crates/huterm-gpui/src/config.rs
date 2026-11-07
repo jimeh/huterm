@@ -34,6 +34,9 @@ watch_config = true
 # Reopen the windows, tabs, and panes open at Quit, each pane with a fresh
 # shell in its last folder. Turning this off deletes the saved windows.
 restore_sessions = true
+# Number new sessions with the lowest unused number ("lowest_unused"), or
+# keep counting up from the highest so far ("increasing").
+session_numbering = "lowest_unused"
 
 [terminal]
 # Terminal identity for new shells: "xterm-256color", "auto", or
@@ -115,10 +118,13 @@ padding_y = 4.0
 padding_balance = false
 # Show the window menu button in the title bar, or in the tab bar without one.
 menu_button = true
+# Show the session control, which names the window's session and opens the
+# session menu, beside the window menu button.
+session_button = true
 # Show key hints on the scroll pill and on dialog and panel buttons.
 shortcut_hints = false
-# Open the window, tab, pane, and terminal menus as native macOS menus. Linux
-# ignores it and always draws them in Huterm's style.
+# Open the window, tab, pane, terminal, and session menus as native macOS
+# menus. Linux ignores it and always draws them in Huterm's style.
 macos_native_menus = true
 # Show a preview window under the pointer while a tab or pane is dragged
 # outside its window on macOS. Off uses the in-window cues. Linux ignores it.
@@ -531,6 +537,7 @@ fn fallback_general(source: &str) -> GeneralConfig {
     GeneralConfig {
         watch_config: flag("watch_config", defaults.watch_config),
         restore_sessions: flag("restore_sessions", defaults.restore_sessions),
+        ..defaults
     }
 }
 

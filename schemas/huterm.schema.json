@@ -260,6 +260,20 @@
           "x-huterm-order": 15,
           "x-huterm-section": "general"
         },
+        "session_numbering": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionNumbering"
+            }
+          ],
+          "default": "lowest_unused",
+          "description": "How a new session picks the number in its automatic name, such as\n\"Session 2\": the lowest number no session uses, or one more than\nthe highest so far. Workspaces number the same way.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sessions",
+          "x-huterm-label": "Number new sessions",
+          "x-huterm-order": 16,
+          "x-huterm-section": "general"
+        },
         "watch_config": {
           "default": true,
           "description": "Reload config.toml when it, or a theme file it uses, changes on disk.",
@@ -1398,6 +1412,11 @@
                 "rename_tab",
                 "rename_workspace",
                 "rename_session",
+                "new_session",
+                "select_session",
+                "clear_session_name",
+                "open_session_in_new_window",
+                "close_session",
                 "rename_pane",
                 "select_recent_tab",
                 "split_right",
@@ -1441,6 +1460,7 @@
                 "undo",
                 "redo",
                 "open_menu",
+                "open_session_menu",
                 "focus_notices",
                 "dismiss_all_notices",
                 "select_all",
@@ -1459,6 +1479,7 @@
                 "menu_select_right",
                 "menu_select_left",
                 "menu_confirm",
+                "menu_confirm_alternate",
                 "menu_close",
                 "panel_close",
                 "panel_focus_next",
@@ -3438,6 +3459,265 @@
               "command": {
                 "const": "rename_session",
                 "description": "Set a custom name for a session; a blank name restores the default.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "new_session"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Create a session with a new tab and switch this window to it.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "new_session",
+                "description": "Create a session with a new tab and switch this window to it.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "select_session"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show another session in this window; both sessions keep running.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "select_session",
+                "description": "Show another session in this window; both sessions keep running.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "clear_session_name"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Remove a session's custom name, restoring its automatic one.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "clear_session_name",
+                "description": "Remove a session's custom name, restoring its automatic one.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "open_session_in_new_window"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open a new window showing an existing session.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_session_in_new_window",
+                "description": "Open a new window showing an existing session.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "close_session"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Close a session and every tab in it after assessing its terminals.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "close_session",
+                "description": "Close a session and every tab in it after assessing its terminals.",
                 "type": "string"
               },
               "description": {
@@ -5716,6 +5996,57 @@
           "if": {
             "properties": {
               "command": {
+                "const": "open_session_menu"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open this window's session menu to switch, create, or rename sessions.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_session_menu",
+                "description": "Open this window's session menu to switch, create, or rename sessions.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
                 "const": "focus_notices"
               }
             },
@@ -6603,6 +6934,57 @@
               "command": {
                 "const": "menu_confirm",
                 "description": "Run the selected menu item.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "menu_confirm_alternate"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Run the selected row's alternate action, such as a session row's Open in New Window.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "menu_confirm_alternate",
+                "description": "Run the selected row's alternate action, such as a session row's Open in New Window.",
                 "type": "string"
               },
               "description": {
@@ -10242,6 +10624,23 @@
       },
       "type": "object"
     },
+    "SessionNumbering": {
+      "description": "How new sessions and workspaces number their automatic names. A session\nwith a custom name keeps its number for Clear Name, so it counts as\nused.",
+      "oneOf": [
+        {
+          "const": "lowest_unused",
+          "description": "The lowest number no open session uses, so closing \"Session 2\"\nfrees 2 for the next one.",
+          "type": "string",
+          "x-huterm-label": "Lowest unused number"
+        },
+        {
+          "const": "increasing",
+          "description": "One more than the highest number used since launch; a restart\ncontinues after the highest restored one.",
+          "type": "string",
+          "x-huterm-label": "Keep counting up"
+        }
+      ]
+    },
     "SettingsConfig": {
       "additionalProperties": false,
       "description": "The Settings window's own state.",
@@ -11165,6 +11564,16 @@
           "x-huterm-group": "Window",
           "x-huterm-label": "Lower frame rate to save power",
           "x-huterm-order": 33,
+          "x-huterm-section": "windows"
+        },
+        "session_button": {
+          "default": true,
+          "description": "Show the session control, which names the window's session and opens\nthe session menu, beside the window menu button.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Window",
+          "x-huterm-label": "Session button",
+          "x-huterm-order": 15,
           "x-huterm-section": "windows"
         },
         "shortcut_hints": {

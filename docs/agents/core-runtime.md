@@ -322,9 +322,16 @@ matching socket names do not permit transfers between Mux instances. The numeric
 rejected by structural APIs. RuntimeId is unique only within this process; future
 IPC needs incarnation identity across processes/restarts. Scope checks prevent
 accidental aliasing, not deliberately fabricated IDs.
-Keep session/workspace automatic names tied to immutable per-kind creation
-ordinals, not membership positions. `None` clears an override; blank custom names
-are invalid. Names come from `Desktop.hierarchy`, the client's projection of
+A session or workspace takes its automatic name's number when it is created
+and keeps it, never from its membership position. `Mux::set_automatic_numbering`
+picks the number: the lowest one no live record of the kind holds (the default,
+so a closed record's number is reused), or one above the highest handed out.
+Custom-named records keep their automatic name, so their numbers stay taken and
+Clear Name never repeats a live name. The client stores
+`[general] session_numbering` in an atomic that every `DesktopRuntime::lock`
+applies, so a reload orders with later creations without the UI thread taking
+the lock. `None` clears an override; blank custom names are invalid. Names
+come from `Desktop.hierarchy`, the client's projection of
 core's sequenced hierarchy events. The UI thread takes the Mux lock for
 structure only once, at startup before any window exists, to subscribe.
 Tab labels look tabs up there by ID and combine them with the live terminal
@@ -398,14 +405,25 @@ through `RuntimeCapture::validate`, which `huterm-state` shares. Every
 refusal stops and joins the spawned runtimes, and dropping an unused
 `SpawnedTerminals` does the same. A restore sets `next_id` to the
 watermark, so later allocations of every kind land above restored IDs,
-sets both ordinals, scopes saved IDs into its `RuntimeId`, takes pane
+resumes each ordinal from the highest automatic name of its kind it
+restored, custom-named records included, rather than from the saved
+ordinal (so increasing numbering stops counting sessions closed before
+Quit across restarts), scopes saved IDs into its `RuntimeId`, takes pane
 fallback names from the commands it launched (captures blank them, since
 they are process labels), and emits the creation
 events so existing subscribers follow. A pane whose terminal failed
 leaves its layout through `without_pane`, a tab left with no pane is
 removed, and the report names both and every session left without a tab.
-Tear-off orphan cleanup asks `Mux::session_attached`; no API snapshots the
-whole hierarchy with its attachments.
+Tear-off orphan cleanup asks `Mux::session_attached` under the lock.
+Attachments are part of the hierarchy stream: `attach_session`,
+`retarget_attachment` (only when the session changes), and `detach_session`
+emit `AttachmentCreated`, `AttachmentRetargeted`, and `AttachmentDetached`
+under the lock that makes the change, so restore's attachments emit too.
+`close_session` emits only `SessionClosed`, which drops the session's
+attachments from a projection, and `subscribe_hierarchy` snapshots the
+attachment map. The reducer refuses a foreign or repeated attachment, a
+retarget or detach of an unknown one, and one naming an unknown session.
+Any session's attachment change makes `windows_to_visit` visit every window.
 Moves retain empty workspaces and sessions and never change terminal lifetime.
 Desktop windows retain their attachment identity for assessed close. Orphaned
 spawn cleanup must preserve resources adopted by another attachment or moved

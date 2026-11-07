@@ -87,21 +87,174 @@ fn placement_follows_platform_position_fullscreen_and_config() {
 fn the_split_row_narrows_plus_and_keeps_the_square_control_at_the_end() {
     // Column widths less the 6pt margins on both sides.
     for (sidebar, row) in [(140.0, 128.0), (180.0, 168.0)] {
-        let full = split_new_tab_row(px(row), false);
+        let full = split_new_tab_row(px(row), false, false);
         assert_eq!(full.plus_width, px(row), "sidebar {sidebar}");
-        assert_eq!(full.menu_x, None);
-        let split = split_new_tab_row(px(row), true);
+        assert_eq!((full.menu_x, full.session_x), (None, None));
+        let split = split_new_tab_row(px(row), true, false);
         assert_eq!(split.menu_x, Some(px(row - 26.0)), "sidebar {sidebar}");
+        assert_eq!(split.session_x, None);
         assert_eq!(split.plus_width, px(row - 26.0 - 4.0));
         assert_eq!(
             split.plus_width + ROW_GAP + CONTROL_SIZE,
             px(row),
             "the row keeps its width"
         );
+        // The session control sits between `+` and the menu control.
+        let both = split_new_tab_row(px(row), true, true);
+        assert_eq!(both.menu_x, Some(px(row - 26.0)));
+        assert_eq!(both.session_x, Some(px(row - 26.0 - 4.0 - 26.0)));
+        assert_eq!(both.plus_width, px(row - 2.0 * (26.0 + 4.0)));
+        // Without the menu button the session control takes its square.
+        let session = split_new_tab_row(px(row), false, true);
+        assert_eq!(session.menu_x, None);
+        assert_eq!(session.session_x, Some(px(row - 26.0)));
+        assert_eq!(session.plus_width, split.plus_width);
     }
-    let tiny = split_new_tab_row(px(20.0), true);
+    let tiny = split_new_tab_row(px(20.0), true, false);
     assert_eq!(tiny.menu_x, Some(px(0.0)));
     assert_eq!(tiny.plus_width, px(0.0));
+    let tiny = split_new_tab_row(px(20.0), true, true);
+    assert_eq!(
+        (tiny.session_x, tiny.menu_x),
+        (Some(px(0.0)), Some(px(0.0)))
+    );
+    assert_eq!(tiny.plus_width, px(0.0));
+}
+
+#[test]
+fn the_session_control_follows_the_menu_button_in_every_window_shape() {
+    use SessionControlHost::{BarEnd, Hidden, SplitRow, TitleStrip};
+    for position in POSITIONS {
+        let bar = if position.vertical() {
+            SplitRow
+        } else {
+            BarEnd
+        };
+        // macOS windowed: the title strip in every position, including
+        // under a shown bar and beside a left or right column.
+        assert_eq!(
+            session_control_host(true, true, position, true),
+            TitleStrip,
+            "{position:?} windowed"
+        );
+        assert_eq!(
+            session_control_host(true, true, position, false),
+            TitleStrip,
+            "{position:?} windowed, bar hidden"
+        );
+        // Fullscreen, Quake, and Linux server decorations have no title
+        // row: the end of a top or bottom bar, or icon-only in a column's
+        // new-tab row.
+        assert_eq!(
+            session_control_host(true, false, position, true),
+            bar,
+            "{position:?} without a title row"
+        );
+        // A hidden bar hides it with the bar, like the menu button.
+        assert_eq!(
+            session_control_host(true, false, position, false),
+            Hidden,
+            "{position:?} auto-hidden"
+        );
+        // `session_button = false` hides it everywhere.
+        for title_strip in [false, true] {
+            for shown in [false, true] {
+                assert_eq!(
+                    session_control_host(false, title_strip, position, shown),
+                    Hidden,
+                    "{position:?} disabled"
+                );
+            }
+        }
+        // It never depends on the menu button: with the button off the
+        // control takes the button's slot in the same host.
+        for title_strip in [false, true] {
+            for shown in [false, true] {
+                let menu =
+                    menu_button_placement(true, title_strip, position, shown);
+                let session =
+                    session_control_host(true, title_strip, position, shown);
+                assert_eq!(
+                    format!("{menu:?}"),
+                    format!("{session:?}"),
+                    "{position:?}"
+                );
+                assert_eq!(
+                    menu_button_placement(false, title_strip, position, shown),
+                    MenuButtonPlacement::Hidden
+                );
+            }
+        }
+    }
+    // Tabs in the title bar: the end of the shown bar, which is the strip.
+    assert_eq!(
+        session_control_host(true, true, TabPosition::Titlebar, true),
+        BarEnd
+    );
+    assert_eq!(
+        session_control_host(true, true, TabPosition::Titlebar, false),
+        TitleStrip
+    );
+    assert!(WindowConfig::default().session_button);
+}
+
+#[test]
+fn the_session_control_truncates_long_names_and_collapses_in_narrow_hosts() {
+    use SessionControlHost::{BarEnd, Hidden, SplitRow, TitleStrip};
+    let chrome = huterm_ui::components::menu_trigger::width_for_label(px(0.0));
+    // A short name fits whole in a roomy bar or strip.
+    for host in [TitleStrip, BarEnd] {
+        let short =
+            SessionControlPlacement::resolve(host, px(900.0), px(40.0), false);
+        assert_eq!(short.label_width, px(40.0), "{host:?}");
+        assert_eq!(short.width, chrome + px(40.0));
+        assert!(!short.truncated && !short.collapsed);
+        assert_eq!(short.slot(), short.width + px(6.0));
+    }
+    // A long name truncates at the widest look.
+    let long =
+        SessionControlPlacement::resolve(BarEnd, px(900.0), px(400.0), false);
+    assert_eq!(long.width, SESSION_CONTROL_MAX);
+    assert_eq!(long.label_width, SESSION_CONTROL_MAX - chrome);
+    assert!(long.truncated && !long.collapsed);
+    // A narrower host shrinks it further before tabs or the title crowd.
+    let narrow =
+        SessionControlPlacement::resolve(BarEnd, px(270.0), px(400.0), false);
+    // 35% of 270 points: the 52-point chrome and a 42.5-point label.
+    assert_eq!(narrow.width, px(94.5), "{narrow:?}");
+    assert_eq!(narrow.label_width, px(42.5));
+    assert!(narrow.truncated && !narrow.collapsed);
+    // Too little room for a readable label collapses to the icon, which
+    // still names the session in its tooltip.
+    let icon = SessionControlPlacement::resolve(
+        TitleStrip,
+        px(190.0),
+        px(40.0),
+        false,
+    );
+    assert!(icon.collapsed && icon.truncated, "{icon:?}");
+    assert_eq!(icon.width, CONTROL_SIZE);
+    assert_eq!(icon.label_width, px(0.0));
+    // A right column's top strip lends its whole width, so the name
+    // truncates to the column rather than collapsing.
+    let column = SessionControlPlacement::resolve(
+        TitleStrip,
+        px(148.0),
+        px(400.0),
+        true,
+    );
+    assert_eq!(column.width, px(148.0));
+    assert!(column.truncated && !column.collapsed);
+    // A column's new-tab row has room for the icon alone.
+    let row =
+        SessionControlPlacement::resolve(SplitRow, px(900.0), px(10.0), false);
+    assert!(row.collapsed);
+    assert_eq!(row.width, CONTROL_SIZE);
+    // Hidden takes no space.
+    let hidden =
+        SessionControlPlacement::resolve(Hidden, px(900.0), px(10.0), false);
+    assert_eq!(hidden, SessionControlPlacement::HIDDEN);
+    assert_eq!(hidden.slot(), px(0.0));
 }
 
 fn keymap(platform: Platform, user: &[KeybindingEntry]) -> InstalledKeymap {

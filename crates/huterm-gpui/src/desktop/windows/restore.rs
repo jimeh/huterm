@@ -12,6 +12,8 @@
 //! until it settles. Until Mux owns the spawned terminals, the worker does,
 //! so termination waits for it through [`Worker`].
 
+use super::layout_history::LayoutHistory;
+use super::model::SessionMemory;
 use super::persistence::{Persistence, State};
 use super::*;
 use huterm_core::{RestoreReport, SpawnedTerminals};
@@ -324,6 +326,11 @@ pub(super) struct Reopen {
     /// The saved window layout of a session waiting in `quake_stash`, which
     /// captures write while it waits, so a relaunch stashes it again.
     pub(super) stashed: Option<huterm_state::WindowLayout>,
+    /// Where the window was in the other sessions it showed, scoped into
+    /// this runtime and filtered to what came back.
+    pub(super) remembered: Vec<SessionMemory>,
+    /// The saved window this reopens, by its index in the saved layout.
+    pub(super) saved_index: Option<usize>,
 }
 
 /// Bootstrap progress, on `Desktop` until it settles.
@@ -373,7 +380,8 @@ enum Outcome {
 struct Restored {
     report: RestoreReport,
     runtime: huterm_protocol::RuntimeId,
-    /// One attachment per restored session that kept a tab, in order.
+    /// One attachment per saved window and Quake stash of each restored
+    /// session, and one for a session no saved window shows, in order.
     attachments: Vec<(SessionId, AttachmentId)>,
     /// Terminals that did not start in their first saved directory.
     fallbacks: HashMap<TerminalId, Fallback>,
@@ -423,13 +431,26 @@ pub(super) fn start_with(cx: &mut App, saved: Saved, base: TerminalCommand) {
     }
     let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
     let capture = saved.capture.clone();
+    // Each saved window, and each stash, takes an attachment of its own.
+    let shown: Vec<u64> = saved
+        .layout
+        .as_ref()
+        .map(|layout| {
+            layout
+                .windows
+                .iter()
+                .map(|window| window.session.get())
+                .collect()
+        })
+        .unwrap_or_default();
     let (sender, outcome) = async_channel::bounded(1);
     // Its own thread: spawning blocks for each terminal, and termination
     // waits for it to stop what it spawned.
     let started = std::thread::Builder::new()
         .name("huterm-restore".into())
         .spawn(move || {
-            let _ = sender.send_blocking(run(&runtime, &capture, &base));
+            let _ =
+                sender.send_blocking(run(&runtime, &capture, &shown, &base));
         });
     if let Err(error) = started {
         cx.global::<Desktop>().runtime.persistence.suspend();
@@ -549,6 +570,7 @@ fn restored_command(
 fn run(
     runtime: &DesktopRuntime,
     capture: &RuntimeCapture,
+    shown: &[u64],
     base: &TerminalCommand,
 ) -> Outcome {
     #[cfg(all(test, feature = "test-support"))]
@@ -558,7 +580,7 @@ fn run(
     {
         return Outcome::Failed("injected restore failure".into());
     }
-    let outcome = restore_blocking(runtime, capture, base);
+    let outcome = restore_blocking(runtime, capture, shown, base);
     #[cfg(all(test, feature = "test-support"))]
     if matches!(outcome, Outcome::Restored(_)) {
         runtime
@@ -571,6 +593,7 @@ fn run(
 fn restore_blocking(
     runtime: &DesktopRuntime,
     capture: &RuntimeCapture,
+    shown: &[u64],
     base: &TerminalCommand,
 ) -> Outcome {
     // Held until the spawned terminals are inserted or stopped.
@@ -635,13 +658,25 @@ fn restore_blocking(
         if mux.session(session).is_none() {
             continue;
         }
-        match mux.attach_session(session) {
-            Ok(attachment) => attachments.push((session, attachment)),
-            Err(error) => {
-                let _ = mux.close_session(session);
-                errors.push(format!(
-                    "A session couldn't be shown and was closed: {error}."
-                ));
+        // One per saved window that shows the session, so two windows on
+        // one session come back independent; at least one, so a session no
+        // window showed gets a window of its own.
+        let windows = shown
+            .iter()
+            .filter(|raw| **raw == session.get())
+            .count()
+            .max(1);
+        for _ in 0..windows {
+            match mux.attach_session(session) {
+                Ok(attachment) => attachments.push((session, attachment)),
+                Err(error) => {
+                    let _ = mux.close_session(session);
+                    attachments.retain(|(attached, _)| *attached != session);
+                    errors.push(format!(
+                        "A session couldn't be shown and was closed: {error}."
+                    ));
+                    break;
+                }
             }
         }
     }
@@ -748,36 +783,57 @@ fn finish(cx: &mut App, saved: &Saved, outcome: Outcome) {
     for error in errors {
         desktop.latched.push(warning(error));
     }
-    let reopens = plan(saved, &report, &attachments, &fallbacks, runtime, cx);
+    let Plan {
+        saved: reopens,
+        unshown,
+        mut unviewed_notices,
+        unused,
+    } = plan(saved, &report, &attachments, &fallbacks, runtime, cx);
+    if !unused.is_empty() {
+        detach_unused(cx, unused);
+    }
     let active = saved
         .layout
         .as_ref()
-        .and_then(|layout| layout.active_window)
-        .and_then(|index| saved.layout.as_ref()?.windows.get(index))
-        .map(|window| SessionId::in_runtime(runtime, window.session.get()));
+        .and_then(|layout| layout.active_window);
+    let mut opens = std::collections::VecDeque::new();
     for planned in reopens {
-        let reopen = match planned {
-            Planned::Open(reopen) => reopen,
+        match planned {
+            Planned::Open(reopen) => opens.push_back(reopen),
             Planned::Stash(profile, reopen) => {
                 cx.global_mut::<Desktop>()
                     .quake_stash
                     .insert(profile, reopen);
-                continue;
             }
-        };
-        let session = reopen.session;
-        let attachment = reopen.attachment;
-        match open_restored(cx, reopen) {
-            Some(id) => {
-                let bootstrap = cx.global_mut::<Desktop>().restoring.as_mut();
-                if let Some(bootstrap) = bootstrap {
-                    bootstrap.outstanding.insert(id);
-                    if active == Some(session) {
-                        bootstrap.active = Some(id);
-                    }
-                }
-            }
-            None => close_unopened(cx, session, attachment),
+        }
+    }
+    let mut opened = false;
+    while let Some(mut reopen) = opens.pop_front() {
+        // The unviewed sessions' notices ride with the first window that
+        // opens.
+        let carried = std::mem::take(&mut unviewed_notices);
+        reopen.notices.extend(carried.iter().cloned());
+        let later = opens.iter().any(|other| other.session == reopen.session);
+        if open_planned(cx, reopen, later, active) {
+            opened = true;
+        } else {
+            unviewed_notices = carried;
+        }
+    }
+    if opened {
+        // Sessions no saved window showed stay unviewed, reachable from
+        // the session menu, as they were before Quit.
+        let attachments: Vec<AttachmentId> =
+            unshown.iter().map(|reopen| reopen.attachment).collect();
+        if !attachments.is_empty() {
+            detach_unused(cx, attachments);
+        }
+    } else {
+        // No saved window came back, as after a lost or empty layout or
+        // when every one failed to open: each session opens in a window of
+        // its own, so the launch never ends with none.
+        for reopen in unshown {
+            open_planned(cx, reopen, false, active);
         }
     }
     if let Some(bootstrap) = cx.global_mut::<Desktop>().restoring.as_mut() {
@@ -789,40 +845,109 @@ fn finish(cx: &mut App, saved: &Saved, outcome: Outcome) {
     settle_if_done(cx);
 }
 
+/// Opens a planned window and counts it toward the bootstrap; one that
+/// fails to open is cleaned up. `later` says a window still to open shows
+/// its session. Returns whether it opened.
+fn open_planned(
+    cx: &mut App,
+    reopen: Reopen,
+    later: bool,
+    active: Option<usize>,
+) -> bool {
+    let (session, attachment) = (reopen.session, reopen.attachment);
+    let saved_index = reopen.saved_index;
+    let Some(id) = open_restored(cx, reopen) else {
+        close_unopened(cx, session, attachment, later);
+        return false;
+    };
+    if let Some(bootstrap) = cx.global_mut::<Desktop>().restoring.as_mut() {
+        bootstrap.outstanding.insert(id);
+        if saved_index.is_some() && saved_index == active {
+            bootstrap.active = Some(id);
+        }
+    }
+    true
+}
+
 /// Opens a restored window; returns its ID, or `None` when it did not
-/// open, after latching a warning for the next window.
+/// open.
 fn open_restored(cx: &mut App, reopen: Reopen) -> Option<gpui::WindowId> {
     let before = cx.windows();
     open_window_with_profile(cx, false, None, None, Some(reopen));
-    let opened = cx
-        .windows()
+    cx.windows()
         .into_iter()
         .find(|handle| !before.contains(handle))
-        .map(|handle| handle.window_id());
-    if opened.is_none() {
-        cx.global_mut::<Desktop>().latched.push(warning(
-            "A window couldn't open, so its session was closed.",
-        ));
-    }
-    opened
+        .map(|handle| handle.window_id())
 }
 
-/// Closes the session of a window that failed to open, on a worker, so
-/// nothing unreachable keeps running.
-fn close_unopened(cx: &mut App, session: SessionId, attachment: AttachmentId) {
+/// Cleans up after a restored window that failed to open, on a worker:
+/// detaches only its own attachment, and closes its session only when no
+/// other restored window or stash holds it, so nothing unreachable keeps
+/// running. `later` says a window still to open shows the session. Latches
+/// a warning for the next window.
+fn close_unopened(
+    cx: &mut App,
+    session: SessionId,
+    attachment: AttachmentId,
+    later: bool,
+) {
+    let desktop = cx.global::<Desktop>();
+    let held = later
+        || desktop.windows.shown_elsewhere(session, None)
+        || desktop
+            .quake_stash
+            .values()
+            .any(|reopen| reopen.session == session);
+    cx.global_mut::<Desktop>().latched.push(warning(if held {
+        "A window couldn't open."
+    } else {
+        "A window couldn't open, so its session was closed."
+    }));
     let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
     cx.background_executor()
         .spawn(async move {
             let mut mux = runtime.lock();
             let _ = mux.detach_session(attachment);
-            let _ = mux.close_session(session);
+            // Any other attachment left belongs to a window that failed
+            // too, whose own cleanup may not have run yet.
+            if !held {
+                let _ = mux.close_session(session);
+            }
         })
         .detach();
 }
 
-/// The windows to reopen, in saved order and then one per session no
-/// saved window shows, and the sessions that wait for a Quake profile's
-/// first summon instead.
+/// Detaches attachments no planned window took, such as a saved window's
+/// whose session lost its workspaces.
+fn detach_unused(cx: &mut App, unused: Vec<AttachmentId>) {
+    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    cx.background_executor()
+        .spawn(async move {
+            let mut mux = runtime.lock();
+            for attachment in unused {
+                let _ = mux.detach_session(attachment);
+            }
+        })
+        .detach();
+}
+
+/// What a restore opens.
+struct Plan {
+    /// The saved windows to reopen, in saved order, and the sessions that
+    /// wait for a Quake profile's first summon instead.
+    saved: Vec<Planned>,
+    /// A window for each session no saved window shows, which opens only
+    /// when no saved window does.
+    unshown: Vec<Reopen>,
+    /// The restore notices of the sessions no saved window shows, named
+    /// after each, for the first window that opens.
+    unviewed_notices: Vec<NoticeContent>,
+    /// The attachments no window takes, to detach.
+    unused: Vec<AttachmentId>,
+}
+
+/// Plans the restore's windows. Each saved window takes its own attachment
+/// of its session.
 #[expect(
     clippy::too_many_lines,
     reason = "saved windows map onto the restored hierarchy in one pass"
@@ -834,16 +959,15 @@ fn plan(
     fallbacks: &HashMap<TerminalId, Fallback>,
     runtime: huterm_protocol::RuntimeId,
     cx: &App,
-) -> Vec<Planned> {
+) -> Plan {
     let desktop = cx.global::<Desktop>();
     let state = desktop.hierarchy.state();
     let scoped_session =
         |id: SessionId| SessionId::in_runtime(runtime, id.get());
-    let attachment = |session: SessionId| {
-        attachments
-            .iter()
-            .find(|(id, _)| *id == session)
-            .map(|(_, attachment)| *attachment)
+    let mut free: Vec<(SessionId, AttachmentId)> = attachments.to_vec();
+    let mut take = |session: SessionId| {
+        let index = free.iter().position(|(id, _)| *id == session)?;
+        Some(free.remove(index).1)
     };
     let mut planned: Vec<Planned> = Vec::new();
     let mut shown = HashSet::new();
@@ -852,53 +976,47 @@ fn plan(
         .as_ref()
         .map(|layout| layout.windows.as_slice())
         .unwrap_or_default();
-    for window in windows {
+    for (index, window) in windows.iter().enumerate() {
         let session = scoped_session(window.session);
-        let workspace =
-            WorkspaceId::in_runtime(runtime, window.workspace.get());
-        let Some(attachment) = attachment(session) else {
+        let Some((workspace, focus)) = scoped_navigation(
+            state,
+            runtime,
+            session,
+            window.workspace,
+            window.active_tab,
+            &window.tab_history,
+            &window.focused_panes,
+        ) else {
             continue;
         };
-        if !shown.insert(session) {
+        let Some(attachment) = take(session) else {
             continue;
-        }
-        let workspace = if state.workspace_session(workspace) == Some(session) {
-            workspace
-        } else {
-            match first_workspace(state, session) {
-                Some(workspace) => workspace,
-                None => continue,
-            }
         };
-        let tab = |id: TabId| TabId::in_runtime(runtime, id.get());
-        let in_workspace = |tab: &TabId| {
-            state
-                .workspace_tabs(workspace)
-                .is_some_and(|tabs| tabs.contains(tab))
-        };
-        let mut history: Vec<TabId> = window
-            .tab_history
+        shown.insert(session);
+        let remembered = window
+            .remembered
             .iter()
-            .rev()
-            .map(|id| tab(*id))
-            .filter(in_workspace)
-            .collect();
-        history.dedup();
-        let focus = Focus {
-            active: window.active_tab.map(tab).filter(in_workspace),
-            history,
-            panes: window
-                .focused_panes
-                .iter()
-                .map(|focus| {
-                    (
-                        tab(focus.tab),
-                        PaneId::in_runtime(runtime, focus.pane.get()),
-                    )
+            .filter_map(|memory| {
+                let session = scoped_session(memory.session);
+                let (workspace, focus) = scoped_navigation(
+                    state,
+                    runtime,
+                    session,
+                    memory.workspace,
+                    memory.active_tab,
+                    &memory.tab_history,
+                    &memory.focused_panes,
+                )?;
+                Some(SessionMemory {
+                    session,
+                    workspace,
+                    active: focus.active,
+                    history: focus.history,
+                    panes: focus.panes,
+                    layout_history: LayoutHistory::default(),
                 })
-                .filter(|(tab, _)| in_workspace(tab))
-                .collect(),
-        };
+            })
+            .collect();
         let profile = window.quake_profile.clone().filter(|name| {
             desktop.config.quake.profiles.contains_key(name)
                 && quake_windows::summons(cx, name)
@@ -914,6 +1032,8 @@ fn plan(
             focus,
             notices: Vec::new(),
             stashed: None,
+            remembered,
+            saved_index: Some(index),
         };
         planned.push(match profile {
             Some(profile) => Planned::Stash(
@@ -932,29 +1052,109 @@ fn plan(
             }),
         });
     }
-    for &(session, attachment) in attachments {
-        if shown.contains(&session) {
-            continue;
-        }
-        let Some(workspace) = first_workspace(state, session) else {
-            continue;
-        };
-        planned.push(Planned::Open(Reopen {
-            attachment,
-            session,
-            workspace,
-            placement: None,
-            focus: Focus::default(),
-            notices: Vec::new(),
-            stashed: None,
-        }));
-    }
     for planned in &mut planned {
         let reopen = planned.reopen_mut();
         reopen.notices =
             window_notices(&saved.capture, report, fallbacks, reopen.session);
     }
-    planned
+    let mut unused = Vec::new();
+    let mut unshown = Vec::new();
+    // An unviewed session's restore notices go to the first window that
+    // opens, named after the session, since no window of its own shows
+    // them; a window that opens for it shows them as its own.
+    let mut unviewed_notices = Vec::new();
+    for (session, attachment) in free {
+        let Some(info) =
+            state.session(session).filter(|_| !shown.contains(&session))
+        else {
+            unused.push(attachment);
+            continue;
+        };
+        shown.insert(session);
+        let notices =
+            window_notices(&saved.capture, report, fallbacks, session);
+        let name = info.display_name().to_owned();
+        unviewed_notices.extend(notices.iter().cloned().map(|mut notice| {
+            notice.message = format!("In \"{name}\": {}", notice.message);
+            notice
+        }));
+        let Some(workspace) = first_workspace(state, session) else {
+            unused.push(attachment);
+            continue;
+        };
+        unshown.push(Reopen {
+            attachment,
+            session,
+            workspace,
+            placement: None,
+            focus: Focus::default(),
+            notices,
+            stashed: None,
+            remembered: Vec::new(),
+            saved_index: None,
+        });
+    }
+    Plan {
+        saved: planned,
+        unshown,
+        unviewed_notices,
+        unused,
+    }
+}
+
+/// Saved navigation in one session scoped into `runtime`: the saved
+/// workspace when it still belongs to the session, else the session's
+/// first, and the tabs and panes the projection holds there. `None` when
+/// the session did not come back or has no workspace.
+fn scoped_navigation(
+    state: &HierarchyState,
+    runtime: huterm_protocol::RuntimeId,
+    session: SessionId,
+    workspace: WorkspaceId,
+    active_tab: Option<TabId>,
+    tab_history: &[TabId],
+    focused_panes: &[huterm_state::FocusedPane],
+) -> Option<(WorkspaceId, Focus)> {
+    state.session(session)?;
+    let workspace = WorkspaceId::in_runtime(runtime, workspace.get());
+    let workspace = if state.workspace_session(workspace) == Some(session) {
+        workspace
+    } else {
+        first_workspace(state, session)?
+    };
+    let tab = |id: TabId| TabId::in_runtime(runtime, id.get());
+    let in_workspace = |tab: &TabId| {
+        state
+            .workspace_tabs(workspace)
+            .is_some_and(|tabs| tabs.contains(tab))
+    };
+    let mut history: Vec<TabId> = tab_history
+        .iter()
+        .rev()
+        .map(|id| tab(*id))
+        .filter(in_workspace)
+        .collect();
+    history.dedup();
+    let focus = Focus {
+        active: active_tab.map(tab).filter(in_workspace),
+        history,
+        panes: focused_panes
+            .iter()
+            .map(|focus| {
+                (
+                    tab(focus.tab),
+                    PaneId::in_runtime(runtime, focus.pane.get()),
+                )
+            })
+            .filter(|(tab, pane)| {
+                in_workspace(tab)
+                    && state
+                        .tab(*tab)
+                        .is_some_and(|info| info.layout.pane(*pane).is_some())
+            })
+            .collect(),
+    };
+    Some((workspace, focus))
 }
 
 /// Where a saved window reopens as a regular window. A Quake window's
@@ -1045,7 +1245,7 @@ pub(super) fn reconcile_stash(cx: &mut App) {
         reopen.placement = reopen.stashed.take().as_ref().map(placement);
         let (session, attachment) = (reopen.session, reopen.attachment);
         if open_restored(cx, reopen).is_none() {
-            close_unopened(cx, session, attachment);
+            close_unopened(cx, session, attachment, false);
         }
     }
 }

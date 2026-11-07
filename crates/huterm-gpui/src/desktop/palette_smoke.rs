@@ -467,10 +467,17 @@ async fn attach_window(
             existing,
         ))
     })?;
-    let attachment = cx
+    let (attachment, seq) = cx
         .background_executor()
-        .spawn(async move { runtime.lock().attach_session(session) })
+        .spawn(async move {
+            let mut mux = runtime.lock();
+            mux.attach_session(session)
+                .map(|attachment| (attachment, mux.hierarchy_seq()))
+        })
         .await?;
+    // Adopt only once the projection holds the attachment, as production
+    // attaches do; an earlier adoption owes a spurious emptied close.
+    super::projected(cx, seq).await;
     cx.update(|cx| {
         super::open_window_inner(cx, false);
         let handle = cx
@@ -714,7 +721,8 @@ fn report_terminal_failure(
 
 /// `invoke\t<command id>` runs any argument-free catalog command through
 /// the production router, as a binding or menu pick would.
-/// Runs `<id>[\t<name>=<text>…]`, each argument carried as text.
+/// Runs `<id>[\t<name>=<text>…]`, each argument carried as text, except a
+/// session argument, which names a session by its number in this runtime.
 fn invoke_catalog(
     cx: &mut App,
     handle: gpui::AnyWindowHandle,
@@ -731,10 +739,28 @@ fn invoke_catalog(
             let (name, value) = argument
                 .split_once('=')
                 .with_context(|| format!("argument {argument:?}"))?;
-            Ok(huterm_protocol::CommandArgument::new(
-                name,
-                huterm_protocol::CommandValue::Text(value.to_owned()),
-            ))
+            let kind = spec
+                .args
+                .iter()
+                .find(|arg| arg.name == name)
+                .map(|arg| arg.kind);
+            let value = if kind == Some(huterm_protocol::ArgumentKind::Session)
+            {
+                let number: u64 = value.parse().context("session number")?;
+                let session = cx
+                    .global::<Desktop>()
+                    .hierarchy
+                    .state()
+                    .sessions()
+                    .iter()
+                    .copied()
+                    .find(|session| session.get() == number)
+                    .with_context(|| format!("no session {number}"))?;
+                huterm_protocol::CommandValue::Session(session)
+            } else {
+                huterm_protocol::CommandValue::Text(value.to_owned())
+            };
+            Ok(huterm_protocol::CommandArgument::new(name, value))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let invocation = CommandInvocation::new(spec.id, args);
@@ -904,9 +930,12 @@ fn read_state(cx: &mut App) -> String {
                 .iter()
                 .map(|tab| tab.focused_view().read(cx).clipboard_writes)
                 .sum();
+            let session = view
+                .attached_session(cx)
+                .map_or_else(|| "none".to_owned(), |session| session.get().to_string());
             writeln!(
                 output,
-                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.mouse={terminal_mouse} w{index}.snapshots={builds},{reuses} w{index}.clipboard_writes={clipboard_writes} {} w{index}.text={:?}",
+                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.session={session} w{index}.mouse={terminal_mouse} w{index}.snapshots={builds},{reuses} w{index}.clipboard_writes={clipboard_writes} {} w{index}.text={:?}",
                 palette.is_some(),
                 window.is_window_active(),
                 view.tabs.len(),

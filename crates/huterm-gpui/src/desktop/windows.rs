@@ -216,6 +216,9 @@ mod pane_moves;
 mod persistence;
 mod projection;
 mod restore;
+mod session_control;
+mod session_menu;
+mod session_switch;
 mod settings_window;
 mod system_appearance;
 mod tab_bar;
@@ -280,8 +283,8 @@ use tab_visibility::{Presentation, Reveal};
 use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu};
 use views::{Views, broadcast, update_windows};
 use window_menu::{
-    MenuButtonPlacement, WindowMenuInput, menu_button_placement,
-    split_new_tab_row, window_menu,
+    MenuButtonPlacement, SessionControlHost, WindowMenuInput,
+    menu_button_placement, split_new_tab_row, window_menu,
 };
 /// Space the tab strip reserves for the new-tab control on its axis.
 const CONTROL_SLOT: Pixels = TAB_HEIGHT;
@@ -375,6 +378,10 @@ struct DesktopRuntime {
     mux: Mutex<Mux>,
     host_effects: DesktopHostEffectClient,
     terminating: AtomicBool,
+    /// `[general] session_numbering` as last loaded, true for increasing.
+    /// Every lock applies it, so a reload orders with later creations
+    /// without the UI thread taking the lock.
+    increasing_numbers: AtomicBool,
     /// Orders every write of the scope's saved state; the Quit write runs
     /// inside the commit callback on a worker.
     persistence: persistence::Persistence,
@@ -406,9 +413,29 @@ type Spawned = (
 
 impl DesktopRuntime {
     fn lock(&self) -> std::sync::MutexGuard<'_, Mux> {
-        self.mux
+        let mut mux = self
+            .mux
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mux.set_automatic_numbering(
+            if self.increasing_numbers.load(Ordering::Acquire) {
+                huterm_core::AutomaticNumbering::Increasing
+            } else {
+                huterm_core::AutomaticNumbering::LowestUnused
+            },
+        );
+        mux
+    }
+
+    /// Records `[general] session_numbering` for every later lock.
+    fn set_session_numbering(
+        &self,
+        numbering: huterm_config::SessionNumbering,
+    ) {
+        self.increasing_numbers.store(
+            numbering == huterm_config::SessionNumbering::Increasing,
+            Ordering::Release,
+        );
     }
 
     /// Captures the hierarchy and subscribes to every later event.
@@ -923,7 +950,14 @@ struct Desktop {
     /// nothing, so it cannot register global shortcuts again.
     quit_committed: bool,
     pending_spawns: usize,
+    /// Windows whose session switch, or Close Session of their own session
+    /// from its commit to its follow-up, holds one of `pending_spawns`
+    /// until its navigation settles.
+    switch_spawns: std::collections::HashSet<gpui::WindowId>,
     quit_pending: bool,
+    /// The Linux last window whose emptied close became the Quit under
+    /// way; a cancelled Quit moves it to a session it can show.
+    emptied_quit: Option<gpui::WindowId>,
     /// The Settings window, which is not in `windows`: it shows no session.
     settings: Option<gpui::WindowHandle<settings_window::SettingsView>>,
     /// The configured font families that were not installed when Huterm
@@ -958,6 +992,9 @@ struct Desktop {
     /// removed.
     #[cfg(test)]
     close_failures: usize,
+    /// How many of the next window opens fail, as a platform refusal would.
+    #[cfg(test)]
+    fail_window_opens: usize,
     #[cfg(all(target_os = "macos", feature = "macos-updater"))]
     updater: native_updater::Updater,
 }
@@ -1163,6 +1200,31 @@ fn run_app_command(
             open_window_with_profile(cx, true, None, reporter, None);
             Ok(CommandOutcome::Accepted)
         }
+        ids::OPEN_SESSION_IN_NEW_WINDOW => {
+            let session = invocation.session("session").ok_or(
+                CommandError::MissingArgument {
+                    command: invocation.id,
+                    name: "session",
+                },
+            )?;
+            if cx
+                .global::<Desktop>()
+                .hierarchy
+                .state()
+                .session(session)
+                .is_none()
+            {
+                return Err(CommandError::StaleTarget);
+            }
+            // Global actions run while the dispatching window is borrowed,
+            // and opening a window updates others.
+            cx.defer(move |cx| {
+                session_switch::open_session_window(
+                    cx, session, reporter, false,
+                );
+            });
+            Ok(CommandOutcome::Accepted)
+        }
         ids::SHOW_QUAKE | ids::HIDE_QUAKE | ids::TOGGLE_QUAKE => {
             quake_windows::invoke(cx, invocation, reporter)
         }
@@ -1281,13 +1343,25 @@ fn app_command_availability(
 ) -> Result<(), CommandError> {
     let desktop = cx.global::<Desktop>();
     match command {
-        ids::NEW_WINDOW if desktop.quitting || desktop.quit_pending => Err(
-            CommandError::Unavailable("application is quitting".to_owned()),
-        ),
+        ids::NEW_WINDOW | ids::OPEN_SESSION_IN_NEW_WINDOW
+            if desktop.quitting || desktop.quit_pending =>
+        {
+            Err(CommandError::Unavailable(
+                "application is quitting".to_owned(),
+            ))
+        }
+        ids::OPEN_SESSION_IN_NEW_WINDOW
+            if desktop.runtime.terminating.load(Ordering::Acquire) =>
+        {
+            Err(CommandError::Unavailable(
+                "runtime is terminating".to_owned(),
+            ))
+        }
         ids::QUIT if desktop.quitting => Err(CommandError::Unavailable(
             "application quit is already in progress".to_owned(),
         )),
         ids::NEW_WINDOW
+        | ids::OPEN_SESSION_IN_NEW_WINDOW
         | ids::SHOW_QUAKE
         | ids::HIDE_QUAKE
         | ids::TOGGLE_QUAKE
@@ -1604,6 +1678,7 @@ pub(super) fn run_with_startup(
         persistence,
         ..DesktopRuntime::default()
     });
+    runtime.set_session_numbering(loaded.config.general.session_numbering);
     // Subscribe before any window or worker exists, so this is the only
     // time the UI thread takes the Mux lock for structure.
     let (hierarchy, subscription) = runtime.subscribe_hierarchy();
@@ -1614,7 +1689,7 @@ pub(super) fn run_with_startup(
         // A restore opens its own windows; an empty desktop gets one when
         // it settles.
         if !restore::defer_reopen(cx) && cx.windows().is_empty() {
-            open_window(cx);
+            session_switch::reopen_window(cx);
         }
         cx.activate(true);
     });
@@ -1707,8 +1782,10 @@ fn install_desktop(
         quitting: false,
         quit_committed: false,
         pending_spawns: 0,
+        switch_spawns: std::collections::HashSet::new(),
         settings: None,
         quit_pending: false,
+        emptied_quit: None,
         unavailable_fonts: UnavailableFonts::default(),
         applied_terminal_family: None,
         external_drag_window: None,
@@ -1727,6 +1804,8 @@ fn install_desktop(
         audible_bell: audible_bell::AudibleBell::platform(),
         #[cfg(test)]
         close_failures: 0,
+        #[cfg(test)]
+        fail_window_opens: 0,
         #[cfg(all(target_os = "macos", feature = "macos-updater"))]
         updater,
     });
@@ -1746,6 +1825,8 @@ fn install_desktop(
         desktop.windows.remove(window);
         desktop.cross.windows.retain(|(id, _)| *id != window);
         checkpoints::set_transfer_reserved(cx, window, false);
+        checkpoints::set_switching(cx, window, false);
+        session_switch::release_switch_spawn(cx, window);
         restore::window_settled(cx, window);
         let desktop = cx.global_mut::<Desktop>();
         // A close the window took and had not started committing never
@@ -1959,6 +2040,12 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         .exit_closes
         .retain(|pane| state.pane_tab(pane).is_some());
     let pruned = desktop.windows.prune_layout_histories(state);
+    desktop.windows.prune_sessions(state);
+    // A Quake stash whose session closed before its first summon goes; the
+    // summon opens a fresh profile session instead.
+    desktop
+        .quake_stash
+        .retain(|_, reopen| state.session(reopen.session).is_some());
     let desktop = cx.global::<Desktop>();
     let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
     let windows = windows_to_visit(&desktop.windows, touched);
@@ -1997,6 +2084,18 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     // A window whose history lost an entry refreshes its open palette and
     // menu, which may offer the entry.
     update_windows(cx, &pruned, |_, cx| cx.notify());
+    // Every window's session control names its session, and its menu
+    // counts other windows, so a rename, a new or closed session, or a
+    // window switching redraws them all. These batches are rare.
+    if touched.names_changed() || touched.attachments_changed() {
+        let all: Vec<gpui::WindowId> = cx
+            .global::<Desktop>()
+            .windows
+            .records()
+            .map(|record| record.id)
+            .collect();
+        update_windows(cx, &all, |_, cx| cx.notify());
+    }
     if !activate.is_empty() {
         // Selecting needs the window, which reconcile does not have here;
         // a deferred update runs once no window is on GPUI's update stack.
@@ -2040,7 +2139,9 @@ fn activate_reconciled_tabs(
 /// Refreshes the views that show titles they do not own. A structural batch
 /// or any title change rebuilds open palettes, which compare their rows
 /// before notifying; a confirmation redraws when a title in its scope
-/// changed. It never changes a confirmation's assessment or focus.
+/// changed, and an open session menu on every structural batch, since it
+/// counts every session's tabs. It never changes a confirmation's
+/// assessment or focus.
 fn refresh_title_consumers(
     cx: &mut App,
     structural: bool,
@@ -2053,6 +2154,10 @@ fn refresh_title_consumers(
     update_windows(cx, &hosts, |view, cx| {
         if view.palette.is_some() {
             view.refresh_palette_hierarchy(cx);
+        }
+        // An open session menu counts tabs and windows in every session.
+        if structural && view.session_menu_open() {
+            cx.notify();
         }
         let in_scope = match &view.close.confirmation {
             Some(CloseTarget::Application) => !retitled.is_empty(),
@@ -2248,7 +2353,12 @@ fn observe_keystroke(
     }
 }
 
+/// Requests Quit, from any source: the menu, the shortcut, the Dock, and
+/// the Linux last window's Close Window or emptied close. It cancels every
+/// own-session Close Session that has not started committing, then waits
+/// for pending spawns, then asks in its host window.
 fn request_quit(cx: &mut App) {
+    cancel_own_session_closes(cx);
     let desktop = cx.global_mut::<Desktop>();
     if !quit_now(desktop.pending_spawns, &mut desktop.quit_pending) {
         return;
@@ -2256,13 +2366,14 @@ fn request_quit(cx: &mut App) {
     let desktop = cx.global::<Desktop>();
     // Only a terminal window can host the confirmation; the Settings
     // window has no record.
-    let host = quit_host(cx.active_window(), &cx.windows(), |handle| {
+    let closing = |handle: AnyWindowHandle| {
         desktop
             .windows
             .record(handle.window_id())
             .is_none_or(|record| record.closing)
-    });
-    if let Some(handle) = host {
+    };
+    let windows = cx.windows();
+    if let Some(handle) = quit_host(cx.active_window(), &windows, closing) {
         let _ = handle.update(cx, |root, window, cx| {
             if let Ok(view) = root.downcast::<WorkspaceView>() {
                 window.activate_window();
@@ -2288,6 +2399,43 @@ fn request_quit(cx: &mut App) {
             native_quit::cancel_request();
         }
     }
+}
+
+/// Cancels, in every window, the own-session Close Session a Quit would
+/// otherwise wait for or race. Runs outside any window update, so each
+/// window's view updates through its handle.
+fn cancel_own_session_closes(cx: &mut App) {
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |root, window, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                view.update(cx, |view, cx| {
+                    view.cancel_own_session_close(window, cx);
+                });
+            }
+        });
+    }
+}
+
+/// Moves the Linux last window whose emptied close became a now cancelled
+/// Quit to a session it can show, once the cancel's update returned.
+fn show_left_session_after_cancel(cx: &mut App) {
+    let Some(id) = cx.global_mut::<Desktop>().emptied_quit.take() else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let Some(handle) = cx
+            .windows()
+            .into_iter()
+            .find(|handle| handle.window_id() == id)
+        else {
+            return;
+        };
+        let _ = handle.update(cx, |root, window, cx| {
+            if let Ok(view) = root.downcast::<WorkspaceView>() {
+                view.update(cx, |view, cx| view.show_left_session(window, cx));
+            }
+        });
+    });
 }
 
 /// The saved layout of every open window, with the regular window used
@@ -2519,6 +2667,15 @@ fn open_window_with_profile(
         cx.global::<Desktop>().quit_pending,
     ) {
         return;
+    }
+    #[cfg(test)]
+    {
+        let fails = &mut cx.global_mut::<Desktop>().fail_window_opens;
+        if *fails > 0 {
+            *fails -= 1;
+            maybe_exit(cx);
+            return;
+        }
     }
     // Linux reports the system's mode through windows; with none open,
     // the mode may have changed unseen.
@@ -2856,6 +3013,8 @@ fn open_window_with_profile(
                 frame_state: state,
                 #[cfg(test)]
                 decorations_override: None,
+                #[cfg(test)]
+                session_shell_fails: false,
                 native_radii,
                 applied_frame: None,
                 button_layout,
@@ -2912,6 +3071,8 @@ fn open_window_with_profile(
                 installs: PendingInstalls::default(),
                 restore_focus: None,
                 reopen: None,
+                switch: None,
+                close_hold: false,
                 close: CloseState::default(),
                 notices: NoticeStack::default(),
                 notice_focus: cx.focus_handle(),
@@ -2932,6 +3093,12 @@ fn open_window_with_profile(
                 native_menu: None,
                 native_menu_token: 0,
                 menu_button_bounds: Rc::new(Cell::new(None)),
+                session_button_bounds: Rc::new(Cell::new(None)),
+                session_control_drawn: Cell::new(false),
+                session_label: session_control::SessionLabel::default(),
+                exited_sessions: HashSet::new(),
+                exited_read: 0,
+                native_session_pending: None,
                 popover: Popover::new(),
                 window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
@@ -3046,7 +3213,7 @@ fn open_window_with_profile(
             let weak = view.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
                 let _ = weak.update(cx, |view, cx| {
-                    view.request_close(CloseTarget::Window, window, cx);
+                    view.close_window(Platform::current(), window, cx);
                 });
                 false
             });
@@ -4275,6 +4442,9 @@ struct WorkspaceView {
     /// as on Linux, so the title row Huterm draws can be tested on macOS.
     #[cfg(test)]
     decorations_override: Option<gpui::Decorations>,
+    /// Makes `session_shell` fail, as when no shell command can be built.
+    #[cfg(test)]
+    session_shell_fails: bool,
     /// The corner radii `AppKit` reported when the window opened. Tests,
     /// whose windows have no `AppKit` handle, set them directly.
     native_radii: NativeRadii,
@@ -4383,9 +4553,15 @@ struct WorkspaceView {
     /// The pane an undo or redo focuses once its view installs, when the
     /// restore brought it back into this window without one.
     restore_focus: Option<PaneId>,
-    /// The tab, history, and pane focus a restored window applies once its
-    /// views have installed.
+    /// The tab, history, and pane focus a restored or switched window
+    /// applies once its views have installed.
     reopen: Option<restore::Focus>,
+    /// The session switch in progress, from its guard to its settle.
+    switch: Option<session_switch::SwitchPhase>,
+    /// Whether the close pipeline holds this window's switch spawn for a
+    /// Close Session of its own session, from the check's start until the
+    /// follow-up's install takes it over or the close ends without one.
+    close_hold: bool,
     close: CloseState,
     notices: NoticeStack,
     /// Focus for the toast column; `notices` bindings match while it holds
@@ -4423,6 +4599,22 @@ struct WorkspaceView {
     /// Where the menu button was last painted, for anchoring the menu and
     /// for smoke state; `None` while the button is not drawn.
     menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Where the session control was last painted, for anchoring the
+    /// session menu and for smoke state; `None` while it is not drawn.
+    session_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Whether this render built the session control; one that built none
+    /// clears `session_button_bounds`.
+    session_control_drawn: Cell<bool>,
+    /// The session name the control last measured and its width, so the
+    /// tab strip and title row reserve its slot between renders.
+    session_label: session_control::SessionLabel,
+    /// Sessions whose every shell exited, as the last read for the session
+    /// menu found them, and that read's generation.
+    exited_sessions: HashSet<SessionId>,
+    exited_read: u64,
+    /// A native session menu waiting for its exited read, and whether the
+    /// keyboard asked for it.
+    native_session_pending: Option<bool>,
     /// The window controls' painted bounds in Huterm's own title row, for
     /// smoke pointer fixtures; `None` while the row is not drawn.
     /// The painted window buttons, by [`WindowButton::index`].
@@ -4473,13 +4665,15 @@ enum MenuKind {
     Pane { tab: TabId, pane: PaneId },
     /// A text field's context menu, in the palette or the Licenses view.
     Field(WeakEntity<Input>),
+    /// The session menu, from the session control or `open_session_menu`.
+    Session,
 }
 
 impl MenuKind {
     /// The tab the menu's tab-targeted picks act on.
     fn tab(&self) -> Option<TabId> {
         match self {
-            Self::Window | Self::Field(_) => None,
+            Self::Window | Self::Field(_) | Self::Session => None,
             Self::Tab(tab)
             | Self::Terminal { tab, .. }
             | Self::Pane { tab, .. } => Some(*tab),
@@ -4493,7 +4687,20 @@ impl MenuKind {
             Self::Window
             | Self::Tab(_)
             | Self::Terminal { .. }
-            | Self::Field(_) => None,
+            | Self::Field(_)
+            | Self::Session => None,
+        }
+    }
+
+    /// The name smoke state and labels use.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Window => "window",
+            Self::Tab(_) => "tab",
+            Self::Terminal { .. } => "terminal",
+            Self::Pane { .. } => "pane",
+            Self::Field(_) => "field",
+            Self::Session => "session",
         }
     }
 }
@@ -4639,6 +4846,9 @@ enum CloseTarget {
     /// The automatic close of a window whose last tab view went away. It
     /// stops no terminal, so it never prompts.
     Emptied,
+    /// A whole session, whichever windows show it. Closing the window's
+    /// own session moves the window to the session it left most recently.
+    Session(SessionId),
 }
 
 impl CloseTarget {
@@ -4649,7 +4859,8 @@ impl CloseTarget {
             Self::Pane { .. }
             | Self::Window
             | Self::Application
-            | Self::Emptied => None,
+            | Self::Emptied
+            | Self::Session(_) => None,
         }
     }
 
@@ -4667,7 +4878,11 @@ impl CloseTarget {
     fn covers(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Application, _) => true,
-            (Self::Window, other) => *other != Self::Application,
+            // A window close may only detach, so it covers no session.
+            (Self::Window, other) => {
+                !matches!(other, Self::Application | Self::Session(_))
+            }
+            (Self::Session(_), _) | (_, Self::Session(_)) => self == other,
             (_, Self::Pane { tab, .. }) => {
                 self == other
                     || self.tabs().is_some_and(|tabs| tabs.contains(tab))
@@ -4726,6 +4941,18 @@ fn close_commit_retries(result: &Result<(), MuxError>) -> bool {
         result,
         Err(MuxError::StaleClose | MuxError::ConfirmationRequired)
     )
+}
+
+/// Starts committing the exit-close `window` took, if any, and returns its
+/// pane with the tab that holds it.
+fn begin_exit_commit(
+    cx: &mut App,
+    window: gpui::WindowId,
+) -> Option<(TabId, PaneId)> {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop.exit_closes.begin_commit(window).and_then(|pane| {
+        Some((desktop.hierarchy.state().pane_tab(pane)?, pane))
+    })
 }
 
 /// How a commit ended for the exit-close of `pane`, in `tab`, it carried.
@@ -4813,6 +5040,18 @@ fn merge_close(
     match (pending, requested) {
         (Some(CloseTarget::Application), _) | (_, CloseTarget::Application) => {
             CloseTarget::Application
+        }
+        // A session close joins nothing: the newer request runs while
+        // `CloseState::checked` keeps the other queued.
+        (Some(pending), requested)
+            if matches!(pending, CloseTarget::Session(_))
+                || matches!(requested, CloseTarget::Session(_)) =>
+        {
+            if pending.covers(&requested) {
+                pending
+            } else {
+                requested
+            }
         }
         (Some(CloseTarget::Window), _) | (_, CloseTarget::Window) => {
             CloseTarget::Window
@@ -4936,8 +5175,12 @@ impl CloseState {
         if let Some(queued) = &pending
             && matches!(
                 (&target, queued),
-                (CloseTarget::Tab(_) | CloseTarget::Pane { .. }, _)
-                    | (_, CloseTarget::Pane { .. })
+                (
+                    CloseTarget::Tab(_)
+                        | CloseTarget::Pane { .. }
+                        | CloseTarget::Session(_),
+                    _
+                ) | (_, CloseTarget::Pane { .. } | CloseTarget::Session(_))
             )
             && !matches!(queued, CloseTarget::Emptied)
             && !target.covers(queued)
@@ -5190,6 +5433,9 @@ impl WorkspaceView {
         let batch = record
             .workspace
             .is_some_and(|workspace| touched.contains_workspace(workspace));
+        // A switch drops the old session's views before the new ones
+        // install; that is no emptied edge.
+        let emptied = emptied && !self.switch_installing();
         if emptied
             || (batch
                 && (self.attached_session_gone(cx)
@@ -5271,6 +5517,7 @@ impl WorkspaceView {
             workspace,
             focus,
             notices,
+            remembered,
             ..
         } = reopen;
         let now = Instant::now();
@@ -5278,6 +5525,9 @@ impl WorkspaceView {
             self.notices.push(notice, now);
         }
         self.reopen = Some(focus);
+        cx.global_mut::<Desktop>()
+            .windows
+            .restore_memory(self.window, remembered);
         self.adopt_attachment(attachment, session, workspace, cx);
         self.apply_reopen(window, cx);
     }
@@ -5317,6 +5567,7 @@ impl WorkspaceView {
         self.publish_pane_focus(cx);
         let id = self.window;
         cx.defer(move |cx| restore::window_settled(cx, id));
+        self.settle_switch(window, cx);
         cx.notify();
     }
 
@@ -6491,10 +6742,12 @@ impl WorkspaceView {
         }
     }
 
-    /// Records whether this window shows a title consumer: an open palette
-    /// or a close confirmation.
+    /// Records whether this window shows a title consumer: an open palette,
+    /// a close confirmation, or the session menu.
     fn sync_title_consumer(&self, cx: &mut App) {
-        let host = self.palette.is_some() || self.close.confirmation.is_some();
+        let host = self.palette.is_some()
+            || self.close.confirmation.is_some()
+            || self.session_menu_open();
         cx.global_mut::<Desktop>()
             .title_consumers
             .set_host(self.window, host);
@@ -6550,6 +6803,7 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
                 .transfer
                 .as_ref()
                 .is_some_and(|pending| pending.installing)
+            && !self.view.switch_installing()
     }
 
     fn drop_tabs(&mut self, tabs: &[TabId]) {
@@ -6709,6 +6963,11 @@ impl WorkspaceView {
     fn title_row_layout(&self, layout: &ChromeLayout) -> TitleRowLayout {
         let position = self.layout_tabs().position;
         let menu = self.menu_button_placement();
+        // The menu button's slot and the session control's beside it.
+        let corner = session_control::title_strip_corner(
+            menu,
+            self.session_control_placement(layout),
+        );
         let titlebar = self.title_row();
         let content = layout.content;
         let (left, width) = if position.vertical() {
@@ -6725,12 +6984,7 @@ impl WorkspaceView {
         } else {
             TRAFFIC_LIGHT_INSET
         };
-        let trailing = layout.frame.buttons.trailing.width()
-            + if menu == MenuButtonPlacement::TitleStrip {
-                CONTROL_SLOT
-            } else {
-                px(0.0)
-            };
+        let trailing = layout.frame.buttons.trailing.width() + corner;
         let drop_left =
             (content.origin.x + leading).clamp(left, bounds.right());
         let drop_right =
@@ -6740,14 +6994,13 @@ impl WorkspaceView {
         let title_padding = if position.vertical() {
             let leading =
                 (content.origin.x + TRAFFIC_LIGHT_INSET - left).max(px(0.0));
-            let trailing = if menu == MenuButtonPlacement::TitleStrip {
-                (bounds.right() - (content.right() - CONTROL_SLOT)).max(px(0.0))
-            } else {
-                px(0.0)
-            };
+            let trailing =
+                (bounds.right() - (content.right() - corner)).max(px(0.0));
             leading.max(trailing)
         } else {
-            layout.strip_inset.max(layout.strip_trailing + CONTROL_SLOT)
+            layout
+                .strip_inset
+                .max(layout.strip_trailing + corner.max(CONTROL_SLOT))
         };
         TitleRowLayout {
             bounds,
@@ -7659,8 +7912,25 @@ impl WorkspaceView {
             tabs.position.vertical(),
             extents,
             self.tab_scroll,
-            self.bar_menu_placement() == MenuButtonPlacement::BarEnd,
+            self.bar_trailing(&layout),
         )
+    }
+
+    /// The bar length a top or bottom bar's trailing controls take after
+    /// `+`: the session control's slot and the menu button's.
+    pub(super) fn bar_trailing(&self, layout: &ChromeLayout) -> Pixels {
+        let menu = if self.bar_menu_placement() == MenuButtonPlacement::BarEnd {
+            CONTROL_SLOT
+        } else {
+            px(0.0)
+        };
+        let session = self.bar_session_placement(layout);
+        let session = if session.host == SessionControlHost::BarEnd {
+            session.slot()
+        } else {
+            px(0.0)
+        };
+        menu + session
     }
 
     /// Whether the window draws its tab bar: reserved, or an overlay bar
@@ -9023,6 +9293,7 @@ impl WorkspaceView {
         }
         self.cancel_pane_drag(window, cx);
         self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
+        self.cancel_pending_session_menu(cx);
 
         let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
@@ -9382,6 +9653,9 @@ impl WorkspaceView {
                     self.check_pane_tear_off_available(cx)
                 }
                 ids::NEW_TAB => self.check_new_tab_available(cx),
+                ids::NEW_SESSION | ids::SELECT_SESSION => {
+                    self.check_switch_available(cx)
+                }
                 ids::CLOSE_TAB
                 | ids::CLOSE_OTHER_TABS
                 | ids::CLOSE_TABS_AFTER
@@ -9418,6 +9692,7 @@ impl WorkspaceView {
                     self.notice_availability(command)
                 }
                 ids::OPEN_MENU => self.check_available(false),
+                ids::OPEN_SESSION_MENU => self.session_menu_availability(cx),
                 ids::WINDOW_TRANSPARENCY => {
                     if self.panel.is_some() {
                         Ok(())
@@ -9435,7 +9710,14 @@ impl WorkspaceView {
                 | ids::MENU_SELECT_RIGHT
                 | ids::MENU_SELECT_LEFT
                 | ids::MENU_CONFIRM
-                | ids::MENU_CLOSE => self.open_menu_entity().map(|_| ()),
+                | ids::MENU_CONFIRM_ALTERNATE
+                | ids::MENU_CLOSE => {
+                    if self.pending_session_menu_takes_keys() {
+                        Ok(())
+                    } else {
+                        self.open_menu_entity().map(|_| ())
+                    }
+                }
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available(cx)
                 }
@@ -9537,6 +9819,33 @@ impl WorkspaceView {
                             "window has no session".into(),
                         ))
                     }
+                    ids::CLEAR_SESSION_NAME => {
+                        let named = target.session.is_some_and(|session| {
+                            cx.global::<Desktop>()
+                                .hierarchy
+                                .state()
+                                .session(session)
+                                .is_some_and(|info| info.custom_name.is_some())
+                        });
+                        if named {
+                            Ok(())
+                        } else {
+                            Err(CommandError::Unavailable(
+                                "session has no custom name".into(),
+                            ))
+                        }
+                    }
+                    ids::CLOSE_SESSION => {
+                        let session = target.session.ok_or_else(|| {
+                            CommandError::Unavailable(
+                                "window has no session".into(),
+                            )
+                        })?;
+                        self.check_close_session_available(session, cx)?;
+                        self.close.check_close_available(&CloseTarget::Session(
+                            session,
+                        ))
+                    }
                     _ => Ok(()),
                 }
             }
@@ -9615,9 +9924,15 @@ impl WorkspaceView {
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
     /// `reordering`, and `fullscreen` while those states hold. The About
     /// panel sets `confirming` too, so the `dialog_*` bindings close it.
+    /// A native session menu waiting for its exited read sets `menu`, so
+    /// Escape cancels it before it appears instead of reaching the
+    /// terminal.
     fn key_context(&self, _window: &Window) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Workspace");
+        if self.pending_session_menu_takes_keys() {
+            context.add(huterm_ui::components::menu::KEY_CONTEXT);
+        }
         if self.dialog_showing() {
             context.add("confirming");
         }
@@ -10128,6 +10443,7 @@ impl WorkspaceView {
             }
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
+            ids::OPEN_SESSION_MENU => self.open_session_menu(true, window, cx),
             ids::WINDOW_TRANSPARENCY => self.toggle_panel(window, cx),
             ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
@@ -10136,6 +10452,7 @@ impl WorkspaceView {
             | ids::MENU_SELECT_RIGHT
             | ids::MENU_SELECT_LEFT
             | ids::MENU_CONFIRM
+            | ids::MENU_CONFIRM_ALTERNATE
             | ids::MENU_CLOSE => self.run_menu_command(invocation.id, cx),
             ids::CLOSE_TAB | ids::CLOSE_OTHER_TABS | ids::CLOSE_TABS_AFTER => {
                 self.run_tab_close(invocation, window, cx)
@@ -10161,8 +10478,66 @@ impl WorkspaceView {
             }
             ids::CLOSE_WINDOW => {
                 self.check_close_window_available()?;
-                self.request_close(CloseTarget::Window, window, cx);
+                self.close_window(Platform::current(), window, cx);
                 Ok(CommandOutcome::Accepted)
+            }
+            ids::NEW_SESSION => {
+                let name = invocation
+                    .text("name")
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_owned);
+                self.switch_session(
+                    session_switch::SwitchTarget::New(name),
+                    window,
+                    cx,
+                )
+            }
+            ids::SELECT_SESSION => {
+                let session = invocation.session("session").ok_or(
+                    CommandError::MissingArgument {
+                        command: invocation.id,
+                        name: "session",
+                    },
+                )?;
+                self.switch_session(
+                    session_switch::SwitchTarget::Existing(session),
+                    window,
+                    cx,
+                )
+            }
+            ids::CLOSE_SESSION => {
+                self.check_runtime_available(cx)?;
+                let session = invocation
+                    .session("session")
+                    .or_else(|| self.attached_session(cx))
+                    .ok_or_else(|| {
+                        CommandError::Unavailable(
+                            "window has no session".to_owned(),
+                        )
+                    })?;
+                self.check_close_session_available(session, cx)?;
+                let target = CloseTarget::Session(session);
+                self.close.check_close_available(&target)?;
+                self.request_close(target, window, cx);
+                Ok(CommandOutcome::Accepted)
+            }
+            ids::CLEAR_SESSION_NAME => {
+                let session = invocation
+                    .session("session")
+                    .or_else(|| self.attached_session(cx))
+                    .ok_or_else(|| {
+                        CommandError::Unavailable(
+                            "window has no session".to_owned(),
+                        )
+                    })?;
+                let invocation = CommandInvocation::new(
+                    ids::CLEAR_SESSION_NAME,
+                    vec![CommandArgument::new(
+                        "session",
+                        CommandValue::Session(session),
+                    )],
+                );
+                Ok(run_on_runtime(invocation, cx))
             }
             ids::NEXT_TAB => self.navigate(true, window, cx),
             id if is_pane_command(id) => {
@@ -10243,7 +10618,11 @@ impl WorkspaceView {
         target: &CloseTarget,
         cx: &App,
     ) -> CloseDialogInput {
-        let scope = if matches!(target, CloseTarget::Application) {
+        // A session's tabs may show in other windows, or in none.
+        let scope = if matches!(
+            target,
+            CloseTarget::Application | CloseTarget::Session(_)
+        ) {
             TitleScope::Open
         } else {
             TitleScope::Window(self.window)
@@ -10289,7 +10668,21 @@ impl WorkspaceView {
                 }),
             _ => None,
         };
-        close_dialog_input(target, jobs, &titles, pane_title.as_deref())
+        let session_name = match target {
+            CloseTarget::Session(session) => cx
+                .global::<Desktop>()
+                .hierarchy
+                .state()
+                .session(*session)
+                .map(|info| info.display_name().to_owned()),
+            _ => None,
+        };
+        close_dialog_input(
+            target,
+            jobs,
+            &titles,
+            pane_title.as_deref().or(session_name.as_deref()),
+        )
     }
 }
 
@@ -10344,7 +10737,7 @@ fn tab_close_availability(
 /// omitted, and headings are set when the dialog covers more than one tab:
 /// a tab set, the application, or a window with more than one tab. A pane
 /// close with no `pane_title`, the close of a tab's only pane, reads as the
-/// tab's close.
+/// tab's close. A session close takes the session's name as `pane_title`.
 fn close_dialog_input<'a>(
     target: &CloseTarget,
     jobs: impl IntoIterator<Item = (TerminalId, &'a huterm_core::JobState)>,
@@ -10374,6 +10767,9 @@ fn close_dialog_input<'a>(
         CloseTarget::Tabs(ids) => CloseDialogTarget::Tabs { count: ids.len() },
         CloseTarget::Window | CloseTarget::Emptied => CloseDialogTarget::Window,
         CloseTarget::Application => CloseDialogTarget::Application,
+        CloseTarget::Session(_) => CloseDialogTarget::Session {
+            name: pane_title.unwrap_or_default().to_owned(),
+        },
     };
     // A split tab's jobs show under their panes' headings, so two busy
     // panes stay distinguishable.
@@ -11247,8 +11643,8 @@ impl WorkspaceView {
             self.release_exit_close_if_idle(cx);
             return;
         };
-        if matches!(target, CloseTarget::Application) {
-            cx.global_mut::<Desktop>().quitting = true;
+        if !self.admit_close(&target, cx) {
+            return;
         }
         if self.busy {
             self.close.queue(target);
@@ -11494,6 +11890,7 @@ impl WorkspaceView {
                 workspace: self.workspace_id(cx)?,
                 tabs: tabs.clone(),
             },
+            CloseTarget::Session(session) => CloseRequest::Session(*session),
         })
     }
 
@@ -11602,12 +11999,14 @@ impl WorkspaceView {
         self.busy = false;
         self.reconcile_own(window, cx);
         let cancelled = self.close.cancel();
+        self.release_close_hold(cx);
         // A cancelled close never reached the runtime.
         self.release_exit_close_if_idle(cx);
         if matches!(cancelled, Some(CloseTarget::Application)) {
             #[cfg(target_os = "macos")]
             native_quit::cancel_request();
             cx.global_mut::<Desktop>().quitting = false;
+            show_left_session_after_cancel(cx);
         }
         self.sync_dialog(window, cx);
         if let Some(tab) = self.active_view(cx) {
@@ -11685,6 +12084,18 @@ impl WorkspaceView {
                 Some(CloseTarget::Pane { tab, pane })
             })
             .filter(|target| can_take || *target != CloseTarget::Emptied);
+        // On Linux the last window's emptied close becomes Quit while
+        // sessions no window shows remain. It is no longer owed, and a
+        // cancelled Quit moves the window to the session left last.
+        if target == Some(CloseTarget::Emptied)
+            && self.emptied_close_target(Platform::current(), cx)
+                == CloseTarget::Application
+        {
+            self.close.emptied = EmptiedClose::None;
+            cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
+            cx.defer(request_quit);
+            return true;
+        }
         if let Some(target) = target {
             self.request_close(target, window, cx);
             true
@@ -11699,6 +12110,13 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if self.quit_refuses(&target, cx) {
+            self.refuse_own_session_close(window, cx);
+            return;
+        }
+        if self.close_becomes_quit(&target, window, cx) {
+            return;
+        }
         let Some((assessment, confirmed)) = self.close.begin_commit(&target)
         else {
             self.request_close(target, window, cx);
@@ -11709,16 +12127,9 @@ impl WorkspaceView {
         let generation = self.close.generation;
         // From here the commit's result decides the exit-close, even if
         // this window closes first.
-        let exit = {
-            let desktop = cx.global_mut::<Desktop>();
-            desktop
-                .exit_closes
-                .begin_commit(self.window)
-                .and_then(|pane| {
-                    Some((desktop.hierarchy.state().pane_tab(pane)?, pane))
-                })
-        };
+        let exit = begin_exit_commit(cx, self.window);
         let id = self.window;
+        self.note_close_commit(&target, true, cx);
         self.publish_restorable_bounds(cx);
         let windows = if matches!(target, CloseTarget::Application) {
             cx.global_mut::<Desktop>().quitting = true;
@@ -11726,25 +12137,17 @@ impl WorkspaceView {
         } else {
             None
         };
+        let (own_session, follow) = self.commit_follow(&target, window, cx);
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let task = cx.background_executor().spawn(async move {
-            #[cfg(all(test, feature = "test-support"))]
-            if runtime
-                .worker_hooks
-                .enter(worker_hooks::Stage::Commit)
-                .await
-            {
-                // A teardown failure after the runtime accepted the close.
-                let mut committed =
-                    runtime.commit(&assessment, confirmed, windows);
-                committed.result = Err(RuntimeError::Stopped.into());
-                return committed;
-            }
-            runtime.commit(&assessment, confirmed, windows)
-        });
+        let task =
+            cx.background_executor().spawn(session_switch::commit_close(
+                runtime, assessment, confirmed, windows, follow,
+            ));
         let app = cx.to_async();
         cx.spawn_in(window, async move |view, cx| {
-            let Committed { result, seq } = task.await;
+            let (Committed { result, seq }, followed) = task.await;
+            let seq = followed.as_ref().map_or(seq, |followed| followed.seq);
+            let mut followed = followed.map(|followed| followed.result);
             // Application close commits teardown itself, which cancels every
             // waiter, so it keeps today's flow without waiting.
             let resolution = if matches!(target, CloseTarget::Application) {
@@ -11757,52 +12160,103 @@ impl WorkspaceView {
                 app.update(|cx| finish_exit_commit(cx, id, pane, outcome));
             }
             let _ = view.update_in(cx, |view, window, cx| {
+                view.note_close_commit(&target, false, cx);
                 if view.close.generation != generation {
+                    session_switch::drop_followed(followed.as_ref(), cx);
+                    view.release_close_hold(cx);
                     return;
                 }
                 view.busy = false;
                 view.close.current = None;
-                if close_commit_retries(&result) {
-                    view.reconcile_own(window, cx);
-                    view.request_close(target, window, cx);
+                let followed_stale =
+                    close_commit_retries(&result) && followed.is_some();
+                if !followed_stale
+                    && view.retry_refused_commit(&result, &target, window, cx)
+                {
                     return;
                 }
-                if let Err(error) = result {
+                if let Err(error) = result
+                    && !followed_stale
+                {
                     let message = format!("Close failed: {error}");
                     eprintln!("{message}");
                     view.report_close_failure(message, cx);
                 }
                 if resolution == Resolution::Cancelled {
                     // Teardown owns removal; publish nothing.
+                    view.release_close_hold(cx);
                     view.reconcile_own(window, cx);
                     view.resume_close(window, cx);
                     cx.notify();
                     return;
                 }
-                match target {
-                    CloseTarget::Application => {
-                        settle_waiters(cx);
-                        approved_quit(cx);
-                    }
-                    CloseTarget::Window | CloseTarget::Emptied => {
-                        // The runtime detached the attachment or deleted its
-                        // session, even when terminal teardown then failed.
-                        view.remove_detached_window(window, cx);
-                    }
-                    CloseTarget::Tab(id) => {
-                        view.remove_closed_tabs(&[id], window, cx);
-                    }
-                    CloseTarget::Pane { tab, pane } => {
-                        view.remove_closed_pane(tab, pane, window, cx);
-                    }
-                    CloseTarget::Tabs(ids) => {
-                        view.remove_closed_tabs(&ids, window, cx);
-                    }
-                }
+                view.finish_committed(
+                    target,
+                    own_session,
+                    followed.take(),
+                    window,
+                    cx,
+                );
+            });
+            // A window gone before its completion leaves no owner for the
+            // follow-up's attachment.
+            app.update(|cx| {
+                session_switch::drop_followed(followed.as_ref(), cx);
             });
         })
         .detach();
         cx.notify();
+    }
+
+    /// Applies a committed close's effect on this window.
+    fn finish_committed(
+        &mut self,
+        target: CloseTarget,
+        own_session: bool,
+        followed: Option<session_switch::FollowUp>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match target {
+            CloseTarget::Application => {
+                settle_waiters(cx);
+                approved_quit(cx);
+            }
+            CloseTarget::Window | CloseTarget::Emptied => {
+                // The runtime detached the attachment or deleted its
+                // session, even when terminal teardown then failed.
+                self.remove_detached_window(window, cx);
+            }
+            CloseTarget::Tab(id) => self.remove_closed_tabs(&[id], window, cx),
+            CloseTarget::Pane { tab, pane } => {
+                self.remove_closed_pane(tab, pane, window, cx);
+            }
+            CloseTarget::Tabs(ids) => self.remove_closed_tabs(&ids, window, cx),
+            CloseTarget::Session(_) => {
+                self.finish_session_close(own_session, followed, window, cx);
+            }
+        }
+    }
+
+    /// Retries a commit the runtime refused as stale or needing consent,
+    /// which assesses again; the next commit attempt holds Quit again.
+    /// A follow-up runs only once the closing session is gone, so a refused
+    /// commit that followed is not retried: another close removed the
+    /// session, and the window moves on as if its own commit had.
+    fn retry_refused_commit(
+        &mut self,
+        result: &Result<(), MuxError>,
+        target: &CloseTarget,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if !close_commit_retries(result) {
+            return false;
+        }
+        self.release_close_hold(cx);
+        self.reconcile_own(window, cx);
+        self.request_close(target.clone(), window, cx);
+        true
     }
 
     /// Drops the view of a committed pane close. When the pane was its
@@ -12068,6 +12522,9 @@ fn finish_reload(
             desktop.transparency_support = crate::transparency::support();
             warn_transparency(&config, desktop.transparency_support);
             desktop.config = config.clone();
+            desktop
+                .runtime
+                .set_session_numbering(config.general.session_numbering);
             restore::apply_setting(cx, config.general.restore_sessions);
             let desktop = cx.global_mut::<Desktop>();
             desktop.config_report = ConfigReport::reloaded(
@@ -12982,6 +13439,15 @@ impl Render for WorkspaceView {
             // A hidden button anchors nothing; `open_menu` falls back.
             self.menu_button_bounds.set(None);
         }
+        let session_placement = self.session_control_placement(&layout);
+        // Set again when a host builds the control; see the end of render.
+        self.session_control_drawn.set(false);
+        // The menu button's slot, which the session control sits before.
+        let menu_slot = if menu_placement == MenuButtonPlacement::Hidden {
+            px(0.0)
+        } else {
+            CONTROL_SLOT
+        };
         for button in WindowButton::ALL {
             if !frame.buttons.contains(button) {
                 self.window_button_bounds[button.index()].set(None);
@@ -13323,6 +13789,22 @@ impl Render for WorkspaceView {
             == MenuButtonPlacement::TitleStrip
             && !sidebar_title_row)
             .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
+        // The session control sits in its slot just before the menu
+        // button, or in the button's slot without it.
+        let title_session_control = (session_placement.host
+            == SessionControlHost::TitleStrip
+            && !sidebar_title_row)
+            .then(|| {
+                self.session_control_element(session_placement, colors, cx)
+            })
+            .flatten()
+            .map(|control| {
+                control.mr(if title_menu_button.is_some() {
+                    CONTROL_SLOT - CONTROL_SIZE
+                } else {
+                    CONTROL_INSET
+                })
+            });
         // The window buttons that start the row Huterm draws.
         let title_leading = (!frame.buttons.leading.is_empty()).then(|| {
             self.window_controls_element(
@@ -13339,6 +13821,7 @@ impl Render for WorkspaceView {
             .ml_auto()
             .flex()
             .items_center()
+            .children(title_session_control)
             .children(title_menu_button)
             .when(!frame.buttons.trailing.is_empty(), |trailing| {
                 trailing.child(self.window_controls_element(
@@ -13907,11 +14390,13 @@ impl Render for WorkspaceView {
                     );
                 }
             }
-            // A vertical column shares the new-tab row with the menu control.
+            // A vertical column shares the new-tab row with the session and
+            // menu controls.
             let row = split_new_tab_row(
                 (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
                     .max(px(0.0)),
                 menu_placement == MenuButtonPlacement::SplitRow,
+                session_placement.host == SessionControlHost::SplitRow,
             );
             chrome = chrome.child(bar).child(
                 Button::new("new-tab", "New Tab", swatch)
@@ -13999,6 +14484,40 @@ impl Render for WorkspaceView {
                         .top(origin.y),
                 );
             }
+            // The session control's slot ends where the menu button's
+            // starts, or at the bar's end without it.
+            let bar_session_control = match session_placement.host {
+                SessionControlHost::BarEnd => Some(point(
+                    layout.strip_bounds(tabs).right()
+                        - clip.origin.x
+                        - menu_slot
+                        - session_placement.slot()
+                        + CONTROL_INSET,
+                    strip.bounds.origin.y - clip.origin.y + bar_inset,
+                )),
+                SessionControlHost::SplitRow => row.session_x.map(|x| {
+                    let row_height = CONTROL_SLOT - VERTICAL_ROW_MARGIN_Y * 2.0;
+                    point(
+                        strip.bounds.origin.x - clip.origin.x
+                            + VERTICAL_ROW_MARGIN_X
+                            + x,
+                        strip.bounds.origin.y - clip.origin.y
+                            + strip.available()
+                            + VERTICAL_ROW_MARGIN_Y
+                            + (row_height - CONTROL_SIZE) / 2.0,
+                    )
+                }),
+                SessionControlHost::TitleStrip | SessionControlHost::Hidden => {
+                    None
+                }
+            };
+            if let Some(origin) = bar_session_control
+                && let Some(control) =
+                    self.session_control_element(session_placement, colors, cx)
+            {
+                chrome = chrome
+                    .child(control.absolute().left(origin.x).top(origin.y));
+            }
             if sidebar_title_row {
                 chrome = chrome.child(
                     self.title_row_gestures(
@@ -14014,9 +14533,35 @@ impl Render for WorkspaceView {
                             .window_control_area(WindowControlArea::Drag),
                     ),
                 );
+                // The full-height bar occludes the root title row, so the
+                // window's top-right controls paint above that bar: the
+                // terminal column's title row beside a left column, the
+                // column's own top strip on the right.
+                if session_placement.host == SessionControlHost::TitleStrip
+                    && let Some(control) = self.session_control_element(
+                        session_placement,
+                        colors,
+                        cx,
+                    )
+                {
+                    chrome = chrome.child(
+                        control
+                            .absolute()
+                            .left(
+                                content.right()
+                                    - menu_slot
+                                    - session_placement.slot()
+                                    + CONTROL_INSET
+                                    - clip.origin.x,
+                            )
+                            .top(
+                                content.origin.y
+                                    + (titlebar - CONTROL_SIZE) / 2.0
+                                    - clip.origin.y,
+                            ),
+                    );
+                }
                 if menu_placement == MenuButtonPlacement::TitleStrip {
-                    // The full-height bar occludes the root title row.
-                    // Paint the window-corner button above that bar.
                     chrome = chrome.child(
                         self.menu_button_element(colors, cx)
                             .absolute()
@@ -14381,6 +14926,11 @@ impl Render for WorkspaceView {
             refresh::Animated::animation_schedule(self, Instant::now()),
             cx,
         );
+        // A frame that draws no control, because it is hidden, its host is
+        // not drawn, or the window shows no session, anchors nothing.
+        if !self.session_control_drawn.get() {
+            self.session_button_bounds.set(None);
+        }
         root
     }
 }
@@ -14475,6 +15025,7 @@ fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
     matches!(
         command,
         ids::OPEN_MENU
+            | ids::OPEN_SESSION_MENU
             | ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
             | ids::MENU_SELECT_FIRST
@@ -14482,6 +15033,7 @@ fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
             | ids::MENU_SELECT_RIGHT
             | ids::MENU_SELECT_LEFT
             | ids::MENU_CONFIRM
+            | ids::MENU_CONFIRM_ALTERNATE
             | ids::MENU_CLOSE
     )
 }
@@ -14973,6 +15525,7 @@ impl WorkspaceView {
             kind @ MenuKind::Field(_) => {
                 Self::field_menu_spec(kind, &menu.contexts, cx)
             }
+            MenuKind::Session => Some(self.session_menu_spec(cx)),
         };
         spec.map(|spec| spec.to_listbox(Platform::current()))
     }
@@ -14993,8 +15546,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        // An opening menu closes the panel and ends a tab or pane drag; the
-        // menu then takes focus.
+        // An opening menu closes the panel, supersedes a native session
+        // menu waiting for its read, and ends a tab or pane drag; the menu
+        // then takes focus.
+        self.cancel_pending_session_menu(cx);
         self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
@@ -15007,6 +15562,7 @@ impl WorkspaceView {
             MenuKind::Terminal { .. } => "Terminal",
             MenuKind::Pane { .. } => "Pane",
             MenuKind::Field(_) => "Edit",
+            MenuKind::Session => "Sessions",
         };
         let view = cx.new(|cx| {
             clock.observe(cx);
@@ -15041,13 +15597,14 @@ impl WorkspaceView {
         });
         menu_focus.focus(window, cx);
         // The button's anchor follows its painted bounds at every render.
+        let trigger = if kind == MenuKind::Session {
+            &self.session_button_bounds
+        } else {
+            &self.menu_button_bounds
+        };
         self.popover.open(
             pointer.map_or_else(
-                || {
-                    Anchor::Trigger(
-                        self.menu_button_bounds.get().unwrap_or_default(),
-                    )
-                },
+                || Anchor::Trigger(trigger.get().unwrap_or_default()),
                 Anchor::Pointer,
             ),
             true,
@@ -15081,6 +15638,9 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let _ = self.popover.close();
+        // A native session menu still waiting for its read is dismissed
+        // with it; it does not count as an open menu.
+        self.cancel_pending_session_menu(cx);
         let Some(menu) = self.menu.take() else {
             return false;
         };
@@ -15121,9 +15681,21 @@ impl WorkspaceView {
         else {
             return;
         };
+        // The session menu keeps the keyboard's place when another window
+        // closes the selected session.
+        let keep_place = self
+            .menu
+            .as_ref()
+            .is_some_and(|menu| menu.kind == MenuKind::Session);
         match self.current_menu_model(cx) {
             Some(model) => {
-                menu.update(cx, |menu, cx| menu.set_model(model, cx));
+                menu.update(cx, |menu, cx| {
+                    if keep_place {
+                        menu.set_model_keeping_place(model, cx);
+                    } else {
+                        menu.set_model(model, cx);
+                    }
+                });
             }
             None => {
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
@@ -15234,6 +15806,10 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if *kind == MenuKind::Session {
+            self.run_session_pick(id, window, cx);
+            return;
+        }
         // A field menu's picks edit its field, not the window.
         if let MenuKind::Field(field) = kind {
             if let Some(field) = field.upgrade() {
@@ -15370,6 +15946,14 @@ impl WorkspaceView {
         command: huterm_protocol::CommandId,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
+        if self.pending_session_menu_takes_keys() {
+            // `menu_close` cancels the native session menu before it
+            // appears; the others have no rows to act on yet.
+            if command == ids::MENU_CLOSE {
+                self.cancel_pending_session_menu(cx);
+            }
+            return Ok(CommandOutcome::Completed);
+        }
         let menu = self.open_menu_entity()?;
         menu.update(cx, |menu, cx| {
             match command {
@@ -15380,6 +15964,7 @@ impl WorkspaceView {
                 ids::MENU_SELECT_RIGHT => menu.select_right(cx),
                 ids::MENU_SELECT_LEFT => menu.select_left(cx),
                 ids::MENU_CONFIRM => menu.confirm(cx),
+                ids::MENU_CONFIRM_ALTERNATE => menu.confirm_alternate(cx),
                 ids::MENU_CLOSE => MenuView::dismiss(cx),
                 other => return Err(CommandError::UnknownCommand(other)),
             }
@@ -15419,10 +16004,9 @@ impl WorkspaceView {
     fn menu_button_open(&self) -> bool {
         self.menu.as_ref().is_some_and(|menu| {
             menu.kind == MenuKind::Window && menu.pointer.is_none()
-        }) || self
-            .native_menu
-            .as_ref()
-            .is_some_and(|session| session.from_button)
+        }) || self.native_menu.as_ref().is_some_and(|session| {
+            session.from_button && session.kind == MenuKind::Window
+        })
     }
 
     /// The menu control: a 14-point icon in the 26-point control with the
@@ -15484,7 +16068,10 @@ impl WorkspaceView {
                 .absolute()
                 .inset_0(),
             )
-            .child(self.popover.trigger_probe())
+            // The session control holds the probe while its menu is open.
+            .when(!self.session_menu_open(), |button| {
+                button.child(self.popover.trigger_probe())
+            })
     }
 
     /// The gestures of a title row Huterm owns, on its empty space: a
@@ -15536,9 +16123,10 @@ impl WorkspaceView {
 
     /// One side's window buttons in the title row Huterm draws: round
     /// 22-point buttons with a subtle fill, in the desktop's order, padded
-    /// more at the window edge. Close takes the assessed window-close path,
-    /// like the `close_window` command, so live jobs still get their
-    /// confirmation.
+    /// more at the window edge. Close runs Close Window as the
+    /// `close_window` command does: the assessed window-close path, so live
+    /// jobs still get their confirmation, or Quit where the last window
+    /// would strand sessions.
     fn window_controls_element(
         &self,
         group: ButtonGroup,
@@ -15613,7 +16201,7 @@ impl WorkspaceView {
                 WindowButton::Close => element.on_click(Self::button_action(
                     cx,
                     |view, window, cx| {
-                        view.request_close(CloseTarget::Window, window, cx);
+                        view.close_window(Platform::current(), window, cx);
                         cx.stop_propagation();
                     },
                 )),
@@ -15638,6 +16226,9 @@ impl WorkspaceView {
             MenuView::content_height(menu.read(cx).model(), window.rem_size());
         let anchor = match open.pointer {
             Some(pointer) => Anchor::Pointer(pointer),
+            None if open.kind == MenuKind::Session => {
+                Anchor::Trigger(self.session_menu_anchor(layout))
+            }
             None => Anchor::Trigger(self.menu_anchor(layout)),
         };
         // The menu's labels follow the interface scale, and so does its
@@ -15670,13 +16261,7 @@ impl WorkspaceView {
                 let menu = open.view.read(cx);
                 let selection =
                     menu.selected_id().unwrap_or_else(|| "none".into());
-                let kind = match open.kind {
-                    MenuKind::Window => "window",
-                    MenuKind::Tab(_) => "tab",
-                    MenuKind::Terminal { .. } => "terminal",
-                    MenuKind::Pane { .. } => "pane",
-                    MenuKind::Field(_) => "field",
-                };
+                let kind = open.kind.name();
                 let (overflow, indicator) = menu.scroll_state();
                 format!(
                     "{prefix}menu=true {prefix}menu_kind={kind} {prefix}menu_focused={} {prefix}menu_selection={selection} {prefix}menu_items={} {prefix}menu_overflow={overflow} {prefix}menu_indicator={indicator}",
@@ -15688,16 +16273,9 @@ impl WorkspaceView {
                 "{prefix}menu=false {prefix}menu_kind=none {prefix}menu_focused=false {prefix}menu_selection=none {prefix}menu_items=none {prefix}menu_overflow=false {prefix}menu_indicator=false"
             ),
         };
-        let native = match self.native_menu_kind() {
-            Some(MenuKind::Window) => "window",
-            Some(MenuKind::Tab(_)) => "tab",
-            Some(MenuKind::Terminal { .. }) => "terminal",
-            Some(MenuKind::Pane { .. }) => "pane",
-            Some(MenuKind::Field(_)) => "field",
-            None => "none",
-        };
+        let native = self.native_menu_kind().map_or("none", |kind| kind.name());
         format!(
-            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={}",
+            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={} {}",
             self.menu_button_open(),
             self.popover.content_bounds().map_or_else(
                 || "none".to_owned(),
@@ -15708,7 +16286,8 @@ impl WorkspaceView {
                     f32::from(bounds.size.width),
                     f32::from(bounds.size.height)
                 )
-            )
+            ),
+            self.session_control_smoke_state(prefix, window, cx),
         )
     }
 
@@ -15971,7 +16550,8 @@ impl WorkspaceView {
                 MenuKind::Window
                 | MenuKind::Terminal { .. }
                 | MenuKind::Pane { .. }
-                | MenuKind::Field(_) => None,
+                | MenuKind::Field(_)
+                | MenuKind::Session => None,
             })
             .and_then(|tab| {
                 self.tabs.iter().position(|record| record.id == tab)
@@ -16132,7 +16712,7 @@ fn menu_items_state(model: &MenuModel) -> String {
                     rows.replace(',', ";")
                 ));
             }
-            MenuRow::Separator => {}
+            MenuRow::Separator | MenuRow::Hint(_) => {}
         }
     }
     ids.join(",")

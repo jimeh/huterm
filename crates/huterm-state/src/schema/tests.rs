@@ -106,6 +106,114 @@ fn a_window_display_round_trips_and_is_left_out_when_unknown() {
     assert_eq!(text.matches("\"display\"").count(), 1, "{text}");
 }
 
+/// Encodes a desktop layout without checking any rule, as a damaged or
+/// foreign writer might.
+fn unchecked_desktop(layout: &DesktopLayout) -> Vec<u8> {
+    serde_json::to_vec(&DesktopFile {
+        format: DESKTOP_FORMAT.into(),
+        version: VERSION,
+        scope_id: SCOPE.to_string(),
+        generation: 1,
+        active_window: layout.active_window,
+        windows: Bounded(layout.windows.iter().map(window_record).collect()),
+    })
+    .unwrap()
+}
+
+/// The rich layout, with its first window remembering where it was in the
+/// second window's session.
+fn remembering() -> DesktopLayout {
+    let mut layout = layout_for(&rich_capture());
+    let other = layout.windows[1].clone();
+    layout.windows[0].remembered = vec![SessionNavigation {
+        session: other.session,
+        workspace: other.workspace,
+        active_tab: other.active_tab,
+        tab_history: other.tab_history,
+        focused_panes: other.focused_panes,
+    }];
+    layout
+}
+
+#[test]
+fn remembered_sessions_round_trip_and_files_without_them_load() {
+    let layout = remembering();
+    let bytes = encode_desktop(&layout, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_desktop(&bytes) else {
+        panic!("the layout did not decode");
+    };
+    assert_eq!(file.content, layout);
+    let text = String::from_utf8(bytes).unwrap();
+    assert_eq!(text.matches("\"remembered\"").count(), 1, "{text}");
+
+    // A window without memory writes no field, as a file from before the
+    // field has none, and such a file loads with no memory.
+    let plain = layout_for(&rich_capture());
+    let bytes = encode_desktop(&plain, SCOPE, 1).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(!text.contains("remembered"), "{text}");
+    let Decoded::Ok(file) = decode_desktop(text.as_bytes()) else {
+        panic!("a file without memory did not load");
+    };
+    assert!(file.content.windows.iter().all(|w| w.remembered.is_empty()));
+}
+
+#[test]
+fn remembered_sessions_breaking_a_window_rule_are_refused() {
+    let valid = remembering();
+    let mut breaks: Vec<(DesktopLayout, &str)> = Vec::new();
+    let mut zero = valid.clone();
+    zero.windows[0].remembered[0].workspace = WorkspaceId::new(0);
+    breaks.push((zero, "identity zero"));
+    let mut zero_focus = valid.clone();
+    zero_focus.windows[0].remembered[0].focused_panes[0].pane = PaneId::new(0);
+    breaks.push((zero_focus, "identity zero"));
+    let mut tabs = valid.clone();
+    tabs.windows[0].remembered[0].tab_history =
+        vec![TabId::new(1); MAX_TABS + 1];
+    breaks.push((tabs, "more than 4096"));
+    let mut sessions = valid.clone();
+    sessions.windows[0].remembered =
+        vec![valid.windows[0].remembered[0].clone(); MAX_SESSIONS + 1];
+    breaks.push((sessions, "more than 256"));
+    for (layout, reason) in breaks {
+        let refused = encode_desktop(&layout, SCOPE, 1).unwrap_err();
+        assert!(refused.reason().contains(reason), "writer: {refused}");
+        match decode_desktop(&unchecked_desktop(&layout)) {
+            Decoded::Corrupt(error) => {
+                assert!(error.contains(reason), "reader: {error}");
+            }
+            other => panic!("the reader accepted {other:?}"),
+        }
+    }
+    let mut at_bound = valid.clone();
+    at_bound.windows[0].remembered =
+        vec![valid.windows[0].remembered[0].clone(); MAX_SESSIONS];
+    let bytes = encode_desktop(&at_bound, SCOPE, 1).unwrap();
+    assert!(matches!(decode_desktop(&bytes), Decoded::Ok(_)));
+
+    // An entry missing a required field is malformed, as a window would be.
+    let text =
+        String::from_utf8(encode_desktop(&valid, SCOPE, 1).unwrap()).unwrap();
+    let workspace = valid.windows[0].remembered[0].workspace.get();
+    let broken = text.replacen(
+        &format!(
+            "\"remembered\":[{{\"session\":{},\"workspace\":{workspace},",
+            valid.windows[0].remembered[0].session.get()
+        ),
+        &format!(
+            "\"remembered\":[{{\"session\":{},",
+            valid.windows[0].remembered[0].session.get()
+        ),
+        1,
+    );
+    assert_ne!(broken, text);
+    assert!(matches!(
+        decode_desktop(broken.as_bytes()),
+        Decoded::Corrupt(reason) if reason.contains("workspace")
+    ));
+}
+
 #[test]
 fn the_writer_drops_directories_a_restore_cannot_use() {
     use std::ffi::OsStr;

@@ -2116,6 +2116,7 @@ impl SettingsView {
                 ids::MENU_SELECT_FIRST => menu.select_first(cx),
                 ids::MENU_SELECT_LAST => menu.select_last(cx),
                 ids::MENU_CONFIRM => menu.confirm(cx),
+                ids::MENU_CONFIRM_ALTERNATE => menu.confirm_alternate(cx),
                 _ => MenuView::dismiss(cx),
             });
             return Ok(());

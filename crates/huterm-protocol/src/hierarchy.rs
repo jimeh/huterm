@@ -1,11 +1,11 @@
 //! Sequenced session, workspace, and tab structure and its reducer.
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
-    PaneId, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis, TabId,
-    TerminalId, WorkspaceId,
+    AttachmentId, PaneId, PaneLayout, PaneNode, RuntimeId, SessionId,
+    SplitAxis, TabId, TerminalId, WorkspaceId,
 };
 
 /// Identifies one ordered hierarchy stream.
@@ -277,7 +277,8 @@ pub enum HierarchyEvent {
         /// New override; `None` resumes the automatic name.
         custom_name: Option<String>,
     },
-    /// A session closed, removing its workspaces and their tabs.
+    /// A session closed, removing its workspaces and their tabs and
+    /// invalidating its attachments.
     SessionClosed {
         /// Closed session.
         session: SessionId,
@@ -380,7 +381,27 @@ pub enum HierarchyEvent {
         /// The changes, applied in order.
         changes: Vec<TabChange>,
     },
-    /// Application shutdown removed every session.
+    /// A view attached to a session.
+    AttachmentCreated {
+        /// The new attachment.
+        attachment: AttachmentId,
+        /// The session it views.
+        session: SessionId,
+    },
+    /// An attachment switched to another session, which keeps both
+    /// sessions.
+    AttachmentRetargeted {
+        /// The attachment.
+        attachment: AttachmentId,
+        /// The session it views now.
+        session: SessionId,
+    },
+    /// An attachment detached; its session survives.
+    AttachmentDetached {
+        /// The detached attachment.
+        attachment: AttachmentId,
+    },
+    /// Application shutdown removed every session and attachment.
     Reset,
 }
 
@@ -426,7 +447,8 @@ pub enum ResyncReason {
 /// changed. Tabs are listed when their name, input sync, or layout changed
 /// or they opened, moved, or closed; layouts list the tabs whose pane
 /// layout or shared zoom changed or that opened. The names flag records any
-/// change to the session or workspace lists or their names.
+/// change to the session or workspace lists or their names. Attachments
+/// list the sessions whose set of attachments changed.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Touched {
     everything: bool,
@@ -434,11 +456,12 @@ pub struct Touched {
     workspaces: HashSet<WorkspaceId>,
     tabs: HashSet<TabId>,
     layouts: HashSet<TabId>,
+    attachments: HashSet<SessionId>,
 }
 
 impl Touched {
-    /// Returns a summary that covers every workspace, tab, and name, for
-    /// recovery from a replaced snapshot.
+    /// Returns a summary that covers every workspace, tab, name, and
+    /// attachment, for recovery from a replaced snapshot.
     #[must_use]
     pub fn everything() -> Self {
         Self {
@@ -455,6 +478,7 @@ impl Touched {
             && self.workspaces.is_empty()
             && self.tabs.is_empty()
             && self.layouts.is_empty()
+            && self.attachments.is_empty()
     }
 
     /// Whether the summary covers everything.
@@ -488,6 +512,18 @@ impl Touched {
         self.everything || self.layouts.contains(&tab)
     }
 
+    /// Whether any session's set of attachments changed.
+    #[must_use]
+    pub fn attachments_changed(&self) -> bool {
+        self.everything || !self.attachments.is_empty()
+    }
+
+    /// Whether the session's set of attachments changed.
+    #[must_use]
+    pub fn contains_attachments(&self, session: SessionId) -> bool {
+        self.everything || self.attachments.contains(&session)
+    }
+
     fn layout_changed(&mut self, workspace: WorkspaceId, tab: TabId) {
         self.workspaces.insert(workspace);
         self.tabs.insert(tab);
@@ -507,6 +543,7 @@ impl Touched {
         self.workspaces.extend(other.workspaces);
         self.tabs.extend(other.tabs);
         self.layouts.extend(other.layouts);
+        self.attachments.extend(other.attachments);
     }
 }
 
@@ -529,11 +566,12 @@ struct TabEntry {
     workspace: WorkspaceId,
 }
 
-/// A client's copy of one stream's sessions, workspaces, and tabs, current
-/// through [`Self::seq`].
+/// A client's copy of one stream's sessions, workspaces, tabs, and
+/// attachments, current through [`Self::seq`].
 ///
 /// Records are indexed by identity, so lookups are constant time; each parent
-/// keeps its children's order. Panes and terminals are indexed to their tab.
+/// keeps its children's order. Panes and terminals are indexed to their tab,
+/// and attachments to the session they view.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HierarchyState {
     stream: StreamId,
@@ -544,6 +582,7 @@ pub struct HierarchyState {
     tabs: HashMap<TabId, TabEntry>,
     panes: HashMap<PaneId, TabId>,
     terminals: HashMap<TerminalId, TabId>,
+    attachments: BTreeMap<AttachmentId, SessionId>,
 }
 
 /// 64-bit FNV-1a offset basis.
@@ -564,22 +603,27 @@ impl HierarchyState {
             tabs: HashMap::new(),
             panes: HashMap::new(),
             terminals: HashMap::new(),
+            attachments: BTreeMap::new(),
         }
     }
 
     /// Builds a snapshot from ordered sessions, their ordered workspaces, and
-    /// their ordered tabs, current through `seq`.
+    /// their ordered tabs, plus each attachment and the session it views,
+    /// current through `seq`.
     ///
-    /// Returns `None` if an identity repeats or belongs to another stream.
-    pub fn from_sessions<S, W, T>(
+    /// Returns `None` if an identity repeats or belongs to another stream,
+    /// or an attachment names a session the snapshot does not hold.
+    pub fn from_sessions<S, W, T, A>(
         stream: StreamId,
         seq: u64,
         sessions: S,
+        attachments: A,
     ) -> Option<Self>
     where
         S: IntoIterator<Item = (SessionInfo, W)>,
         W: IntoIterator<Item = (WorkspaceInfo, T)>,
         T: IntoIterator<Item = TabInfo>,
+        A: IntoIterator<Item = (AttachmentId, SessionId)>,
     {
         let mut state = Self::new(stream);
         state.seq = seq;
@@ -595,6 +639,9 @@ impl HierarchyState {
                     state.insert_tab(workspace_id, tab, index)?;
                 }
             }
+        }
+        for (attachment, session) in attachments {
+            state.insert_attachment(attachment, session)?;
         }
         Some(state)
     }
@@ -693,6 +740,23 @@ impl HierarchyState {
         self.terminals.get(&id).copied()
     }
 
+    /// Returns the session an attachment views.
+    #[must_use]
+    pub fn attachment_session(&self, id: AttachmentId) -> Option<SessionId> {
+        self.attachments.get(&id).copied()
+    }
+
+    /// Returns the attachments that view a session, in identity order.
+    pub fn session_attachments(
+        &self,
+        session: SessionId,
+    ) -> impl Iterator<Item = AttachmentId> + '_ {
+        self.attachments
+            .iter()
+            .filter(move |(_, attached)| **attached == session)
+            .map(|(attachment, _)| *attachment)
+    }
+
     /// Applies the next event of this state's stream.
     ///
     /// A foreign stream, a gap, or an event that contradicts the state
@@ -717,12 +781,14 @@ impl HierarchyState {
         }
     }
 
-    /// Returns a stable 64-bit FNV-1a hash of the structure and names.
+    /// Returns a stable 64-bit FNV-1a hash of the structure, names, and
+    /// attachments.
     ///
     /// The canonical encoding visits sessions in order, each session's
-    /// workspaces in order, and each workspace's tabs in order. Integers are
-    /// little-endian `u64`. A string is its byte length then its UTF-8 bytes.
-    /// An optional name is `0`, or `1` followed by the string.
+    /// workspaces in order, and each workspace's tabs in order, then every
+    /// attachment in ascending identity order. Integers are little-endian
+    /// `u64`. A string is its byte length then its UTF-8 bytes. An optional
+    /// name is `0`, or `1` followed by the string.
     ///
     /// - Session: `b'S'`, ID, custom name, automatic name, workspace count.
     /// - Workspace: `b'W'`, ID, custom name, automatic name, tab count.
@@ -731,6 +797,7 @@ impl HierarchyState {
     ///   for a pane, `b'P'`, pane ID, terminal ID, fallback name, custom
     ///   name; for a split, `b'X'`, split ID, axis (`0` columns, `1` rows),
     ///   child count, then each child's weight followed by the child.
+    /// - Attachment: `b'A'`, attachment ID, session ID.
     ///
     /// The stream and sequence are not part of the digest. The cost is
     /// proportional to the hierarchy, so do not compute it per event.
@@ -768,6 +835,11 @@ impl HierarchyState {
                 }
             }
         }
+        for (attachment, session) in &self.attachments {
+            hash.byte(b'A');
+            hash.number(attachment.get());
+            hash.number(session.get());
+        }
         hash.0
     }
 
@@ -792,6 +864,11 @@ impl HierarchyState {
                 self.session_order.retain(|id| *id != session);
                 for workspace in entry.workspaces {
                     self.remove_workspace(workspace, &mut touched);
+                }
+                let attached = self.attachments.len();
+                self.attachments.retain(|_, viewed| *viewed != session);
+                if self.attachments.len() != attached {
+                    touched.attachments.insert(session);
                 }
                 touched.names = true;
             }
@@ -892,6 +969,30 @@ impl HierarchyState {
             HierarchyEvent::PanesRearranged { changes } => {
                 self.rearrange(changes, &mut touched)?;
             }
+            HierarchyEvent::AttachmentCreated {
+                attachment,
+                session,
+            } => {
+                self.insert_attachment(attachment, session)?;
+                touched.attachments.insert(session);
+            }
+            HierarchyEvent::AttachmentRetargeted {
+                attachment,
+                session,
+            } => {
+                if !self.sessions.contains_key(&session) {
+                    return None;
+                }
+                let viewed = self.attachments.get_mut(&attachment)?;
+                let previous = std::mem::replace(viewed, session);
+                if previous != session {
+                    touched.attachments.extend([previous, session]);
+                }
+            }
+            HierarchyEvent::AttachmentDetached { attachment } => {
+                let session = self.attachments.remove(&attachment)?;
+                touched.attachments.insert(session);
+            }
             HierarchyEvent::Reset => {
                 self.session_order.clear();
                 self.sessions.clear();
@@ -899,6 +1000,7 @@ impl HierarchyState {
                 self.tabs.clear();
                 self.panes.clear();
                 self.terminals.clear();
+                self.attachments.clear();
                 touched = Touched::everything();
             }
         }
@@ -975,6 +1077,23 @@ impl HierarchyState {
                 workspaces: Vec::new(),
             },
         );
+        Some(())
+    }
+
+    /// Records a new attachment of this stream to a known session, or
+    /// returns `None` without changes.
+    fn insert_attachment(
+        &mut self,
+        attachment: AttachmentId,
+        session: SessionId,
+    ) -> Option<()> {
+        if !self.owns(attachment.runtime())
+            || self.attachments.contains_key(&attachment)
+            || !self.sessions.contains_key(&session)
+        {
+            return None;
+        }
+        self.attachments.insert(attachment, session);
         Some(())
     }
 

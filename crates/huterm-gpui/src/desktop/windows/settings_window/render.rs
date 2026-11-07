@@ -886,17 +886,11 @@ impl SettingsView {
                 cx,
             )
             // The user's own scroll wins over a pending group reveal, and
-            // so does any press in the pane. A scrollbar press and release
-            // can both land between two frames, before the reveal's next
-            // check could see a drag.
+            // so does any press in the pane.
             .on_scroll(cx.listener(|view, _: &gpui::ScrollEvent, _, _| {
                 view.reveal_group = None;
             }))
-            .capture_any_mouse_down(cx.listener(
-                |view, _: &gpui::MouseDownEvent, _, _| {
-                    view.reveal_group = None;
-                },
-            ));
+            .child(reveal_press_capture(&view));
         div()
             .flex()
             .flex_col()
@@ -1165,4 +1159,28 @@ pub(super) fn changed_dot(swatch: Swatch) -> Div {
         .size(px(6.0))
         .rounded_full()
         .bg(swatch.accent)
+}
+
+/// Cancels a pending group reveal on any press inside the pane, from the
+/// window rather than the pane's own listeners: a mounted scrollbar strip
+/// blocks those, and a press and release on it can both land between two
+/// frames, before the reveal's next check could see a drag.
+fn reveal_press_capture(view: &gpui::Entity<SettingsView>) -> AnyElement {
+    let view = view.clone();
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| {
+            let view = view.clone();
+            window.on_mouse_event(
+                move |event: &gpui::MouseDownEvent, phase, _, cx| {
+                    if phase.capture() && bounds.contains(&event.position) {
+                        view.update(cx, |view, _| view.reveal_group = None);
+                    }
+                },
+            );
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
 }

@@ -3,8 +3,8 @@
 mod holder_fixture;
 
 use super::{
-    AttachmentId, Mux, MuxError, PaneId, RuntimeClient, RuntimeId, SessionId,
-    Tab, TabId, TerminalId, Workspace, WorkspaceId,
+    AttachmentId, HierarchyEvent, Mux, MuxError, PaneId, RuntimeClient,
+    RuntimeId, SessionId, Tab, TabId, TerminalId, Workspace, WorkspaceId,
 };
 use crate::JobState;
 use std::time::{Duration, Instant};
@@ -204,7 +204,8 @@ impl CloseAssessment {
 }
 
 impl Mux {
-    /// Attaches one view to a session without claiming terminal ownership.
+    /// Attaches one view to a session without claiming terminal ownership,
+    /// and emits [`HierarchyEvent::AttachmentCreated`].
     /// # Errors
     /// Rejects foreign/missing sessions or exhausted identities.
     pub fn attach_session(
@@ -214,6 +215,10 @@ impl Mux {
         self.select_session(session)?;
         let id = AttachmentId::in_runtime(self.runtime_id, self.allocate()?);
         self.attachments.insert(id, session);
+        self.emit_hierarchy(|_| HierarchyEvent::AttachmentCreated {
+            attachment: id,
+            session,
+        });
         Ok(id)
     }
     /// Resolves a live attachment to its session.
@@ -236,7 +241,8 @@ impl Mux {
             .values()
             .any(|attached| *attached == session)
     }
-    /// Detaches without closing the session, including when no views remain.
+    /// Detaches without closing the session, including when no views remain,
+    /// and emits [`HierarchyEvent::AttachmentDetached`].
     /// # Errors
     /// Rejects foreign or invalidated attachments.
     pub fn detach_session(
@@ -247,9 +253,15 @@ impl Mux {
         self.changed();
         self.invalidate_attachment_authority(attachment);
         self.attachments.remove(&attachment);
+        self.emit_hierarchy(|_| HierarchyEvent::AttachmentDetached {
+            attachment,
+        });
         Ok(())
     }
     /// Atomically switches a view's session, preserving the previous session.
+    /// A switch to another session emits
+    /// [`HierarchyEvent::AttachmentRetargeted`]; one to the current session
+    /// changes and emits nothing.
     /// # Errors
     /// Validates both targets before changing either attachment or membership.
     pub fn retarget_attachment(
@@ -265,6 +277,10 @@ impl Mux {
         self.changed();
         self.invalidate_attachment_authority(attachment);
         self.attachments.insert(attachment, session);
+        self.emit_hierarchy(|_| HierarchyEvent::AttachmentRetargeted {
+            attachment,
+            session,
+        });
         Ok(())
     }
     /// Resolves an exact close scope while holding exclusive structural access.

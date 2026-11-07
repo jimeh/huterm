@@ -25,8 +25,8 @@ use crate::bounds::{
     MAX_TABS, MAX_WINDOWS, MAX_WORKSPACES,
 };
 use crate::desktop::{
-    DesktopLayout, FocusedPane, WindowAppearance, WindowBounds, WindowLayout,
-    WindowMode,
+    DesktopLayout, FocusedPane, SessionNavigation, WindowAppearance,
+    WindowBounds, WindowLayout, WindowMode,
 };
 use crate::{InvalidState, valid_socket_name};
 
@@ -100,6 +100,12 @@ struct Bounded<T, const N: usize>(Vec<T>);
 impl<T, const N: usize> Default for Bounded<T, N> {
     fn default() -> Self {
         Self(Vec::new())
+    }
+}
+
+impl<T, const N: usize> Bounded<T, N> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -261,6 +267,21 @@ struct WindowRecord {
     quake_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     appearance: Option<AppearanceRecord>,
+    #[serde(default, skip_serializing_if = "Bounded::is_empty")]
+    remembered: Bounded<NavigationRecord, MAX_SESSIONS>,
+}
+
+/// One remembered session's navigation, with a window's own field names.
+#[derive(Deserialize, Serialize)]
+struct NavigationRecord {
+    session: u64,
+    workspace: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_tab: Option<u64>,
+    #[serde(default)]
+    tab_history: Bounded<u64, MAX_TABS>,
+    #[serde(default)]
+    focused_panes: Bounded<FocusRecord, MAX_TABS>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -730,19 +751,8 @@ fn window_record(window: &WindowLayout) -> WindowRecord {
         session: window.session.get(),
         workspace: window.workspace.get(),
         active_tab: window.active_tab.map(TabId::get),
-        tab_history: Bounded(
-            window.tab_history.iter().map(|t| t.get()).collect(),
-        ),
-        focused_panes: Bounded(
-            window
-                .focused_panes
-                .iter()
-                .map(|focus| FocusRecord {
-                    tab: focus.tab.get(),
-                    pane: focus.pane.get(),
-                })
-                .collect(),
-        ),
+        tab_history: tab_ids(&window.tab_history),
+        focused_panes: focus_records(&window.focused_panes),
         bounds: BoundsRecord {
             x: window.bounds.x,
             y: window.bounds.y,
@@ -763,7 +773,36 @@ fn window_record(window: &WindowLayout) -> WindowRecord {
             foreground_opacity: appearance.foreground_opacity,
             blur: appearance.blur,
         }),
+        remembered: Bounded(
+            window
+                .remembered
+                .iter()
+                .map(|memory| NavigationRecord {
+                    session: memory.session.get(),
+                    workspace: memory.workspace.get(),
+                    active_tab: memory.active_tab.map(TabId::get),
+                    tab_history: tab_ids(&memory.tab_history),
+                    focused_panes: focus_records(&memory.focused_panes),
+                })
+                .collect(),
+        ),
     }
+}
+
+fn tab_ids(tabs: &[TabId]) -> Bounded<u64, MAX_TABS> {
+    Bounded(tabs.iter().map(|tab| tab.get()).collect())
+}
+
+fn focus_records(focused: &[FocusedPane]) -> Bounded<FocusRecord, MAX_TABS> {
+    Bounded(
+        focused
+            .iter()
+            .map(|focus| FocusRecord {
+                tab: focus.tab.get(),
+                pane: focus.pane.get(),
+            })
+            .collect(),
+    )
 }
 
 fn window_layout(window: WindowRecord) -> WindowLayout {
@@ -771,16 +810,8 @@ fn window_layout(window: WindowRecord) -> WindowLayout {
         session: SessionId::new(window.session),
         workspace: WorkspaceId::new(window.workspace),
         active_tab: window.active_tab.map(TabId::new),
-        tab_history: window.tab_history.0.into_iter().map(TabId::new).collect(),
-        focused_panes: window
-            .focused_panes
-            .0
-            .into_iter()
-            .map(|focus| FocusedPane {
-                tab: TabId::new(focus.tab),
-                pane: PaneId::new(focus.pane),
-            })
-            .collect(),
+        tab_history: tab_history(window.tab_history),
+        focused_panes: focused_panes(window.focused_panes),
         bounds: WindowBounds {
             x: window.bounds.x,
             y: window.bounds.y,
@@ -801,7 +832,34 @@ fn window_layout(window: WindowRecord) -> WindowLayout {
             foreground_opacity: appearance.foreground_opacity,
             blur: appearance.blur,
         }),
+        remembered: window
+            .remembered
+            .0
+            .into_iter()
+            .map(|memory| SessionNavigation {
+                session: SessionId::new(memory.session),
+                workspace: WorkspaceId::new(memory.workspace),
+                active_tab: memory.active_tab.map(TabId::new),
+                tab_history: tab_history(memory.tab_history),
+                focused_panes: focused_panes(memory.focused_panes),
+            })
+            .collect(),
     }
+}
+
+fn tab_history(tabs: Bounded<u64, MAX_TABS>) -> Vec<TabId> {
+    tabs.0.into_iter().map(TabId::new).collect()
+}
+
+fn focused_panes(focused: Bounded<FocusRecord, MAX_TABS>) -> Vec<FocusedPane> {
+    focused
+        .0
+        .into_iter()
+        .map(|focus| FocusedPane {
+            tab: TabId::new(focus.tab),
+            pane: PaneId::new(focus.pane),
+        })
+        .collect()
 }
 
 #[cfg(test)]

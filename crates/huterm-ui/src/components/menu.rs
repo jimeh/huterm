@@ -3,10 +3,14 @@
 //!
 //! Anatomy: rows of items (a label, then a shortcut, a count badge, or a
 //! disabled hint on the right, and a leading check for checkable rows),
-//! separators, button rows such as Edit's Copy, Paste, and Select All, and
-//! submenu rows, which show `›` on the right. Rows overflowing the owner's `max_height` scroll with the fading
-//! list scrollbar. The owner places it in a
-//! [`crate::components::popover::Popover`].
+//! separators, button rows such as Edit's Copy, Paste, and Select All,
+//! submenu rows, which show `›` on the right, and muted hint rows that are
+//! never selected. An item may also mute its label, carry an icon in the
+//! leading column, outlined tags after its label, secondary detail text on
+//! the right, and an alternate action, which the selected row shows as an
+//! inline button in place of its detail. Rows overflowing the owner's
+//! `max_height` scroll with the fading list scrollbar. The owner places it
+//! in a [`crate::components::popover::Popover`].
 //!
 //! Submenus drill in: opening one replaces the rows with a back row, `‹`
 //! and the submenu's label, followed by the submenu's rows. The back row
@@ -17,8 +21,9 @@
 //! Keyboard: the menu takes focus and carries the [`KEY_CONTEXT`] key
 //! context; the owner routes its commands to [`Menu::select_next`],
 //! [`Menu::select_previous`], [`Menu::select_first`], [`Menu::select_last`],
-//! [`Menu::select_right`], [`Menu::select_left`], [`Menu::confirm`], and
-//! [`Menu::dismiss`]. Enter or [`Menu::select_right`] on a submenu row opens
+//! [`Menu::select_right`], [`Menu::select_left`], [`Menu::confirm`],
+//! [`Menu::confirm_alternate`], which runs the selected row's alternate
+//! action, and [`Menu::dismiss`]. Enter or [`Menu::select_right`] on a submenu row opens
 //! it and selects its first row; [`Menu::select_left`] or Enter on the back
 //! row leaves it. Printable text selects the next item it starts, through
 //! GPUI's input handler. A menu opened from the keyboard selects its first
@@ -36,7 +41,9 @@
 //! `ListBox` of selectable `ListBoxOption` rows, named by its label. The
 //! selected row is the active descendant; disabled rows report it, rows
 //! with shortcuts report them, a submenu row reports itself collapsed, and
-//! the back row is named "Back from" and the submenu's label. Checkable rows
+//! the back row is named "Back from" and the submenu's label. Tags report
+//! `Label` nodes named by their words, and an alternate action's button a
+//! `Button` with its shortcut. Checkable rows
 //! report `MenuItemCheckBox` with their toggled state. When any row is
 //! checkable, every row reserves the check column, including unchecked and
 //! plain rows.
@@ -61,7 +68,8 @@ use crate::components::surface::surface;
 use crate::components::tooltip::Tooltip;
 use crate::list_scrollbar::ListScrollbar;
 use crate::listbox::{
-    Button, Item, ItemId, Model, Row, Selection, remap_selection,
+    Action, Button, Item, ItemId, Model, Row, Selection, Tag, TagTone,
+    remap_selection,
 };
 use crate::tokens::{Tokens, size};
 use crate::typography::{DESIGN_REM, Typography, ui};
@@ -108,19 +116,33 @@ const BADGE_PADDING: f32 = 14.0;
 const BACK: &str = "‹back";
 
 const CHECK_WIDTH: f32 = 12.0;
+/// A hint row's height and text size.
+const HINT_HEIGHT: f32 = 24.0;
+const HINT_TEXT_SIZE: f32 = 11.5;
+/// A tag's horizontal padding and border, beyond its glyphs.
+const TAG_PADDING: f32 = 12.0;
+/// The space between a label and its tags, and between tags.
+const TAG_GAP: f32 = 6.0;
+/// A tag's icon size.
+const TAG_ICON: f32 = 10.0;
+/// The inline action button's square size.
+const ACTION_SIZE: f32 = 22.0;
 
-/// Whether this menu tree needs an aligned check column.
+/// Whether this menu tree needs an aligned leading column, for checks or
+/// icons.
 fn has_checks(model: &Model) -> bool {
     checked_rows(&model.rows)
 }
 
+fn leads(item: &Item) -> bool {
+    item.checked.is_some() || item.icon.is_some()
+}
+
 fn checked_rows(rows: &[Row]) -> bool {
     rows.iter().any(|row| match row {
-        Row::Item(item) => item.checked.is_some(),
-        Row::Submenu { item, rows } => {
-            item.checked.is_some() || checked_rows(rows)
-        }
-        Row::Separator | Row::Buttons { .. } => false,
+        Row::Item(item) => leads(item),
+        Row::Submenu { item, rows } => leads(item) || checked_rows(rows),
+        Row::Separator | Row::Buttons { .. } | Row::Hint(_) => false,
     })
 }
 
@@ -320,25 +342,11 @@ impl Menu {
                     + SIDE_INSET
                     + measure(SUBMENU_MARK, SIDE_TEXT_SIZE)
             }
-            Row::Item(item) => {
-                let side = if let Some(count) = item.badge {
-                    ROW_GAP
-                        + measure(&count.to_string(), SIDE_TEXT_SIZE)
-                        + BADGE_PADDING
-                } else if item.enabled && !item.shortcut.is_empty() {
-                    ROW_GAP
-                        + SIDE_INSET
-                        + measure(&kbd::text(&item.shortcut), SIDE_TEXT_SIZE)
-                } else if let Some(hint) =
-                    item.disabled_hint.as_deref().filter(|_| !item.enabled)
-                {
-                    ROW_GAP + SIDE_INSET + measure(hint, SIDE_TEXT_SIZE)
-                } else {
-                    0.0
-                };
-                ROW_PADDING * 2.0 + measure(&item.label, TEXT_SIZE) + side
-            }
+            Row::Item(item) => item_width(item, &measure),
             Row::Separator => 0.0,
+            Row::Hint(text) => {
+                ROW_PADDING * 2.0 + measure(text, HINT_TEXT_SIZE)
+            }
             Row::Buttons { label, buttons } => {
                 let buttons: f32 = buttons
                     .iter()
@@ -430,6 +438,31 @@ impl Menu {
             self.reveal(selection.row);
         }
         cx.notify();
+    }
+
+    /// [`Self::set_model`], except that a selection whose row went away
+    /// moves to the row that took its place, as
+    /// [`crate::listbox::remap_or_neighbour`] finds it, instead of
+    /// clearing; a list such as a session menu keeps the keyboard's place
+    /// when another client removes the selected entry.
+    pub fn set_model_keeping_place(
+        &mut self,
+        model: Model,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.submenu.is_some() {
+            self.set_model(model, cx);
+            return;
+        }
+        let selection = crate::listbox::remap_or_neighbour(
+            &self.shown,
+            self.selection,
+            &model,
+        );
+        self.set_model(model, cx);
+        if self.selection != selection {
+            self.set_selection(selection, cx);
+        }
     }
 
     /// The height from [`Placement::max_height`], beyond which the list
@@ -623,6 +656,34 @@ impl Menu {
         self.activate(selection, true, cx);
     }
 
+    /// Runs the selected row's alternate action, when it has one.
+    pub fn confirm_alternate(&mut self, cx: &mut Context<'_, Self>) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        if let Some(action) = self.shown.action_at(selection) {
+            cx.emit(MenuEvent::Picked(action.id.clone()));
+        }
+    }
+
+    /// Runs a pointer press on `row`'s action button when that row still
+    /// offers the action `id`.
+    fn pick_action(
+        &mut self,
+        row: usize,
+        id: &ItemId,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let selection = Selection { row, button: None };
+        if self
+            .shown
+            .action_at(selection)
+            .is_some_and(|action| action.id == *id)
+        {
+            cx.emit(MenuEvent::Picked(id.clone()));
+        }
+    }
+
     fn activate(
         &mut self,
         selection: Selection,
@@ -708,6 +769,8 @@ impl Menu {
             tokens.dim
         };
         let side = self.render_side(row, item, kind, side_text);
+        let trailing =
+            self.render_trailing(row, item, kind, selected, side_text, cx);
         let id = item.id.clone();
         let enabled = item.enabled;
         // A submenu's rows have ids of their own, so a press on the top
@@ -778,7 +841,8 @@ impl Menu {
             })
             .children(self.render_check(item, text))
             .when(kind == ItemKind::Back, |row| row.child(BACK_MARK))
-            .child(div().truncate().child(item.label.clone()))
+            .child(self.render_label(row, item, selected, text))
+            .children(trailing)
             .children(side);
         States {
             disabled: !enabled,
@@ -800,6 +864,17 @@ impl Menu {
                 .flex_none()
                 .flex()
                 .items_center()
+                .when_some(
+                    item.icon.clone().filter(|_| item.checked.is_none()),
+                    |lead, asset| {
+                        lead.child(
+                            gpui::svg()
+                                .path(asset)
+                                .size(px(CHECK_WIDTH))
+                                .text_color(color),
+                        )
+                    },
+                )
                 .when(item.checked == Some(true), |check| {
                     if let Some(asset) = &self.check_icon {
                         check.child(
@@ -853,6 +928,166 @@ impl Menu {
         }
     }
 
+    /// `row`'s label, muted when the item asks, followed by its tags.
+    fn render_label(
+        &self,
+        row: usize,
+        item: &Item,
+        selected: bool,
+        text: gpui::Hsla,
+    ) -> gpui::Div {
+        let tokens = self.tokens;
+        let label_text = if item.muted && item.enabled {
+            if selected {
+                tokens.muted_on(tokens.accent)
+            } else {
+                tokens.muted
+            }
+        } else {
+            text
+        };
+        div()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(TAG_GAP))
+            .child(
+                div()
+                    .truncate()
+                    .text_color(label_text)
+                    .child(item.label.clone()),
+            )
+            .children(
+                item.tags.iter().enumerate().map(|(index, tag)| {
+                    self.render_tag(row, index, tag, selected)
+                }),
+            )
+    }
+
+    /// The item's detail on the right in `color`, or, on the selected row,
+    /// its alternate action's button in the detail's place.
+    fn render_trailing(
+        &self,
+        row: usize,
+        item: &Item,
+        kind: ItemKind,
+        selected: bool,
+        color: gpui::Hsla,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<gpui::AnyElement> {
+        let action = item
+            .action
+            .as_ref()
+            .filter(|_| selected && item.enabled && kind == ItemKind::Item);
+        if let Some(action) = action {
+            return Some(self.render_action(row, action, cx));
+        }
+        item.detail.clone().map(|detail| {
+            div()
+                .ml_auto()
+                .pl(px(SIDE_INSET))
+                .flex_none()
+                .text_size(ui(SIDE_TEXT_SIZE))
+                .text_color(color)
+                .whitespace_nowrap()
+                .child(detail)
+                .into_any_element()
+        })
+    }
+
+    /// An outlined tag after `row`'s label: the accent or warning text on
+    /// the menu, or the selection's text on a selected row.
+    fn render_tag(
+        &self,
+        row: usize,
+        index: usize,
+        tag: &Tag,
+        selected: bool,
+    ) -> gpui::AnyElement {
+        let tokens = self.tokens;
+        let color = if selected {
+            tokens.on_accent()
+        } else {
+            match tag.tone {
+                TagTone::Accent => tokens.accent_text(),
+                TagTone::Warning => tokens.warning_text(),
+            }
+        };
+        let label = tag.label.clone();
+        div()
+            .id(SharedString::from(format!("menu-tag-{row}-{index}")))
+            .role(gpui::Role::Label)
+            .aria_label(tag.label.clone())
+            .tooltip(move |_, cx| Tooltip::view(label.clone(), tokens, cx))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(3.0))
+            .px(px(5.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(color.opacity(0.35))
+            .text_size(ui(10.5))
+            .line_height(ui(14.0))
+            .text_color(color)
+            .child(kbd::glyphs(&tag.glyphs, px(TAG_ICON), color))
+            .into_any_element()
+    }
+
+    /// The selected `row`'s inline button for its alternate action.
+    fn render_action(
+        &self,
+        row: usize,
+        action: &Action,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::AnyElement {
+        let tokens = self.tokens;
+        let tooltip = if action.shortcut.is_empty() {
+            action.label.clone()
+        } else {
+            format!("{} ({})", action.label, kbd::text(&action.shortcut))
+        };
+        let id = action.id.clone();
+        let fill = tokens.on_accent().opacity(0.18);
+        div()
+            .id(("menu-action", row))
+            .debug_selector(move || format!("menu-action-{row}"))
+            .role(gpui::Role::Button)
+            .aria_label(action.label.clone())
+            .when(!action.shortcut.is_empty(), |button| {
+                button.aria_keyshortcuts(kbd::text(&action.shortcut))
+            })
+            .tooltip(move |_, cx| Tooltip::view(tooltip.clone(), tokens, cx))
+            .ml_auto()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(ACTION_SIZE))
+            .rounded(px(5.0))
+            .bg(fill)
+            .hover(move |style| style.bg(tokens.on_accent().opacity(0.3)))
+            .active(move |style| style.bg(tokens.on_accent().opacity(0.4)))
+            // The row's own click would pick the row; the button's press
+            // and release stay with the button.
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(move |menu, event, _, cx| {
+                cx.stop_propagation();
+                if !from_keyboard(event) {
+                    menu.pick_action(row, &id, cx);
+                }
+            }))
+            .child(
+                gpui::svg()
+                    .path(action.icon.clone())
+                    .size(px(11.0))
+                    .text_color(tokens.on_accent()),
+            )
+            .into_any_element()
+    }
+
     /// Renders the rows the menu shows, with the size of the set their
     /// items and buttons form.
     fn render_rows(
@@ -885,6 +1120,22 @@ impl Menu {
                 Row::Separator => separator::horizontal(self.tokens)
                     .mx(px(4.0))
                     .my(px(4.0))
+                    .into_any_element(),
+                Row::Hint(text) => div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .h(ui(HINT_HEIGHT))
+                    .pl(px(ROW_PADDING
+                        + if has_checks(&self.model) {
+                            CHECK_WIDTH + ROW_GAP
+                        } else {
+                            0.0
+                        }))
+                    .pr(px(ROW_PADDING))
+                    .text_size(ui(HINT_TEXT_SIZE))
+                    .text_color(self.tokens.muted)
+                    .child(div().truncate().child(text.clone()))
                     .into_any_element(),
                 Row::Buttons { label, buttons } => {
                     position += buttons.len();
@@ -1086,6 +1337,58 @@ impl EntityInputHandler for Menu {
     }
 }
 
+/// An item row's width with `measure` (text, size) giving text widths: its
+/// padding, label, tags, and the wider of what sits on its right, the
+/// detail, whose place the selected row's action button takes, or a badge,
+/// shortcut, or disabled hint.
+fn item_width(item: &Item, measure: &impl Fn(&str, f32) -> f32) -> f32 {
+    let glyphs = |glyphs: &[kbd::Glyph]| -> f32 {
+        glyphs
+            .iter()
+            .map(|glyph| match glyph {
+                kbd::Glyph::Icon { .. } => TAG_ICON + 3.0,
+                kbd::Glyph::Text(text) => measure(text, 10.5),
+            })
+            .sum()
+    };
+    let tags: f32 = item
+        .tags
+        .iter()
+        .map(|tag| TAG_GAP + TAG_PADDING + glyphs(&tag.glyphs))
+        .sum();
+    let detail = item
+        .detail
+        .as_deref()
+        .map_or(0.0, |detail| measure(detail, SIDE_TEXT_SIZE));
+    let detail = if item.action.is_some() {
+        detail.max(ACTION_SIZE)
+    } else {
+        detail
+    };
+    let detail = if detail > 0.0 {
+        ROW_GAP + SIDE_INSET + detail
+    } else {
+        0.0
+    };
+    let side = if let Some(count) = item.badge {
+        ROW_GAP + measure(&count.to_string(), SIDE_TEXT_SIZE) + BADGE_PADDING
+    } else if item.enabled && !item.shortcut.is_empty() {
+        ROW_GAP
+            + SIDE_INSET
+            + measure(&kbd::text(&item.shortcut), SIDE_TEXT_SIZE)
+    } else if let Some(hint) =
+        item.disabled_hint.as_deref().filter(|_| !item.enabled)
+    {
+        ROW_GAP + SIDE_INSET + measure(hint, SIDE_TEXT_SIZE)
+    } else {
+        0.0
+    };
+    ROW_PADDING * 2.0
+        + measure(&item.label, TEXT_SIZE)
+        + tags
+        + side.max(detail)
+}
+
 /// How an item row draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ItemKind {
@@ -1171,6 +1474,7 @@ fn row_height(row: &Row, rem: Pixels) -> Pixels {
         Row::Item(_) | Row::Submenu { .. } => ui(ROW_HEIGHT).to_pixels(rem),
         Row::Separator => px(SEPARATOR_HEIGHT),
         Row::Buttons { .. } => ui(BUTTON_ROW_HEIGHT).to_pixels(rem),
+        Row::Hint(_) => ui(HINT_HEIGHT).to_pixels(rem),
     }
 }
 
@@ -1334,7 +1638,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::{Menu, MenuEvent, Role, select_width};
-    use crate::listbox::{Button, Item, Model, Row};
+    use crate::listbox::{Action, Button, Item, Model, Row};
     use crate::testing::{a11y_node, tokens};
     use crate::typography::DESIGN_REM;
 
@@ -1757,6 +2061,87 @@ mod tests {
             assert_eq!(menu.selection().map(|s| s.row), Some(30));
             assert!(shows(menu, 30), "offset {:?}", menu.scroll.offset());
         });
+    }
+
+    /// Session rows: one with an alternate action, a hint that is never
+    /// selected, and an action row.
+    fn with_actions() -> Model {
+        let action = |raw: u32| Action {
+            id: format!("open:{raw}").into(),
+            label: "Open in New Window".to_owned(),
+            icon: "icons/external-link.svg".into(),
+            shortcut: Vec::new(),
+        };
+        Model::new(vec![
+            Row::Item(
+                Item::new("one", "One")
+                    .checked(true)
+                    .detail("3 tabs")
+                    .action(action(1)),
+            ),
+            Row::Hint("No other sessions".to_owned()),
+            Row::Separator,
+            Row::Item(Item::new("new", "New").icon("icons/plus.svg")),
+        ])
+    }
+
+    #[gpui::test]
+    fn a_rows_alternate_action_runs_from_its_button_or_the_keyboard(
+        cx: &mut TestAppContext,
+    ) {
+        let (host, cx) = cx.add_window_view(|_, _| Host { menu: None });
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let seen = events.clone();
+        let menu = cx.update(|_, cx| {
+            let menu = cx.new(|cx| {
+                Menu::new("Sessions", with_actions(), tokens(), true, cx)
+            });
+            cx.subscribe(&menu, move |_, event: &MenuEvent, _| {
+                seen.borrow_mut().push(event.clone());
+            })
+            .detach();
+            host.update(cx, |host, cx| {
+                host.menu = Some(menu.clone());
+                cx.notify();
+            });
+            menu
+        });
+        cx.run_until_parked();
+        // The hint is never selected: the keyboard skips it.
+        menu.update(cx, Menu::select_next);
+        cx.read(|cx| {
+            assert_eq!(menu.read(cx).selected_id().as_deref(), Some("new"));
+        });
+        // A row without an action ignores the alternate key.
+        menu.update(cx, Menu::confirm_alternate);
+        assert!(events.borrow().is_empty());
+        menu.update(cx, Menu::select_first);
+        menu.update(cx, Menu::confirm_alternate);
+        assert_eq!(
+            events.borrow().as_slice(),
+            [MenuEvent::Picked("open:1".into())]
+        );
+        // The selected row shows the action's button in place of its
+        // detail; a click on it runs the action, never the row.
+        cx.run_until_parked();
+        let button = cx
+            .debug_bounds("menu-action-0")
+            .expect("the selected row draws its action");
+        cx.simulate_click(button.center(), Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow().as_slice(),
+            [
+                MenuEvent::Picked("open:1".into()),
+                MenuEvent::Picked("open:1".into())
+            ]
+        );
+        // Enter still picks the row itself.
+        menu.update(cx, Menu::confirm);
+        assert_eq!(
+            events.borrow().last(),
+            Some(&MenuEvent::Picked("one".into()))
+        );
     }
 
     /// Rows with an Arrange submenu second, whose rows are three layouts.

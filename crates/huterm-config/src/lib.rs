@@ -73,6 +73,17 @@ pub struct GeneralConfig {
         "x-huterm-apply" = "live",
     )))]
     pub restore_sessions: bool,
+    /// How a new session picks the number in its automatic name, such as
+    /// "Session 2": the lowest number no session uses, or one more than
+    /// the highest so far. Workspaces number the same way.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "general",
+        "x-huterm-group" = "Sessions",
+        "x-huterm-label" = "Number new sessions",
+        "x-huterm-order" = 16,
+        "x-huterm-apply" = "live",
+    )))]
+    pub session_numbering: SessionNumbering,
 }
 
 impl Default for GeneralConfig {
@@ -80,8 +91,35 @@ impl Default for GeneralConfig {
         Self {
             watch_config: true,
             restore_sessions: true,
+            session_numbering: SessionNumbering::default(),
         }
     }
+}
+
+/// How new sessions and workspaces number their automatic names. A session
+/// with a custom name keeps its number for Clear Name, so it counts as
+/// used.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SessionNumbering {
+    /// The lowest number no open session uses, so closing "Session 2"
+    /// frees 2 for the next one.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Lowest unused number"))
+    )]
+    LowestUnused,
+    /// One more than the highest number used since launch; a restart
+    /// continues after the highest restored one.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Keep counting up"))
+    )]
+    Increasing,
 }
 
 /// The Settings window's own state.
@@ -918,6 +956,16 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub menu_button: bool,
+    /// Show the session control, which names the window's session and opens
+    /// the session menu, beside the window menu button.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "windows",
+        "x-huterm-group" = "Window",
+        "x-huterm-label" = "Session button",
+        "x-huterm-order" = 15,
+        "x-huterm-apply" = "live",
+    )))]
+    pub session_button: bool,
     /// Show key hints on the scroll pill and on dialog and panel buttons.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
@@ -1204,6 +1252,7 @@ impl Default for WindowConfig {
             padding_y: 4.0,
             padding_balance: false,
             menu_button: true,
+            session_button: true,
             shortcut_hints: false,
             macos_native_menus: true,
             macos_drag_preview: true,

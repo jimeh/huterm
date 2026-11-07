@@ -36,6 +36,68 @@ pub struct Item {
     pub badge: Option<usize>,
     /// A checkable row, checked when true; None is a plain row.
     pub checked: Option<bool>,
+    /// Secondary text on the right, such as a session's tab count.
+    pub detail: Option<String>,
+    /// Draws the label in the muted tone, such as an automatic name beside
+    /// custom ones.
+    pub muted: bool,
+    /// An icon asset in the leading column, where a check would go.
+    pub icon: Option<SharedString>,
+    /// Outlined tags after the label, such as a window count.
+    pub tags: Vec<Tag>,
+    /// A second action the selected row offers as an inline button and
+    /// through [`crate::components::menu::Menu::confirm_alternate`].
+    pub action: Option<Action>,
+}
+
+/// A short outlined tag after an item's label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tag {
+    /// What the tag shows: text, icons, or both.
+    pub glyphs: Vec<Glyph>,
+    /// What assistive technology reads and the tooltip shows.
+    pub label: String,
+    /// The tag's color.
+    pub tone: TagTone,
+}
+
+/// A [`Tag`]'s color.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TagTone {
+    /// The accent text color, for information such as a count.
+    #[default]
+    Accent,
+    /// The warning text color, for a state that wants attention.
+    Warning,
+}
+
+impl Tag {
+    /// A tag showing `glyphs`, read as `label`.
+    #[must_use]
+    pub fn new(
+        glyphs: Vec<Glyph>,
+        label: impl Into<String>,
+        tone: TagTone,
+    ) -> Self {
+        Self {
+            glyphs,
+            label: label.into(),
+            tone,
+        }
+    }
+}
+
+/// An item's alternate action: an inline button on the selected row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Action {
+    /// What the owner receives when the action runs.
+    pub id: ItemId,
+    /// The button's accessible name and tooltip.
+    pub label: String,
+    /// The button's icon asset.
+    pub icon: SharedString,
+    /// The binding that runs it, drawn in the tooltip.
+    pub shortcut: Vec<Glyph>,
 }
 
 impl Item {
@@ -50,7 +112,47 @@ impl Item {
             disabled_hint: None,
             badge: None,
             checked: None,
+            detail: None,
+            muted: false,
+            icon: None,
+            tags: Vec::new(),
+            action: None,
         }
+    }
+
+    /// The item with `detail` as secondary text on its right.
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// The item's label in the muted tone.
+    #[must_use]
+    pub fn muted(mut self) -> Self {
+        self.muted = true;
+        self
+    }
+
+    /// The item with the icon `asset` in its leading column.
+    #[must_use]
+    pub fn icon(mut self, asset: impl Into<SharedString>) -> Self {
+        self.icon = Some(asset.into());
+        self
+    }
+
+    /// The item with `tag` after its label and earlier tags.
+    #[must_use]
+    pub fn tag(mut self, tag: Tag) -> Self {
+        self.tags.push(tag);
+        self
+    }
+
+    /// The item offering `action` while selected.
+    #[must_use]
+    pub fn action(mut self, action: Action) -> Self {
+        self.action = Some(action);
+        self
     }
 
     /// The item with `shortcut` drawn on its right.
@@ -131,6 +233,8 @@ pub enum Row {
         /// The buttons, selected one at a time.
         buttons: Vec<Button>,
     },
+    /// Muted explanatory text, such as "No other sessions"; never selected.
+    Hint(String),
     /// An item that opens `rows` in its place rather than being picked.
     /// It is selected, matched, and enabled as an item is; its `rows` are
     /// one level deep.
@@ -206,6 +310,15 @@ impl Model {
         }
     }
 
+    /// The alternate action of the enabled item under `selection`.
+    #[must_use]
+    pub fn action_at(&self, selection: Selection) -> Option<&Action> {
+        match (self.rows.get(selection.row)?, selection.button) {
+            (Row::Item(item), None) if item.enabled => item.action.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Where the enabled item or button `id` sits, if it does.
     #[must_use]
     pub fn selection_of(&self, id: &str) -> Option<Selection> {
@@ -222,7 +335,10 @@ impl Model {
                         buttons.iter().position(|button| button.id == id)?,
                     ),
                 },
-                Row::Item(_) | Row::Submenu { .. } | Row::Separator => {
+                Row::Item(_)
+                | Row::Submenu { .. }
+                | Row::Separator
+                | Row::Hint(_) => {
                     return None;
                 }
             };
@@ -379,6 +495,36 @@ impl Model {
     }
 }
 
+/// [`remap_selection`], or, once its command is gone, the enabled target
+/// that took its row's place in `new`: the target now at that row, else
+/// the nearest one above it, else the nearest below. A list that loses
+/// its selected entry keeps the keyboard's place there.
+#[must_use]
+pub fn remap_or_neighbour(
+    old: &Model,
+    selection: Option<Selection>,
+    new: &Model,
+) -> Option<Selection> {
+    let selection = selection?;
+    if let Some(kept) = remap_selection(old, Some(selection), new) {
+        return Some(kept);
+    }
+    let row = selection.row.min(new.rows.len().saturating_sub(1));
+    let rows = new.selectable_rows();
+    let above = || {
+        rows.iter()
+            .copied()
+            .filter(|candidate| *candidate < row)
+            .max()
+    };
+    let below = || rows.iter().copied().find(|candidate| *candidate > row);
+    rows.contains(&row)
+        .then_some(row)
+        .or_else(above)
+        .or_else(below)
+        .and_then(|row| new.enter_row(row))
+}
+
 /// Where `selection` in `old` lands in `new`: on the same command, not the
 /// same row, since rows that appear or disappear above it would otherwise
 /// move it onto a different command. `None` once that command is gone or
@@ -466,6 +612,38 @@ mod tests {
         );
         assert_eq!(remap_selection(&model, at(6), &Model::new(rows)), None);
         assert_eq!(remap_selection(&model, None, &shifted), None);
+    }
+
+    #[test]
+    fn a_vanished_selection_moves_to_the_row_that_took_its_place() {
+        let sessions = |ids: &[&'static str]| {
+            let mut rows: Vec<Row> =
+                ids.iter().map(|id| item(id, id)).collect();
+            rows.push(Row::Separator);
+            rows.push(item("new", "New"));
+            Model::new(rows)
+        };
+        let old = sessions(&["a", "b", "c"]);
+        // A kept command stays selected wherever it moved.
+        assert_eq!(
+            remap_or_neighbour(&old, at(2), &sessions(&["b", "c"])),
+            at(1)
+        );
+        // A middle row that vanished hands its place to the next.
+        assert_eq!(
+            remap_or_neighbour(&old, at(1), &sessions(&["a", "c"])),
+            at(1)
+        );
+        // The last of a group falls back to the one above, not past the
+        // separator.
+        assert_eq!(
+            remap_or_neighbour(&old, at(2), &sessions(&["a", "b"])),
+            at(1)
+        );
+        assert_eq!(remap_or_neighbour(&old, None, &old), None);
+        // With nothing above, the nearest row below.
+        let only_new = Model::new(vec![Row::Separator, item("new", "New")]);
+        assert_eq!(remap_or_neighbour(&old, at(0), &only_new), at(1));
     }
 
     #[test]

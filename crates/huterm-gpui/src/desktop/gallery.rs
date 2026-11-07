@@ -19,7 +19,7 @@ use huterm_ui::animation::{AnimationSchedule, Wake};
 use huterm_ui::components::alert::{Alert, Tone as AlertTone};
 use huterm_ui::components::alert_dialog::AlertDialog;
 use huterm_ui::components::badge::{Tone, badge};
-use huterm_ui::components::button::{Button, Variant};
+use huterm_ui::components::button::{Button, Colors as ButtonColors, Variant};
 use huterm_ui::components::card::{self, Card};
 use huterm_ui::components::collapsible::{Collapsible, chevron};
 use huterm_ui::components::combobox::{Combobox, ComboboxEvent};
@@ -36,6 +36,7 @@ use huterm_ui::components::key_recorder::{
 use huterm_ui::components::menu::{
     Menu, MenuEvent, Role as MenuRole, min_width, select_width,
 };
+use huterm_ui::components::menu_trigger::MenuTrigger;
 use huterm_ui::components::number_field::{Format, NumberField};
 use huterm_ui::components::popover::{Anchor, Popover, place};
 use huterm_ui::components::prose::Prose;
@@ -607,6 +608,49 @@ fn command_menu() -> Model {
                 MenuButton::new("paste", "Paste"),
             ],
         },
+        // The session menu's rows: a check, a muted automatic name, a
+        // detail, tags, an inline action, a hint, and leading icons.
+        Row::Separator,
+        Row::Item(
+            Item::new("session:1", "huterm")
+                .checked(true)
+                .detail("3 tabs")
+                .action(huterm_ui::listbox::Action {
+                    id: "session-window:1".into(),
+                    label: "Open in New Window".to_owned(),
+                    icon: Icon::ExternalLink.asset_path().into(),
+                    shortcut: KeyHint::parse("cmd-enter", Platform::current())
+                        .glyphs(),
+                }),
+        ),
+        Row::Item(Item::new("session:3", "infra").detail("2 tabs").tag(
+            huterm_ui::listbox::Tag::new(
+                vec![
+                    kbd::Glyph::Icon {
+                        path: Icon::AppWindow.asset_path().into(),
+                        text: "".into(),
+                    },
+                    kbd::Glyph::Text("1".into()),
+                ],
+                "Shown in 1 other window",
+                huterm_ui::listbox::TagTone::Accent,
+            ),
+        )),
+        Row::Item(
+            Item::new("session:4", "Session 4")
+                .muted()
+                .detail("1 tab")
+                .tag(huterm_ui::listbox::Tag::new(
+                    vec![kbd::Glyph::Text("exited".into())],
+                    "Every shell exited",
+                    huterm_ui::listbox::TagTone::Warning,
+                )),
+        ),
+        Row::Hint("No other sessions".to_owned()),
+        Row::Item(
+            Item::new("new_session", "New Session")
+                .icon(Icon::Plus.asset_path()),
+        ),
     ])
 }
 
@@ -857,6 +901,7 @@ impl Gallery {
                 swatch,
                 div().child(column.menu.clone()),
             ))
+            .child(menu_triggers(index, swatch))
             .child(self.popover_entry(index, cx))
             .child(self.select_entry(index, cx))
             .child(inputs(swatch, &self.columns[index].fields))
@@ -1966,6 +2011,49 @@ fn buttons(index: usize, swatch: Swatch) -> Div {
                         )
                         .icon_only(),
                     ),
+            ),
+    )
+}
+
+fn menu_triggers(index: usize, swatch: Swatch) -> Div {
+    let colors = ButtonColors {
+        fill: None,
+        text: swatch.fg,
+        border: None,
+        hover: swatch.hover,
+        pressed: swatch.pressed(),
+    };
+    let trigger = |id: &str, name: &str| {
+        MenuTrigger::new(
+            SharedString::from(format!("{id}-{index}")),
+            format!("Session: {name}"),
+            name.to_owned(),
+            Icon::Layers.asset_path(),
+            Icon::ChevronDown.asset_path(),
+            swatch,
+            colors,
+        )
+        .quiet(swatch.muted)
+        .h(px(26.0))
+    };
+    entry(
+        "menu_trigger",
+        "Menu trigger",
+        swatch,
+        row()
+            .child(trigger("trigger-custom", "huterm"))
+            .child(trigger("trigger-auto", "Session 2").muted(swatch.muted))
+            .child(trigger("trigger-open", "huterm").open(true))
+            .child(
+                trigger("trigger-long", "huterm-release-notes")
+                    .label_width(px(60.0))
+                    .tooltip(Some("huterm-release-notes".into())),
+            )
+            .child(
+                trigger("trigger-icon", "huterm-release-notes")
+                    .collapsed(true)
+                    .size(px(26.0))
+                    .tooltip(Some("huterm-release-notes".into())),
             ),
     )
 }

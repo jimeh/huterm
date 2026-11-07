@@ -99,6 +99,18 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
         ],
     ),
     (
+        "Sessions",
+        &[
+            ids::OPEN_SESSION_MENU,
+            ids::NEW_SESSION,
+            ids::SELECT_SESSION,
+            ids::OPEN_SESSION_IN_NEW_WINDOW,
+            ids::RENAME_SESSION,
+            ids::CLEAR_SESSION_NAME,
+            ids::CLOSE_SESSION,
+        ],
+    ),
+    (
         "Terminal",
         &[
             ids::COPY,
@@ -121,7 +133,6 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::SHOW_ALL,
             ids::CHECK_FOR_UPDATES,
             ids::RENAME_WORKSPACE,
-            ids::RENAME_SESSION,
         ],
     ),
     (

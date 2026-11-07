@@ -250,7 +250,8 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `show_quake` | Application | Optional `profile` name; defaults to `default`. |
 | `hide_quake` | Application | Optional `profile` name; defaults to `default`. |
 | `toggle_quake` | Application | Optional `profile` name; defaults to `default`. |
-| `new_window` | Application | |
+| `new_window` | Application | Opens a window with a new session. |
+| `open_session_in_new_window` | Application | `session`, which the palette prompts for. Opens a window showing that existing session; both windows keep their own tab and pane selection. No default binding. |
 | `quit` | Application | |
 | `hide` | Application | |
 | `hide_others` | Application | |
@@ -301,6 +302,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `minimize` | Window | |
 | `zoom` | Window | |
 | `open_menu` | Window | |
+| `open_session_menu` | Window | Opens the session menu at the title bar's session control, or at the window menu's place while the control is hidden, with the first session selected. No default binding. |
 | `open_context_menu` | Window | Opens the active terminal's context menu at its cursor. |
 | `focus_notices` | Window | Focuses the newest notice; unavailable without notices. |
 | `dismiss_all_notices` | Window | Dismisses every notice; unavailable without notices. |
@@ -315,6 +317,10 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab. |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace. |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session. |
+| `clear_session_name` | Runtime | Optional `session`, defaulting to the window's. Restores the automatic name; unavailable while the session has no custom name. No default binding. |
+| `close_session` | Runtime | Optional `session`, defaulting to the window's; the palette asks for it, so it can close a session no window shows. Closes the session and every tab in it, asking first when jobs run. Windows that show it close. When it is the window's own session, the window switches to the session it showed most recently instead, else to the session viewed most recently that no window shows, passing over any it cannot show, else, when one could not be shown, to a new session. It closes when no session remains, or when that new session fails too; on Linux the last window quits instead while sessions no window shows remain. Closing the window's own session is refused while Quit runs, and Quit cancels such a close that has not started committing. No default binding. |
+| `new_session` | Window | Optional `name`, which the palette does not ask for. Creates a session with one tab and switches the window to it; the previous session keeps running. No default binding. |
+| `select_session` | Window | `session`, which the palette prompts for. Switches the window to that session; both sessions keep running, and the window comes back to the tab and pane it last showed there, with its own undo. Two windows can show one session and switch independently. Quake windows can switch and keep their profile. No default binding. |
 | `rename_pane` | Runtime | `name`; `pane` defaults to the active tab's focused pane. |
 | `dialog_confirm` | Window | Bound only while `confirming`. |
 | `dialog_cancel` | Window | Bound only while `confirming`. |
@@ -327,6 +333,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `menu_select_right` | Window | Selects the next button in a button row, or opens the selected submenu. Bound only while `menu`. |
 | `menu_select_left` | Window | Selects the previous button in a button row, or returns from a submenu to its row. Bound only while `menu`. |
 | `menu_confirm` | Window | Bound only while `menu`. |
+| `menu_confirm_alternate` | Window | Runs the selected row's alternate action, such as a session row's Open in New Window. Bound only while `menu`. |
 | `menu_close` | Window | Bound only while `menu`. |
 | `panel_close` | Window | Bound only while `Panel`. Closes the panel and returns focus to the terminal. |
 | `panel_focus_next` | Window | Bound only while `Panel`. |
@@ -593,6 +600,13 @@ in a split tab, opens a submenu in place of the rows with Right, Enter, or a
 click; Left or its `‹` back row returns to it. Escape, Tab, running an item,
 or clicking elsewhere closes the menu and returns focus to the terminal.
 
+The session menu binds the same keys. The session control opens it with
+nothing selected, and `open_session_menu` selects the first session. Enter
+switches the window to the selected session, and `menu_confirm_alternate`
+opens it in a new window instead, as the selected row's inline button does.
+In a native macOS session menu, holding Command turns each session row into
+its Open in New Window item.
+
 | Command | macOS | Linux |
 | --- | --- | --- |
 | `menu_select_next` | `down` | `down` |
@@ -602,6 +616,7 @@ or clicking elsewhere closes the menu and returns focus to the terminal.
 | `menu_select_right` | `right` | `right` |
 | `menu_select_left` | `left` | `left` |
 | `menu_confirm` | `enter`, `space` | `enter`, `space` |
+| `menu_confirm_alternate` | `cmd-enter` | `ctrl-enter` |
 | `menu_close` | `escape`, `tab`, `shift-tab` | `escape`, `tab`, `shift-tab` |
 
 ### Window Transparency panel
