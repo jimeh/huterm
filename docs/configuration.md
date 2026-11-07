@@ -451,6 +451,11 @@ Limitations:
     redraws the theme's unmarked `PROMPT`; the next prompt is marked again;
   - a theme redraws with `builtin zle reset-prompt`, which skips Huterm's
     `zle` function, or a `zle` function defined by a startup file replaces it.
+- Huterm's `zle` is a function. With a `ZERR` trap set, zsh does not apply
+  `err_return` to a failing function, so a widget with both continues after a
+  failing `zle` call. A trap that runs `return` just as Huterm marks a redrawn
+  prompt can leave the marks in `PROMPT`. Later commands then get no execution
+  or completion markers until the theme sets `PROMPT` again.
 - An `/etc/zshenv` that changes `ZDOTDIR` before the stub can bypass loading.
   Startup files that replace `XDG_DATA_DIRS` before fish or nushell discover
   vendor files can also bypass it.
