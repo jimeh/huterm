@@ -1,6 +1,7 @@
 pub(crate) mod bench;
 mod builtin;
 pub(crate) mod smoke;
+mod symbols;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -8,9 +9,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Bounds, FontStyle, Hsla, LineLayout, Pixels, Point, StrikethroughStyle,
-    TextRun, TextSystem, UnderlineStyle, Window, fill, outline, point, px,
-    rgba, size,
+    Bounds, Font, FontStyle, Hsla, LineLayout, Pixels, Point,
+    StrikethroughStyle, TextRun, TextSystem, UnderlineStyle, Window,
+    WindowTextSystem, fill, outline, point, px, rgba, size,
 };
 use huterm_protocol::{
     BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalSnapshot,
@@ -110,7 +111,7 @@ impl GridMetrics {
 pub(super) struct TerminalRenderer {
     snapshot: Option<Arc<TerminalSnapshot>>,
     rows: Vec<PreparedRow>,
-    layouts: GlyphLayoutCache<Arc<LineLayout>>,
+    layouts: GlyphLayoutCache<GlyphContent>,
     graphics: builtin::GeometryCache,
     metrics: GridMetrics,
     terminal_font: TerminalFont,
@@ -760,10 +761,23 @@ struct PreparedGlyph {
     color: Hsla,
 }
 
+// Prepare and paint walk one of these per visible cell. Growing it by a
+// pointer slowed the renderer benchmark's builtin scenarios measurably.
+const _: () = assert!(std::mem::size_of::<PreparedGlyph>() <= 40);
+
 #[derive(Clone)]
 enum GlyphContent {
     Font(Arc<LineLayout>),
+    Symbol(Arc<SymbolGlyph>),
     Builtin(Arc<builtin::Geometry>),
+}
+
+/// A layout in the bundled symbols font and its glyph origin relative to the
+/// cell origin, since its size and baseline differ from the grid's. Shared
+/// behind one pointer so every prepared glyph stays as small as before.
+struct SymbolGlyph {
+    layout: Arc<LineLayout>,
+    origin: Point<Pixels>,
 }
 
 #[derive(Clone)]
@@ -775,7 +789,7 @@ struct PreparedDecoration {
 
 fn prepare_row(
     cells: &[Cell],
-    layouts: &mut GlyphLayoutCache<Arc<LineLayout>>,
+    layouts: &mut GlyphLayoutCache<GlyphContent>,
     graphics: &mut builtin::GeometryCache,
     window: &mut Window,
     cache_activity: &mut CacheActivity,
@@ -783,7 +797,6 @@ fn prepare_row(
     theme: &Theme,
 ) -> PreparedRow {
     let (terminal_font, metrics) = font;
-    let font_size = metrics.font_size;
     let mut row = PreparedRow {
         backgrounds: prepare_backgrounds(cells, theme),
         underlines: prepare_decorations(cells, theme, |cell| {
@@ -830,17 +843,32 @@ fn prepare_row(
             || GlyphText::Sequence(cell.text.as_str()),
             GlyphText::Scalar,
         );
-        let (layout, hit) = layouts.get_or_insert_with(key, variant, || {
-            let text = cell.text.as_str();
-            let runs = [text_run(text, variant, terminal_font)];
-            window
-                .text_system()
-                .layout_line(text, font_size, &runs, None)
-        });
+        let (mut content, hit) =
+            layouts.get_or_insert_with(key, variant, || {
+                layout_cell(
+                    window.text_system(),
+                    cell.text.as_str(),
+                    cell_font(variant, terminal_font),
+                    metrics,
+                )
+            });
         cache_activity.record(hit);
+        // Cached symbol origins centre in one column; a wide cell spans two.
+        if let GlyphContent::Symbol(symbol) = &content
+            && cell.style.wide
+            && column + 1 < cells.len()
+        {
+            content = GlyphContent::Symbol(Arc::new(SymbolGlyph {
+                layout: Arc::clone(&symbol.layout),
+                origin: point(
+                    symbol.origin.x + metrics.cell_width / 2.0,
+                    symbol.origin.y,
+                ),
+            }));
+        }
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
-            content: GlyphContent::Font(layout),
+            content,
             color: rgb_color(display_foreground(
                 resolve_color(cell.foreground, theme),
                 cell.style.dim,
@@ -848,6 +876,38 @@ fn prepare_row(
         });
     }
     row
+}
+
+/// Shapes one cell's text in its terminal face, or, for an icon that face
+/// lacks, in the bundled symbols face fitted to the cell.
+fn layout_cell(
+    text_system: &WindowTextSystem,
+    text: &str,
+    configured: Font,
+    metrics: GridMetrics,
+) -> GlyphContent {
+    let scalar = text.parse::<char>().ok();
+    if let Some((symbols, id)) = scalar.and_then(|ch| {
+        symbols::face_for(text_system, &configured, ch, metrics.font_size)
+    }) {
+        let size = symbols::font_size(metrics);
+        let runs = [text_run(text, symbols)];
+        let layout = text_system.layout_line(text, size, &runs, None);
+        let origin = symbols::origin(
+            metrics,
+            layout.width,
+            text_system.ascent(id, size),
+            text_system.descent(id, size),
+        );
+        return GlyphContent::Symbol(Arc::new(SymbolGlyph { layout, origin }));
+    }
+    let runs = [text_run(text, configured)];
+    GlyphContent::Font(text_system.layout_line(
+        text,
+        metrics.font_size,
+        &runs,
+        None,
+    ))
 }
 
 fn prepare_backgrounds(
@@ -930,7 +990,7 @@ fn paint_row(
             row_index,
             metrics,
         );
-        let layout = match &glyph.content {
+        let (layout, offset) = match &glyph.content {
             GlyphContent::Builtin(geometry) => {
                 geometry.paint(
                     origin,
@@ -939,13 +999,16 @@ fn paint_row(
                 );
                 continue;
             }
-            GlyphContent::Font(layout) => layout,
+            GlyphContent::Font(layout) => {
+                (layout, point(metrics.glyph_offset_x, metrics.baseline))
+            }
+            GlyphContent::Symbol(symbol) => (&symbol.layout, symbol.origin),
         };
         for run in &layout.runs {
             for shaped in &run.glyphs {
                 let glyph_origin = point(
-                    origin.x + metrics.glyph_offset_x + shaped.position.x,
-                    origin.y + metrics.baseline,
+                    origin.x + offset.x + shaped.position.x,
+                    origin.y + offset.y,
                 );
                 let result = if shaped.is_emoji {
                     window.paint_emoji(
@@ -1255,20 +1318,20 @@ impl<T: Clone> VariantLayouts<T> {
     }
 }
 
-fn text_run(
-    text: &str,
-    variant: FontVariant,
-    terminal_font: &TerminalFont,
-) -> TextRun {
+fn cell_font(variant: FontVariant, terminal_font: &TerminalFont) -> Font {
     let mut cell_font = terminal_font.face(variant.bold);
     cell_font.style = if variant.italic {
         FontStyle::Italic
     } else {
         FontStyle::Normal
     };
+    cell_font
+}
+
+fn text_run(text: &str, font: Font) -> TextRun {
     TextRun {
         len: text.len(),
-        font: cell_font,
+        font,
         color: rgba(0xffff_ffff).into(),
         background_color: None,
         underline: None,
