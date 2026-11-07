@@ -3424,6 +3424,10 @@ impl refresh::Animated for WorkspaceView {
             // Each frame moves the progress line.
             cx.notify();
         }
+        if self.notices.release_announcements(now) {
+            // Draws the toasts without the leaves that announced them.
+            cx.notify();
+        }
         if self.pointer_reveal.probe_at.is_some_and(|at| now >= at) {
             self.refresh_tab_visibility(window, cx);
         }
@@ -3810,6 +3814,17 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<gpui::Div> {
+        // A notice announces once, in the first frame that shows it while
+        // the user is in this window and assistive technology reads it: a
+        // background window's waits for its activation, a hidden Quake
+        // window's for its summons, and one drawn before a screen reader
+        // connected for the redraw GPUI forces then, which all redraw.
+        let announcing = self.notices.begin_frame(
+            window.is_window_active()
+                && window.is_a11y_active()
+                && self.can_show_notices(cx),
+            Instant::now(),
+        );
         if self.notices.is_empty() {
             return None;
         }
@@ -3865,6 +3880,7 @@ impl WorkspaceView {
                 .filter(|(id, _)| Some(*id) == self.focused_notice)
                 .map(|(_, index)| index),
             hovered: &self.hovered_notices,
+            announcing: &announcing,
             fit: StackFit::new(terminal.size, bottom, window.rem_size()),
             swatch,
             handlers: &handlers,

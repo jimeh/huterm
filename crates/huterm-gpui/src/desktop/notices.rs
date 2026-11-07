@@ -7,16 +7,25 @@
 //! under the `notices` key context, fitted to the terminal area by
 //! [`StackFit`]. The owner routes the `notice_*` catalog commands, hover
 //! pause, and action invocations through [`ToastHandlers`].
+//!
+//! Each toast is an accessibility `Alert` named by
+//! [`NoticeContent::accessible_text`]. [`NoticeStack::begin_frame`] decides
+//! which toasts announce in the frame being drawn: each notice once, through
+//! a live leaf added when it announces, since AccessKit announces a live
+//! node when it is added and its descendants inherit its live state. The
+//! leaf stays for [`ANNOUNCEMENT_HOLD`], because AT-SPI announces from the
+//! leaf's own object and a screen reader may read it after the event.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use gpui::accesskit::{Live, Node};
 use gpui::{
-    AnyElement, App, Div, Edges, FocusHandle, MouseButton, MouseDownEvent,
-    Pixels, Rems, SharedString, Size, Window, div, prelude::*, px, relative,
-    svg,
+    AnyElement, App, Div, Edges, ElementId, FocusHandle, MouseButton,
+    MouseDownEvent, Pixels, Rems, Role, SharedString, Size, Window, div,
+    prelude::*, px, relative, svg,
 };
 use huterm_protocol::{CommandInvocation, TabId};
 use huterm_ui::components::button::{Button, Variant};
@@ -32,6 +41,10 @@ use crate::ui::animation::AnimationSchedule;
 pub(crate) const NOTICE_LIFETIME: Duration = Duration::from_secs(6);
 /// Toasts shown at once; the rest are counted in the overflow chip.
 pub(crate) const VISIBLE_NOTICES: usize = 3;
+/// How long a toast keeps the live leaf that announced it. AT-SPI sends
+/// the announcement from the leaf, and a removed leaf's object is defunct,
+/// so it outlasts the frames that follow, such as scrolling to the toast.
+pub(crate) const ANNOUNCEMENT_HOLD: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Severity {
@@ -47,6 +60,15 @@ impl Severity {
             Self::Error => "error",
             Self::Warning => "warning",
             Self::Info => "info",
+        }
+    }
+
+    /// The word assistive technology reads before a notice's text.
+    fn spoken(self) -> &'static str {
+        match self {
+            Self::Error => "Error",
+            Self::Warning => "Warning",
+            Self::Info => "Info",
         }
     }
 
@@ -187,6 +209,47 @@ impl NoticeContent {
         self
     }
 
+    /// What assistive technology reads for the notice: its severity, then
+    /// its title, message, and location as sentences, leaving out empty
+    /// parts.
+    pub(crate) fn accessible_text(&self) -> String {
+        let mut text = self.severity.spoken().to_owned();
+        let mut separator = ": ";
+        for part in [
+            self.title.as_str(),
+            self.message.as_str(),
+            self.location.as_deref().unwrap_or_default(),
+        ] {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            text.push_str(separator);
+            text.push_str(part);
+            separator = if part.ends_with(['.', '!', '?', ':']) {
+                " "
+            } else {
+                ". "
+            };
+        }
+        text
+    }
+
+    /// How urgently the notice is announced. A failure of something the
+    /// user or a terminal just did interrupts speech, as an alert does;
+    /// diagnostics, restore and save problems, program notifications, and
+    /// every warning and info wait for speech to finish, as a status does,
+    /// so they do not cut off what is being read, such as terminal output.
+    pub(crate) fn politeness(&self) -> Live {
+        match (self.severity, &self.source) {
+            (
+                Severity::Error,
+                NoticeSource::Command | NoticeSource::Terminal { .. },
+            ) => Live::Assertive,
+            _ => Live::Polite,
+        }
+    }
+
     /// One smoke state line: `severity|source|message`, newlines replaced by
     /// spaces. Terminal sources read `terminal:<tab title>`; consumers split
     /// on the first two `|` so the message may contain more.
@@ -235,6 +298,13 @@ pub(crate) struct Notice {
     pub(crate) content: NoticeContent,
     created: Instant,
     deadline: Option<Instant>,
+    /// When its announcement started and the mount it was drawn in; `None`
+    /// until it announces.
+    announced: Option<(Instant, u64)>,
+    /// How many times its toast was drawn after a frame without it. Each
+    /// return is a new accessibility node: AT-SPI reports a removed node's
+    /// object defunct, and Orca then ignores it for good.
+    mounts: u64,
 }
 
 impl Notice {
@@ -253,6 +323,14 @@ pub(crate) struct NoticeStack {
     notices: Vec<Notice>,
     next_id: u64,
     paused_since: Option<Instant>,
+    /// The toasts the last frame drew, for [`Notice::mounts`].
+    drawn: Vec<NoticeId>,
+    /// Whether the last frame drew the overflow chip.
+    overflow_drawn: bool,
+    /// The overflow chip's returns, as [`Notice::mounts`] counts a toast's.
+    overflow_mounts: u64,
+    /// When the earliest live leaf the last frame drew is due to go.
+    holding_until: Option<Instant>,
 }
 
 impl NoticeStack {
@@ -275,9 +353,64 @@ impl NoticeStack {
                 content,
                 created: now,
                 deadline,
+                announced: None,
+                mounts: 0,
             },
         );
         id
+    }
+
+    /// Records the toasts the frame being drawn at `now` shows, and returns
+    /// those that carry the live leaf announcing them. A notice announces
+    /// when it is shown, has not announced before, and `announce` holds,
+    /// which the owner passes while its window is in front, can show
+    /// notices, and builds an accessibility tree; a notice shown before
+    /// that announces in the first frame that has it. Its leaf stays for
+    /// [`ANNOUNCEMENT_HOLD`] while the toast stays drawn: a toast that
+    /// returns, as a new node, does not bring it back.
+    pub(crate) fn begin_frame(
+        &mut self,
+        announce: bool,
+        now: Instant,
+    ) -> HashSet<NoticeId> {
+        let shown = self.notices.len().min(VISIBLE_NOTICES);
+        let mut announcing = HashSet::new();
+        self.holding_until = None;
+        for notice in &mut self.notices[..shown] {
+            if !self.drawn.contains(&notice.id) {
+                notice.mounts += 1;
+            }
+            if announce && notice.announced.is_none() {
+                notice.announced = Some((now, notice.mounts));
+            }
+            if let Some((at, mount)) = notice.announced {
+                let until = at + ANNOUNCEMENT_HOLD;
+                if mount == notice.mounts && now < until {
+                    announcing.insert(notice.id);
+                    self.holding_until = Some(
+                        self.holding_until
+                            .map_or(until, |held| held.min(until)),
+                    );
+                }
+            }
+        }
+        self.drawn = self.notices[..shown].iter().map(|n| n.id).collect();
+        let overflow = self.overflow() > 0;
+        if overflow && !self.overflow_drawn {
+            self.overflow_mounts += 1;
+        }
+        self.overflow_drawn = overflow;
+        announcing
+    }
+
+    /// Whether a live leaf the last frame drew is due to go by `now`, so
+    /// the owner redraws to remove it.
+    pub(crate) fn release_announcements(&mut self, now: Instant) -> bool {
+        if self.holding_until.is_some_and(|until| now >= until) {
+            self.holding_until = None;
+            return true;
+        }
+        false
     }
 
     /// Replaces every notice from `source` with `replacements`, so a reload
@@ -423,14 +556,22 @@ impl NoticeStack {
     }
 
     /// The window's wake: frames while [`Self::animating`], so the progress
-    /// line moves without other repaints, and the earliest expiry as a
+    /// line moves without other repaints, the earliest expiry as a
     /// deadline, so a window that draws no frames, such as a covered one,
-    /// still expires on time. Idle while paused or when every notice is
-    /// persistent.
+    /// still expires on time, and the earliest live leaf's removal. Idle
+    /// while paused, when a held leaf waits for the resume, or when every
+    /// notice is persistent and no leaf is held.
     pub(crate) fn schedule(&self) -> AnimationSchedule {
+        if self.paused_since.is_some() {
+            return AnimationSchedule::IDLE;
+        }
         let deadline = self
             .next_deadline()
-            .map_or(AnimationSchedule::IDLE, AnimationSchedule::at);
+            .map_or(AnimationSchedule::IDLE, AnimationSchedule::at)
+            .merge(
+                self.holding_until
+                    .map_or(AnimationSchedule::IDLE, AnimationSchedule::at),
+            );
         if self.animating() {
             deadline.merge(AnimationSchedule::FRAME)
         } else {
@@ -610,6 +751,9 @@ pub(crate) struct NoticeColumn<'a> {
     pub(crate) button: Option<usize>,
     /// Toasts under the pointer, which stay expanded.
     pub(crate) hovered: &'a HashSet<NoticeId>,
+    /// Toasts that announce in this frame, from
+    /// [`NoticeStack::begin_frame`].
+    pub(crate) announcing: &'a HashSet<NoticeId>,
     pub(crate) fit: StackFit,
     pub(crate) swatch: Swatch,
     pub(crate) handlers: &'a ToastHandlers,
@@ -629,6 +773,16 @@ impl NoticeColumn<'_> {
                     .p(px(RING_ROOM))
                     .child(
                         div()
+                            .id(ElementId::NamedInteger(
+                                "notice-overflow".into(),
+                                self.stack.overflow_mounts,
+                            ))
+                            .role(Role::Label)
+                            .aria_value(if overflow == 1 {
+                                "1 more notice".to_owned()
+                            } else {
+                                format!("{overflow} more notices")
+                            })
                             .px(px(8.0))
                             .py(px(2.0))
                             .rounded(px(10.0))
@@ -662,6 +816,7 @@ impl NoticeColumn<'_> {
                             (true, Some(index)) => ToastFocus::Button(index),
                         },
                         expanded,
+                        self.announcing.contains(&id),
                         self.swatch,
                         self.handlers,
                     ))
@@ -846,12 +1001,15 @@ impl ToastFocus {
 }
 
 /// One toast: in full when `expanded`, otherwise collapsed to its mark,
-/// title, and Dismiss button on one line.
+/// title, and Dismiss button on one line. Its accessibility node reads the
+/// whole notice either way, and `announce` adds the live leaf that
+/// announces it.
 fn render_toast(
     notice: &Notice,
     progress: Option<f32>,
     focus: ToastFocus,
     expanded: bool,
+    announce: bool,
     swatch: Swatch,
     handlers: &ToastHandlers,
 ) -> gpui::Stateful<Div> {
@@ -873,8 +1031,14 @@ fn render_toast(
     };
     let progress_selector = content.title.clone();
     let toast_selector = content.title.clone();
+    let text = content.accessible_text();
     let mut toast = raised_panel(swatch, TOAST_RADIUS)
-        .id(("toast", id.0))
+        .id(ElementId::NamedInteger(
+            SharedString::from(format!("toast-{}", id.0)),
+            notice.mounts,
+        ))
+        .role(Role::Alert)
+        .aria_label(text.clone())
         .debug_selector(|| format!("notice-{toast_selector}"))
         // Over a terminal, whose text cursor would otherwise show.
         .cursor(gpui::CursorStyle::Arrow)
@@ -923,6 +1087,21 @@ fn render_toast(
             swatch,
             handlers,
         ));
+    if announce {
+        // A leaf added when the toast announces: AccessKit announces a live
+        // node when it is added, on macOS from its value and on AT-SPI from
+        // its name, which a label takes from its value. Live on the toast
+        // itself would pass to its buttons, which would announce too. The
+        // leaf keeps its id while it is held, so it announces only once.
+        let live = content.politeness();
+        toast = toast.a11y_synthetic_children(move |builder| {
+            let id = builder.synthetic_node_id("announcement");
+            let mut node = Node::new(Role::Label);
+            node.set_value(text.clone());
+            node.set_live(live);
+            builder.push_child(id, node);
+        });
+    }
     if let Some(progress) = progress {
         // Inset by the corner radius and lifted off the border, so the line
         // stays inside the rounded panel; the content mask is rectangular.
@@ -985,6 +1164,153 @@ mod tests {
             tab: TabId::new(tab),
             title: format!("tab {tab}"),
         }
+    }
+
+    #[test]
+    fn the_accessible_text_reads_severity_then_each_part_as_a_sentence() {
+        let notice = |severity, title: &str, message: &str| NoticeContent {
+            severity,
+            source: NoticeSource::Command,
+            title: title.to_owned(),
+            message: message.to_owned(),
+            location: None,
+            actions: Vec::new(),
+            lifetime: Lifetime::Expiring,
+        };
+        assert_eq!(
+            notice(Severity::Error, "Copy failed", "No selection")
+                .accessible_text(),
+            "Error: Copy failed. No selection"
+        );
+        assert_eq!(
+            notice(Severity::Warning, "Restore skipped.", "  State is newer ")
+                .location("~/.local/state/huterm/sessions.json")
+                .accessible_text(),
+            "Warning: Restore skipped. State is newer. \
+             ~/.local/state/huterm/sessions.json",
+            "existing punctuation is kept, parts are trimmed"
+        );
+        assert_eq!(
+            notice(Severity::Info, "", "build done").accessible_text(),
+            "Info: build done",
+            "an empty title is left out"
+        );
+        assert_eq!(notice(Severity::Error, "", " ").accessible_text(), "Error");
+    }
+
+    #[test]
+    fn only_failures_of_commands_and_terminals_interrupt() {
+        let politeness = |severity, source| {
+            NoticeContent {
+                severity,
+                ..content(source, "t", Lifetime::Expiring)
+            }
+            .politeness()
+        };
+        assert_eq!(
+            politeness(Severity::Error, NoticeSource::Command),
+            Live::Assertive
+        );
+        assert_eq!(politeness(Severity::Error, terminal(1)), Live::Assertive);
+        for source in [
+            NoticeSource::Config,
+            NoticeSource::Keymap,
+            NoticeSource::Sessions,
+            NoticeSource::Program {
+                tab: TabId::new(1),
+                title: "tab".to_owned(),
+            },
+        ] {
+            assert_eq!(
+                politeness(Severity::Error, source.clone()),
+                Live::Polite,
+                "{source:?}"
+            );
+        }
+        assert_eq!(
+            politeness(Severity::Warning, NoticeSource::Command),
+            Live::Polite
+        );
+        assert_eq!(politeness(Severity::Info, terminal(1)), Live::Polite);
+    }
+
+    #[test]
+    fn each_notice_announces_once_when_first_shown_in_front() {
+        let now = Instant::now();
+        let at = |ms: u64| now + Duration::from_millis(ms);
+        let mut stack = NoticeStack::default();
+        let push = |stack: &mut NoticeStack, tab: u64| {
+            stack.push(content(terminal(tab), "n", Lifetime::Persistent), now)
+        };
+        let set = |ids: &[NoticeId]| ids.iter().copied().collect();
+        let mounts = |stack: &NoticeStack, id| stack.get(id).unwrap().mounts;
+        let first = push(&mut stack, 0);
+        assert!(
+            stack.begin_frame(false, at(0)).is_empty(),
+            "nothing announces while the window is behind"
+        );
+        assert_eq!(stack.begin_frame(true, at(100)), set(&[first]));
+        assert_eq!(
+            stack.begin_frame(true, at(600)),
+            set(&[first]),
+            "the leaf holds across frames"
+        );
+        assert_eq!(
+            stack.schedule(),
+            AnimationSchedule::at(at(1100)),
+            "a wake removes the leaf"
+        );
+        assert!(!stack.release_announcements(at(1099)));
+        assert!(stack.release_announcements(at(1100)));
+        assert!(
+            stack.begin_frame(true, at(1100)).is_empty(),
+            "announced once"
+        );
+        assert_eq!(stack.schedule(), AnimationSchedule::IDLE);
+        assert_eq!(mounts(&stack, first), 1, "drawn ever since");
+
+        // Three newer notices push the first into the overflow, and its
+        // return after a dismissal is a new node that stays quiet.
+        let newer: Vec<NoticeId> =
+            (1..4).map(|tab| push(&mut stack, tab)).collect();
+        assert_eq!(stack.begin_frame(true, at(2000)), set(&newer));
+        assert_eq!(stack.overflow_mounts, 1, "the chip appeared");
+        assert!(stack.dismiss(newer[2]));
+        assert_eq!(
+            stack.begin_frame(true, at(2100)),
+            set(&newer[..2]),
+            "held leaves stay, and the returning toast is quiet"
+        );
+        assert_eq!(mounts(&stack, first), 2, "a new node on return");
+        assert_eq!(stack.overflow_mounts, 1);
+
+        // A toast that leaves and returns while its leaf is held comes back
+        // without it, since its new node would announce again.
+        let x = push(&mut stack, 8);
+        let y = push(&mut stack, 9);
+        stack.begin_frame(true, at(2200));
+        assert!(stack.dismiss(x) && stack.dismiss(y));
+        assert_eq!(
+            stack.begin_frame(true, at(2300)),
+            set(&[newer[1]]),
+            "newer[0] returned as a new node"
+        );
+        assert!(stack.begin_frame(true, at(3300)).is_empty());
+
+        // Notices that overflowed before any frame showed them announce
+        // when they are first shown.
+        let hidden: Vec<NoticeId> =
+            (4..8).map(|tab| push(&mut stack, tab)).collect();
+        assert_eq!(stack.begin_frame(true, at(4000)), set(&hidden[1..]));
+        assert!(stack.dismiss(hidden[3]));
+        assert_eq!(
+            stack.begin_frame(true, at(5000)),
+            set(&[hidden[0]]),
+            "first shown now"
+        );
+        assert!(stack.dismiss_all());
+        assert!(stack.begin_frame(true, at(5100)).is_empty());
+        assert!(!stack.overflow_drawn);
     }
 
     #[test]
