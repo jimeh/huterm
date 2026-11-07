@@ -2,3 +2,5 @@
 channel = "1.99.1"
 components = ["clippy", "rustfmt"]
 profile = "minimal"
+# The dependency-neutral contract crates build for browsers; see check:wasm.
+targets = ["wasm32-unknown-unknown"]
