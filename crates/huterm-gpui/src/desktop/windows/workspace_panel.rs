@@ -786,10 +786,12 @@ impl WorkspaceView {
                     .text_color(colors.inactive.opacity(0.8))
                     .child(row.tabs.to_string()),
             )
-            .on_mouse_down(MouseButton::Left, |_, window, _| {
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 // The row takes no focus from a press; keyboard focus
-                // stays where it was, as on tabs.
+                // stays where it was, as on tabs. A chip in the title row
+                // keeps the press from its move and double-click.
                 window.prevent_default();
+                cx.stop_propagation();
             })
             .on_click(cx.listener(
                 move |view, event: &gpui::ClickEvent, window, cx| {
@@ -1276,8 +1278,20 @@ impl WorkspaceView {
             WorkspaceChrome::Bar { edge } => format!("bar_{edge:?}"),
         }
         .to_lowercase();
+        // Rows in session order while a panel or bar draws them.
+        let rows = if layout.workspace_chrome.edge().is_some() {
+            let painted = self.workspace_row_bounds.borrow();
+            let rows: Vec<String> = self
+                .workspace_rows(cx)
+                .iter()
+                .map(|row| rect(painted.get(&row.workspace).copied()))
+                .collect();
+            rows.join(";")
+        } else {
+            "none".to_owned()
+        };
         format!(
-            "{prefix}workspace_chrome={chrome} {prefix}workspace_band={} {prefix}workspace_dropdown={} {prefix}workspace_collapsed={} {prefix}workspace_count={} {prefix}workspace_menu_open={} {prefix}workspace_shown={}",
+            "{prefix}workspace_chrome={chrome} {prefix}workspace_band={} {prefix}workspace_rows={rows} {prefix}workspace_dropdown={} {prefix}workspace_collapsed={} {prefix}workspace_count={} {prefix}workspace_menu_open={} {prefix}workspace_shown={}",
             rect(layout.workspace),
             rect(
                 self.workspace_trigger_bounds

@@ -3151,6 +3151,58 @@ fn initial_window_grid_adds_padding_and_chrome_then_respects_minimum() {
 }
 
 #[test]
+fn an_always_shown_workspace_panel_widens_a_new_window() {
+    use huterm_config::{WorkspacePosition, WorkspaceShow, WorkspacesConfig};
+    let config = |show, position, collapsed| WorkspacesConfig {
+        show,
+        position,
+        collapsed,
+    };
+    let none = size(px(0.0), px(0.0));
+    // `auto` and `never` show nothing in a new window, nor does a
+    // collapsed window.
+    for show in [WorkspaceShow::Auto, WorkspaceShow::Never] {
+        assert_eq!(
+            workspace_reservation(
+                config(show, WorkspacePosition::Left, false),
+                true
+            ),
+            none
+        );
+    }
+    let always = |position, title_row| {
+        workspace_reservation(
+            config(WorkspaceShow::Always, position, false),
+            title_row,
+        )
+    };
+    assert_eq!(
+        workspace_reservation(
+            config(WorkspaceShow::Always, WorkspacePosition::Left, true),
+            false
+        ),
+        none
+    );
+    for position in [WorkspacePosition::Left, WorkspacePosition::Right] {
+        assert_eq!(
+            always(position, true),
+            size(workspace_chrome::PANEL_WIDTH, px(0.0))
+        );
+    }
+    // A top bar takes the title row where there is one.
+    assert_eq!(always(WorkspacePosition::Top, true), none);
+    for (position, title_row) in [
+        (WorkspacePosition::Top, false),
+        (WorkspacePosition::Bottom, true),
+    ] {
+        assert_eq!(
+            always(position, title_row),
+            size(px(0.0), workspace_chrome::BAR_HEIGHT)
+        );
+    }
+}
+
+#[test]
 fn initial_window_clamp_leaves_room_for_the_native_titlebar() {
     let requested = size(px(2000.0), px(1500.0));
     let visible = size(px(1200.0), px(800.0));

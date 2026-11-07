@@ -2638,6 +2638,11 @@ fn initial_window_size(
     } else {
         size(px(0.0), px(0.0))
     };
+    let reserved = reserved
+        + workspace_reservation(
+            config.workspaces,
+            title_row_height(false, frame) > px(0.0),
+        );
     let requested = size(
         metrics.cell_width * f32::from(config.window.initial_columns)
             + px(config.window.padding_x * 2.0)
@@ -2656,6 +2661,33 @@ fn initial_window_size(
         requested.width.max(WINDOW_MIN_SIZE.width),
         requested.height.max(WINDOW_MIN_SIZE.height),
     )
+}
+
+/// The room a new window's workspace panel or bar takes from its terminal.
+/// Only `show = "always"` shows one in a new window, whose session has one
+/// workspace; a top bar in a window with a title row takes that row.
+fn workspace_reservation(
+    workspaces: huterm_config::WorkspacesConfig,
+    title_row: bool,
+) -> gpui::Size<Pixels> {
+    if workspaces.show != huterm_config::WorkspaceShow::Always
+        || workspaces.collapsed
+    {
+        return size(px(0.0), px(0.0));
+    }
+    match workspaces.position {
+        huterm_config::WorkspacePosition::Left
+        | huterm_config::WorkspacePosition::Right => {
+            size(workspace_chrome::PANEL_WIDTH, px(0.0))
+        }
+        huterm_config::WorkspacePosition::Top if title_row => {
+            size(px(0.0), px(0.0))
+        }
+        huterm_config::WorkspacePosition::Top
+        | huterm_config::WorkspacePosition::Bottom => {
+            size(px(0.0), workspace_chrome::BAR_HEIGHT)
+        }
+    }
 }
 
 /// The smallest content size an ordinary terminal window accepts.

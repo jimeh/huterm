@@ -163,7 +163,7 @@ restore_sessions = true
 ```
 
 Set `restore_sessions = false` to start fresh every time. Turning it off,
-in the file or in Settings > General, deletes the saved windows at once;
+in the file or in Settings > Sessions, deletes the saved windows at once;
 turning it on saves the current windows right away. Both apply without a
 restart.
 
@@ -195,6 +195,56 @@ new session takes one more than the highest number used since launch, and
 a restart continues after the highest number it restored. Workspaces
 number the same way. The setting applies to sessions created after it
 changes, without a restart; existing names never change.
+
+## Workspaces
+
+A session holds one or more workspaces, each with its own tabs. Windows show
+their session's workspaces in a panel, a bar, or a dropdown, and switch
+between them with a click; New Workspace in the session menu, the panel's
+`+`, or the palette creates one with a fresh shell. A window that never has
+a second workspace shows none of this.
+
+```toml
+[workspaces]
+show = "auto"     # auto, always, or never
+position = "left" # left, top, right, or bottom
+collapsed = false # new windows show the dropdown instead of the panel
+```
+
+- `show = "auto"` shows workspace UI only while the window's session has two
+  or more workspaces; `always` shows it with one, and `never` hides it,
+  including the session menu's New Workspace row. The workspace commands
+  stay in the command palette either way.
+- `position` puts a list on the `left` or `right` edge, or a row of chips on
+  the `top` or `bottom` edge. The workspace panel is outermost on an edge it
+  shares with the tab bar. A side panel spans the window's height and holds
+  that corner of the title bar: the traffic lights or window buttons, and on
+  the right the menu button and session control. A top bar takes the title
+  bar's place, so `titlebar` tabs move to a bar below it; in a window
+  without a title bar, a top bar sits at the top, and in non-native
+  fullscreen on a notched display it takes the space beside the notch. A
+  fullscreen tab bar that auto-hides takes a workspace bar on its own edge
+  with it; a workspace bar on another edge, and a side panel, stay shown.
+- The panel header's collapse button, the workspace menu's Show Workspace
+  Panel, or `toggle_workspace_panel` collapse a window's panel or bar into a
+  dropdown that leads the tab bar, and show it again. Each window keeps its
+  own choice; `collapsed` sets it for new windows. A side panel that would
+  leave the terminal narrower than 384 points also shows as the dropdown
+  until the window widens. With the tab bar hidden, the dropdown leads the
+  title bar.
+- Drag a side panel's inner edge to resize it, between 140 and 400 points
+  and at most half the window; each window keeps its own width. Collapse
+  state and width are saved with the window.
+- Rows and chips show the workspace's name, dimmed when automatic, and its
+  tab count. A click shows the workspace, a double-click renames it, and a
+  right-click opens its menu: Rename, Clear Name, New Workspace, and Close
+  Workspace. The dropdown opens the workspace menu, which also lists the
+  workspaces, marks those another window shows, and offers the same actions
+  for the shown workspace. `focus_workspace_panel` moves keyboard focus to
+  the panel; see [keybindings](keybindings.md#workspace-panel).
+
+Changing a window's panel resizes its terminals as a window resize does, so
+a selection survives only when the grid size stays the same.
 
 ## Shells
 
@@ -821,6 +871,7 @@ padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
 session_button = true # the session control beside the menu button
+session_button_placement = "title_bar" # title_bar, sidebar, or both
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
 macos_native_menus = true # native macOS menus; ignored on Linux
 macos_drag_preview = true # floating drag preview; ignored on Linux
@@ -1054,19 +1105,22 @@ available through the palette and shortcuts.
 
 `session_button` shows the session control just before the menu button: a
 layers icon, the window's session name, and a chevron. It opens the session
-menu, which switches, creates, renames, and closes sessions and opens one in
-a new window. It follows the menu button's placement one slot further in, so
-the menu button keeps the rightmost slot, and takes the button's slot when
+menu, which switches, creates, renames, and closes sessions and opens one in a
+new window. It follows the menu button's placement one slot further in, so the
+menu button keeps the rightmost slot, and takes the button's slot when
 `menu_button = false`. In a left or right column without a title bar it shows
 only its icon in the new-tab row. Its name truncates at 168 points and in
 narrow hosts, and below about 345 points of title bar it shows only the icon;
 the tooltip and accessible name keep the full name. It hides with an
 auto-hidden bar. `session_button = false` removes it; `open_session_menu` and
-the session commands stay available. The session menu follows
-`macos_native_menus` like the other menus; a native menu shows each session's
-tab count and tags as a subtitle on macOS 14.4 and later. Right-clicking empty tab-bar
-space also opens the window menu, except in Huterm's own Linux title row,
-where it opens the window manager's menu.
+the session commands stay available. `session_button_placement = "sidebar"`
+moves the control to the first row of the workspace panel, or the start of a
+workspace bar, and back to the title bar while the window shows neither;
+`"both"` shows it in both places, and each opens the menu at itself. The
+session menu follows `macos_native_menus` like the other menus; a native menu
+shows each session's tab count and tags as a subtitle on macOS 14.4 and later.
+Right-clicking empty tab-bar space also opens the window menu, except in
+Huterm's own Linux title row, where it opens the window manager's menu.
 
 Menus and the command palette show each command's shortcut: in symbols on macOS
 (`⇧⌘P`) and in words on Linux (`Ctrl+Shift+P`), with Return, Tab, Backspace,

@@ -1951,6 +1951,36 @@ cancels. During a drag, hovering an overflow edge scrolls continuously without
 changing the active terminal. Reordering preserves terminal processes, focus,
 selection, and scroll position. Cross-window moves and tear-out remain deferred.
 
+## Workspace chrome
+
+`workspace_chrome::resolve` decides, purely, whether a window shows no
+workspace UI, the dropdown, a side panel, or a bar, from `[workspaces]`, the
+session's workspace count, the window's collapse state, and the terminal
+width a candidate side panel leaves (SW1: under 384 points it resolves to
+the dropdown, leaving the saved collapse state alone). Layout, rendering,
+hit testing, menus, and smoke state (`workspace_chrome=`) all read it.
+`ChromeLayout::build_with` carves the band from the content first and
+partitions what is left (`area`) exactly as a window without one;
+`WorkspaceChrome::None` must reproduce the old layout, and
+`workspace_chrome/tests.rs` keeps a verbatim copy of it as the oracle. The
+dropdown takes a leading width from a horizontal strip (`strip_inset`) or a
+row above a column's tabs, so `TabStrip`, drops, and reveal follow without
+special cases. In fullscreen a top or bottom workspace bar on the tab bar's
+edge hides and reveals with it as one band (`present`, `reveal_region`).
+
+Render reads the workspace count and measures the shown name in
+`sync_workspace_chrome` before laying out, so layout outside render
+resolves the same chrome. `Touched::contains_chrome` names the sessions
+whose workspace list, names, or tab counts changed; `windows_to_visit`
+visits every window on them and reconcile notifies them, so counts and an
+open workspace menu stay current. A window's own workspace switch changes
+nothing in the runtime, so `install_session` notifies the other windows on
+the sessions it left and joined for their badges. Panel rows and chips take
+the `WorkspacePanel` key context and its `workspace_panel_*` commands; a
+press never moves keyboard focus to them. A panel change relays out every
+terminal as a window resize does, so a selection survives only when the grid
+size stays the same (#373).
+
 ## Configuration and schemas
 
 Theme reload must invalidate prepared row colors even when the terminal snapshot

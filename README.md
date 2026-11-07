@@ -61,8 +61,6 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
 These are not available yet:
 
 - Pane layout presets, and undoing a layout change.
-- A workspace panel or dropdown. Workspaces are reached from the command
-  palette and the session menu for now.
 - A background server, local IPC, a command-line client, a TUI, or a browser
   client.
 - Saving and restoring sessions or terminal history across restarts.
@@ -146,6 +144,9 @@ ordered tabs. A session can hold more workspaces: New Workspace, in the
 session menu and the palette, adds one with a fresh shell, and Switch
 Workspace, Next Workspace, and Previous Workspace move a window between
 them, each window on its own and back to the tab and pane it left there.
+Once a session has a second workspace, its windows show a workspace panel
+on any edge, or a dropdown in the tab bar; see
+[Workspaces](docs/configuration.md#workspaces).
 Each tab holds one or more panes, each with its own terminal and
 shell. Hidden tabs keep processing output without building snapshots or
 painting. A pane closes when its shell exits, and its tab closes with its last
