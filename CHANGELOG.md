@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.32.0](https://github.com/jimeh/huterm/compare/v0.31.0...v0.32.0) (2026-11-07)
+
+
+### Features
+
+* show notifications and progress from terminal programs, and ask for attention on a bell ([#437](https://github.com/jimeh/huterm/issues/437)) ([67f5116](https://github.com/jimeh/huterm/commit/67f5116b2767bfb61b87ad078e47a1fc74fdb8eb))
+
+
+### Bug Fixes
+
+* keep zsh prompt marks when a theme redraws its own prompt ([#434](https://github.com/jimeh/huterm/issues/434)) ([f13cf26](https://github.com/jimeh/huterm/commit/f13cf2614d739a8f74bbdb0655c06b5abaa5fe2e))
+
 ## [0.31.0](https://github.com/jimeh/huterm/compare/v0.30.0...v0.31.0) (2026-11-07)
 
 
