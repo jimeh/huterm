@@ -958,6 +958,10 @@ impl Owner<'_> {
         probes: &ProbeSchedule,
     ) -> Result<(), RuntimeError> {
         let now = Instant::now();
+        if self.status.expire_progress(now) {
+            // The caller's next turn flushes the cleared status.
+            return Ok(());
+        }
         self.compression
             .observe(self.engine.compression_activity()?, now);
         if self.compression.due(now) {
@@ -993,10 +997,14 @@ impl Owner<'_> {
             self.compression.finished(result, Instant::now());
             return Ok(());
         }
-        let deadline = match (probes.deadline(), self.compression.deadline()) {
-            (Some(probe), Some(compress)) => Some(probe.min(compress)),
-            (probe, compress) => probe.or(compress),
-        };
+        let deadline = [
+            probes.deadline(),
+            self.compression.deadline(),
+            self.status.progress_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         wake.wait_until(deadline);
         Ok(())
     }
@@ -1253,6 +1261,10 @@ impl Owner<'_> {
             }
             EngineEffect::Bell => {
                 status.bell();
+                WriterQueueState::Drained
+            }
+            EngineEffect::Progress(progress) => {
+                status.progress(progress, Instant::now());
                 WriterQueueState::Drained
             }
         }

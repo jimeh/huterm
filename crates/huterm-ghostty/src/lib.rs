@@ -56,11 +56,12 @@ pub use terminal::{GridRef, Options, RowRef, Terminal, TrackedRef};
 pub use types::{
     Boundaries, COMPRESSION_SUPPORTED, Cell, CellContent, CellWidth,
     ClipboardContent, ClipboardLocation, ClipboardWrite, ClipboardWriteResult,
-    ColorScheme, Compression, Cursor, CursorStyle, DeviceAttributes, Dirty,
-    Effect, Fill, MemoryUsage, Mode, Optimize, Palette, Point, PointSpace,
-    PromptKind, RenderColors, Rgb, Row, RowSemanticPrompt, Screen,
-    ScreenMemory, Scroll, Scrollbar, SemanticPrompt, SemanticPromptKind, Style,
-    StyleColor, WriteStop,
+    ColorScheme, Compression, Cursor, CursorStyle, DesktopNotification,
+    DeviceAttributes, Dirty, Effect, Fill, MemoryUsage, Mode, Optimize,
+    Palette, Point, PointSpace, Progress, ProgressState, PromptKind,
+    RenderColors, Rgb, Row, RowSemanticPrompt, Screen, ScreenMemory, Scroll,
+    Scrollbar, SemanticPrompt, SemanticPromptKind, Style, StyleColor,
+    WriteStop,
 };
 
 /// The optimization mode of the linked library.

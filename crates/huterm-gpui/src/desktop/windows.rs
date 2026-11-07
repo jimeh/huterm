@@ -70,9 +70,9 @@ use huterm_config::{
 };
 use huterm_core::{
     CloseAssessment, CloseRequest, DesktopHostEffectClient,
-    HierarchySubscription, HostEffectRecipientOptions, HostEffectViewerOptions,
-    MuxError, OpenedPane, OpenedTab, RestoreDirection, TerminalViewer,
-    ViewerOptions, ViewerWake,
+    HierarchySubscription, HostEffectPermissions, HostEffectRecipientOptions,
+    HostEffectViewerOptions, MuxError, OpenedPane, OpenedTab, RestoreDirection,
+    TerminalViewer, ViewerOptions, ViewerWake,
 };
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
@@ -448,7 +448,7 @@ impl DesktopRuntime {
         workspace: Option<WorkspaceId>,
         attachment: Option<AttachmentId>,
         command: &TerminalCommand,
-        clipboard_allowed: bool,
+        permissions: HostEffectPermissions,
     ) -> Committed<Result<Spawned, MuxError>> {
         let mut mux = self.lock();
         let result = self.open_tab_locked(
@@ -456,7 +456,7 @@ impl DesktopRuntime {
             workspace,
             attachment,
             command,
-            clipboard_allowed,
+            permissions,
         );
         Committed {
             result,
@@ -470,7 +470,7 @@ impl DesktopRuntime {
         workspace: Option<WorkspaceId>,
         attachment: Option<AttachmentId>,
         command: &TerminalCommand,
-        clipboard_allowed: bool,
+        permissions: HostEffectPermissions,
     ) -> Result<Spawned, MuxError> {
         if self.terminating.load(Ordering::Acquire) {
             return Err(RuntimeError::Stopped.into());
@@ -517,7 +517,7 @@ impl DesktopRuntime {
                                 )),
                                 spawned: true,
                                 ..self.viewer_options(
-                                    clipboard_allowed,
+                                    permissions,
                                     command.presentation.clone(),
                                 )
                             },
@@ -562,7 +562,7 @@ impl DesktopRuntime {
         pane: PaneId,
         direction: SplitDirection,
         command: &TerminalCommand,
-        clipboard_allowed: bool,
+        permissions: HostEffectPermissions,
     ) -> Committed<Result<(OpenedPane, TerminalViewer), MuxError>> {
         let mut mux = self.lock();
         let result = if self.terminating.load(Ordering::Acquire) {
@@ -580,7 +580,7 @@ impl DesktopRuntime {
                             )),
                             spawned: true,
                             ..self.viewer_options(
-                                clipboard_allowed,
+                                permissions,
                                 command.presentation.clone(),
                             )
                         },
@@ -651,15 +651,13 @@ impl DesktopRuntime {
     /// presentation.
     fn viewer_options(
         &self,
-        clipboard_allowed: bool,
+        permissions: HostEffectPermissions,
         presentation: TerminalPresentation,
     ) -> ViewerOptions {
         ViewerOptions {
             host_effects: Some(HostEffectViewerOptions {
                 process: self.host_effects.clone(),
-                options: HostEffectRecipientOptions::local_desktop(
-                    clipboard_allowed,
-                ),
+                options: HostEffectRecipientOptions::local_desktop(permissions),
             }),
             presentation: Some(presentation),
             ..ViewerOptions::new(ViewerCapabilities::ALL)
@@ -674,7 +672,7 @@ impl DesktopRuntime {
         &self,
         attachment: AttachmentId,
         targets: &[view_install::PaneTarget],
-        clipboard_allowed: bool,
+        permissions: HostEffectPermissions,
     ) -> Committed<Vec<Result<TerminalViewer, MuxError>>> {
         let mux = self.lock();
         let terminating = self.terminating.load(Ordering::Acquire);
@@ -691,7 +689,7 @@ impl DesktopRuntime {
                             geometry: target.start.geometry,
                             spawned: target.spawned,
                             ..self.viewer_options(
-                                clipboard_allowed,
+                                permissions,
                                 target.start.presentation.clone(),
                             )
                         },
@@ -8553,20 +8551,15 @@ impl WorkspaceView {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace_id(cx);
         let attachment = self.attachment_id(cx);
-        let clipboard_allowed =
-            self.config.terminal.clipboard_write.is_allowed();
+        let permissions = host_effect_permissions(&self.config.terminal);
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
             if let Some(directory) = launch_directory(inherited_directories) {
                 command.working_directory = directory;
             }
-            let spawned = runtime.open_tab(
-                workspace,
-                attachment,
-                &command,
-                clipboard_allowed,
-            );
+            let spawned =
+                runtime.open_tab(workspace, attachment, &command, permissions);
             #[cfg(all(test, feature = "test-support"))]
             let _ = runtime
                 .worker_hooks
@@ -8863,8 +8856,7 @@ impl WorkspaceView {
             })
             .unwrap_or_default();
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let clipboard_allowed =
-            self.config.terminal.clipboard_write.is_allowed();
+        let permissions = host_effect_permissions(&self.config.terminal);
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
@@ -8878,7 +8870,7 @@ impl WorkspaceView {
                 pane,
                 direction,
                 &command,
-                clipboard_allowed,
+                permissions,
             )
         });
         let app = cx.to_async();
@@ -9053,8 +9045,10 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Option<PaneView> {
         if let Some(recipient) = viewer.host_effects() {
-            recipient
-                .set_allowed(self.config.terminal.clipboard_write.is_allowed());
+            apply_host_effect_permissions(
+                recipient,
+                host_effect_permissions(&self.config.terminal),
+            );
         }
         let activity = viewer.wake_handle();
         let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);

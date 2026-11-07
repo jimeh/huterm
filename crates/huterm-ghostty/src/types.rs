@@ -325,6 +325,67 @@ pub enum Effect {
     PwdChanged(Vec<u8>),
     /// The shell reported a step of a command through OSC 133.
     SemanticPrompt(SemanticPrompt),
+    /// A program asked for a desktop notification through OSC 9 or OSC 777.
+    DesktopNotification(DesktopNotification),
+    /// A program reported progress through OSC 9;4. A full reset reports
+    /// [`ProgressState::Remove`] before it returns.
+    Progress(Progress),
+}
+
+/// A desktop notification request (OSC 9 or OSC 777), copied out of the
+/// callback. Both fields are untrusted bytes, at most what Ghostty's
+/// 2,048-byte OSC capture holds.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DesktopNotification {
+    /// The title OSC 777 carried; empty for OSC 9, which has none.
+    pub title: Vec<u8>,
+    /// The notification text.
+    pub body: Vec<u8>,
+}
+
+/// A progress report (OSC 9;4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Progress {
+    /// The state the program reported.
+    pub state: ProgressState,
+    /// The percentage, clamped by Ghostty to 0 through 100, when the
+    /// program sent one.
+    pub percent: Option<u8>,
+}
+
+/// The state of a [`Progress`] report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ProgressState {
+    /// Remove any progress indication.
+    Remove,
+    /// Determinate progress.
+    Set,
+    /// The operation failed.
+    Error,
+    /// Progress with no known completion.
+    Indeterminate,
+    /// The operation is paused.
+    Pause,
+    /// A state this binding does not know.
+    Unknown(i32),
+}
+
+impl ProgressState {
+    pub(crate) const fn from_ffi(
+        state: ffi::GhosttyTerminalProgressState,
+    ) -> Self {
+        match state {
+            ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE => Self::Remove,
+            ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_SET => Self::Set,
+            ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR => Self::Error,
+            ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE => {
+                Self::Indeterminate
+            }
+            ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE => Self::Pause,
+            other => Self::Unknown(other),
+        }
+    }
 }
 
 /// A shell integration event (OSC 133), copied out of the callback.

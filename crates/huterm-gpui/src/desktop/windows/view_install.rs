@@ -163,8 +163,7 @@ impl WorkspaceView {
             return;
         };
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-        let clipboard_allowed =
-            self.config.terminal.clipboard_write.is_allowed();
+        let permissions = host_effect_permissions(&self.config.terminal);
         let requested = targets.clone();
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
@@ -186,7 +185,7 @@ impl WorkspaceView {
                     seq: runtime.lock().hierarchy_seq(),
                 };
             }
-            runtime.subscribe_panes(attachment, &requested, clipboard_allowed)
+            runtime.subscribe_panes(attachment, &requested, permissions)
         });
         let id = self.window;
         cx.spawn(async move |view, cx| {
@@ -483,10 +482,9 @@ impl WorkspaceView {
             return;
         };
         let activity = viewer.wake_handle();
-        let clipboard_allowed =
-            self.config.terminal.clipboard_write.is_allowed();
+        let permissions = host_effect_permissions(&self.config.terminal);
         view.update(cx, |terminal, cx| {
-            terminal.replace_viewer(viewer, start, clipboard_allowed, cx);
+            terminal.replace_viewer(viewer, start, permissions, cx);
         });
         let failure_wakes = view.read(cx).failure_wakes.clone();
         let task = Self::pane_activity_task(

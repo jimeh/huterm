@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, Weak};
 
 use huterm_protocol::{
     AttachmentId, ClipboardDestination, ClipboardWrite, HostEffect,
-    HostEffectMetadata, HostEffectOrigin, HostEffectRecipientId, TerminalId,
+    HostEffectKind, HostEffectMetadata, HostEffectOrigin,
+    HostEffectRecipientId, TerminalId, TerminalNotification,
 };
 
 /// Effects one terminal may have queued.
@@ -29,6 +30,33 @@ pub enum HostEffectClientOrigin {
     Remote,
 }
 
+/// The host-effect kinds a client currently permits terminal content to
+/// use, from its policy settings.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct HostEffectPermissions {
+    /// Terminal-content clipboard writes (`terminal.clipboard_write`).
+    pub clipboard: bool,
+    /// Terminal-content notifications (`terminal.notifications`).
+    pub notifications: bool,
+}
+
+impl HostEffectPermissions {
+    /// Permits every kind.
+    pub const ALL: Self = Self {
+        clipboard: true,
+        notifications: true,
+    };
+
+    /// Whether `kind` is permitted.
+    #[must_use]
+    pub const fn allows(self, kind: HostEffectKind) -> bool {
+        match kind {
+            HostEffectKind::Clipboard => self.clipboard,
+            HostEffectKind::Notification => self.notifications,
+        }
+    }
+}
+
 /// Capability and policy state used when registering a host-effect recipient.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostEffectRecipientOptions {
@@ -36,18 +64,18 @@ pub struct HostEffectRecipientOptions {
     pub origin: HostEffectClientOrigin,
     /// Whether this client is allowed to perform state-changing host effects.
     pub writable: bool,
-    /// Current terminal-content clipboard permission.
-    pub clipboard_allowed: bool,
+    /// The kinds terminal content may currently use through this client.
+    pub permissions: HostEffectPermissions,
 }
 
 impl HostEffectRecipientOptions {
     /// Creates options for a writable local desktop view.
     #[must_use]
-    pub const fn local_desktop(clipboard_allowed: bool) -> Self {
+    pub const fn local_desktop(permissions: HostEffectPermissions) -> Self {
         Self {
             origin: HostEffectClientOrigin::LocalEmbeddedDesktop,
             writable: true,
-            clipboard_allowed,
+            permissions,
         }
     }
 }
@@ -160,14 +188,21 @@ pub(crate) struct RecipientLink {
     pub(crate) ordinal: Arc<AtomicU64>,
 }
 
+/// One kind's permission and the generation that numbers its changes.
+#[derive(Debug)]
+struct KindState {
+    allowed: AtomicBool,
+    generation: AtomicU64,
+}
+
 #[derive(Debug)]
 struct Registration {
     id: HostEffectRecipientId,
-    generation: AtomicU64,
     active: AtomicBool,
     attachment: Option<AttachmentId>,
     options: HostEffectRecipientOptions,
-    allowed: AtomicBool,
+    /// Indexed by [`HostEffectKind::index`].
+    kinds: [KindState; HostEffectKind::ALL.len()],
     link: RecipientLink,
     order: u64,
     process_budget: Arc<Budget>,
@@ -175,15 +210,24 @@ struct Registration {
 }
 
 impl Registration {
-    fn is_eligible(&self) -> bool {
+    fn kind(&self, kind: HostEffectKind) -> &KindState {
+        &self.kinds[kind.index()]
+    }
+
+    fn is_eligible(&self, kind: HostEffectKind) -> bool {
         self.options.origin == HostEffectClientOrigin::LocalEmbeddedDesktop
             && self.options.writable
             && self.active.load(Ordering::Acquire)
-            && self.allowed.load(Ordering::Acquire)
+            && self.kind(kind).allowed.load(Ordering::Acquire)
     }
 
-    fn advance_generation(&self) {
+    fn generation(&self, kind: HostEffectKind) -> u64 {
+        self.kind(kind).generation.load(Ordering::Acquire)
+    }
+
+    fn advance_generation(&self, kind: HostEffectKind) {
         if self
+            .kind(kind)
             .generation
             .try_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
                 generation.checked_add(1)
@@ -194,32 +238,40 @@ impl Registration {
         }
     }
 
-    /// Drops every queued effect after releasing the queue, so freeing
-    /// their reservations never waits for a budget while holding it.
-    fn clear_queue(&self) {
-        let cleared = std::mem::take(
-            &mut *self
-                .queue
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+    /// Drops the queued effects `matches` selects after releasing the
+    /// queue, so freeing their reservations never waits for a budget while
+    /// holding it.
+    fn clear_queue(&self, matches: impl Fn(HostEffectKind) -> bool) {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (cleared, kept) = std::mem::take(&mut *queue)
+            .into_iter()
+            .partition::<VecDeque<_>, _>(|pending| {
+                matches(pending.effect.kind())
+            });
+        *queue = kept;
+        drop(queue);
         drop(cleared);
     }
 
-    fn revoke_permission(&self) {
-        self.begin_permission_revocation();
-        self.clear_queue();
+    fn revoke_permission(&self, kind: HostEffectKind) {
+        self.begin_permission_revocation(kind);
+        self.clear_queue(|queued| queued == kind);
     }
 
-    fn begin_permission_revocation(&self) {
-        self.allowed.store(false, Ordering::Release);
-        self.advance_generation();
+    fn begin_permission_revocation(&self, kind: HostEffectKind) {
+        self.kind(kind).allowed.store(false, Ordering::Release);
+        self.advance_generation(kind);
     }
 
     fn revoke_permanently(&self) {
         self.active.store(false, Ordering::Release);
-        self.advance_generation();
-        self.clear_queue();
+        for kind in HostEffectKind::ALL {
+            self.advance_generation(kind);
+        }
+        self.clear_queue(|_| true);
     }
 }
 
@@ -230,15 +282,19 @@ pub struct HostEffectRecipient {
 }
 
 impl HostEffectRecipient {
-    /// Updates terminal-content clipboard permission for this recipient.
-    /// Removing permission cancels queued and already-popped deliveries.
-    pub fn set_allowed(&self, allowed: bool) {
+    /// Updates whether terminal content may use `kind` through this
+    /// recipient. Removing permission cancels that kind's queued and
+    /// already-popped deliveries, and leaves other kinds alone.
+    pub fn set_allowed(&self, kind: HostEffectKind, allowed: bool) {
         if allowed {
             if self.registration.active.load(Ordering::Acquire) {
-                self.registration.allowed.store(true, Ordering::Release);
+                self.registration
+                    .kind(kind)
+                    .allowed
+                    .store(true, Ordering::Release);
             }
         } else {
-            self.registration.revoke_permission();
+            self.registration.revoke_permission(kind);
         }
     }
 
@@ -268,11 +324,11 @@ impl HostEffectRecipient {
     /// that has already started cannot be undone by later revocation.
     #[must_use]
     pub fn is_current(&self, pending: &PendingHostEffect) -> bool {
+        let kind = pending.effect.kind();
         pending.registration.upgrade().is_some_and(|registration| {
             Arc::ptr_eq(&registration, &self.registration)
-                && registration.active.load(Ordering::Acquire)
-                && registration.allowed.load(Ordering::Acquire)
-                && registration.generation.load(Ordering::Acquire)
+                && registration.is_eligible(kind)
+                && registration.generation(kind)
                     == pending.metadata.recipient_generation
         })
     }
@@ -351,26 +407,39 @@ impl HostEffectSink {
     #[cfg(test)]
     pub(crate) fn admit_owned(&self, text: String) -> HostEffectAdmission {
         let bytes = text.capacity();
-        self.admit(bytes, || text)
+        self.admit(HostEffectKind::Clipboard, bytes, || clipboard(text))
     }
 
     pub(crate) fn admit_borrowed(&self, text: &str) -> HostEffectAdmission {
-        self.admit(text.len(), || text.to_owned())
+        self.admit(HostEffectKind::Clipboard, text.len(), || {
+            clipboard(text.to_owned())
+        })
+    }
+
+    pub(crate) fn admit_notification(
+        &self,
+        notification: TerminalNotification,
+    ) -> HostEffectAdmission {
+        let bytes = notification.allocation_capacity();
+        self.admit(HostEffectKind::Notification, bytes, || {
+            HostEffect::Notification(notification)
+        })
     }
 
     fn admit(
         &self,
+        kind: HostEffectKind,
         bytes: usize,
-        make_text: impl FnOnce() -> String,
+        make_effect: impl FnOnce() -> HostEffect,
     ) -> HostEffectAdmission {
         if self.inner.closed.load(Ordering::Acquire) {
             return HostEffectAdmission::Closed;
         }
-        let (registration, selected_generation) = match self.select_recipient()
-        {
-            Ok(selected) => selected,
-            Err(status) => return status,
-        };
+        let (registration, selected_generation) =
+            match self.select_recipient(kind) {
+                Ok(selected) => selected,
+                Err(status) => return status,
+            };
 
         let mut terminal_budget = self.lock(&self.inner.terminal_budget.state);
         let mut process_budget = self.lock(&registration.process_budget.state);
@@ -385,15 +454,14 @@ impl HostEffectSink {
             return HostEffectAdmission::Full;
         }
         let mut queue = self.lock(&registration.queue);
-        if !registration.is_eligible()
-            || registration.generation.load(Ordering::Acquire)
-                != selected_generation
+        if !registration.is_eligible(kind)
+            || registration.generation(kind) != selected_generation
         {
             return HostEffectAdmission::Denied;
         }
 
-        let text = make_text();
-        let actual_bytes = text.capacity();
+        let effect = make_effect();
+        let actual_bytes = effect.allocation_capacity();
         if actual_bytes != bytes
             && (!self
                 .inner
@@ -425,10 +493,7 @@ impl HostEffectSink {
                 recipient: registration.id,
                 recipient_generation: selected_generation,
             },
-            effect: HostEffect::ClipboardWrite(ClipboardWrite::new(
-                ClipboardDestination::System,
-                text,
-            )),
+            effect,
             registration: Arc::downgrade(&registration),
             _reservation: EffectReservation {
                 terminal: Arc::clone(&self.inner.terminal_budget),
@@ -445,6 +510,7 @@ impl HostEffectSink {
 
     fn select_recipient(
         &self,
+        kind: HostEffectKind,
     ) -> Result<(Arc<Registration>, u64), HostEffectAdmission> {
         let mut state = self.lock(&self.inner.state);
         state.registrations.retain(|weak| weak.strong_count() != 0);
@@ -455,7 +521,7 @@ impl HostEffectSink {
             .registrations
             .iter()
             .filter_map(Weak::upgrade)
-            .filter(|registration| registration.is_eligible())
+            .filter(|registration| registration.is_eligible(kind))
             .max_by(|left, right| {
                 left.link
                     .ordinal
@@ -466,8 +532,7 @@ impl HostEffectSink {
         else {
             return Err(HostEffectAdmission::Denied);
         };
-        let selected_generation =
-            registration.generation.load(Ordering::Acquire);
+        let selected_generation = registration.generation(kind);
         Ok((registration, selected_generation))
     }
 
@@ -551,11 +616,13 @@ impl HostEffectSink {
         let registration_order = state.next_registration;
         let registration = Arc::new(Registration {
             id: HostEffectRecipientId::new(registration_order),
-            generation: AtomicU64::new(1),
             active: AtomicBool::new(true),
             attachment,
             options,
-            allowed: AtomicBool::new(options.clipboard_allowed),
+            kinds: HostEffectKind::ALL.map(|kind| KindState {
+                allowed: AtomicBool::new(options.permissions.allows(kind)),
+                generation: AtomicU64::new(1),
+            }),
             link,
             order: registration_order,
             process_budget: Arc::clone(&process.process_budget),
@@ -564,6 +631,13 @@ impl HostEffectSink {
         state.registrations.push(Arc::downgrade(&registration));
         Some(HostEffectRecipient { registration })
     }
+}
+
+fn clipboard(text: String) -> HostEffect {
+    HostEffect::ClipboardWrite(ClipboardWrite::new(
+        ClipboardDestination::System,
+        text,
+    ))
 }
 
 #[cfg(test)]
@@ -586,7 +660,10 @@ pub(crate) fn test_fixture_with_clipboard(
         .register(
             Some(AttachmentId::new(1)),
             &process,
-            HostEffectRecipientOptions::local_desktop(clipboard_allowed),
+            HostEffectRecipientOptions::local_desktop(HostEffectPermissions {
+                clipboard: clipboard_allowed,
+                notifications: true,
+            }),
             RecipientLink::default(),
         )
         .expect("fresh test fixture should accept its first recipient");
@@ -635,7 +712,9 @@ mod tests {
         };
         let (active_link, active_signal) = link(2);
         let (idle_link, idle_signal) = link(1);
-        let options = HostEffectRecipientOptions::local_desktop(true);
+        let options = HostEffectRecipientOptions::local_desktop(
+            HostEffectPermissions::ALL,
+        );
         let active = sink
             .register(
                 Some(AttachmentId::new(1)),
@@ -658,7 +737,9 @@ mod tests {
     fn permanently_revoked_registrations_free_their_place_in_the_limit() {
         let sink = HostEffectSink::new(TerminalId::new(1));
         let process = DesktopHostEffectClient::new();
-        let options = HostEffectRecipientOptions::local_desktop(true);
+        let options = HostEffectRecipientOptions::local_desktop(
+            HostEffectPermissions::ALL,
+        );
         let register = |attachment| {
             sink.register(
                 Some(AttachmentId::new(attachment)),
@@ -691,7 +772,9 @@ mod tests {
                 &sink,
                 &process,
                 id,
-                HostEffectRecipientOptions::local_desktop(true),
+                HostEffectRecipientOptions::local_desktop(
+                    HostEffectPermissions::ALL,
+                ),
             );
             terminals.push((sink, recipient));
         }
@@ -711,7 +794,9 @@ mod tests {
             &sink,
             &process,
             1,
-            HostEffectRecipientOptions::local_desktop(true),
+            HostEffectRecipientOptions::local_desktop(
+                HostEffectPermissions::ALL,
+            ),
         );
 
         for _ in 0..TERMINAL_EFFECT_LIMIT {
@@ -734,7 +819,9 @@ mod tests {
                 &sink,
                 &process,
                 id,
-                HostEffectRecipientOptions::local_desktop(true),
+                HostEffectRecipientOptions::local_desktop(
+                    HostEffectPermissions::ALL,
+                ),
             ));
             sinks.push(sink);
         }
@@ -768,7 +855,9 @@ mod tests {
                 &sink,
                 &process,
                 id,
-                HostEffectRecipientOptions::local_desktop(true),
+                HostEffectRecipientOptions::local_desktop(
+                    HostEffectPermissions::ALL,
+                ),
             ));
             sinks.push(sink);
         }
@@ -813,11 +902,11 @@ mod tests {
         let stale = recipient.try_next().expect("effect should be queued");
         assert!(recipient.is_current(&stale));
 
-        recipient.set_allowed(false);
+        recipient.set_allowed(HostEffectKind::Clipboard, false);
         assert!(!recipient.is_current(&stale));
         assert_eq!(sink.admit_borrowed("denied"), HostEffectAdmission::Denied);
 
-        recipient.set_allowed(true);
+        recipient.set_allowed(HostEffectKind::Clipboard, true);
         assert_eq!(sink.admit_borrowed("after"), HostEffectAdmission::Accepted);
         let fresh =
             recipient.try_next().expect("fresh effect should be queued");
@@ -832,7 +921,9 @@ mod tests {
     fn activity_selects_one_recipient_without_fallback_or_replay() {
         let sink = HostEffectSink::new(TerminalId::new(3));
         let process = DesktopHostEffectClient::new();
-        let options = HostEffectRecipientOptions::local_desktop(true);
+        let options = HostEffectRecipientOptions::local_desktop(
+            HostEffectPermissions::ALL,
+        );
         let first_ordinal = Arc::new(AtomicU64::new(0));
         let first = sink
             .register(
@@ -877,7 +968,7 @@ mod tests {
                 HostEffectRecipientOptions {
                     origin: HostEffectClientOrigin::LocalText,
                     writable: true,
-                    clipboard_allowed: true,
+                    permissions: HostEffectPermissions::ALL,
                 },
             ),
             (
@@ -885,7 +976,7 @@ mod tests {
                 HostEffectRecipientOptions {
                     origin: HostEffectClientOrigin::Remote,
                     writable: true,
-                    clipboard_allowed: true,
+                    permissions: HostEffectPermissions::ALL,
                 },
             ),
             (
@@ -893,14 +984,97 @@ mod tests {
                 HostEffectRecipientOptions {
                     origin: HostEffectClientOrigin::LocalEmbeddedDesktop,
                     writable: false,
-                    clipboard_allowed: true,
+                    permissions: HostEffectPermissions::ALL,
                 },
             ),
         ] {
             let sink = HostEffectSink::new(TerminalId::new(id));
             let _recipient = recipient(&sink, &process, id, options);
             assert_eq!(sink.admit_borrowed("no"), HostEffectAdmission::Denied);
+            // Text and remote clients present no notifications either,
+            // until their policies exist.
+            assert_eq!(
+                sink.admit_notification(note("no")),
+                HostEffectAdmission::Denied
+            );
         }
+    }
+
+    fn note(body: &str) -> TerminalNotification {
+        TerminalNotification::new(String::new(), body.to_owned())
+    }
+
+    #[test]
+    fn each_kind_has_its_own_permission_and_generation() {
+        let (sink, recipient) = test_fixture(TerminalId::new(17));
+        assert_eq!(sink.admit_borrowed("copy"), HostEffectAdmission::Accepted);
+        assert_eq!(
+            sink.admit_notification(note("first")),
+            HostEffectAdmission::Accepted
+        );
+        let popped = recipient.try_next().expect("the copy is queued");
+        assert!(matches!(popped.effect(), HostEffect::ClipboardWrite(_)));
+
+        // Revoking notifications cancels only queued notifications.
+        recipient.set_allowed(HostEffectKind::Notification, false);
+        assert!(recipient.is_current(&popped));
+        assert!(recipient.try_next().is_none(), "the notification is gone");
+        assert_eq!(
+            sink.admit_notification(note("denied")),
+            HostEffectAdmission::Denied
+        );
+        assert_eq!(sink.admit_borrowed("copy"), HostEffectAdmission::Accepted);
+
+        // Revoking the clipboard leaves a queued notification current.
+        recipient.set_allowed(HostEffectKind::Notification, true);
+        assert_eq!(
+            sink.admit_notification(note("second")),
+            HostEffectAdmission::Accepted
+        );
+        recipient.set_allowed(HostEffectKind::Clipboard, false);
+        assert!(!recipient.is_current(&popped));
+        let queued = recipient.try_next().expect("the notification stays");
+        match queued.effect() {
+            HostEffect::Notification(note) => assert_eq!(note.body(), "second"),
+            effect => panic!("unexpected host effect: {effect:?}"),
+        }
+        assert!(recipient.is_current(&queued));
+        assert!(recipient.try_next().is_none(), "the copy was cancelled");
+    }
+
+    #[test]
+    fn notifications_select_only_recipients_that_permit_them() {
+        let sink = HostEffectSink::new(TerminalId::new(18));
+        let process = DesktopHostEffectClient::new();
+        let newest_denies = HostEffectPermissions {
+            clipboard: true,
+            notifications: false,
+        };
+        let older = recipient(
+            &sink,
+            &process,
+            1,
+            HostEffectRecipientOptions::local_desktop(
+                HostEffectPermissions::ALL,
+            ),
+        );
+        let newer = recipient(
+            &sink,
+            &process,
+            2,
+            HostEffectRecipientOptions::local_desktop(newest_denies),
+        );
+        assert_eq!(
+            sink.admit_notification(note("note")),
+            HostEffectAdmission::Accepted
+        );
+        assert_eq!(sink.admit_borrowed("copy"), HostEffectAdmission::Accepted);
+        assert!(matches!(
+            older.try_next().unwrap().effect(),
+            HostEffect::Notification(_)
+        ));
+        assert!(older.try_next().is_none(), "the copy went to the newer one");
+        assert_eq!(text(&newer.try_next().unwrap()), "copy");
     }
 
     #[test]
@@ -965,8 +1139,8 @@ mod tests {
         assert_eq!(sink.admit_borrowed("held"), HostEffectAdmission::Accepted);
         let held = recipient.try_next().expect("effect should be queued");
 
-        recipient.set_allowed(false);
-        recipient.set_allowed(true);
+        recipient.set_allowed(HostEffectKind::Clipboard, false);
+        recipient.set_allowed(HostEffectKind::Clipboard, true);
         for _ in 1..TERMINAL_EFFECT_LIMIT {
             assert_eq!(
                 sink.admit_borrowed("queued"),
@@ -1002,9 +1176,10 @@ mod tests {
             let revoked_worker = Arc::clone(&revoked);
             let registration = &recipient.registration;
             scope.spawn(move || {
-                registration.begin_permission_revocation();
+                registration
+                    .begin_permission_revocation(HostEffectKind::Clipboard);
                 revoked_worker.wait();
-                registration.clear_queue();
+                registration.clear_queue(|_| true);
             });
             revoked.wait();
 

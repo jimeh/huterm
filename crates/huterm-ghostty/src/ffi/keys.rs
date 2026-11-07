@@ -364,6 +364,8 @@ pub(crate) mod terminal_option {
         "SCROLLBACK_MAX_LINES",
         "CLIPBOARD_WRITE_MAX_BYTES",
         "SEMANTIC_PROMPT",
+        "DESKTOP_NOTIFICATION",
+        "PROGRESS_REPORT",
     ];
 
     /// `GHOSTTY_TERMINAL_OPT_USERDATA`.
@@ -571,6 +573,26 @@ pub(crate) mod terminal_option {
         const KEY: ffi::GhosttyTerminalOption =
             ffi::GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT;
         type Callback = ffi::GhosttyTerminalSemanticPromptFn;
+    }
+
+    /// `GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION`.
+    #[derive(Debug)]
+    pub(crate) enum DesktopNotification {}
+
+    impl super::super::TerminalCallback for DesktopNotification {
+        const KEY: ffi::GhosttyTerminalOption =
+            ffi::GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION;
+        type Callback = ffi::GhosttyTerminalDesktopNotificationFn;
+    }
+
+    /// `GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT`.
+    #[derive(Debug)]
+    pub(crate) enum ProgressReport {}
+
+    impl super::super::TerminalCallback for ProgressReport {
+        const KEY: ffi::GhosttyTerminalOption =
+            ffi::GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT;
+        type Callback = ffi::GhosttyTerminalProgressReportFn;
     }
 }
 
@@ -976,6 +998,18 @@ impl super::SizedStruct for ffi::GhosttyClipboardWriteReply {
 }
 
 impl super::SizedStruct for ffi::GhosttyClipboardWrite {
+    fn size_mut(&mut self) -> &mut usize {
+        &mut self.size
+    }
+}
+
+impl super::SizedStruct for ffi::GhosttyTerminalDesktopNotification {
+    fn size_mut(&mut self) -> &mut usize {
+        &mut self.size
+    }
+}
+
+impl super::SizedStruct for ffi::GhosttyTerminalProgressReport {
     fn size_mut(&mut self) -> &mut usize {
         &mut self.size
     }

@@ -141,6 +141,10 @@ pub struct SettingsConfig {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent terminal setting"
+)]
 pub struct TerminalConfig {
     pub term: TerminalIdentity,
     pub close_on_exit: bool,
@@ -148,6 +152,8 @@ pub struct TerminalConfig {
     pub new_tab_directory: NewTabDirectory,
     pub bell: BellConfig,
     pub clipboard_write: ClipboardWritePolicy,
+    pub notifications: NotificationPolicy,
+    pub progress_bar: bool,
     pub links: bool,
     pub link_modifiers: LinkModifiers,
     pub macos_option_as_alt: MacosOptionAsAlt,
@@ -165,6 +171,8 @@ impl Default for TerminalConfig {
             new_tab_directory: NewTabDirectory::Inherit,
             bell: BellConfig::default(),
             clipboard_write: ClipboardWritePolicy::Allow,
+            notifications: NotificationPolicy::Allow,
+            progress_bar: true,
             links: true,
             link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
@@ -304,6 +312,18 @@ pub struct BellConfig {
         "x-huterm-visible-when" = {"setting": "terminal.bell.audio", "equals": true},
     )))]
     pub volume: f32,
+    /// Ask for attention when a bell rings in a window that is not active,
+    /// without taking focus: macOS bounces the Dock icon once while Huterm
+    /// is in the background, and X11 marks the window urgent. Wayland has
+    /// no such request.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Bell",
+        "x-huterm-label" = "Request attention from inactive windows",
+        "x-huterm-order" = 74,
+        "x-huterm-apply" = "live",
+    )))]
+    pub attention: bool,
 }
 
 impl Default for BellConfig {
@@ -314,6 +334,7 @@ impl Default for BellConfig {
             audio: cfg!(target_os = "macos"),
             sound: BellSound::System,
             volume: 0.5,
+            attention: true,
         }
     }
 }
@@ -446,6 +467,37 @@ pub enum ClipboardWritePolicy {
 
 impl ClipboardWritePolicy {
     /// Returns whether terminal-content clipboard writes are allowed.
+    #[must_use]
+    pub const fn is_allowed(self) -> bool {
+        matches!(self, Self::Allow)
+    }
+}
+
+/// Permission for desktop notifications requested by terminal content
+/// (OSC 9 and OSC 777).
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum NotificationPolicy {
+    /// Present notifications from terminal programs.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Allow"))
+    )]
+    Allow,
+    /// Drop notifications from terminal programs.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Deny"))
+    )]
+    Deny,
+}
+
+impl NotificationPolicy {
+    /// Returns whether terminal-content notifications are allowed.
     #[must_use]
     pub const fn is_allowed(self) -> bool {
         matches!(self, Self::Allow)
@@ -2821,6 +2873,10 @@ impl RawKeybinding {
 #[derive(Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent terminal setting"
+)]
 pub struct RawTerminal {
     /// Deprecated compatibility setting. Both legacy values use Ghostty;
     /// remove this field.
@@ -2854,6 +2910,27 @@ pub struct RawTerminal {
         "x-huterm-apply" = "live",
     )))]
     pub clipboard_write: ClipboardWritePolicy,
+    /// Whether programs in the terminal may show notifications (OSC 9 and
+    /// OSC 777): a system notification while Huterm is in the background,
+    /// a notice while it is in front.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Notifications and progress",
+        "x-huterm-label" = "Notifications from programs",
+        "x-huterm-order" = 66,
+        "x-huterm-apply" = "live",
+    )))]
+    pub notifications: NotificationPolicy,
+    /// Draw a thin bar across the top of a pane while its program reports
+    /// progress (OSC 9;4). The tab's progress ring shows either way.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Notifications and progress",
+        "x-huterm-label" = "Progress bar on panes",
+        "x-huterm-order" = 67,
+        "x-huterm-apply" = "live",
+    )))]
+    pub progress_bar: bool,
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Mouse",
@@ -2958,6 +3035,8 @@ impl Default for RawTerminal {
             engine: None,
             term: TerminalIdentity::Xterm256Color,
             clipboard_write: ClipboardWritePolicy::Allow,
+            notifications: NotificationPolicy::Allow,
+            progress_bar: true,
             links: true,
             link_modifiers: LinkModifiers::default(),
             close_on_exit: TerminalConfig::default().close_on_exit,

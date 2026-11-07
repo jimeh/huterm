@@ -15,12 +15,15 @@ use gpui::{
     WindowBounds, WindowControlArea, WindowOptions, canvas, div, point,
     prelude::*, px, size, svg,
 };
-use huterm_core::{Mux, RuntimeError, TerminalViewer, ViewerWake};
+use huterm_core::{
+    HostEffectPermissions, HostEffectRecipient, Mux, RuntimeError,
+    TerminalViewer, ViewerWake,
+};
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
-    CommandOutcome, CommandValue, GridSize, HostEffect, Modifiers,
-    ScrollbackLimit, TabId, TerminalCommand, TerminalId, TerminalInput,
-    TerminalLifecycle, TerminalMetadata, TerminalPresentation,
+    CommandOutcome, CommandValue, GridSize, HostEffect, HostEffectKind,
+    Modifiers, ScrollbackLimit, TabId, TerminalCommand, TerminalId,
+    TerminalInput, TerminalLifecycle, TerminalMetadata, TerminalPresentation,
     TerminalSnapshot, ids,
 };
 
@@ -579,6 +582,27 @@ impl SnapshotCounts {
         self.0
             .get(&terminal)
             .map_or((0, 0), |count| (count.builds, count.reuses))
+    }
+}
+
+/// The host-effect kinds the terminal policy lets programs use.
+fn host_effect_permissions(
+    terminal: &config::TerminalConfig,
+) -> HostEffectPermissions {
+    HostEffectPermissions {
+        clipboard: terminal.clipboard_write.is_allowed(),
+        notifications: terminal.notifications.is_allowed(),
+    }
+}
+
+/// Applies `permissions` to a viewer's recipient; a revoked kind cancels
+/// its deliveries that have not run yet.
+fn apply_host_effect_permissions(
+    recipient: &HostEffectRecipient,
+    permissions: HostEffectPermissions,
+) {
+    for kind in HostEffectKind::ALL {
+        recipient.set_allowed(kind, permissions.allows(kind));
     }
 }
 
@@ -1222,11 +1246,11 @@ impl TerminalView {
         &mut self,
         viewer: TerminalViewer,
         start: &ViewerStart,
-        clipboard_allowed: bool,
+        permissions: HostEffectPermissions,
         cx: &mut Context<'_, Self>,
     ) {
         if let Some(recipient) = viewer.host_effects() {
-            recipient.set_allowed(clipboard_allowed);
+            apply_host_effect_permissions(recipient, permissions);
         }
         self.viewer = viewer;
         self.viewer_epoch += 1;
@@ -1364,7 +1388,10 @@ impl TerminalView {
         cx: &mut Context<'_, Self>,
     ) {
         if let Some(recipient) = self.viewer.host_effects() {
-            recipient.set_allowed(terminal.clipboard_write.is_allowed());
+            apply_host_effect_permissions(
+                recipient,
+                host_effect_permissions(&terminal),
+            );
         }
         self.refresh_mode = terminal.refresh;
         self.scrollback = terminal.scrollback;

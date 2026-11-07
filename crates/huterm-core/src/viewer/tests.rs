@@ -20,8 +20,8 @@ use super::{HostEffectViewerOptions, TerminalViewer, ViewerOptions};
 use crate::terminal::RuntimeControl;
 use crate::test_support::wait_for_text;
 use crate::{
-    DesktopHostEffectClient, HostEffectRecipientOptions, RuntimeError,
-    TerminalRuntime,
+    DesktopHostEffectClient, HostEffectPermissions, HostEffectRecipientOptions,
+    RuntimeError, TerminalRuntime,
 };
 
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -322,7 +322,9 @@ fn a_host_effect_wakes_its_viewer_while_a_snapshot_is_due() {
         .subscribe(ViewerOptions {
             host_effects: Some(HostEffectViewerOptions {
                 process: DesktopHostEffectClient::new(),
-                options: HostEffectRecipientOptions::local_desktop(true),
+                options: HostEffectRecipientOptions::local_desktop(
+                    HostEffectPermissions::ALL,
+                ),
             }),
             ..ViewerOptions::new(ViewerCapabilities::ALL)
         })
@@ -885,7 +887,9 @@ fn a_clipboard_write_reaches_exactly_one_recipient() {
             .subscribe(ViewerOptions {
                 host_effects: Some(HostEffectViewerOptions {
                     process: process.clone(),
-                    options: HostEffectRecipientOptions::local_desktop(true),
+                    options: HostEffectRecipientOptions::local_desktop(
+                        HostEffectPermissions::ALL,
+                    ),
                 }),
                 ..ViewerOptions::new(ViewerCapabilities::ALL)
             })
@@ -1284,7 +1288,9 @@ fn a_closed_host_effect_sink_refuses_a_viewer_without_registering_it() {
     let refused = runtime.subscribe(ViewerOptions {
         host_effects: Some(HostEffectViewerOptions {
             process: DesktopHostEffectClient::new(),
-            options: HostEffectRecipientOptions::local_desktop(true),
+            options: HostEffectRecipientOptions::local_desktop(
+                HostEffectPermissions::ALL,
+            ),
         }),
         focused: true,
         ..ViewerOptions::new(ViewerCapabilities::ALL)
@@ -1794,4 +1800,49 @@ fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
         std::task::Poll::Ready(value) => value,
         std::task::Poll::Pending => panic!("future was not ready"),
     }
+}
+
+#[test]
+fn program_progress_is_status_and_its_notification_reaches_one_recipient() {
+    let runtime = spawn(
+        235,
+        "stty -echo; printf '\\033]9;4;1;50\\007\\033]9;Build done\\007READY'; read l; exit 0",
+    );
+    let recipient = runtime
+        .subscribe(ViewerOptions {
+            host_effects: Some(HostEffectViewerOptions {
+                process: DesktopHostEffectClient::new(),
+                options: HostEffectRecipientOptions::local_desktop(
+                    HostEffectPermissions::ALL,
+                ),
+            }),
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    assert_eq!(
+        runtime.registry().status().progress,
+        Some(huterm_protocol::TerminalProgress::Determinate(50))
+    );
+    // The recipient subscribed before the output, so it was eligible when
+    // the notification arrived.
+    wait_until("notification", || {
+        recipient.host_effects().unwrap().try_next().is_some_and(|pending| {
+            matches!(
+                pending.effect(),
+                HostEffect::Notification(note) if note.body() == "Build done"
+            )
+        })
+    });
+    typist.send_input(TerminalInput::Text("\n".into())).unwrap();
+    wait_until("exit", || {
+        runtime.registry().status().lifecycle != TerminalLifecycle::Running
+    });
+    assert_eq!(
+        runtime.registry().status().progress,
+        None,
+        "the root's exit ends its progress"
+    );
+    runtime.shutdown().unwrap();
 }

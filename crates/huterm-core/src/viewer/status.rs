@@ -2,18 +2,25 @@
 //! batches and only when a value actually changed.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use huterm_protocol::{
     CommandRecord, ExitStatus, TERMINAL_FAILURE_CAPACITY, TerminalFailure,
-    TerminalLifecycle, TerminalMetadata, TerminalStatus,
+    TerminalLifecycle, TerminalMetadata, TerminalProgress, TerminalStatus,
 };
 
 use super::Registry;
+
+/// How long progress stays without a new report, as Ghostty clears it, so a
+/// program that crashed or forgot to remove it leaves no stale indicator.
+pub(crate) const PROGRESS_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Default)]
 pub(crate) struct StatusPublisher {
     status: TerminalStatus,
     dirty: bool,
+    /// When the shown progress expires; `None` while there is none.
+    progress_expires: Option<Instant>,
 }
 
 impl StatusPublisher {
@@ -49,11 +56,42 @@ impl StatusPublisher {
         self.dirty = true;
     }
 
+    /// Records a progress report at `now`. Every report, even an unchanged
+    /// one, extends its expiry.
+    pub(crate) fn progress(
+        &mut self,
+        progress: Option<TerminalProgress>,
+        now: Instant,
+    ) {
+        self.progress_expires = progress.map(|_| now + PROGRESS_TIMEOUT);
+        if self.status.progress != progress {
+            self.status.progress = progress;
+            self.dirty = true;
+        }
+    }
+
+    /// When progress expires, for the runtime's idle wait.
+    pub(crate) fn progress_deadline(&self) -> Option<Instant> {
+        self.progress_expires
+    }
+
+    /// Clears progress whose last report is [`PROGRESS_TIMEOUT`] old.
+    /// Returns whether it did.
+    pub(crate) fn expire_progress(&mut self, now: Instant) -> bool {
+        if self.progress_expires.is_some_and(|expires| now >= expires) {
+            self.progress(None, now);
+            return true;
+        }
+        false
+    }
+
+    /// Records the root's exit, which also ends any progress it reported.
     pub(crate) fn exit(&mut self, status: ExitStatus) {
         if self.status.lifecycle == TerminalLifecycle::Running {
             self.status.lifecycle = TerminalLifecycle::Exited(status);
             self.dirty = true;
         }
+        self.progress(None, Instant::now());
     }
 
     /// Records a failure. A message identical to the latest one is not
@@ -150,5 +188,38 @@ mod tests {
             status.status.last_failure(),
             u64::try_from(TERMINAL_FAILURE_CAPACITY).unwrap() + 1
         );
+    }
+
+    #[test]
+    fn progress_expires_after_its_timeout_and_with_the_root() {
+        use std::time::{Duration, Instant};
+
+        use huterm_protocol::{ExitStatus, TerminalProgress};
+
+        use super::PROGRESS_TIMEOUT;
+
+        let start = Instant::now();
+        let mut status = StatusPublisher::default();
+        assert_eq!(status.progress_deadline(), None);
+        status.progress(Some(TerminalProgress::Determinate(10)), start);
+        assert!(std::mem::take(&mut status.dirty));
+        // An unchanged report publishes nothing but extends the expiry.
+        let later = start + Duration::from_secs(10);
+        status.progress(Some(TerminalProgress::Determinate(10)), later);
+        assert!(!status.dirty);
+        assert_eq!(status.progress_deadline(), Some(later + PROGRESS_TIMEOUT));
+        assert!(!status.expire_progress(start + PROGRESS_TIMEOUT));
+        assert!(status.expire_progress(later + PROGRESS_TIMEOUT));
+        assert_eq!(status.status.progress, None);
+        assert_eq!(status.progress_deadline(), None);
+        assert!(std::mem::take(&mut status.dirty));
+
+        status.progress(Some(TerminalProgress::Indeterminate), later);
+        status.exit(ExitStatus {
+            code: Some(0),
+            success: true,
+        });
+        assert_eq!(status.status.progress, None, "exit clears progress");
+        assert_eq!(status.progress_deadline(), None);
     }
 }

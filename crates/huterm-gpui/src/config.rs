@@ -63,6 +63,11 @@ new_tab_directory = "inherit"
 # Allow terminal content such as tmux to replace the system clipboard.
 # Reload applies this to existing terminals: "allow" or "deny".
 clipboard_write = "allow"
+# Let programs show notifications (OSC 9, OSC 777): a system notification
+# while Huterm is in the background, a notice while it is in front.
+notifications = "allow" # or "deny"
+# Draw a thin bar across a pane while its program reports progress (OSC 9;4).
+progress_bar = true
 # Send Option character chords as terminal Meta: "off", "both", "left", or
 # "right"; the other Option key still types macOS characters. Reload applies
 # this to existing terminals. Linux always uses Alt as Meta.
@@ -85,6 +90,9 @@ visual = false
 # audio = true # macOS default; Linux default: false
 sound = "system"
 volume = 0.5
+# Bounce the Dock icon (macOS) or mark the window urgent (X11) when a bell
+# rings in a window that is not active. Focus never moves.
+attention = true
 
 [font]
 # Defaults to Menlo on macOS and bundled DejaVu Sans Mono on Linux.
@@ -660,6 +668,8 @@ fn parse_consumed(
             new_tab_directory: raw.terminal.new_tab_directory,
             bell: raw.terminal.bell,
             clipboard_write: raw.terminal.clipboard_write,
+            notifications: raw.terminal.notifications,
+            progress_bar: raw.terminal.progress_bar,
             links: raw.terminal.links,
             link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,

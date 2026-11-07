@@ -975,7 +975,12 @@ fn attachment_allocation_failure_rolls_back_published_pty() {
     runtime.mux.lock().unwrap().reserve_through(u64::MAX - 5);
     assert!(matches!(
         runtime
-            .open_tab(None, None, &lifecycle_command(), true)
+            .open_tab(
+                None,
+                None,
+                &lifecycle_command(),
+                HostEffectPermissions::ALL
+            )
             .result,
         Err(MuxError::IdExhausted)
     ));
@@ -993,8 +998,10 @@ fn open_tab_returns_registered_host_effect_recipient() {
         "read value; printf '\\033]52;c;ZGVza3RvcABjbGlwYm9hcmQ=\\007'; read value"
             .into(),
     ];
-    let (session, _, _, _, viewer) =
-        runtime.open_tab(None, None, &command, true).result.unwrap();
+    let (session, _, _, _, viewer) = runtime
+        .open_tab(None, None, &command, HostEffectPermissions::ALL)
+        .result
+        .unwrap();
     let recipient = viewer.host_effects().unwrap();
 
     viewer
@@ -1022,7 +1029,7 @@ fn open_tab_returns_registered_host_effect_recipient() {
 fn orphaned_publication_preserves_another_attachment_and_transferred_tab() {
     let runtime = DesktopRuntime::default();
     let (session, workspace, opened, attachment, _authority) = runtime
-        .open_tab(None, None, &lifecycle_command(), true)
+        .open_tab(None, None, &lifecycle_command(), HostEffectPermissions::ALL)
         .result
         .unwrap();
     let second = runtime.mux.lock().unwrap().attach_session(session).unwrap();
@@ -1044,7 +1051,7 @@ fn orphaned_publication_preserves_another_attachment_and_transferred_tab() {
     );
     assert!(runtime.mux.lock().unwrap().tab(opened.tab.id).is_some());
     let (source, source_workspace, transferred, initial, _authority) = runtime
-        .open_tab(None, None, &lifecycle_command(), true)
+        .open_tab(None, None, &lifecycle_command(), HostEffectPermissions::ALL)
         .result
         .unwrap();
     runtime
@@ -1071,7 +1078,7 @@ fn orphaned_publication_preserves_another_attachment_and_transferred_tab() {
 fn orphaned_publication_never_terminates_a_retargeted_destination() {
     let runtime = DesktopRuntime::default();
     let (source, workspace, opened, attachment, _authority) = runtime
-        .open_tab(None, None, &lifecycle_command(), true)
+        .open_tab(None, None, &lifecycle_command(), HostEffectPermissions::ALL)
         .result
         .unwrap();
     let destination = runtime
@@ -1105,7 +1112,7 @@ fn orphaned_publication_spares_a_pane_moved_into_its_tab() {
     // Another client moves a pane into the spawn's tab before the spawn's
     // window publishes it.
     let (session, workspace, opened, attachment, _authority) = runtime
-        .open_tab(None, None, &lifecycle_command(), true)
+        .open_tab(None, None, &lifecycle_command(), HostEffectPermissions::ALL)
         .result
         .unwrap();
     let spawned = opened.tab.first_pane().clone();
@@ -1341,20 +1348,39 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
         shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     };
-    assert!(runtime.open_tab(None, None, &command, true).result.is_err());
+    assert!(
+        runtime
+            .open_tab(None, None, &command, HostEffectPermissions::ALL)
+            .result
+            .is_err()
+    );
     assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
     assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
     command.program = "/bin/sh".into();
-    let (session, workspace, first, attachment, first_viewer) =
-        runtime.open_tab(None, None, &command, true).result.unwrap();
-    let (sibling, _, _, _, second_viewer) =
-        runtime.open_tab(None, None, &command, true).result.unwrap();
+    let (session, workspace, first, attachment, first_viewer) = runtime
+        .open_tab(None, None, &command, HostEffectPermissions::ALL)
+        .result
+        .unwrap();
+    let (sibling, _, _, _, second_viewer) = runtime
+        .open_tab(None, None, &command, HostEffectPermissions::ALL)
+        .result
+        .unwrap();
     assert_ne!(session, sibling);
     command.program = "/huterm-nonexistent-shell".into();
-    assert!(runtime.open_tab(None, None, &command, true).result.is_err());
     assert!(
         runtime
-            .open_tab(Some(workspace), attachment, &command, true)
+            .open_tab(None, None, &command, HostEffectPermissions::ALL)
+            .result
+            .is_err()
+    );
+    assert!(
+        runtime
+            .open_tab(
+                Some(workspace),
+                attachment,
+                &command,
+                HostEffectPermissions::ALL
+            )
             .result
             .is_err()
     );
@@ -1383,7 +1409,9 @@ fn private_session_spawn_failure_rolls_back_and_cleanup_keeps_siblings() {
     assert_eq!(runtime.mux.lock().unwrap().terminal_count(), 0);
     runtime.mux.lock().unwrap().reserve_through(u64::MAX - 1);
     assert!(matches!(
-        runtime.open_tab(None, None, &command, true).result,
+        runtime
+            .open_tab(None, None, &command, HostEffectPermissions::ALL)
+            .result,
         Err(MuxError::IdExhausted)
     ));
     assert_eq!(runtime.mux.lock().unwrap().sessions(), []);
@@ -1407,14 +1435,18 @@ fn native_termination_drains_existing_terminals_and_rejects_queued_spawns() {
         shell_integration: huterm_protocol::ShellIntegration::OFF,
         scrollback_compression: false,
     };
-    let (_, _, _, _, viewer) =
-        runtime.open_tab(None, None, &command, true).result.unwrap();
+    let (_, _, _, _, viewer) = runtime
+        .open_tab(None, None, &command, HostEffectPermissions::ALL)
+        .result
+        .unwrap();
     // Hold the structural lock as an already-running spawn would, then
     // queue another spawn and invoke the exact native-hook cleanup method.
     let guard = runtime.mux.lock().unwrap();
     let spawn_runtime = Arc::clone(&runtime);
     let spawn = std::thread::spawn(move || {
-        spawn_runtime.open_tab(None, None, &command, true).result
+        spawn_runtime
+            .open_tab(None, None, &command, HostEffectPermissions::ALL)
+            .result
     });
     let quit_runtime = Arc::clone(&runtime);
     let (finished, completion) = std::sync::mpsc::channel();

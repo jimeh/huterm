@@ -1181,7 +1181,12 @@ fn a_word_expanding_when_its_viewer_is_revoked_completes_through_the_replacement
         // send the expansion, so only the replacement can send it.
         view.visible = false;
         let start = view.viewer_start();
-        view.replace_viewer(replacement, &start, true, cx);
+        view.replace_viewer(
+            replacement,
+            &start,
+            HostEffectPermissions::ALL,
+            cx,
+        );
     });
     harness.wait_for_selected("beta.gamma");
 }
