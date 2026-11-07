@@ -285,6 +285,49 @@ fn increasing_names_resume_after_the_highest_one_restored() {
 }
 
 #[test]
+fn a_tabless_session_a_window_shows_is_captured_and_restored_empty() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(Some("kept")).unwrap();
+    let emptied = mux.create_workspace(session, None).unwrap();
+    let spare = mux.create_workspace(session, Some("spare")).unwrap();
+    let tab = mux.open_tab(emptied, &idle()).unwrap().tab.id;
+    mux.attach_session(session).unwrap();
+    // The window's last tab closed beside an empty workspace, which it
+    // now shows, so its session holds no tab but is still shown.
+    mux.close_tab(emptied, tab).unwrap();
+    mux.close_workspace(emptied).unwrap();
+    // A tabless session nothing holds, as a transfer leaves in flight.
+    let transient = mux.create_session(None).unwrap();
+    mux.create_workspace(transient, None).unwrap();
+    let capture = mux.capture_runtime();
+    let sessions: Vec<u64> =
+        capture.sessions.iter().map(|s| s.info.id.get()).collect();
+    assert_eq!(sessions, [session.get()]);
+    let workspaces = &capture.sessions[0].workspaces;
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0].info.id.get(), spare.get());
+    assert_eq!(workspaces[0].info.custom_name.as_deref(), Some("spare"));
+    assert_eq!(workspaces[0].tabs.len(), 0);
+    assert_eq!(capture.terminals.len(), 0);
+
+    // Restore reports it, so the desktop gives it a fresh tab.
+    let mut restored = Mux::default();
+    let spawned = spawn_all(&restored, &capture);
+    let report = restored.restore(&capture, spawned).unwrap();
+    let runtime = restored.runtime_id();
+    assert_eq!(
+        report.empty_sessions,
+        [SessionId::in_runtime(runtime, session.get())]
+    );
+    let workspace = restored
+        .workspace(WorkspaceId::in_runtime(runtime, spare.get()))
+        .unwrap();
+    assert_eq!(workspace.custom_name(), Some("spare"));
+    restored.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
 fn capture_lists_local_directories_in_preference_order_without_repeats() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();

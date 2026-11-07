@@ -254,11 +254,14 @@ fn pane_terminals(capture: &RuntimeCapture) -> Vec<TerminalId> {
 }
 
 impl Mux {
-    /// Captures every session that holds a tab, with its workspaces, tabs,
-    /// and layouts in order, the allocator watermark, the creation
-    /// ordinals, and each shown terminal's directory candidates, read from
-    /// its published status without waiting on its runtime. Sessions that
-    /// hold no tab, which only transfers create in flight, are left out.
+    /// Captures every session that holds a tab or an attachment, with its
+    /// workspaces, tabs, and layouts in order, the allocator watermark,
+    /// the creation ordinals, and each shown terminal's directory
+    /// candidates, read from its published status without waiting on its
+    /// runtime. A tabless session a window still shows, such as one whose
+    /// last tab closed beside an empty workspace, is kept; a tabless
+    /// session nothing holds, which a transfer leaves in flight, is left
+    /// out.
     /// Attachments, viewers, layout history, and process state are never
     /// captured. Identities come out unscoped.
     #[must_use]
@@ -271,7 +274,9 @@ impl Mux {
                 .iter()
                 .map(|id| &self.workspaces[id])
                 .collect();
-            if workspaces.iter().all(|workspace| workspace.tabs.is_empty()) {
+            if workspaces.iter().all(|workspace| workspace.tabs.is_empty())
+                && !self.attachments.values().any(|held| *held == session.id)
+            {
                 continue;
             }
             let mut captured = Vec::new();

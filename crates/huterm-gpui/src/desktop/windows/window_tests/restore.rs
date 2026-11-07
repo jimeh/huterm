@@ -1743,6 +1743,62 @@ fn two_windows_on_two_workspaces_restore_their_workspaces(
 }
 
 #[gpui::test]
+fn a_session_left_on_an_empty_workspace_survives_quit_and_restore(
+    cx: &mut TestAppContext,
+    relaunched: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let spare = harness
+        .runtime
+        .lock()
+        .create_workspace(harness.session, Some("spare"))
+        .unwrap();
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_projection();
+    // Closing the window's last tab moves it to the empty sibling, so its
+    // session holds no tab while the window still shows it.
+    harness.activate(window, tab);
+    harness.invoke(window, ids::CLOSE_TAB).unwrap();
+    let shown = window.window_id();
+    harness.wait_for("the window to show the empty workspace", |cx| {
+        cx.global::<Desktop>()
+            .windows
+            .record(shown)
+            .is_some_and(|record| record.workspace == Some(spare))
+    });
+    harness.resume_quits();
+    harness.cx.update(request_quit);
+    harness.wait_quit(harness.session);
+    let (capture, saved) = harness.recorder.saved().remove(0);
+    assert_eq!(capture.sessions.len(), 1, "{capture:?}");
+
+    let mut relaunch = DesktopHarness::restoring(
+        relaunched,
+        |_| {},
+        capture,
+        Some(saved),
+        ECHO,
+    );
+    relaunch.wait_settled();
+    let runtime = relaunch.runtime_id();
+    let session = SessionId::in_runtime(runtime, harness.session.get());
+    let spare = WorkspaceId::in_runtime(runtime, spare.get());
+    // The session and its named workspace come back, with the fresh tab
+    // restore gives a session that held none, and the window shows it.
+    let windows = relaunch.windows_of(session);
+    assert_eq!(windows.len(), 1);
+    assert_eq!(relaunch.navigation_of(windows[0]).0, Some(spare));
+    {
+        let mux = relaunch.runtime.lock();
+        let workspace = mux.workspace(spare).unwrap();
+        assert_eq!(workspace.custom_name(), Some("spare"));
+        assert_eq!(workspace.tabs.len(), 1);
+    }
+    relaunch.runtime.terminate().unwrap();
+}
+
+#[gpui::test]
 fn a_quake_stash_on_a_closed_workspace_shows_another(cx: &mut TestAppContext) {
     let scratch = Scratch::new();
     let mut saved = quake_layout();

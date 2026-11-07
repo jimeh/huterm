@@ -637,6 +637,16 @@ Recorded while implementing PR A:
   appearing, and W12 splits into W12 (the only sibling closes or moves
   away) and W12a (the only populated sibling empties, which keeps the
   leave). The follow-up target rule is unchanged.
+- 2026-11-07, after the UX re-check of PR A: a tabless session an
+  attachment holds is now captured. With the rule above, a window can be
+  left on a session whose workspaces are all empty, and Quit dropped that
+  session because capture skipped every tabless session. Restore already
+  gives a restored tabless session one fresh tab in its first workspace,
+  so its workspaces and names survive and the window reopens on the
+  workspace it showed. A tear-off's destination session also holds an
+  attachment while its tab is in flight; checkpoints defer during
+  transfers, so only a Quit landing in that moment could save it, and it
+  would come back with one fresh shell.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-26]: https://github.com/jimeh/huterm/issues/26

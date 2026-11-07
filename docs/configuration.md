@@ -145,7 +145,9 @@ started again. A pane whose last folder no longer exists starts in an
 earlier folder it used, or failing that in your home folder on macOS or
 Huterm's working directory on Linux, and its window says so. A session no
 window showed at Quit comes back the same way, running but in no window;
-switch to it from the session menu. Closing the
+switch to it from the session menu. A shown session whose workspaces
+were all empty at Quit keeps its workspaces and names, and its first
+workspace starts one fresh shell. Closing the
 last window is not a Quit: it ends that session, so the next launch opens
 one fresh window.
 
