@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 mod capture;
 mod cell_text;
@@ -23,9 +24,10 @@ pub use command::{
     Requirement, SIDES, catalog, ids, lookup, validate, validate_supplied,
 };
 pub use hierarchy::{
-    ApplyOutcome, HierarchyEnvelope, HierarchyEvent, HierarchyState,
-    LayoutChange, ResyncReason, SessionInfo, StreamId, TabChange, TabInfo,
-    TabRecord, TabSnapshot, Touched, WorkspaceInfo, resolve_tab_name,
+    ApplyOutcome, DigestProfile, HierarchyEnvelope, HierarchyEvent,
+    HierarchyState, LayoutChange, ResyncReason, SessionInfo, StreamId,
+    TabChange, TabInfo, TabRecord, TabSnapshot, Touched, WorkspaceInfo,
+    resolve_tab_name,
 };
 pub use layout_template::{
     BUILT_IN_LAYOUTS, LayoutTemplate, MAX_LAYOUT_NAME_LEN, MAX_TEMPLATE_DEPTH,
@@ -68,6 +70,58 @@ opaque_id!(
     RuntimeId,
     "Identifies one runtime incarnation within the current process."
 );
+
+/// The next value [`RuntimeId::allocate`] hands out. Zero stays reserved for
+/// unscoped identities.
+static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
+
+impl RuntimeId {
+    /// Allocates a runtime identity no other allocation in this process
+    /// shares, so an embedded runtime and remote connections in one process
+    /// never alias. Returns `None` once the identity space is exhausted.
+    #[must_use]
+    pub fn allocate() -> Option<Self> {
+        NEXT_RUNTIME
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .ok()
+            .map(Self)
+    }
+}
+
+/// Names one lifetime of a server's terminals: 16 random bytes drawn when a
+/// server starts without its predecessor's terminals.
+///
+/// A live handover keeps it, so every identity it scopes stays valid; a
+/// crash, a stop, or a restore from saved state draws a new one. It never
+/// derives from process identity.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ServerIncarnation([u8; 16]);
+
+impl ServerIncarnation {
+    /// Wraps the incarnation's bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the incarnation's bytes.
+    #[must_use]
+    pub const fn to_bytes(self) -> [u8; 16] {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for ServerIncarnation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ServerIncarnation(")?;
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        formatter.write_str(")")
+    }
+}
 
 macro_rules! scoped_id {
     ($name:ident, $docs:literal) => {
@@ -113,7 +167,7 @@ scoped_id!(
 );
 scoped_id!(PaneId, "Identifies a pane within a tab's layout.");
 scoped_id!(SplitId, "Identifies a split within a tab's layout.");
-opaque_id!(TerminalId, "Identifies a terminal runtime.");
+scoped_id!(TerminalId, "Identifies a terminal runtime.");
 opaque_id!(
     HostEffectRecipientId,
     "Identifies one registered recipient of terminal host effects."
@@ -1182,6 +1236,26 @@ mod tests {
             column: 7,
         };
         assert_eq!(BufferRange::ordered(right, left).start, left);
+    }
+
+    #[test]
+    fn allocated_runtime_identities_are_distinct_and_never_unscoped() {
+        let first = RuntimeId::allocate().unwrap();
+        let second = RuntimeId::allocate().unwrap();
+        assert_ne!(first, second);
+        assert_ne!(first.get(), 0);
+        assert_ne!(second.get(), 0);
+    }
+
+    #[test]
+    fn server_incarnation_debug_prints_its_bytes_in_hex() {
+        let mut bytes = [0; 16];
+        bytes[0] = 0xab;
+        bytes[15] = 0x01;
+        assert_eq!(
+            format!("{:?}", ServerIncarnation::from_bytes(bytes)),
+            "ServerIncarnation(ab000000000000000000000000000001)"
+        );
     }
 
     #[test]

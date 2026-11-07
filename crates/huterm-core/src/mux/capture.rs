@@ -108,7 +108,7 @@ impl SpawnedTerminals {
                 spawned.shutdown()?;
                 return Err(MuxError::RestoreCancelled);
             }
-            let id = record.id;
+            let id = TerminalId::in_runtime(runtime, record.id.get());
             let command = command(record);
             match TerminalRuntime::spawn_in(runtime, id, &command) {
                 Ok(started) => {
@@ -174,7 +174,12 @@ impl SpawnedTerminals {
             .keys()
             .chain(self.failures.iter().map(|failure| &failure.terminal))
             .all(|id| seen.insert(*id));
-        accounted && seen == pane_terminals(capture).into_iter().collect()
+        accounted
+            && seen
+                == pane_terminals(capture)
+                    .into_iter()
+                    .map(|id| TerminalId::in_runtime(self.runtime, id.get()))
+                    .collect()
     }
 }
 
@@ -286,7 +291,7 @@ impl Mux {
             }
         }
         TerminalCapture {
-            id,
+            id: TerminalId::new(id.get()),
             directories,
             launch: TerminalLaunch::DefaultShell,
         }

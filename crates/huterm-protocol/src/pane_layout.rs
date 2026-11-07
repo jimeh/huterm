@@ -501,8 +501,8 @@ impl PaneLayout {
         same_shape(&self.root, &other.root, false)
     }
 
-    /// The same layout with every pane and split identity moved into
-    /// `runtime`'s scope. Numeric identities, weights, and names stay, so
+    /// The same layout with every pane, split, and terminal identity moved
+    /// into `runtime`'s scope. Numeric identities, weights, and names stay, so
     /// every invariant still holds.
     #[must_use]
     pub fn in_runtime(&self, runtime: RuntimeId) -> Self {
@@ -1196,6 +1196,8 @@ fn rescope(node: &mut PaneNode, runtime: RuntimeId) {
     match node {
         PaneNode::Pane(pane) => {
             pane.id = PaneId::in_runtime(runtime, pane.id.get());
+            pane.terminal_id =
+                TerminalId::in_runtime(runtime, pane.terminal_id.get());
         }
         PaneNode::Split(split) => {
             split.id = SplitId::in_runtime(runtime, split.id.get());

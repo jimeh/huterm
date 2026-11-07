@@ -15,7 +15,7 @@ fn split_id(value: u64) -> SplitId {
 fn info(value: u64) -> PaneInfo {
     PaneInfo {
         id: pane_id(value),
-        terminal_id: TerminalId::new(value),
+        terminal_id: TerminalId::in_runtime(RUNTIME, value),
         fallback_name: format!("p{value}"),
         custom_name: None,
     }
@@ -900,7 +900,7 @@ fn swapping_exchanges_panes_and_leaves_each_slot_its_weight() {
     // Each pane keeps its terminal.
     assert_eq!(
         swapped.pane(pane_id(1)).unwrap().terminal_id,
-        TerminalId::new(1)
+        TerminalId::in_runtime(RUNTIME, 1)
     );
     assert_eq!(uneven.with_swapped(pane_id(2), pane_id(2)).unwrap(), uneven);
     assert_eq!(
@@ -1273,7 +1273,9 @@ fn moving_a_layout_into_a_runtime_rescopes_identities_and_keeps_its_shape() {
     let other = RuntimeId::new(9);
     let moved = original.in_runtime(other);
     assert_eq!(shape(&moved), shape(&original));
-    assert!(moved.panes().iter().all(|pane| pane.id.runtime() == other));
+    assert!(moved.panes().iter().all(|pane| {
+        pane.id.runtime() == other && pane.terminal_id.runtime() == other
+    }));
     assert!(
         moved
             .split_ids()

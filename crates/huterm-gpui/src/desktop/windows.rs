@@ -8769,7 +8769,7 @@ impl WorkspaceView {
                 direction,
                 PaneInfo {
                     id: added,
-                    terminal_id: TerminalId::new(u64::MAX),
+                    terminal_id: TerminalId::in_runtime(probe, u64::MAX),
                     fallback_name: String::new(),
                     custom_name: None,
                 },
