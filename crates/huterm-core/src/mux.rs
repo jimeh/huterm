@@ -10,7 +10,6 @@ pub use hierarchy::{HierarchyRecvError, HierarchySubscription};
 pub use lifecycle::{CloseAssessment, CloseEffect, CloseRequest, CloseTicket};
 pub use moves::{Beside, MoveDestination, PaneRef};
 pub use restore::RestoreDirection;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::terminal::RuntimeClient;
 use crate::{RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions};
@@ -24,7 +23,6 @@ use thiserror::Error;
 
 /// Logical default socket name. No endpoint is opened by the runtime.
 pub const DEFAULT_SOCKET_NAME: &str = "default";
-static NEXT_RUNTIME: AtomicU64 = AtomicU64::new(1);
 
 /// One tab: its split tree of panes, its shared zoom, and its input sync.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,15 +213,11 @@ impl Mux {
     /// Rejects blank names or exhausted process-local runtime identities.
     pub fn new(socket_name: &str) -> Result<Self, MuxError> {
         validate_name(Some(socket_name))?;
-        let runtime_id = NEXT_RUNTIME
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_add(1)
-            })
-            .map_err(|_| MuxError::IdExhausted)?;
+        let runtime_id = RuntimeId::allocate().ok_or(MuxError::IdExhausted)?;
         Ok(Self {
             revision: 0,
             attachments: BTreeMap::new(),
-            runtime_id: RuntimeId::new(runtime_id),
+            runtime_id,
             socket_name: socket_name.into(),
             next_id: 0,
             session_ordinal: 0,
@@ -608,7 +602,10 @@ impl Mux {
     ) -> Result<PaneInfo, MuxError> {
         Ok(PaneInfo {
             id: PaneId::in_runtime(self.runtime_id, self.allocate()?),
-            terminal_id: TerminalId::new(self.allocate()?),
+            terminal_id: TerminalId::in_runtime(
+                self.runtime_id,
+                self.allocate()?,
+            ),
             fallback_name: fallback_name(command),
             custom_name: None,
         })

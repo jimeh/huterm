@@ -437,7 +437,7 @@ fn projected() -> HierarchyState {
                 custom_name: None,
                 layout: PaneLayout::single(PaneInfo {
                     id: PaneId::in_runtime(runtime, value),
-                    terminal_id: TerminalId::new(value),
+                    terminal_id: TerminalId::in_runtime(runtime, value),
                     fallback_name: "sh".into(),
                     custom_name: None,
                 }),
@@ -611,13 +611,13 @@ fn a_rebuild_moves_window_scoped_pickers_and_defaults_to_the_current_scope() {
         session: Some(session),
         workspace: Some(WorkspaceId::in_runtime(runtime, 10)),
         tab: Some(TabId::in_runtime(runtime, 2)),
-        terminal: Some(TerminalId::new(2)),
+        terminal: Some(TerminalId::in_runtime(runtime, 2)),
         terminal_view: None,
     };
     assert!(target.rescope(current.clone()));
     assert!(!target.rescope(current), "an unchanged scope is no change");
     // Terminal-scope commands follow the active tab's terminal too.
-    assert_eq!(target.terminal, Some(TerminalId::new(2)));
+    assert_eq!(target.terminal, Some(TerminalId::in_runtime(runtime, 2)));
     let domain = DomainView {
         hierarchy: &rows,
         profiles: &[],
@@ -1348,7 +1348,10 @@ mod lists {
                         custom_name: None,
                         layout: PaneLayout::single(PaneInfo {
                             id: PaneId::in_runtime(runtime(), value),
-                            terminal_id: TerminalId::new(value),
+                            terminal_id: TerminalId::in_runtime(
+                                runtime(),
+                                value,
+                            ),
                             fallback_name: "sh".into(),
                             custom_name: None,
                         }),

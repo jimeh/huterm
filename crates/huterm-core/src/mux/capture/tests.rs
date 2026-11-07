@@ -298,7 +298,8 @@ fn capture_lists_local_directories_in_preference_order_without_repeats() {
             ),
         )
         .unwrap();
-    let terminal = opened.tab.first_pane().terminal_id;
+    // Captures carry unscoped identities.
+    let terminal = TerminalId::new(opened.tab.first_pane().terminal_id.get());
     let wait_for_directory = |path: &str, local: bool| {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -351,7 +352,10 @@ fn a_failed_spawn_leaves_its_pane_and_an_emptied_tab_and_reports_both() {
         .layout
         .first_pane()
         .terminal_id;
-    let lost = [fixture.zoomed.terminal_id, unviewed_terminal];
+    let lost = [
+        TerminalId::new(fixture.zoomed.terminal_id.get()),
+        unviewed_terminal,
+    ];
     let mut restored = Mux::default();
     let spawned = SpawnedTerminals::spawn(
         restored.runtime_id(),
@@ -366,13 +370,15 @@ fn a_failed_spawn_leaves_its_pane_and_an_emptied_tab_and_reports_both() {
         || false,
     )
     .unwrap();
+    // Spawned terminals take the restoring runtime's scope.
+    let runtime = restored.runtime_id();
+    let lost = lost.map(|id| TerminalId::in_runtime(runtime, id.get()));
     let failed: Vec<TerminalId> =
         spawned.failures().iter().map(|f| f.terminal).collect();
     assert_eq!(failed, lost);
     assert_eq!(spawned.started().count(), 4);
 
     let report = restored.restore(&capture, spawned).unwrap();
-    let runtime = restored.runtime_id();
     let editor = TabId::in_runtime(runtime, fixture.editor.get());
     let unviewed_tab = TabId::in_runtime(runtime, fixture.unviewed_tab.get());
     let unviewed = SessionId::in_runtime(runtime, fixture.unviewed.get());
