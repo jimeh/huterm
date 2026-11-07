@@ -1,0 +1,13 @@
+diff --git a/src/cosmic_text_system.rs b/src/cosmic_text_system.rs
+index 775067518c6ae03883fced0d6dedde88f0bcc20f..266a3fc1dd133907012a8a5f199d41e5305d6bbb 100644
+--- a/src/cosmic_text_system.rs
++++ b/src/cosmic_text_system.rs
+@@ -416,6 +416,8 @@ impl CosmicTextSystemState {
+             let allowed_bad_font_names = [
+                 "SegoeFluentIcons", // NOTE: Segoe fluent icons postscript name is inconsistent
+                 "Segoe Fluent Icons",
++                // Huterm draws Nerd Font icons from this face and never measures it by 'm'.
++                "SymbolsNFM",
+             ];
+ 
+             // This only decides whether a face can be a primary font. The
