@@ -2,7 +2,9 @@
 //! rule is load bearing: switching one off makes some seed fail.
 
 use huterm_ipc_sim::profile::Design;
-use huterm_ipc_sim::sim::{Report, Scenario, run, run_with, scenarios, swarm};
+use huterm_ipc_sim::sim::{
+    Report, Scenario, run, run_scheduled, run_with, scenarios, swarm,
+};
 
 /// Seeds per scenario in the normal suite. `HUTERM_SIM_SEEDS` raises it;
 /// the `huterm-ipc-sim` program runs hundreds.
@@ -252,4 +254,16 @@ fn without_a_complete_final_snapshot_a_stopped_view_stays_damaged() {
     );
     let passed = run_with(&scenario, seed, Design::default());
     assert!(passed.is_ok(), "seed {seed} failed anyway: {passed:?}");
+}
+
+#[test]
+fn scheduled_runs_hold_their_invariants_whatever_the_schedule() {
+    for seed in 0..4 {
+        for schedule in [&[][..], &[0; 256], &[0xff; 256], &[0x5a; 4096]] {
+            let scenario = swarm(seed);
+            if let Err(error) = run_scheduled(&scenario, seed, schedule) {
+                panic!("{error}");
+            }
+        }
+    }
 }

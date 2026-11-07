@@ -1,0 +1,65 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the wire decoders and the IPC simulation's
+# schedule on the nightly that fuzz/rust-toolchain.toml pins. It is
+# evidence, not a gate: no ruleset requires it, so a broken nightly never
+# blocks a pull request. A crash becomes a regression test in the normal
+# suite.
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds to fuzz each target
+        default: '300'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MISE_AUTO_INSTALL: 'false'
+
+jobs:
+  fuzz:
+    name: Fuzz wire decoders
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Rust and cargo-fuzz install after the toolchain bootstrap below.
+      - name: Install Mise
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
+        with:
+          install: false
+          cache: false
+          version: 2026.10.25
+
+      - name: Materialize Rust toolchain
+        run: mise run ci:toolchain
+
+      - name: Install cargo-fuzz
+        run: mise install --locked cargo:cargo-fuzz
+
+      - name: Fuzz every target
+        env:
+          HUTERM_FUZZ_SECONDS: ${{ inputs.seconds || '300' }}
+        run: mise run fuzz:wire
+
+      - name: Upload crash inputs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ github.run_attempt }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

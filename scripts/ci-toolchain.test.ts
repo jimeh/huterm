@@ -73,9 +73,9 @@ test("Rust bootstrap stops if clean removal fails", () => {
 });
 
 test("CI and release setup reach Rust recovery before any Cargo tool installation", () => {
-  type Step = { uses?: string; run?: string; with?: { install_args?: string } };
+  type Step = { uses?: string; run?: string; with?: { install?: boolean; install_args?: string } };
   type Workflow = { jobs?: Record<string, { steps?: Step[] }>; runs?: { steps: Step[] } };
-  for (const file of [".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/actions/prepare-release-candidate/action.yml"]) {
+  for (const file of [".github/workflows/ci.yml", ".github/workflows/fuzz.yml", ".github/workflows/release.yml", ".github/actions/prepare-release-candidate/action.yml"]) {
     const workflow = Bun.YAML.parse(readFileSync(join(import.meta.dir, "..", file), "utf8")) as Workflow;
     const groups = workflow.runs ? [workflow.runs] : Object.values(workflow.jobs!);
     for (const { steps = [] } of groups) {
@@ -84,6 +84,11 @@ test("CI and release setup reach Rust recovery before any Cargo tool installatio
       const bootstrapIndex = steps.findIndex(step => step.run === "mise run ci:toolchain");
       expect(bootstrapIndex).toBeGreaterThanOrEqual(0);
       for (const step of installs) {
+        // A step that installs no tools leaves every install to later steps.
+        if (step.with?.install === false) {
+          expect(steps.indexOf(step)).toBeLessThan(bootstrapIndex);
+          continue;
+        }
         expect(step.with?.install_args).toBeDefined();
         expect(step.with!.install_args!.split(/\s+/).some(tool => tool === "rust" || tool.startsWith("cargo:"))).toBe(false);
         expect(steps.indexOf(step)).toBeLessThan(bootstrapIndex);
