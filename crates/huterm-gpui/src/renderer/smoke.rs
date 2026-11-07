@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, canvas,
-    div, point, prelude::*, px, size,
+    App, Bounds, Context, Pixels, Render, Window, WindowBounds, WindowOptions,
+    canvas, div, point, prelude::*, px, size,
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellStyle, Cursor, CursorShape,
@@ -211,7 +211,7 @@ impl Render for Fixture {
                     },
                 )
                 .w(m.cell_width * 32.0)
-                .h(m.cell_height * 33.0)
+                .h(m.cell_height * f32::from(ROWS))
                 .flex_shrink_0(),
             );
         }
@@ -230,7 +230,17 @@ fn cached_geometry(
         .expect("prepared builtin geometry")
 }
 
+const ROWS: u16 = 34;
+/// Nerd Font icons that neither platform's default terminal font covers,
+/// then text that stays on the font path.
+const ICONS: &str =
+    "\u{e0a0} \u{f07b} \u{f115} \u{f0001} \u{23fb} \u{e300} \u{f31a}  a";
+const ICON_ROW: usize = 29;
+const ICON_WIDE: usize = 12;
+
 fn check(panel: &mut Panel, window: &mut Window) {
+    check_icons(panel, window);
+    check_icons_off(panel, window);
     let renderer = &mut panel.renderer;
     assert_eq!(
         renderer.graphics.len(),
@@ -318,6 +328,106 @@ fn check(panel: &mut Panel, window: &mut Window) {
     );
 }
 
+/// Icons lay out in the bundled symbols font, sized and placed inside their
+/// cells by the Nerd Fonts patcher's rules, while text keeps the terminal
+/// font.
+fn check_icons(panel: &Panel, window: &Window) {
+    let renderer = &panel.renderer;
+    let metrics = renderer.metrics;
+    let symbols = window
+        .text_system()
+        .resolve_font(&gpui::font(crate::terminal_font::SYMBOLS_FAMILY));
+    let glyphs = &renderer.rows[ICON_ROW].glyphs;
+    assert_eq!(glyphs.len(), 8, "seven icons and one letter");
+    let whole = |value: Pixels| {
+        let device = value * metrics.scale_factor;
+        (device - device.round()).abs() < px(0.001)
+    };
+    let value = |pixels: Pixels| f64::from(f32::from(pixels));
+    // The patcher's overlap pads reach 3% of a cell past an edge, and
+    // origins round by up to half a device pixel.
+    let slack = 0.03 * value(metrics.cell_width)
+        + 0.5 / f64::from(metrics.scale_factor);
+    for glyph in &glyphs[..7] {
+        let wide = usize::from(glyph.column) == ICON_WIDE;
+        assert_eq!(glyph.wide, wide, "wide flag at column {}", glyph.column);
+        let GlyphContent::Symbol(symbol) = &glyph.content else {
+            panic!("icon at column {} must use the symbols font", glyph.column)
+        };
+        let placed = if wide { &symbol.wide } else { &symbol.narrow };
+        assert_eq!(placed.layout.runs.len(), 1);
+        assert_eq!(placed.layout.runs[0].font_id, symbols);
+        assert!(
+            whole(placed.origin.x) && whole(placed.origin.y),
+            "icon at column {} must sit on whole device pixels",
+            glyph.column
+        );
+        let ch = ICONS
+            .chars()
+            .nth(usize::from(glyph.column))
+            .expect("icon character");
+        let ink = super::symbols::ink_box(ch, placed.layout.font_size)
+            .expect("icon ink");
+        let left = value(placed.origin.x) + ink.x;
+        let bottom = value(placed.origin.y) - ink.y;
+        let (right, top) = (left + ink.width, bottom - ink.height);
+        let span = value(metrics.cell_width) * if wide { 2.0 } else { 1.0 };
+        assert!(
+            left >= -slack
+                && top >= -slack
+                && right <= span + slack
+                && bottom <= value(metrics.cell_height) + slack,
+            "icon at column {} spans ({left}, {top})..({right}, {bottom})",
+            glyph.column
+        );
+    }
+    // The Powerline branch scales to the line height, as a patched font
+    // draws it, rather than to the cell width.
+    let GlyphContent::Symbol(branch) = &glyphs[0].content else {
+        panic!("the branch must use the symbols font")
+    };
+    let ink =
+        super::symbols::ink_box('\u{e0a0}', branch.narrow.layout.font_size)
+            .expect("branch ink");
+    let line = value(metrics.ascent + metrics.descent);
+    assert!(
+        (ink.height - line).abs() < 1.0,
+        "branch is {} tall on a {line} line",
+        ink.height
+    );
+    assert!(matches!(&glyphs[7].content, GlyphContent::Font(_)));
+}
+
+/// With `[font] nerd_font_symbols` off, icons stay on the terminal font
+/// path, and turning it back on routes them to the symbols font again.
+fn check_icons_off(panel: &mut Panel, window: &mut Window) {
+    let renderer = &mut panel.renderer;
+    let on = renderer.terminal_font.clone();
+    let theme = renderer.theme.clone();
+    let metrics = renderer.metrics;
+    renderer.reconfigure(
+        crate::terminal_font::TerminalFont {
+            nerd_font_symbols: false,
+            ..on.clone()
+        },
+        theme.clone(),
+        metrics,
+    );
+    renderer.prepare(Some(&panel.snapshot), window);
+    assert!(
+        renderer.rows[ICON_ROW].glyphs[..7]
+            .iter()
+            .all(|glyph| matches!(&glyph.content, GlyphContent::Font(_))),
+        "icons must use the terminal font with the setting off"
+    );
+    renderer.reconfigure(on, theme, metrics);
+    renderer.prepare(Some(&panel.snapshot), window);
+    assert!(matches!(
+        &renderer.rows[ICON_ROW].glyphs[0].content,
+        GlyphContent::Symbol(_)
+    ));
+}
+
 fn snapshot(font_size: f32) -> TerminalSnapshot {
     let mut lines = vec![format!("Font size {font_size}"), String::new()];
     for start in (0x2500..=0x2590).step_by(16) {
@@ -350,6 +460,7 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
         ]
         .map(str::to_owned),
     );
+    lines.push(ICONS.to_owned());
     lines.extend(["\u{e0b0} \u{e0b1} \u{e0b2} \u{e0b3} \u{e0b4} \u{e0b5} \u{e0b6} \u{e0b7} \u{e0b8} \u{e0b9} \u{e0ba} \u{e0bb} \u{e0bc} \u{e0bd} \u{e0be} \u{e0bf}", "\u{e0d2} \u{e0d4} ◢ ◣ ◤ ◥ ◸ ◹ ◺ ◿", "██\u{e0b0}██\u{e0b4}██\u{e0b8}██\u{e0bc}██\u{e0d2}", "██\u{e0b1}██\u{e0b5}██◸██◿██\u{e0d4}"].map(str::to_owned));
     let rows = lines
         .into_iter()
@@ -371,27 +482,7 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
                 style: CellStyle::default(),
             });
             cells.truncate(32);
-            if row == 27 {
-                for cell in &mut cells {
-                    cell.text = " ".into();
-                }
-                for (column, text) in [
-                    (0, "M"),
-                    (2, "界"),
-                    (5, "▐\u{0301}"),
-                    (7, "▕\u{fe0e}"),
-                    (9, "😀"),
-                ] {
-                    cells[column].text = text.into();
-                }
-                for column in [2, 9] {
-                    cells[column].style.wide = true;
-                    cells[column + 1].style.wide_spacer = true;
-                }
-            }
-            if row == 28 {
-                populate_wide(&mut cells);
-            }
+            populate_row(row, &mut cells);
             style_row(row, &mut cells);
             Arc::new(TerminalRow {
                 cells,
@@ -404,7 +495,7 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
         generation: 1,
         revision: 0,
         geometry_revision: 0,
-        size: GridSize::clamped(32, 33),
+        size: GridSize::clamped(32, ROWS),
         rows,
         // The translucent block cursor must paint over the "n" of "normal".
         cursor: Some(Cursor {
@@ -420,8 +511,39 @@ fn snapshot(font_size: f32) -> TerminalSnapshot {
     }
 }
 
+/// Rows whose cells differ from their fixture text: graphemes and wide
+/// cells.
+fn populate_row(row: usize, cells: &mut [Cell]) {
+    if row == 27 {
+        for cell in cells.iter_mut() {
+            cell.text = " ".into();
+        }
+        for (column, text) in [
+            (0, "M"),
+            (2, "界"),
+            (5, "▐\u{0301}"),
+            (7, "▕\u{fe0e}"),
+            (9, "😀"),
+        ] {
+            cells[column].text = text.into();
+        }
+        for column in [2, 9] {
+            cells[column].style.wide = true;
+            cells[column + 1].style.wide_spacer = true;
+        }
+    }
+    if row == 28 {
+        populate_wide(cells);
+    }
+    if row == ICON_ROW {
+        cells[ICON_WIDE].style.wide = true;
+        cells[ICON_WIDE + 1].text = " ".into();
+        cells[ICON_WIDE + 1].style.wide_spacer = true;
+    }
+}
+
 fn style_row(row: usize, cells: &mut [Cell]) {
-    if row >= 31 {
+    if row >= 32 {
         for (column, cell) in cells.iter_mut().enumerate() {
             cell.foreground =
                 CellColor::Indexed(if column < 6 { 4 } else { 2 });

@@ -5101,7 +5101,7 @@ fn the_licenses_view_filters_selects_and_returns_to_about_without_terminal_input
         harness.cx.update(|cx| licenses_state(cx, window)),
         Some(LicensesState::Ready {
             matches,
-            selected: Some("Ghostty sprite drawing".to_owned()),
+            selected: Some("Ghostty Nerd Font constraints".to_owned()),
         })
     );
     // Escape clears the search first, keeping the selection.
@@ -5110,7 +5110,7 @@ fn the_licenses_view_filters_selects_and_returns_to_about_without_terminal_input
         harness.cx.update(|cx| licenses_state(cx, window)),
         Some(LicensesState::Ready {
             matches: all,
-            selected: Some("Ghostty sprite drawing".to_owned()),
+            selected: Some("Ghostty Nerd Font constraints".to_owned()),
         })
     );
     harness.press(window, "escape");
@@ -5240,7 +5240,7 @@ fn about_again_or_a_press_in_the_licenses_view_keeps_keys_in_its_search(
     else {
         panic!("the view closed");
     };
-    assert_eq!(matches, 2);
+    assert_eq!(matches, 3);
     // A press inside the panel moves keyboard focus back to the search, so
     // Enter no longer presses the button Tab reached.
     harness.press(window, "tab tab tab");
@@ -5430,7 +5430,7 @@ fn a_licenses_row_shows_its_component_on_a_click_not_a_hover(
         .simulate_click(second, gpui::Modifiers::none());
     assert_eq!(
         selected(&mut harness).as_deref(),
-        Some("Ghostty sprite drawing")
+        Some("Ghostty Nerd Font constraints")
     );
     assert_eq!(harness.licenses_focus(window), Some(LicensesFocus::Search));
 }

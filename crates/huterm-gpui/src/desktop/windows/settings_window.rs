@@ -2611,6 +2611,7 @@ impl SettingsView {
             text_system
                 .all_font_names()
                 .into_iter()
+                .filter(|name| crate::terminal_font::is_selectable_family(name))
                 .map(SharedString::from)
                 .collect::<Arc<[SharedString]>>()
         });

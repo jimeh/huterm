@@ -87,6 +87,8 @@ workflow below. So are the font crates `huterm-gpui` pins to GPUI's versions:
 `zed-font-kit`, `core-foundation`, `core-text`, and `fontdb`. A GPUI upgrade
 moves those pins to the versions it resolves, along with the `gpui-pre-apple`
 and `gpui-pre-wgpu` dev-dependencies that the font registration tests use.
+Both are also vendored for their `nerd-font-symbols` patches, so the upgrade
+moves their vendor directories and Cargo overrides too.
 A bump that changes lint behavior, such as `syn`, may also need code changes
 before Clippy passes. AccessKit's macOS adapter, `accesskit_macos`, is vendored
 at the version GPUI resolves with Huterm's terminal accessibility patches, so a
@@ -106,6 +108,46 @@ Run `mise run licenses:generate`, `mise run licenses:check`, the
 `terminal_font` tests (native registration and weights on both platforms),
 `mise run smoke:renderer`, and the platform package checks. The notices ship
 as resources; the fonts themselves are embedded and registered before lookup.
+
+## Bundled symbols font
+
+`SymbolsNerdFont-Regular.ttf`, the non-Mono face, from the Nerd Fonts 3.5.1
+`NerdFontsSymbolsOnly.tar.xz` release lives unmodified in
+`crates/huterm-gpui/assets/fonts/nerd-fonts/`. The renderer sizes its icons
+with a constraint table generated from the same release's font-patcher. To
+bump it:
+
+1. Pick a release outside the three-day cooldown, verify the archive's SHA-256
+   against the release asset digest, and copy `SymbolsNerdFont-Regular.ttf`
+   and the archive's `LICENSE` without rewriting them.
+2. Compare the archive README's icon-set table with
+   `third-party/nerd-fonts/README.md`. For each set whose version or license
+   changed, or that is new, fetch its license text at the matching tag or
+   commit into `third-party/nerd-fonts/licenses/`, then update `NOTICE.txt`,
+   the README table, and the set's entry in
+   `third-party/licenses/components.json`. A set under a license that is not
+   clearly redistributable needs the user's decision before it ships.
+3. Refresh every URL and hash in `third-party/nerd-fonts/provenance.json` and
+   the Linux notice list in `assets/linux/package-policy.json`.
+4. Check that the family is still `Symbols Nerd Font` with PostScript name
+   `SymbolsNF`, which the `nerd-font-symbols` vendor patches name.
+5. In `scripts/nerd-font-constraints.py`, set `NF_VERSION`, the new
+   `font-patcher` SHA-256, and the icon-set source fonts' SHA-256s. Check the
+   script's evaluation context against the new `setup_patch_set` variables,
+   and run `mise run nerd-fonts:constraints`.
+   Review the regenerated `renderer/symbols/constraint/table.rs`; a test fails
+   while its version differs from the bundled font's.
+6. In `scripts/nerd-font-reference.py`, move the three families' archive and
+   unpatched-font pins to the release, and run `mise run nerd-fonts:reference`.
+   The `patched_reference` test then compares every icon's placement with
+   the Nerd Fonts project's own patched "Nerd Font Mono" builds.
+
+The generator runs through the pinned `uv` Mise tool with an exact `fonttools`
+version, and downloads the font-patcher and icon-set source fonts into
+`.native/nerd-fonts`. Bump `fonttools` in the task under the same cooldown.
+Run `mise run licenses:generate`, `mise run licenses:check`, the
+`renderer::symbols` tests, `mise run smoke:renderer` on macOS and in the Linux
+container, and the platform package checks.
 
 ## GPUI and nix
 
@@ -166,6 +208,15 @@ pacing when `kern.hv_vmm_present` reports a virtual machine, where GPUI's
 `CAMetalDisplayLink` stops issuing updates. Drop it when a reviewed snapshot
 delivers Metal-link frames on GitHub's macOS runners; CI's macOS smokes are the
 check. [Window presentation](window-presentation.md) records the evidence.
+
+The `gpui-pre-apple` and `gpui-pre-wgpu` `nerd-font-symbols` patches let the
+bundled Symbols Nerd Font load as a primary font. Both text systems skip
+any face without an `m` glyph, because Zed measures fonts by it, and admit only
+Segoe Fluent Icons as an exception; GPUI's fallback chain loads through the
+same filter. The patches add the symbols face to that exception by full name on
+macOS and PostScript name (`SymbolsNF`) on Linux. Drop them when a reviewed
+snapshot loads a face without `m` as a primary font, or offers an equivalent
+explicit allowance; the native `renderer::symbols` test fails without them.
 
 `gpui-pre` archives carry no Cargo VCS file; their manifest entries set
 `"snapshot": "gpui-pre"` so the checker reads the Zed crate and revision from

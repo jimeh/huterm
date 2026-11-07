@@ -20,6 +20,8 @@ rust = { version = "1.99.1", components = ["clippy", "rustfmt"], profile = "mini
 "pipx:spdx-tools" = "0.8.5"
 syft = "1.56.0"
 taplo = "0.10.0"
+# Runs bump-time Python generators, such as nerd-fonts:constraints.
+uv = "0.13.7"
 zig = "0.17.0"
 zizmor = "1.32.0"
 
@@ -108,6 +110,14 @@ run = "bun scripts/rust-test-order.ts"
 [tasks."lint:test-order:files"]
 description = "Check test-module order in the given Rust files"
 run = "bun scripts/rust-test-order.ts --files"
+
+[tasks."nerd-fonts:constraints"]
+description = "Regenerate the Nerd Font icon constraint table from the pinned font-patcher and the bundled symbols font"
+run = "uv run --no-project --isolated --python 3.13 --with fonttools==4.68.0 python -I scripts/nerd-font-constraints.py crates/huterm-gpui/assets/fonts/nerd-fonts/SymbolsNerdFont-Regular.ttf .native/nerd-fonts crates/huterm-gpui/src/renderer/symbols/constraint/table.rs"
+
+[tasks."nerd-fonts:reference"]
+description = "Regenerate the patched Nerd Font Mono reference fixtures for the icon placement test"
+run = "uv run --no-project --isolated --python 3.13 --with fonttools==4.68.0 python -I scripts/nerd-font-reference.py crates/huterm-gpui/assets/fonts/nerd-fonts/SymbolsNerdFont-Regular.ttf .native/nerd-fonts crates/huterm-gpui/src/renderer/symbols/reference"
 
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
@@ -479,6 +489,10 @@ assert_file "$bundle/Contents/Resources/lucide/README.md" "Lucide provenance"
 assert_file "$bundle/Contents/Resources/lucide/LICENSE" "Lucide license"
 assert_file "$bundle/Contents/Resources/dejavu/README.md" "DejaVu provenance"
 assert_file "$bundle/Contents/Resources/dejavu/LICENSE" "DejaVu license"
+assert_file "$bundle/Contents/Resources/nerd-fonts/README.md" "Nerd Fonts provenance"
+assert_file "$bundle/Contents/Resources/nerd-fonts/NOTICE.txt" "Nerd Fonts icon notices"
+assert_file "$bundle/Contents/Resources/nerd-fonts/licenses/weather-icons-OFL.txt" "Nerd Fonts icon licenses"
+assert_file "$bundle/Contents/Resources/nerd-font-constraints/LICENSE-Ghostty" "Nerd Font constraints license"
 assert_file "$bundle/Contents/Resources/licenses.json" "open source license notices"
 if ! cmp -s "$bundle/Contents/Resources/licenses.json" third-party/licenses/licenses.json; then
   echo "package verification failed: licenses.json differs from third-party/licenses/licenses.json" >&2

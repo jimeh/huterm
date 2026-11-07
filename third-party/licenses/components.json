@@ -85,6 +85,18 @@
       "files": ["third-party/terminal-graphics/LICENSE-Ghostty"]
     },
     {
+      "id": "nerd-font-constraints",
+      "name": "Ghostty Nerd Font constraints",
+      "version": "83fb956",
+      "kind": "Source port",
+      "license": "MIT",
+      "url": "https://github.com/ghostty-org/ghostty",
+      "files": [
+        "third-party/nerd-font-constraints/LICENSE-Ghostty",
+        "third-party/nerd-fonts/LICENSE"
+      ]
+    },
+    {
       "id": "dejavu-sans-mono",
       "name": "DejaVu Sans Mono",
       "version": "2.37",
@@ -92,6 +104,187 @@
       "license": "Bitstream-Vera AND LicenseRef-Arev AND LicenseRef-DejaVu-Public-Domain",
       "url": "https://dejavu-fonts.github.io/",
       "files": ["third-party/dejavu/LICENSE"]
+    },
+    {
+      "id": "nerd-fonts-symbols",
+      "name": "Symbols Nerd Font",
+      "version": "3.5.1",
+      "kind": "Font",
+      "license": "MIT",
+      "url": "https://www.nerdfonts.com",
+      "files": [
+        "third-party/nerd-fonts/LICENSE",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-codicons",
+      "name": "Codicons",
+      "version": "0.0.45",
+      "kind": "Icons",
+      "license": "CC-BY-4.0",
+      "url": "https://github.com/microsoft/vscode-codicons",
+      "files": [
+        "third-party/nerd-fonts/licenses/CC-BY-4.0.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-devicons",
+      "name": "Devicons",
+      "version": "2.17.0",
+      "kind": "Icons",
+      "license": "MIT",
+      "url": "https://github.com/devicons/devicon",
+      "files": [
+        "third-party/nerd-fonts/licenses/devicons-LICENSE",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-font-awesome",
+      "name": "Font Awesome",
+      "version": "6.5.1",
+      "kind": "Icons",
+      "license": "CC-BY-4.0",
+      "url": "https://fontawesome.com",
+      "files": [
+        "third-party/nerd-fonts/licenses/font-awesome-LICENSE.txt",
+        "third-party/nerd-fonts/licenses/CC-BY-4.0.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-font-awesome-extension",
+      "name": "Font Awesome Extension",
+      "version": "0.0.3",
+      "kind": "Icons",
+      "license": "MIT",
+      "url": "https://github.com/AndreLZGava/font-awesome-extension",
+      "files": [
+        "third-party/nerd-fonts/licenses/font-awesome-extension-LICENCE",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-font-logos",
+      "name": "Font Logos",
+      "version": "1.3.0",
+      "kind": "Icons",
+      "license": "Unlicense",
+      "url": "https://github.com/lukas-w/font-logos",
+      "files": [
+        "third-party/nerd-fonts/licenses/font-logos-LICENSE",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-hack",
+      "name": "Hack extra glyphs",
+      "kind": "Icons",
+      "license": "MIT AND Bitstream-Vera",
+      "url": "https://github.com/source-foundry/Hack",
+      "files": [
+        "third-party/nerd-fonts/licenses/hack-LICENSE.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-material-design-icons",
+      "name": "Material Design Icons",
+      "version": "2022-10-06",
+      "kind": "Icons",
+      "license": "Apache-2.0",
+      "url": "https://pictogrammers.com/library/mdi/",
+      "files": [
+        "third-party/nerd-fonts/licenses/material-design-icons-LICENSE",
+        "third-party/licenses/canonical/Apache-2.0.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-octicons",
+      "name": "Octicons",
+      "version": "18.3.0",
+      "kind": "Icons",
+      "license": "MIT",
+      "url": "https://github.com/primer/octicons",
+      "files": [
+        "third-party/nerd-fonts/licenses/octicons-LICENSE",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-seti-ui",
+      "name": "Seti UI",
+      "version": "0.8.1",
+      "kind": "Icons",
+      "license": "MIT",
+      "url": "https://github.com/jesseweed/seti-ui",
+      "files": [
+        "third-party/nerd-fonts/licenses/seti-ui-LICENSE.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-pomicons",
+      "name": "Pomicons",
+      "version": "1.001",
+      "kind": "Icons",
+      "license": "OFL-1.1",
+      "url": "https://github.com/gabrielelana/pomicons",
+      "files": [
+        "third-party/nerd-fonts/licenses/pomicons-LICENSE",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-powerline-extra",
+      "name": "Powerline Extra Symbols",
+      "version": "1.200",
+      "kind": "Icons",
+      "license": "MIT",
+      "url": "https://github.com/ryanoasis/powerline-extra-symbols",
+      "files": [
+        "third-party/nerd-fonts/licenses/powerline-extra-LICENSE",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-powerline-symbols",
+      "name": "Powerline Symbols",
+      "version": "1.000",
+      "kind": "Icons",
+      "license": "MIT",
+      "url": "https://github.com/powerline/powerline",
+      "files": [
+        "third-party/nerd-fonts/licenses/powerline-symbols-LICENSE.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-iec-power-symbols",
+      "name": "IEC Power Symbols",
+      "version": "2015-02",
+      "kind": "Icons",
+      "license": "MIT",
+      "url": "https://github.com/jloughry/Unicode",
+      "files": [
+        "third-party/nerd-fonts/licenses/iec-power-symbols-LICENSE.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
+    },
+    {
+      "id": "nerd-fonts-weather-icons",
+      "name": "Weather Icons",
+      "version": "2.0.10",
+      "kind": "Icons",
+      "license": "OFL-1.1",
+      "url": "https://github.com/erikflowers/weather-icons",
+      "files": [
+        "third-party/nerd-fonts/licenses/weather-icons-OFL.txt",
+        "third-party/nerd-fonts/NOTICE.txt"
+      ]
     },
     {
       "id": "lucide",

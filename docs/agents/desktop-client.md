@@ -619,6 +619,28 @@ quads, then paths, underlines, and sprites, so a quad that must cover glyphs,
 such as the block cursor, needs a later layer or an unlayered paint after it.
 Tessellate built-in paths once per geometry, never per paint.
 
+Nerd Font icons draw from the bundled Symbols Nerd Font through
+`renderer/symbols`, not GPUI's fallback, which Linux lacks. Only standalone
+Private Use Area scalars and the IEC power symbols qualify, after the built-in
+check, and only when the cell's own face (variant included) has no glyph, so
+patched families keep their icons. The choice runs on a layout-cache miss and
+is cached with the layout. Each icon takes its Nerd Fonts patcher rule from
+the generated `symbols/constraint/table.rs`, a port of Ghostty's constraints
+credited in `third-party/nerd-font-constraints/`: measure its ink with
+`skrifa`, constrain it against the terminal face's metrics and cap height,
+and lay it out at the resulting size. The size and origin differ from the
+grid's and travel in `GlyphContent::Symbol`, one layout per cell width. GPUI
+scales glyphs only uniformly, so stretch rules size like fit. Never edit the
+table by hand; run `mise run nerd-fonts:constraints`. The `patched_reference`
+test checks every icon against patched "Nerd Font Mono" builds of three
+families within 5% of a cell; treat a failure there as a placement bug, not a
+tolerance to raise. Ask GPUI
+for the family only after `symbols_available()`: `resolve_font` panics when a
+family and GPUI's whole fallback stack are missing. GPUI loads the face only
+through the `nerd-font-symbols` vendor patches, because both text systems skip
+faces without an `m` glyph. Keep the family out of Settings' font lists and
+terminal or interface resolution with `is_selectable_family`.
+
 Run `mise run smoke:renderer` for production preparation/paint coverage and
 inspect the held fixture when changing geometry. Keep its license notice in
 the packaged resources independently of the Ghostty VT engine notice.

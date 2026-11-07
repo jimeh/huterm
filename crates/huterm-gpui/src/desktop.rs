@@ -265,7 +265,8 @@ fn install_menus(cx: &mut App) {
 fn resolve_terminal_family(config: &Config, cx: &App) -> ResolvedFamily {
     let names = cx.text_system().all_font_names();
     ResolvedFamily::resolve(&config.font.family, |family| {
-        names.iter().any(|name| name == family)
+        crate::terminal_font::is_selectable_family(family)
+            && names.iter().any(|name| name == family)
     })
 }
 
@@ -278,8 +279,10 @@ fn resolve_metrics(
     if let Some(warning) = resolved.warning() {
         eprintln!("{warning}");
     }
-    let terminal_font =
-        TerminalFont::new(resolved.family.clone(), config.font.weight);
+    let terminal_font = TerminalFont {
+        nerd_font_symbols: config.font.nerd_font_symbols,
+        ..TerminalFont::new(resolved.family.clone(), config.font.weight)
+    };
     let font_size = px(config.font.size);
     let metrics = GridMetrics::resolve(text_system, &terminal_font, font_size)?;
     Ok((terminal_font, metrics, resolved))

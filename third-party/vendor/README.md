@@ -9,10 +9,11 @@ Keep each coherent fix together. GPUI's core crate has hidden-window creation,
 file-drop pointer-modality, test-window accessibility, keystroke held-flag,
 App-free keybinding loader, and accessibility window-bounds patches, its Linux
 crate has X11 file-drop, fullscreen-state, key-repeat, accessibility
-window-bounds, and bounded notification-wait patches, and its macOS crate has
+window-bounds, and bounded notification-wait patches, its macOS crate has
 offscreen-screen, per-window
 frame-constraint, virtual-machine display-link, and accessibility view adapter
-patches. AccessKit's macOS adapter has the terminal text patches described
+patches, and its Apple and wgpu text-system crates have the icon-font exception
+patch. AccessKit's macOS adapter has the terminal text patches described
 below.
 
 Normal Cargo builds use the fully patched vendored source through
@@ -154,9 +155,11 @@ patches, and manifest entry, then validate the registry dependency instead.
 Zed has not published GPUI to crates.io since 0.2.2. Huterm uses `gpui-pre`
 0.3.11, which republishes Zed's workspace crates from revision
 `f816e1f9263e3a8ef63c4baaa02e1441ce1c6038` as separate Apache-2.0 registry
-crates. Only the three patched crates are vendored: `gpui-pre` (Zed's
-`crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), and `gpui-pre-macos`
-(`crates/gpui_macos`). The other snapshot crates resolve from the registry.
+crates. Only the five patched crates are vendored: `gpui-pre` (Zed's
+`crates/gpui`), `gpui-pre-linux` (`crates/gpui_linux`), `gpui-pre-macos`
+(`crates/gpui_macos`), `gpui-pre-apple` (`crates/gpui_apple`), and
+`gpui-pre-wgpu` (`crates/gpui_wgpu`). The other snapshot crates resolve from
+the registry.
 The archives omit Cargo's VCS file and record their Zed crate and revision in
 `package.metadata.gpui-pre`, which `vendor:check` compares with the manifest.
 The registry archive is the reproducible source of truth. All published files
@@ -170,6 +173,18 @@ borderless traffic-light guard, explicit application lifetime, a live X11 window
 handle, a patched Taffy grid, explicit float literals, sprite sorting by atlas
 texture rather than tile (zed#65814), and a nil-screen guard in the macOS
 maximized check.
+
+## GPUI icon-font exception
+
+GPUI's macOS (`gpui-pre-apple`) and Linux (`gpui-pre-wgpu`) text systems skip
+any face without an `m` glyph when loading a family, except Segoe Fluent Icons,
+and their fallback chains load through the same check. Huterm's bundled Symbols
+Nerd Font has no `m`, so each crate's `nerd-font-symbols` patch adds it to that
+exception: by full name on macOS and by PostScript name, `SymbolsNF`, on
+Linux. Huterm never measures that face by `m`. Remove both patches, the vendored
+crates, and their overrides when a reviewed snapshot loads such a face as a
+primary font; the native `renderer::symbols` test and `smoke:renderer` check it
+on both platforms.
 
 ## GPUI X11 native file-drop correction
 

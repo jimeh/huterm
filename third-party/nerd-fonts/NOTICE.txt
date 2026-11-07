@@ -1,0 +1,54 @@
+Symbols Nerd Font
+
+Huterm embeds SymbolsNerdFont-Regular.ttf from the Nerd Fonts 3.5.1
+NerdFontsSymbolsOnly release, unmodified, to draw icon code points that the
+configured terminal font does not cover. Nerd Fonts (https://www.nerdfonts.com,
+copyright (c) 2014 Ryan L McIntyre) assembled the font from the icon sets
+below, rescaling and re-encoding their glyphs to Nerd Fonts code points. Each
+set keeps its own license:
+
+- Codicons 0.0.45, copyright (c) Microsoft Corporation, CC BY 4.0
+  (https://creativecommons.org/licenses/by/4.0/). Nerd Fonts repaired glyphs
+  U+EA91 and U+EBF0. https://github.com/microsoft/vscode-codicons
+- Devicons 2.17.0, copyright (c) 2015 konpa, MIT.
+  https://github.com/devicons/devicon
+- Font Awesome Free 6.5.1 icons, copyright (c) Fonticons, Inc., CC BY 4.0
+  (https://creativecommons.org/licenses/by/4.0/). Nerd Fonts built a subset
+  from the release SVGs, which the CC BY 4.0 part of the Font Awesome Free
+  license covers, and added the Font Awesome 7.3.1 solid volume icon.
+  https://fontawesome.com
+- Font Awesome Extension 0.0.3, copyright (c) 2017 André Luiz Gava, MIT.
+  https://github.com/AndreLZGava/font-awesome-extension
+- Font Logos 1.3.0, released into the public domain under The Unlicense.
+  https://github.com/lukas-w/font-logos
+- Hack extra glyphs, copyright 2018 Source Foundry Authors, MIT, with
+  Bitstream Vera Sans Mono under the Bitstream Vera License.
+  https://github.com/source-foundry/Hack
+- Material Design Icons (October 6, 2022), Pictogrammers Free License: the
+  font is distributed under Apache 2.0. Nerd Fonts repaired glyph U+F1522.
+  https://github.com/Templarian/MaterialDesign-Font
+- Octicons 18.3.0, copyright (c) 2023 GitHub Inc., MIT.
+  https://github.com/primer/octicons
+- Seti UI 0.8.1, copyright (c) 2014 Jesse Weed, MIT, and the original Nerd
+  Fonts glyphs under the Nerd Fonts MIT license.
+  https://github.com/jesseweed/seti-ui
+- Pomicons 1.001, copyright (c) 2021 Gabriele Lana, with Reserved Font Name
+  Pomicons, SIL Open Font License 1.1. https://github.com/gabrielelana/pomicons
+- Powerline Extra Symbols 1.200, copyright (c) 2016 Ryan L McIntyre, MIT.
+  https://github.com/ryanoasis/powerline-extra-symbols
+- Powerline Symbols 1.000, copyright 2013 Kim Silkebækken and other
+  contributors, MIT. Nerd Fonts added a 7% strip to the straight side of
+  U+E0B0 and U+E0B2.
+  https://github.com/powerline/powerline
+- IEC Power Symbols, copyright (c) 2013 Joe Loughry, MIT.
+  https://github.com/jloughry/Unicode
+- Weather Icons 2.0.10, SIL Open Font License 1.1. Icon designs originally by
+  Lukas Bischoff; icon art for 1.1 onward by Erik Flowers.
+  https://github.com/erikflowers/weather-icons
+
+The Pomicons and Weather Icons glyphs in this font remain under the SIL Open
+Font License 1.1, whatever license covers the rest of the font. Huterm
+distributes the font file unmodified and does not use either reserved name.
+
+Brand icons in these sets are trademarks of their respective owners; these
+licenses grant no trademark rights.

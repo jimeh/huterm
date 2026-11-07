@@ -567,7 +567,7 @@ command = "open_context_menu"
     await typeText("ghostty");
     await state('w0.licenses_selected=Some("Ghostty")');
     await key("down");
-    await state('w0.licenses_selected=Some("Ghostty sprite drawing")');
+    await state('w0.licenses_selected=Some("Ghostty Nerd Font constraints")');
     await key("tab");
     await key("tab");
     await state("w0.licenses_focus=copy");
@@ -575,7 +575,7 @@ command = "open_context_menu"
     let licenseText = "";
     await waitFor(async () => { licenseText = await command("clipboard"); return licenseText.includes("Mitchell Hashimoto"); }, `Copy to write the license, last clipboard ${JSON.stringify(licenseText.slice(0, 80))}`);
     await key("escape");
-    await stateWhere((text) => !text.includes("w0.licenses=2 ") && /w0\.licenses=\d{2,} /.test(text), "the search to clear");
+    await stateWhere((text) => !text.includes("w0.licenses=3 ") && /w0\.licenses=\d{2,} /.test(text), "the search to clear");
     await typeText("acklicensesx");
     await key("enter");
     await state("w0.licenses=0 ");

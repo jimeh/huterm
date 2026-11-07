@@ -1,5 +1,7 @@
 //! Terminal font identity and the faces GPUI can match.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use gpui::{Font, font};
 use huterm_config::FontWeight;
 use zed_font_kit::{
@@ -12,7 +14,8 @@ use zed_font_kit::source::SystemSource;
 
 pub(crate) const BUNDLED_FAMILY: &str = "DejaVu Sans Mono";
 
-// The registered-face list is the extension point for additional bundled fonts.
+// The terminal family's faces. `BUNDLED_FAMILIES` is the extension point for
+// additional bundled fonts.
 const BUNDLED_FACES: &[&[u8]] = &[
     include_bytes!("../assets/fonts/dejavu/DejaVuSansMono.ttf"),
     include_bytes!("../assets/fonts/dejavu/DejaVuSansMono-Bold.ttf"),
@@ -20,18 +23,67 @@ const BUNDLED_FACES: &[&[u8]] = &[
     include_bytes!("../assets/fonts/dejavu/DejaVuSansMono-BoldOblique.ttf"),
 ];
 
+/// The icon font the renderer draws Nerd Font code points from when the
+/// terminal font lacks them. It is not a terminal or interface family.
+pub(crate) const SYMBOLS_FAMILY: &str = "Symbols Nerd Font";
+
+pub(crate) const SYMBOLS_FACE: &[u8] =
+    include_bytes!("../assets/fonts/nerd-fonts/SymbolsNerdFont-Regular.ttf");
+
+/// Each family registers on its own, so one family's failure never hides
+/// another.
+const BUNDLED_FAMILIES: [(&str, &[&[u8]]); 2] = [
+    (BUNDLED_FAMILY, BUNDLED_FACES),
+    (SYMBOLS_FAMILY, &[SYMBOLS_FACE]),
+];
+
 /// Run before the first font lookup in every native application entrypoint.
 pub(crate) fn register_bundled_fonts(cx: &gpui::App) {
-    if let Err(error) = register_faces(cx.text_system(), BUNDLED_FACES) {
-        static LOG_FAILURE: std::sync::Once = std::sync::Once::new();
-        LOG_FAILURE.call_once(|| {
-            eprintln!("Huterm bundled font {BUNDLED_FAMILY:?} failed to load: {error:#}");
-        });
+    static LOG_FAILURE: [std::sync::Once; BUNDLED_FAMILIES.len()] =
+        [const { std::sync::Once::new() }; BUNDLED_FAMILIES.len()];
+    for ((family, faces), logged) in BUNDLED_FAMILIES.iter().zip(&LOG_FAILURE) {
+        match register_faces(cx.text_system(), family, faces) {
+            Ok(()) if *family == SYMBOLS_FAMILY => {
+                SYMBOLS_REGISTERED.store(true, Ordering::Relaxed);
+            }
+            Ok(()) => {}
+            Err(error) => logged.call_once(|| {
+                eprintln!(
+                    "Huterm bundled font {family:?} failed to load: {error:#}"
+                );
+            }),
+        }
     }
 }
 
+static SYMBOLS_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+/// Whether the symbols font registered. GPUI's `resolve_font` panics when a
+/// family and its whole fallback stack are missing, so the renderer asks
+/// for the symbols family only after it loaded.
+pub(crate) fn symbols_available() -> bool {
+    SYMBOLS_REGISTERED.load(Ordering::Relaxed)
+}
+
+/// The bundled family's regular face, for measuring what GPUI's Linux text
+/// system does not report.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn bundled_regular_face() -> &'static [u8] {
+    BUNDLED_FACES[0]
+}
+
+/// Whether a family belongs in the terminal and interface font lists.
+pub(crate) fn is_selectable_family(family: &str) -> bool {
+    family != SYMBOLS_FAMILY
+}
+
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(unused_variables, reason = "only Linux checks the family")
+)]
 fn register_faces(
     text_system: &gpui::TextSystem,
+    family: &str,
     faces: &[&'static [u8]],
 ) -> anyhow::Result<()> {
     text_system.add_fonts(
@@ -46,7 +98,7 @@ fn register_faces(
         text_system
             .all_font_names()
             .iter()
-            .any(|name| name == BUNDLED_FAMILY),
+            .any(|name| name == family),
         "registered family is absent from the text system"
     );
     Ok(())
@@ -146,6 +198,9 @@ pub(crate) struct TerminalFont {
     pub(crate) family: String,
     pub(crate) weight: FontWeight,
     pub(crate) bold_weight: FontWeight,
+    /// Whether icons the family lacks draw from the bundled symbols font.
+    /// It shapes glyph layouts, so a change re-lays them like a family change.
+    pub(crate) nerd_font_symbols: bool,
 }
 
 impl TerminalFont {
@@ -154,6 +209,7 @@ impl TerminalFont {
             family,
             weight,
             bold_weight: weight.bold(),
+            nerd_font_symbols: true,
         }
     }
 
@@ -519,7 +575,7 @@ mod tests {
         use gpui::PlatformTextSystem as _;
         let platform = std::sync::Arc::new(gpui_apple::AppleTextSystem::new());
         let system = gpui::TextSystem::new(platform.clone());
-        register_faces(&system, BUNDLED_FACES).unwrap();
+        register_faces(&system, BUNDLED_FAMILY, BUNDLED_FACES).unwrap();
         let mut ids = Vec::new();
         for request in [
             font(BUNDLED_FAMILY),
@@ -591,7 +647,10 @@ mod tests {
                 assert!(!ids.contains(&id));
                 ids.push(id);
             }
-            assert_eq!(cx.text_system().all_font_names(), [BUNDLED_FAMILY]);
+            assert_eq!(
+                cx.text_system().all_font_names(),
+                [BUNDLED_FAMILY, SYMBOLS_FAMILY]
+            );
         });
     }
 
@@ -608,7 +667,8 @@ mod tests {
         system
             .add_fonts(vec![std::borrow::Cow::Borrowed(b"invalid font")])
             .unwrap();
-        let error = register_faces(&system, &[b"invalid font"]).unwrap_err();
+        let error = register_faces(&system, BUNDLED_FAMILY, &[b"invalid font"])
+            .unwrap_err();
         assert!(error.to_string().contains("registered family is absent"));
     }
 

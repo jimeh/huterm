@@ -1311,6 +1311,16 @@
           "x-huterm-order": 10,
           "x-huterm-section": "appearance"
         },
+        "nerd_font_symbols": {
+          "default": true,
+          "description": "Draw Nerd Font icons, such as prompt and file-listing icons, from\nHuterm's bundled Symbols Nerd Font when the terminal font has no glyph\nof its own. Off leaves them to the terminal font and the system.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Font",
+          "x-huterm-label": "Built-in Nerd Font icons",
+          "x-huterm-order": 25,
+          "x-huterm-section": "appearance"
+        },
         "size": {
           "default": 14.0,
           "format": "float",

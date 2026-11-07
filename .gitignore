@@ -4,6 +4,7 @@
 .DS_Store
 /.native/ghostty/
 /.native/ghostty-prebuilt/
+/.native/nerd-fonts/
 /.native/sparkle/
 /.native/vendor/
 /node_modules/

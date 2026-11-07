@@ -58,7 +58,7 @@ fn weight_only_reload_invalidates_prepared_glyphs_with_identical_metrics() {
     renderer.layouts.get_or_insert_with(
         GlyphText::Scalar('A'),
         variant,
-        || Arc::new(LineLayout::default()),
+        || GlyphContent::Font(Arc::new(LineLayout::default())),
     );
     let weight =
         huterm_config::FontWeight::parse(&toml::Value::Integer(500)).unwrap();
@@ -69,14 +69,14 @@ fn weight_only_reload_invalidates_prepared_glyphs_with_identical_metrics() {
     assert!(
         !renderer
             .layouts
-            .get_or_insert_with(GlyphText::Scalar('A'), variant, || Arc::new(
-                LineLayout::default()
-            ))
+            .get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                GlyphContent::Font(Arc::new(LineLayout::default()))
+            })
             .1
     );
     assert_eq!(original.rows[0].cells[0].text, "A");
     assert_eq!(
-        text_run("A", variant, &terminal_font).font.weight,
+        cell_font(variant, &terminal_font).weight,
         gpui::FontWeight(500.0)
     );
     let bold = FontVariant {
@@ -84,7 +84,7 @@ fn weight_only_reload_invalidates_prepared_glyphs_with_identical_metrics() {
         ..variant
     };
     assert_eq!(
-        text_run("A", bold, &terminal_font).font.weight,
+        cell_font(bold, &terminal_font).weight,
         gpui::FontWeight(800.0)
     );
 }
@@ -140,7 +140,7 @@ fn font_changes_evict_layouts_while_palette_changes_reuse_them() {
     renderer.layouts.get_or_insert_with(
         GlyphText::Scalar('A'),
         variant,
-        || Arc::new(LineLayout::default()),
+        || GlyphContent::Font(Arc::new(LineLayout::default())),
     );
     let mut theme = Theme::default();
     theme.background = theme.foreground;
@@ -153,12 +153,26 @@ fn font_changes_evict_layouts_while_palette_changes_reuse_them() {
             ))
             .1
     );
-    renderer.reconfigure("Monaco".into(), theme, metrics);
+    renderer.reconfigure("Monaco".into(), theme.clone(), metrics);
     assert!(
         !renderer
             .layouts
             .get_or_insert_with(GlyphText::Scalar('A'), variant, || {
-                Arc::new(LineLayout::default())
+                GlyphContent::Font(Arc::new(LineLayout::default()))
+            })
+            .1
+    );
+    // Turning the bundled Nerd Font icons off re-lays icons in the family.
+    let without_symbols = TerminalFont {
+        nerd_font_symbols: false,
+        ..TerminalFont::from("Monaco")
+    };
+    renderer.reconfigure(without_symbols, theme, metrics);
+    assert!(
+        !renderer
+            .layouts
+            .get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                GlyphContent::Font(Arc::new(LineLayout::default()))
             })
             .1
     );
@@ -743,7 +757,7 @@ fn opacity_changes_preserve_prepared_rows_and_glyph_caches() {
     renderer.layouts.get_or_insert_with(
         GlyphText::Scalar('A'),
         FontVariant::default(),
-        || Arc::new(LineLayout::default()),
+        || GlyphContent::Font(Arc::new(LineLayout::default())),
     );
     assert!(renderer.set_opacity(
         0.6,
