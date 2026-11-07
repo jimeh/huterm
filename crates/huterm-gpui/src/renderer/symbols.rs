@@ -1,11 +1,22 @@
-//! Nerd Font icons drawn from the bundled Symbols Nerd Font Mono when the
+//! Nerd Font icons drawn from the bundled Symbols Nerd Font when the
 //! terminal font has no glyph for them. GPUI has no per-font fallback on
 //! Linux, so the renderer chooses the face itself rather than relying on it.
+//! Each icon is sized and aligned in its cell by the Nerd Fonts patcher's
+//! rule for it, as a patched "Nerd Font Mono" family would draw it.
+//!
+//! The placement follows Ghostty's glyph rendering in src/font/face, copyright
+//! (c) 2024 Mitchell Hashimoto, Ghostty contributors, under MIT. See
+//! third-party/nerd-font-constraints/README.md.
 
-use gpui::{Font, FontId, Pixels, Point, TextSystem, font, point};
+mod constraint;
 
+use std::sync::OnceLock;
+
+use gpui::{Font, FontId, Pixels, Point, TextSystem, font, point, px};
+
+use self::constraint::{Constraint, GlyphBox, Metrics, Size};
 use super::GridMetrics;
-use crate::terminal_font::SYMBOLS_FAMILY;
+use crate::terminal_font::{SYMBOLS_FACE, SYMBOLS_FAMILY};
 
 /// Scalars the symbols font may draw: the Private Use Areas, where Nerd Fonts
 /// places its icons, and the IEC power symbols. Standard characters the font
@@ -47,29 +58,104 @@ pub(super) fn face_for(
     (loaded && has_glyph(id)).then_some((symbols, id))
 }
 
-/// The font size that fits the font's one-em-square glyphs in one cell.
-pub(super) fn font_size(metrics: GridMetrics) -> Pixels {
-    metrics.cell_width.min(metrics.cell_height)
+/// The bundled face, parsed once to read glyph outlines' bounds. GPUI's
+/// Linux text system reports advances, not ink bounds.
+fn face() -> Option<&'static ttf_parser::Face<'static>> {
+    static FACE: OnceLock<Option<ttf_parser::Face<'static>>> = OnceLock::new();
+    FACE.get_or_init(|| ttf_parser::Face::parse(SYMBOLS_FACE, 0).ok())
+        .as_ref()
 }
 
-/// The glyph origin, relative to the cell origin, that centres a symbol of
-/// `advance` and the given ascent and descent in a span of `columns` cells,
-/// in whole device pixels. Descent is a distance below the baseline, of
-/// either sign.
-pub(super) fn origin(
+/// Ignores outline segments; only the returned bounds are needed.
+struct Bounds;
+
+impl ttf_parser::OutlineBuilder for Bounds {
+    fn move_to(&mut self, _: f32, _: f32) {}
+    fn line_to(&mut self, _: f32, _: f32) {}
+    fn quad_to(&mut self, _: f32, _: f32, _: f32, _: f32) {}
+    fn curve_to(&mut self, _: f32, _: f32, _: f32, _: f32, _: f32, _: f32) {}
+    fn close(&mut self) {}
+}
+
+/// `ch`'s ink box at `font_size`, in logical pixels with y up from the
+/// baseline and x from the pen position.
+pub(super) fn ink_box(ch: char, font_size: Pixels) -> Option<GlyphBox> {
+    let face = face()?;
+    let rect = face.outline_glyph(face.glyph_index(ch)?, &mut Bounds)?;
+    let scale =
+        f64::from(f32::from(font_size)) / f64::from(face.units_per_em());
+    let ink = GlyphBox {
+        width: f64::from(rect.width()) * scale,
+        height: f64::from(rect.height()) * scale,
+        x: f64::from(rect.x_min) * scale,
+        y: f64::from(rect.y_min) * scale,
+    };
+    (ink.width > 0.0 && ink.height > 0.0).then_some(ink)
+}
+
+/// The grid measurements the patcher's rules size icons against.
+/// `cap_height` is the terminal face's.
+pub(super) fn grid(metrics: GridMetrics, cap_height: Pixels) -> Metrics {
+    let value = |pixels: Pixels| f64::from(f32::from(pixels));
+    let face_height = value(metrics.ascent + metrics.descent);
+    let cell_baseline = value(metrics.cell_height - metrics.baseline);
+    Metrics {
+        cell_width: value(metrics.cell_width),
+        cell_height: value(metrics.cell_height),
+        face_width: value(metrics.advance),
+        face_height,
+        face_y: cell_baseline - value(metrics.descent),
+        icon_height: face_height,
+        icon_height_single: (2.0 * value(cap_height) + face_height) / 3.0,
+    }
+}
+
+/// Where a symbol draws: the size to lay it out at and its glyph origin,
+/// the pen position on the baseline, relative to the cell's top-left corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Placement {
+    pub(super) font_size: Pixels,
+    pub(super) origin: Point<Pixels>,
+}
+
+/// Places `ch` in `columns` cells by its patcher rule, with the origin on
+/// whole device pixels. `None` for a glyph without ink.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "cell-sized logical pixels and scale factors fit f32"
+)]
+pub(super) fn place(
+    ch: char,
     metrics: GridMetrics,
-    columns: u16,
-    advance: Pixels,
-    ascent: Pixels,
-    descent: Pixels,
-) -> Point<Pixels> {
-    let scale = metrics.scale_factor;
-    let align = |value: Pixels| (value * scale).round() / scale;
-    let height = ascent + descent.abs();
-    point(
-        align((metrics.cell_width * f32::from(columns) - advance) / 2.0),
-        align((metrics.cell_height - height) / 2.0 + ascent),
-    )
+    grid: &Metrics,
+    columns: u8,
+) -> Option<Placement> {
+    let ink = ink_box(ch, metrics.font_size)?;
+    let cell_baseline =
+        grid.cell_height - f64::from(f32::from(metrics.baseline));
+    let glyph = GlyphBox {
+        y: ink.y + cell_baseline,
+        ..ink
+    };
+    let constraint = Constraint::for_char(ch);
+    let placed = constraint.constrain(glyph, grid, columns);
+    let factor = placed.width / glyph.width;
+    // Like Ghostty, centre the face's advance in the rounded cell, except
+    // for stretch rules, which already align to the grid.
+    let x = if constraint.size == Size::Stretch {
+        placed.x
+    } else {
+        placed.x + (grid.cell_width - grid.face_width) / 2.0
+    };
+    let scale = f64::from(metrics.scale_factor);
+    let align = |value: f64| px(((value * scale).round() / scale) as f32);
+    Some(Placement {
+        font_size: metrics.font_size * factor as f32,
+        origin: point(
+            align(x - ink.x * factor),
+            align(grid.cell_height - placed.y + ink.y * factor),
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -109,30 +195,6 @@ mod tests {
         ] {
             assert!(!candidate(ch), "{:04X}", u32::from(ch));
         }
-    }
-
-    #[test]
-    fn symbols_fill_the_cell_width_and_centre_vertically() {
-        // Menlo 12 at 2x: a cell narrower than it is tall.
-        let metrics = GridMetrics::from_measurements(
-            px(12.0),
-            px(7.224_609_4),
-            px(11.138_672),
-            px(-2.830_078_1),
-            2.0,
-        );
-        let size = font_size(metrics);
-        assert_eq!(size, metrics.cell_width);
-        let ascent = size * 0.8;
-        let descent = size * 0.2;
-        let origin = origin(metrics, 1, size, ascent, -descent);
-        assert_eq!(origin.x, px(0.0));
-        // Equal space above the ascent and below the descent, within the
-        // half device pixel that rounding may move it.
-        let above = origin.y - ascent;
-        let below = metrics.cell_height - origin.y - descent;
-        assert!((above - below).abs() <= px(0.5), "{above:?} {below:?}");
-        assert_eq!(origin.y * 2.0, (origin.y * 2.0).round());
     }
 
     /// Registers the bundled fonts in the platform's native text system, as
@@ -180,7 +242,7 @@ mod tests {
                     });
                 assert_eq!(face.family.as_ref(), SYMBOLS_FAMILY);
                 let advance = text_system.advance(id, size, ch).unwrap().width;
-                assert_eq!(advance, size, "Mono glyphs are one em wide");
+                assert!(advance > px(0.0));
             }
             // A family with its own glyph keeps it; the symbols family stands
             // in for a patched Nerd Font.
@@ -200,27 +262,95 @@ mod tests {
         });
     }
 
-    #[test]
-    fn symbols_in_a_short_wide_cell_take_the_cell_height() {
-        let metrics = GridMetrics::fixed(20.0, 10.0);
-        let size = font_size(metrics);
-        assert_eq!(size, metrics.cell_height);
-        let origin = origin(metrics, 1, size, size * 0.8, size * 0.2);
-        assert_eq!(origin.x, px(5.0));
-        assert_eq!(origin.y, size * 0.8);
+    /// Menlo 12 at 2x, with its cap height: a cell narrower than tall.
+    fn menlo() -> (GridMetrics, Metrics) {
+        let metrics = GridMetrics::from_measurements(
+            px(12.0),
+            px(7.224_609_4),
+            px(11.138_672),
+            px(-2.830_078_1),
+            2.0,
+        );
+        (metrics, grid(metrics, px(8.748)))
+    }
+
+    /// The placed ink's edges relative to the cell's top-left corner:
+    /// left, top, right, bottom.
+    fn placed_ink(ch: char, at: Placement) -> (f64, f64, f64, f64) {
+        let ink = ink_box(ch, at.font_size).expect("ink");
+        let x = f64::from(f32::from(at.origin.x)) + ink.x;
+        let baseline = f64::from(f32::from(at.origin.y));
+        (
+            x,
+            baseline - ink.y - ink.height,
+            x + ink.width,
+            baseline - ink.y,
+        )
     }
 
     #[test]
-    fn wide_symbols_centre_on_whole_device_pixels() {
-        // An odd device-pixel cell width at 1x puts the two-column centre
-        // on a half pixel unless the shifted origin is aligned again.
-        let metrics = GridMetrics::fixed(7.0, 14.0);
-        let size = font_size(metrics);
-        let narrow = origin(metrics, 1, size, size * 0.8, size * 0.2);
-        let wide = origin(metrics, 2, size, size * 0.8, size * 0.2);
-        assert_eq!(narrow.x, px(0.0));
-        assert_eq!(wide.x, wide.x.round());
-        assert!((wide.x - px(3.5)).abs() <= px(0.5));
-        assert_eq!(wide.y, narrow.y);
+    fn tall_icons_take_the_line_height_like_a_patched_font() {
+        let (metrics, grid) = menlo();
+        let cell_height = f64::from(f32::from(metrics.cell_height));
+        let cell_width = f64::from(f32::from(metrics.cell_width));
+        // The Powerline branch scales to the full line height.
+        let at = place('\u{e0a0}', metrics, &grid, 1).expect("branch");
+        let (_, top, _, bottom) = placed_ink('\u{e0a0}', at);
+        assert!(
+            (bottom - top - grid.face_height).abs() < 0.5,
+            "branch spans {top}..{bottom} of a {} line",
+            grid.face_height
+        );
+        // A narrow Material battery grows taller than a cell is wide, which
+        // fitting the em square to the cell width never allowed.
+        let at = place('\u{f0084}', metrics, &grid, 1).expect("battery");
+        let (left, top, right, bottom) = placed_ink('\u{f0084}', at);
+        assert!(
+            bottom - top > cell_width,
+            "battery is {} tall",
+            bottom - top
+        );
+        assert!(right - left < cell_width + 0.5 && bottom <= cell_height + 0.5);
+        // A wide folder fills the width and stays short.
+        let at = place('\u{f07b}', metrics, &grid, 1).expect("folder");
+        let (left, _, right, _) = placed_ink('\u{f07b}', at);
+        assert!((right - left - grid.face_width).abs() < 0.5);
+    }
+
+    #[test]
+    fn every_icon_stays_inside_its_cells() {
+        let (metrics, grid) = menlo();
+        let cell_width = f64::from(f32::from(metrics.cell_width));
+        let cell_height = f64::from(f32::from(metrics.cell_height));
+        // The patcher's overlap pads let a few glyphs reach 3% of a cell
+        // past each edge, and origins round by up to half a device pixel.
+        let slack = 0.03 * grid.face_width + 0.5;
+        let mut code_points = Vec::new();
+        let cmap = face().expect("bundled face").tables().cmap.expect("cmap");
+        for subtable in cmap.subtables {
+            if subtable.is_unicode() {
+                subtable.codepoints(|code| code_points.push(code));
+            }
+        }
+        let mut placed = 0;
+        for ch in code_points.into_iter().filter_map(char::from_u32) {
+            for columns in [1_u8, 2] {
+                let Some(at) = place(ch, metrics, &grid, columns) else {
+                    continue;
+                };
+                let span = cell_width * f64::from(columns);
+                let (left, top, right, bottom) = placed_ink(ch, at);
+                assert!(
+                    left >= -slack
+                        && top >= -slack
+                        && right <= span + slack
+                        && bottom <= cell_height + slack,
+                    "U+{:04X} in {columns} cells spans ({left}, {top})..({right}, {bottom})",
+                    u32::from(ch)
+                );
+                placed += 1;
+            }
+        }
+        assert!(placed > 20_000, "placed {placed} glyphs");
     }
 }

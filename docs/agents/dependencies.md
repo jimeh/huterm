@@ -111,13 +111,15 @@ as resources; the fonts themselves are embedded and registered before lookup.
 
 ## Bundled symbols font
 
-`SymbolsNerdFontMono-Regular.ttf` from the Nerd Fonts 3.5.1
+`SymbolsNerdFont-Regular.ttf`, the non-Mono face, from the Nerd Fonts 3.5.1
 `NerdFontsSymbolsOnly.tar.xz` release lives unmodified in
-`crates/huterm-gpui/assets/fonts/nerd-fonts/`. To bump it:
+`crates/huterm-gpui/assets/fonts/nerd-fonts/`. The renderer sizes its icons
+with a constraint table generated from the same release's font-patcher. To
+bump it:
 
 1. Pick a release outside the three-day cooldown, verify the archive's SHA-256
-   against the release asset digest, and copy the Mono TTF and the archive's
-   `LICENSE` without rewriting them.
+   against the release asset digest, and copy `SymbolsNerdFont-Regular.ttf`
+   and the archive's `LICENSE` without rewriting them.
 2. Compare the archive README's icon-set table with
    `third-party/nerd-fonts/README.md`. For each set whose version or license
    changed, or that is new, fetch its license text at the matching tag or
@@ -127,11 +129,17 @@ as resources; the fonts themselves are embedded and registered before lookup.
    clearly redistributable needs the user's decision before it ships.
 3. Refresh every URL and hash in `third-party/nerd-fonts/provenance.json` and
    the Linux notice list in `assets/linux/package-policy.json`.
-4. Check that the family is still `Symbols Nerd Font Mono` with PostScript
-   name `SymbolsNFM`, which the `nerd-font-symbols` vendor patches name, that
-   every glyph still has a one-em advance, and that hhea ascent plus descent
-   still equals one em, which vertical centring assumes.
+4. Check that the family is still `Symbols Nerd Font` with PostScript name
+   `SymbolsNF`, which the `nerd-font-symbols` vendor patches name.
+5. In `scripts/nerd-font-constraints.py`, set `NF_VERSION` and the new
+   `font-patcher` SHA-256, check the script's evaluation context against the
+   new `setup_patch_set` variables, and run `mise run nerd-fonts:constraints`.
+   Review the regenerated `renderer/symbols/constraint/table.rs`; a test fails
+   while its version differs from the bundled font's.
 
+The generator runs through the pinned `uv` Mise tool with an exact `fonttools`
+version, and downloads the font-patcher and icon-set source fonts into
+`.native/nerd-fonts`. Bump `fonttools` in the task under the same cooldown.
 Run `mise run licenses:generate`, `mise run licenses:check`, the
 `renderer::symbols` tests, `mise run smoke:renderer` on macOS and in the Linux
 container, and the platform package checks.
@@ -197,11 +205,11 @@ delivers Metal-link frames on GitHub's macOS runners; CI's macOS smokes are the
 check. [Window presentation](window-presentation.md) records the evidence.
 
 The `gpui-pre-apple` and `gpui-pre-wgpu` `nerd-font-symbols` patches let the
-bundled Symbols Nerd Font Mono load as a primary font. Both text systems skip
+bundled Symbols Nerd Font load as a primary font. Both text systems skip
 any face without an `m` glyph, because Zed measures fonts by it, and admit only
 Segoe Fluent Icons as an exception; GPUI's fallback chain loads through the
 same filter. The patches add the symbols face to that exception by full name on
-macOS and PostScript name (`SymbolsNFM`) on Linux. Drop them when a reviewed
+macOS and PostScript name (`SymbolsNF`) on Linux. Drop them when a reviewed
 snapshot loads a face without `m` as a primary font, or offers an equivalent
 explicit allowance; the native `renderer::symbols` test fails without them.
 

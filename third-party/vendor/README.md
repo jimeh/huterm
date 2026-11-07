@@ -179,8 +179,8 @@ maximized check.
 GPUI's macOS (`gpui-pre-apple`) and Linux (`gpui-pre-wgpu`) text systems skip
 any face without an `m` glyph when loading a family, except Segoe Fluent Icons,
 and their fallback chains load through the same check. Huterm's bundled Symbols
-Nerd Font Mono has no `m`, so each crate's `nerd-font-symbols` patch adds it to
-that exception: by full name on macOS and by PostScript name, `SymbolsNFM`, on
+Nerd Font has no `m`, so each crate's `nerd-font-symbols` patch adds it to that
+exception: by full name on macOS and by PostScript name, `SymbolsNF`, on
 Linux. Huterm never measures that face by `m`. Remove both patches, the vendored
 crates, and their overrides when a reviewed snapshot loads such a face as a
 primary font; the native `renderer::symbols` test and `smoke:renderer` check it

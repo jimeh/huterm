@@ -2701,6 +2701,7 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.8+spec-1.1.0",
+ "ttf-parser",
  "unicode-segmentation",
  "x11rb 0.14.0",
  "zed-font-kit",

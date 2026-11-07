@@ -85,6 +85,18 @@
       "files": ["third-party/terminal-graphics/LICENSE-Ghostty"]
     },
     {
+      "id": "nerd-font-constraints",
+      "name": "Ghostty Nerd Font constraints",
+      "version": "83fb956",
+      "kind": "Source port",
+      "license": "MIT",
+      "url": "https://github.com/ghostty-org/ghostty",
+      "files": [
+        "third-party/nerd-font-constraints/LICENSE-Ghostty",
+        "third-party/nerd-fonts/LICENSE"
+      ]
+    },
+    {
       "id": "dejavu-sans-mono",
       "name": "DejaVu Sans Mono",
       "version": "2.37",
@@ -95,7 +107,7 @@
     },
     {
       "id": "nerd-fonts-symbols",
-      "name": "Symbols Nerd Font Mono",
+      "name": "Symbols Nerd Font",
       "version": "3.5.1",
       "kind": "Font",
       "license": "MIT",

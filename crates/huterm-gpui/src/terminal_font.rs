@@ -25,11 +25,10 @@ const BUNDLED_FACES: &[&[u8]] = &[
 
 /// The icon font the renderer draws Nerd Font code points from when the
 /// terminal font lacks them. It is not a terminal or interface family.
-pub(crate) const SYMBOLS_FAMILY: &str = "Symbols Nerd Font Mono";
+pub(crate) const SYMBOLS_FAMILY: &str = "Symbols Nerd Font";
 
-const SYMBOLS_FACE: &[u8] = include_bytes!(
-    "../assets/fonts/nerd-fonts/SymbolsNerdFontMono-Regular.ttf"
-);
+pub(crate) const SYMBOLS_FACE: &[u8] =
+    include_bytes!("../assets/fonts/nerd-fonts/SymbolsNerdFont-Regular.ttf");
 
 /// Each family registers on its own, so one family's failure never hides
 /// another.

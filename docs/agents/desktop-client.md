@@ -619,15 +619,19 @@ quads, then paths, underlines, and sprites, so a quad that must cover glyphs,
 such as the block cursor, needs a later layer or an unlayered paint after it.
 Tessellate built-in paths once per geometry, never per paint.
 
-Nerd Font icons draw from the bundled Symbols Nerd Font Mono through
+Nerd Font icons draw from the bundled Symbols Nerd Font through
 `renderer/symbols`, not GPUI's fallback, which Linux lacks. Only standalone
 Private Use Area scalars and the IEC power symbols qualify, after the built-in
 check, and only when the cell's own face (variant included) has no glyph, so
 patched families keep their icons. The choice runs on a layout-cache miss and
-is cached with the layout. Every glyph in the Mono font is a one-em square:
-lay it out at the shorter cell side and centre it, so its size and baseline
-differ from the grid's and travel in `GlyphContent::Symbol`. A few glyphs ink
-up to 6% outside their em; that overlap into neighbours is accepted. Ask GPUI
+is cached with the layout. Each icon takes its Nerd Fonts patcher rule from
+the generated `symbols/constraint/table.rs`, a port of Ghostty's constraints
+credited in `third-party/nerd-font-constraints/`: measure its ink with
+`ttf-parser`, constrain it against the terminal face's metrics and cap height,
+and lay it out at the resulting size. The size and origin differ from the
+grid's and travel in `GlyphContent::Symbol`, one layout per cell width. GPUI
+scales glyphs only uniformly, so stretch rules size like fit. Never edit the
+table by hand; run `mise run nerd-fonts:constraints`. Ask GPUI
 for the family only after `symbols_available()`: `resolve_font` panics when a
 family and GPUI's whole fallback stack are missing. GPUI loads the face only
 through the `nerd-font-symbols` vendor patches, because both text systems skip

@@ -1,6 +1,6 @@
-Symbols Nerd Font Mono
+Symbols Nerd Font
 
-Huterm embeds SymbolsNerdFontMono-Regular.ttf from the Nerd Fonts 3.5.1
+Huterm embeds SymbolsNerdFont-Regular.ttf from the Nerd Fonts 3.5.1
 NerdFontsSymbolsOnly release, unmodified, to draw icon code points that the
 configured terminal font does not cover. Nerd Fonts (https://www.nerdfonts.com,
 copyright (c) 2014 Ryan L McIntyre) assembled the font from the icon sets

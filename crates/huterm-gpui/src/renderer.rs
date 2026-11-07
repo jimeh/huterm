@@ -777,15 +777,19 @@ enum GlyphContent {
     Builtin(Arc<builtin::Geometry>),
 }
 
-/// A layout in the bundled symbols font and its glyph origins relative to
-/// the cell origin, since its size and baseline differ from the grid's.
-/// Shared behind one pointer so every prepared glyph stays as small as before.
+/// A symbol laid out for one cell and for a wide cell's two, since its
+/// patcher rule may size it differently in each. Shared behind one pointer
+/// so every prepared glyph stays as small as before.
 struct SymbolGlyph {
+    narrow: PlacedLayout,
+    wide: PlacedLayout,
+}
+
+/// A layout and its glyph origin relative to the cell origin, since a
+/// symbol's size and baseline differ from the grid's.
+struct PlacedLayout {
     layout: Arc<LineLayout>,
     origin: Point<Pixels>,
-    /// The horizontal origin across two columns, aligned on its own so a
-    /// wide cell never centres on a half device pixel.
-    wide_x: Pixels,
 }
 
 #[derive(Clone)]
@@ -886,23 +890,31 @@ fn layout_cell(
     configured: Font,
     metrics: GridMetrics,
 ) -> GlyphContent {
-    let scalar = text.parse::<char>().ok();
-    if let Some((symbols, id)) = scalar.and_then(|ch| {
-        symbols::face_for(text_system, &configured, ch, metrics.font_size)
-    }) {
-        let size = symbols::font_size(metrics);
-        let runs = [text_run(text, symbols)];
-        let layout = text_system.layout_line(text, size, &runs, None);
-        let (ascent, descent) =
-            (text_system.ascent(id, size), text_system.descent(id, size));
-        let origin = |columns| {
-            symbols::origin(metrics, columns, layout.width, ascent, descent)
+    if let Some(ch) = text.parse::<char>().ok()
+        && let Some((symbols, _)) =
+            symbols::face_for(text_system, &configured, ch, metrics.font_size)
+    {
+        let cap_height = text_system.cap_height(
+            text_system.resolve_font(&configured),
+            metrics.font_size,
+        );
+        let grid = symbols::grid(metrics, cap_height);
+        let place = |columns| {
+            let placement = symbols::place(ch, metrics, &grid, columns);
+            let font_size =
+                placement.map_or(metrics.font_size, |at| at.font_size);
+            let runs = [text_run(text, symbols.clone())];
+            PlacedLayout {
+                layout: text_system.layout_line(text, font_size, &runs, None),
+                origin: placement.map_or(
+                    point(metrics.glyph_offset_x, metrics.baseline),
+                    |at| at.origin,
+                ),
+            }
         };
-        let (origin, wide_x) = (origin(1), origin(2).x);
         return GlyphContent::Symbol(Arc::new(SymbolGlyph {
-            layout,
-            origin,
-            wide_x,
+            narrow: place(1),
+            wide: place(2),
         }));
     }
     let runs = [text_run(text, configured)];
@@ -1007,12 +1019,12 @@ fn paint_row(
                 (layout, point(metrics.glyph_offset_x, metrics.baseline))
             }
             GlyphContent::Symbol(symbol) => {
-                let x = if glyph.wide {
-                    symbol.wide_x
+                let placed = if glyph.wide {
+                    &symbol.wide
                 } else {
-                    symbol.origin.x
+                    &symbol.narrow
                 };
-                (&symbol.layout, point(x, symbol.origin.y))
+                (&placed.layout, placed.origin)
             }
         };
         for run in &layout.runs {

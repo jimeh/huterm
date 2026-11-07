@@ -68,6 +68,8 @@
     { "source": "third-party/nerd-fonts/licenses/powerline-symbols-LICENSE.txt", "target": "nerd-fonts-powerline-symbols-LICENSE.txt" },
     { "source": "third-party/nerd-fonts/licenses/seti-ui-LICENSE.txt", "target": "nerd-fonts-seti-ui-LICENSE.txt" },
     { "source": "third-party/nerd-fonts/licenses/weather-icons-OFL.txt", "target": "nerd-fonts-weather-icons-OFL.txt" },
+    { "source": "third-party/nerd-font-constraints/README.md", "target": "nerd-font-constraints-README.md" },
+    { "source": "third-party/nerd-font-constraints/LICENSE-Ghostty", "target": "nerd-font-constraints-LICENSE-Ghostty" },
     { "source": "third-party/freetype/FTL.TXT", "target": "freetype-FTL.txt" },
     { "source": "third-party/licenses/licenses.json", "target": "licenses.json" }
   ],

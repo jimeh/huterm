@@ -1,13 +1,16 @@
-# Symbols Nerd Font Mono provenance
+# Symbols Nerd Font provenance
 
-Huterm embeds the unmodified `SymbolsNerdFontMono-Regular.ttf` from the Nerd
-Fonts 3.5.1
+Huterm embeds the unmodified `SymbolsNerdFont-Regular.ttf` from the Nerd Fonts
+3.5.1
 [NerdFontsSymbolsOnly.tar.xz](https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/NerdFontsSymbolsOnly.tar.xz)
 release archive, whose SHA-256 is
 `01172f37db8543edb102e5cb5c64101c9f4686630804d49b419aa07b23a69996`.
 The TTF is in `crates/huterm-gpui/assets/fonts/nerd-fonts/`. `LICENSE` is the
 archive's Nerd Fonts MIT license. `provenance.json` pins the font, that
 license, and each icon set's license text in `licenses/` by URL and SHA-256.
+The renderer sizes each icon by the release's font-patcher rules through a
+port of Ghostty's constraints, whose notice is in
+`third-party/nerd-font-constraints/`.
 
 The font combines 14 icon sets under their own licenses. `NOTICE.txt` credits
 each one and records the changes Nerd Fonts made, and every icon set has its

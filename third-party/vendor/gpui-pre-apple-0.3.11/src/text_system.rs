@@ -315,7 +315,7 @@ impl AppleTextSystemState {
                 let is_segoe_fluent_icons = font.full_name() == "Segoe Fluent Icons";
 
                 // Huterm draws Nerd Font icons from this face and never measures it by 'm'.
-                let is_nerd_font_symbols = font.full_name() == "Symbols Nerd Font Mono";
+                let is_nerd_font_symbols = font.full_name() == "Symbols Nerd Font";
 
                 if !has_m_glyph && !is_segoe_fluent_icons && !is_nerd_font_symbols {
                     // I spent far too long trying to track down why a font missing the 'm'

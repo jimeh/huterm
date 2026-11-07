@@ -1339,16 +1339,18 @@ Settings explains the alias without calling it uninstalled. Its weight selector
 lists the drawn family's weights and applies `weight` normally. Resolving the
 alias through fontconfig is deferred.
 
-Huterm also bundles Symbols Nerd Font Mono from Nerd Fonts 3.5.1, so prompt
-and file-listing icons from tools such as Starship, Powerlevel10k, eza, and
-Neovim draw with any terminal family. A Private Use Area icon, or one of the
-IEC power symbols, draws from it when the terminal family has no glyph of its
+Huterm also bundles Symbols Nerd Font from Nerd Fonts 3.5.1, so prompt and
+file-listing icons from tools such as Starship, Powerlevel10k, eza, and Neovim
+draw with any terminal family. A Private Use Area icon, or one of the IEC
+power symbols, draws from it when the terminal family has no glyph of its
 own. A Nerd Font patched family therefore keeps its own icons. Each icon is
-scaled to one cell's width, or its height when that is shorter, and centred
-in the cell. A few icons are wider than their slot and overlap the next cell
-by up to 6% of a cell's width. Box drawing, block elements, and the Powerline
-separators that Huterm draws itself are unchanged. The icon font is not
-offered as a terminal or interface family.
+sized and aligned in its cell by the Nerd Fonts patcher's rule for it, as a
+patched "Nerd Font Mono" family draws it, using a port of Ghostty's rules: an
+icon fills one cell, or both columns of a wide cell, and tall icons such as
+the Git branch can use the full line height. A few separators may overlap
+the next cell slightly by design. Box drawing, block elements, and the
+Powerline separators that Huterm draws itself are unchanged. The icon font is
+not offered as a terminal or interface family.
 
 On macOS the bundled DejaVu faces draw even when the system has that family
 installed. On Linux an installed DejaVu face with matching properties takes

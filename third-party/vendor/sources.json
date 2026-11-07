@@ -148,7 +148,7 @@
         {
           "name": "nerd-font-symbols",
           "file": "patches/gpui-pre-apple/nerd-font-symbols.patch",
-          "description": "Load Symbols Nerd Font Mono, which has no 'm' glyph, as a primary font: add it to the icon-font exception that already admits Segoe Fluent Icons. Huterm draws Nerd Font icons from that face and never measures it by its 'm'."
+          "description": "Load Symbols Nerd Font, which has no 'm' glyph, as a primary font: add it to the icon-font exception that already admits Segoe Fluent Icons. Huterm draws Nerd Font icons from that face and never measures it by its 'm'."
         }
       ]
     },
@@ -167,7 +167,7 @@
         {
           "name": "nerd-font-symbols",
           "file": "patches/gpui-pre-wgpu/nerd-font-symbols.patch",
-          "description": "Load Symbols Nerd Font Mono (PostScript name SymbolsNFM), which has no 'm' glyph, as a primary font: add it to the icon-font exception that already admits Segoe Fluent Icons. Huterm draws Nerd Font icons from that face and never measures it by its 'm'."
+          "description": "Load Symbols Nerd Font (PostScript name SymbolsNF), which has no 'm' glyph, as a primary font: add it to the icon-font exception that already admits Segoe Fluent Icons. Huterm draws Nerd Font icons from that face and never measures it by its 'm'."
         }
       ]
     },

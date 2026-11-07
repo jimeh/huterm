@@ -1,7 +1,7 @@
 {
-  "../../crates/huterm-gpui/assets/fonts/nerd-fonts/SymbolsNerdFontMono-Regular.ttf": {
-    "url": "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/NerdFontsSymbolsOnly.tar.xz#SymbolsNerdFontMono-Regular.ttf",
-    "sha256": "fe471e538392f51910faab985fa8e192a39dd3426125edd15b71b3680df0e749"
+  "../../crates/huterm-gpui/assets/fonts/nerd-fonts/SymbolsNerdFont-Regular.ttf": {
+    "url": "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/NerdFontsSymbolsOnly.tar.xz#SymbolsNerdFont-Regular.ttf",
+    "sha256": "2839f0a572d4559f3f17a6fb74b8772e183f0c0a47150998ab194932cad55829"
   },
   "LICENSE": {
     "url": "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/NerdFontsSymbolsOnly.tar.xz#LICENSE",

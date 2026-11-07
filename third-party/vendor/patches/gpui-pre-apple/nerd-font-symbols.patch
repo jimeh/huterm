@@ -1,5 +1,5 @@
 diff --git a/src/text_system.rs b/src/text_system.rs
-index 74cd7cc7ce0fcae2990ea9e8fd1d3f78af5014cf..62f984fea3888c74ae0b0147a88ccac16a6e881b 100644
+index 74cd7cc7ce0fcae2990ea9e8fd1d3f78af5014cf..9201ba48a85078db8af419c35adfba8363d8e271 100644
 --- a/src/text_system.rs
 +++ b/src/text_system.rs
 @@ -314,7 +314,10 @@ impl AppleTextSystemState {
@@ -8,7 +8,7 @@ index 74cd7cc7ce0fcae2990ea9e8fd1d3f78af5014cf..62f984fea3888c74ae0b0147a88ccac1
  
 -                if !has_m_glyph && !is_segoe_fluent_icons {
 +                // Huterm draws Nerd Font icons from this face and never measures it by 'm'.
-+                let is_nerd_font_symbols = font.full_name() == "Symbols Nerd Font Mono";
++                let is_nerd_font_symbols = font.full_name() == "Symbols Nerd Font";
 +
 +                if !has_m_glyph && !is_segoe_fluent_icons && !is_nerd_font_symbols {
                      // I spent far too long trying to track down why a font missing the 'm'

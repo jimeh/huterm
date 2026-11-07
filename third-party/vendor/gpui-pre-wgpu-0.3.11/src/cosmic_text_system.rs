@@ -417,7 +417,7 @@ impl CosmicTextSystemState {
                 "SegoeFluentIcons", // NOTE: Segoe fluent icons postscript name is inconsistent
                 "Segoe Fluent Icons",
                 // Huterm draws Nerd Font icons from this face and never measures it by 'm'.
-                "SymbolsNFM",
+                "SymbolsNF",
             ];
 
             // This only decides whether a face can be a primary font. The

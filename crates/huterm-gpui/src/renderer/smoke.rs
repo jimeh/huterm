@@ -327,60 +327,73 @@ fn check(panel: &mut Panel, window: &mut Window) {
     );
 }
 
-/// Icons lay out in the bundled symbols font, one em fitted to the cell and
-/// centred in it, while text keeps the terminal font.
+/// Icons lay out in the bundled symbols font, sized and placed inside their
+/// cells by the Nerd Fonts patcher's rules, while text keeps the terminal
+/// font.
 fn check_icons(panel: &Panel, window: &Window) {
     let renderer = &panel.renderer;
     let metrics = renderer.metrics;
-    let text_system = window.text_system();
-    let symbols = text_system
+    let symbols = window
+        .text_system()
         .resolve_font(&gpui::font(crate::terminal_font::SYMBOLS_FAMILY));
     let glyphs = &renderer.rows[ICON_ROW].glyphs;
     assert_eq!(glyphs.len(), 8, "seven icons and one letter");
-    let size = super::symbols::font_size(metrics);
-    let ascent = text_system.ascent(symbols, size);
-    let descent = text_system.descent(symbols, size).abs();
     let whole = |value: Pixels| {
         let device = value * metrics.scale_factor;
         (device - device.round()).abs() < px(0.001)
     };
+    let value = |pixels: Pixels| f64::from(f32::from(pixels));
+    // The patcher's overlap pads reach 3% of a cell past an edge, and
+    // origins round by up to half a device pixel.
+    let slack = 0.03 * value(metrics.cell_width)
+        + 0.5 / f64::from(metrics.scale_factor);
     for glyph in &glyphs[..7] {
         let wide = usize::from(glyph.column) == ICON_WIDE;
         assert_eq!(glyph.wide, wide, "wide flag at column {}", glyph.column);
         let GlyphContent::Symbol(symbol) = &glyph.content else {
             panic!("icon at column {} must use the symbols font", glyph.column)
         };
-        let x = if wide { symbol.wide_x } else { symbol.origin.x };
-        let (layout, y) = (&symbol.layout, symbol.origin.y);
-        assert_eq!(layout.runs.len(), 1);
-        assert_eq!(layout.runs[0].font_id, symbols);
-        assert_eq!(layout.font_size, size);
-        let span = metrics.cell_width * if wide { 2.0 } else { 1.0 };
-        let right = x + layout.width;
+        let placed = if wide { &symbol.wide } else { &symbol.narrow };
+        assert_eq!(placed.layout.runs.len(), 1);
+        assert_eq!(placed.layout.runs[0].font_id, symbols);
         assert!(
-            x >= px(0.0) && right <= span + px(0.5),
-            "icon at column {} spans {x:?}..{right:?} of {span:?}",
-            glyph.column
-        );
-        // Equal space on both sides and above and below, within the device
-        // pixel that alignment may move each origin.
-        let pixel = px(1.0 / metrics.scale_factor);
-        assert!(
-            (x - (span - right)).abs() <= pixel,
-            "icon at column {} must centre horizontally",
-            glyph.column
-        );
-        assert!(
-            ((y - ascent) - (metrics.cell_height - y - descent)).abs() <= pixel,
-            "icon at column {} must centre vertically",
-            glyph.column
-        );
-        assert!(
-            whole(x) && whole(y),
+            whole(placed.origin.x) && whole(placed.origin.y),
             "icon at column {} must sit on whole device pixels",
             glyph.column
         );
+        let ch = ICONS
+            .chars()
+            .nth(usize::from(glyph.column))
+            .expect("icon character");
+        let ink = super::symbols::ink_box(ch, placed.layout.font_size)
+            .expect("icon ink");
+        let left = value(placed.origin.x) + ink.x;
+        let bottom = value(placed.origin.y) - ink.y;
+        let (right, top) = (left + ink.width, bottom - ink.height);
+        let span = value(metrics.cell_width) * if wide { 2.0 } else { 1.0 };
+        assert!(
+            left >= -slack
+                && top >= -slack
+                && right <= span + slack
+                && bottom <= value(metrics.cell_height) + slack,
+            "icon at column {} spans ({left}, {top})..({right}, {bottom})",
+            glyph.column
+        );
     }
+    // The Powerline branch scales to the line height, as a patched font
+    // draws it, rather than to the cell width.
+    let GlyphContent::Symbol(branch) = &glyphs[0].content else {
+        panic!("the branch must use the symbols font")
+    };
+    let ink =
+        super::symbols::ink_box('\u{e0a0}', branch.narrow.layout.font_size)
+            .expect("branch ink");
+    let line = value(metrics.ascent + metrics.descent);
+    assert!(
+        (ink.height - line).abs() < 1.0,
+        "branch is {} tall on a {line} line",
+        ink.height
+    );
     assert!(matches!(&glyphs[7].content, GlyphContent::Font(_)));
 }
 
