@@ -374,3 +374,81 @@ fn a_capture_past_the_name_or_item_limits_is_refused_before_anything_spawns() {
         assert_eq!(restored.terminal_count(), 0);
     }
 }
+
+#[test]
+fn a_restore_of_a_change_with_a_name_past_the_limit_is_invalid() {
+    let full = Full::new(MAX_HIERARCHY_ITEMS);
+    let (arrangement, expected) = (full.nested(), full.layout());
+    let (workspace, tab, mut mux) = (full.workspace, full.tab, full.mux);
+    let mut change = mux
+        .arrange_panes(workspace, tab, &expected, &arrangement)
+        .unwrap();
+    // A record this runtime could not have produced: a pane name past the
+    // limit on the side an undo returns to.
+    let record = change.before[0].record.as_mut().unwrap();
+    let pane = record.layout.first_pane().id;
+    record
+        .layout
+        .rename_pane(pane, Some(name(MAX_NAME_BYTES + 1)));
+    let revision = mux.revision;
+    assert!(matches!(
+        mux.restore_tabs(&change, RestoreDirection::Undo),
+        Err(MuxError::InvalidRestore)
+    ));
+    assert_eq!(mux.revision, revision);
+    assert_eq!(mux.tab(tab).unwrap().layout().depth(), 3);
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_pane_moved_into_another_tab_refuses_to_grow_past_the_limit() {
+    // Two items free, then a second one-pane tab takes them.
+    let mut full = Full::new(2);
+    let other = full
+        .mux
+        .open_test_tab(full.workspace, &command("read value"))
+        .unwrap()
+        .tab;
+    assert_eq!(full.mux.hierarchy_items(), MAX_HIERARCHY_ITEMS);
+    let (workspace, tab, panes) = (full.workspace, full.tab, full.panes);
+    let target = other.first_pane().id;
+    // The source split keeps two children, and the target pane gains a
+    // split: one item more.
+    full.refuses(|mux| {
+        mux.move_pane(
+            PaneRef {
+                workspace,
+                tab,
+                pane: panes[2],
+            },
+            MoveDestination::Beside(Beside {
+                target: PaneRef {
+                    workspace,
+                    tab: other.id,
+                    pane: target,
+                },
+                side: SplitDirection::Down,
+            }),
+        )
+    });
+    // Moving the other tab's only pane into the split removes its tab.
+    full.mux
+        .move_pane(
+            PaneRef {
+                workspace,
+                tab: other.id,
+                pane: target,
+            },
+            MoveDestination::Beside(Beside {
+                target: PaneRef {
+                    workspace,
+                    tab,
+                    pane: panes[0],
+                },
+                side: SplitDirection::Right,
+            }),
+        )
+        .unwrap();
+    assert_eq!(full.mux.hierarchy_items(), MAX_HIERARCHY_ITEMS - 1);
+    full.mux.shutdown().unwrap();
+}

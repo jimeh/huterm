@@ -164,11 +164,18 @@ fn an_idle_stream_is_rejected_unless_the_receiver_paused_reading() {
     receiver.resume(50 * SECOND);
     assert_eq!(receiver.idle_deadline(), Some(70 * SECOND));
     assert_eq!(receiver.check_idle(69 * SECOND), Ok(()));
+    // A frame read while paused counts from the pause, not twice.
+    receiver.pause(60 * SECOND);
+    receiver
+        .accept(frame(0, FrameEnd::More, &message[2..2]), 65 * SECOND)
+        .unwrap();
+    receiver.resume(80 * SECOND);
+    assert_eq!(receiver.idle_deadline(), Some(110 * SECOND));
     // Another frame restarts the stream's clock.
     receiver
-        .accept(frame(0, FrameEnd::More, &message[2..3]), 60 * SECOND)
+        .accept(frame(0, FrameEnd::More, &message[2..3]), 90 * SECOND)
         .unwrap();
-    assert_eq!(receiver.idle_deadline(), Some(90 * SECOND));
+    assert_eq!(receiver.idle_deadline(), Some(120 * SECOND));
 }
 
 #[test]

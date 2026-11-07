@@ -302,3 +302,26 @@ fn a_test_minor_server_converges_with_older_and_newer_clients_through_every_down
         Err(DecodeError::UnknownTag { tag: 21, .. })
     ));
 }
+
+#[test]
+fn closing_a_pinned_tabs_workspace_drops_its_pin_so_snapshots_agree() {
+    let mut server = TestHierarchy::new(sample_hierarchy());
+    let pin = TestEvent::TabPinned {
+        tab: tab_id(4),
+        pinned: true,
+    };
+    server.apply(&pin, TEST_MINOR).unwrap();
+    let close = TestEvent::Base(HierarchyEvent::WorkspaceClosed {
+        workspace: WorkspaceId::in_runtime(RUNTIME, 2),
+    });
+    server.apply(&close, TEST_MINOR).unwrap();
+    assert_eq!(server.pinned, std::collections::BTreeSet::new());
+    // A client that installs the server's snapshot computes its digest.
+    let (digest, installed) = decode_snapshot(
+        &mut Reader::new(&snapshot_bytes(&server)),
+        vectors::context(0).hierarchy,
+    )
+    .unwrap();
+    assert_eq!(installed, server);
+    assert_eq!(digest, installed.digest(TEST_MINOR));
+}

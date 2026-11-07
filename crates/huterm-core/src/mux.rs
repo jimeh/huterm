@@ -1326,9 +1326,8 @@ pub(crate) struct TestPane {
     pub(crate) client: crate::test_support::TestClient,
 }
 
-/// A pane's label without a title: the launched program's file name.
-/// The launched program's file name, truncated at a character boundary to
-/// [`MAX_NAME_BYTES`].
+/// A pane's label without a title: the launched program's file name,
+/// truncated at a character boundary to [`MAX_NAME_BYTES`].
 fn fallback_name(command: &TerminalCommand) -> String {
     let mut name = command
         .program

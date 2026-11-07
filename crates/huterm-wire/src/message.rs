@@ -51,7 +51,9 @@ pub struct HostEffect {
     pub effect: u64,
     /// The viewer whose recipient core selected.
     pub viewer: ViewerId,
-    /// The viewer's permission generation when the effect was admitted.
+    /// The viewer's permission generation for the payload's effect kind
+    /// when the effect was admitted. Permission is per kind, so the
+    /// payload's variant names the kind this generation counts.
     pub permission_generation: u64,
     /// The terminal whose content asked for the effect.
     pub terminal: TerminalId,

@@ -1505,7 +1505,8 @@ choices within it.
   `MAX_HIERARCHY_ITEMS` items (`LimitExceeded`), in `SpawnedTerminals::spawn`
   before anything starts and again in `Mux::restore`. The check stays out of
   `RuntimeCapture::validate`, because `huterm-state` shares that validator and
-  keeps its own file bounds, such as 16,384 panes.
+  keeps its own file bounds, such as 16,384 panes. `restore_tabs` refuses a
+  recorded `LayoutChange` that holds a longer name with `InvalidRestore`.
 - **Encodings.** `MAJOR` starts at 1. An enum whose variants carry data
   travels as a tag and a record, as the primitives table says; a field-less
   enum (split axis, client kind, retry class, error code, outcome) travels
@@ -1513,13 +1514,18 @@ choices within it.
   of a uniform 64-bit value usually takes 10. Message kinds are numbered
   `Hello` 0, `Welcome` 1, `Reject` 2, `HierarchySnapshot` 3,
   `HierarchyEvent` 4, `HierarchyResync` 5, `Paste` 6, and `HostEffect` 7,
-  and the handshake kinds' cap is `HANDSHAKE_FRAME_LIMIT`.
+  and the handshake kinds' cap is `HANDSHAKE_FRAME_LIMIT`. That cap is frozen
+  for `Hello` in every major version, with its kind and leading fields, so a
+  server of any major version reads a newer client's `Hello` and answers
+  `Reject` instead of closing on an over-cap message.
 - **Payload records ahead of their slices.** The acceptance criteria need a
   paste and a clipboard write at their limits, so slice 1 defines the
   `Paste` and `HostEffect` records. A paste is its own kind, so only it
-  carries the paste cap. Minor version 0 is unreleased until #45 ships a
-  server, so slices 3b and 4 may still change these records, as later slices
-  add kinds and error codes.
+  carries the paste cap. A host effect's `permission_generation` counts the
+  generation of its payload's effect kind, since #81 makes permission per
+  kind. Minor version 0 is unreleased until #45 ships a server, so slices 3b
+  and 4 may still change these records, as later slices add kinds and error
+  codes.
 - **The test-only minor version** is `MINOR + 1`, behind the `test-minor`
   feature. It appends a tab's pinned flag and adds `TabPinned` (sent to
   minor 0 as `Skipped`), `TabRetitled` (as `TabRenamed`), and
