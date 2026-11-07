@@ -34,6 +34,9 @@ watch_config = true
 # Reopen the windows, tabs, and panes open at Quit, each pane with a fresh
 # shell in its last folder. Turning this off deletes the saved windows.
 restore_sessions = true
+# Number new sessions with the lowest unused number ("lowest_unused"), or
+# keep counting up from the highest so far ("increasing").
+session_numbering = "lowest_unused"
 
 [terminal]
 # Terminal identity for new shells: "xterm-256color", "auto", or
@@ -534,6 +537,7 @@ fn fallback_general(source: &str) -> GeneralConfig {
     GeneralConfig {
         watch_config: flag("watch_config", defaults.watch_config),
         restore_sessions: flag("restore_sessions", defaults.restore_sessions),
+        ..defaults
     }
 }
 

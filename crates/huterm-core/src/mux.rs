@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 mod arrange;
 mod capture;
 mod hierarchy;
@@ -165,6 +165,19 @@ pub struct OpenedPane {
     pub pane: PaneInfo,
 }
 
+/// How a new session or workspace picks the number in its automatic name,
+/// such as the 2 in "Session 2". Records with a custom name keep their
+/// automatic one for Clear Name, so their numbers count as used.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AutomaticNumbering {
+    /// The lowest number no live record of the same kind uses.
+    #[default]
+    LowestUnused,
+    /// One more than the last number this runtime handed out; a restore
+    /// resumes after the highest number it restored.
+    Increasing,
+}
+
 /// Canonical session, workspace, and terminal owner.
 ///
 /// Structural operations require exclusive access. Spawn and close block while
@@ -180,8 +193,10 @@ pub struct Mux {
     runtime_id: RuntimeId,
     socket_name: String,
     next_id: u64,
+    /// The highest automatic-name number handed out or restored, per kind.
     session_ordinal: u64,
     workspace_ordinal: u64,
+    numbering: AutomaticNumbering,
     sessions: Vec<Session>,
     workspaces: BTreeMap<WorkspaceId, Workspace>,
     terminals: BTreeMap<TerminalId, TerminalRuntime>,
@@ -213,11 +228,17 @@ impl Mux {
             next_id: 0,
             session_ordinal: 0,
             workspace_ordinal: 0,
+            numbering: AutomaticNumbering::default(),
             sessions: Vec::new(),
             workspaces: BTreeMap::new(),
             terminals: BTreeMap::new(),
             hierarchy: HierarchyPublisher::default(),
         })
+    }
+    /// Sets how later sessions and workspaces number their automatic names.
+    /// Existing names never change.
+    pub fn set_automatic_numbering(&mut self, numbering: AutomaticNumbering) {
+        self.numbering = numbering;
     }
     /// Returns the runtime incarnation used to validate structural targets.
     #[must_use]
@@ -365,10 +386,14 @@ impl Mux {
         name: Option<&str>,
     ) -> Result<SessionId, MuxError> {
         validate_name(name)?;
-        let ordinal = self
-            .session_ordinal
-            .checked_add(1)
-            .ok_or(MuxError::IdExhausted)?;
+        let ordinal = next_ordinal(
+            self.numbering,
+            self.session_ordinal,
+            self.sessions
+                .iter()
+                .map(|session| session.automatic_name.as_str()),
+            SESSION_NAME,
+        )?;
         let value = self.allocate()?;
         let id = SessionId::in_runtime(self.runtime_id, value);
         self.sessions.push(Session {
@@ -377,7 +402,7 @@ impl Mux {
             custom_name: name.map(str::to_owned),
             automatic_name: automatic_name(SESSION_NAME, ordinal),
         });
-        self.session_ordinal = ordinal;
+        self.session_ordinal = self.session_ordinal.max(ordinal);
         let index = position(self.sessions.len() - 1);
         self.emit_hierarchy(|mux| HierarchyEvent::SessionCreated {
             session: mux.sessions[mux.sessions.len() - 1].info(),
@@ -395,10 +420,14 @@ impl Mux {
     ) -> Result<WorkspaceId, MuxError> {
         self.select_session(session)?;
         validate_name(name)?;
-        let ordinal = self
-            .workspace_ordinal
-            .checked_add(1)
-            .ok_or(MuxError::IdExhausted)?;
+        let ordinal = next_ordinal(
+            self.numbering,
+            self.workspace_ordinal,
+            self.workspaces
+                .values()
+                .map(|workspace| workspace.automatic_name.as_str()),
+            WORKSPACE_NAME,
+        )?;
         let value = self.allocate()?;
         let id = WorkspaceId::in_runtime(self.runtime_id, value);
         self.workspaces.insert(
@@ -419,7 +448,7 @@ impl Mux {
             .workspaces;
         siblings.push(id);
         let index = position(siblings.len() - 1);
-        self.workspace_ordinal = ordinal;
+        self.workspace_ordinal = self.workspace_ordinal.max(ordinal);
         self.emit_hierarchy(|mux| HierarchyEvent::WorkspaceCreated {
             session,
             workspace: mux.workspaces[&id].info(),
@@ -1300,6 +1329,29 @@ fn automatic_name(kind: &str, ordinal: u64) -> String {
 /// The creation ordinal an automatic name of this kind carries.
 fn automatic_ordinal(kind: &str, name: &str) -> Option<u64> {
     name.strip_prefix(kind)?.strip_prefix(' ')?.parse().ok()
+}
+
+/// The number a new record's automatic name takes, given the highest one
+/// handed out so far and the automatic names live records of its kind hold.
+fn next_ordinal<'a>(
+    numbering: AutomaticNumbering,
+    highest: u64,
+    live: impl Iterator<Item = &'a str>,
+    kind: &str,
+) -> Result<u64, MuxError> {
+    match numbering {
+        AutomaticNumbering::Increasing => {
+            highest.checked_add(1).ok_or(MuxError::IdExhausted)
+        }
+        AutomaticNumbering::LowestUnused => {
+            let used: BTreeSet<u64> = live
+                .filter_map(|name| automatic_ordinal(kind, name))
+                .collect();
+            (1..=u64::MAX)
+                .find(|ordinal| !used.contains(ordinal))
+                .ok_or(MuxError::IdExhausted)
+        }
+    }
 }
 
 fn validate_name(name: Option<&str>) -> Result<(), MuxError> {

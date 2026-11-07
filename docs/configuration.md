@@ -172,6 +172,26 @@ not finish, Huterm opens a fresh window, keeps the bad file as
 `runtime.json.corrupt`, and shows why. State saved by a newer Huterm is left
 alone and not restored.
 
+## Session numbering
+
+A session you have not named shows an automatic name such as "Session 2".
+By default a new session takes the lowest number no open session uses, so
+after you close "Session 2" the next new session is "Session 2" again. A
+session you renamed keeps its number for Clear Name, so that number stays
+taken.
+
+```toml
+[general]
+# "lowest_unused" or "increasing".
+session_numbering = "lowest_unused"
+```
+
+Set `session_numbering = "increasing"` to keep counting up instead: each
+new session takes one more than the highest number used since launch, and
+a restart continues after the highest number it restored. Workspaces
+number the same way. The setting applies to sessions created after it
+changes, without a restart; existing names never change.
+
 ## Shells
 
 On macOS, Huterm launches `$SHELL -l` in the home directory, as a Finder launch

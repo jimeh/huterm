@@ -297,10 +297,10 @@ impl Mux {
     /// [`SpawnedTerminals::spawn`] started for it. Sets the allocator to
     /// the capture's watermark, so new allocations never collide, and
     /// resumes each creation ordinal from the highest automatic name of
-    /// its kind restored, counting records with a custom name too, so a
-    /// new automatic name repeats no restored one and the count does not
-    /// keep the gaps closed records left. Emits the events creation emits,
-    /// so subscribers stay current.
+    /// its kind restored, counting records with a custom name too, so
+    /// increasing numbering repeats no restored name and does not keep
+    /// counting records closed before the capture. Emits the events
+    /// creation emits, so subscribers stay current.
     ///
     /// A pane whose terminal failed leaves its layout, and a tab left with
     /// no pane is removed; the report names both, and each session left

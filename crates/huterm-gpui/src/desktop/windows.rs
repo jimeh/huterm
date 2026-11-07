@@ -390,6 +390,33 @@ struct DesktopRuntime {
     worker_hooks: worker_hooks::WorkerHooks,
 }
 
+fn automatic_numbering(
+    numbering: huterm_config::SessionNumbering,
+) -> huterm_core::AutomaticNumbering {
+    match numbering {
+        huterm_config::SessionNumbering::LowestUnused => {
+            huterm_core::AutomaticNumbering::LowestUnused
+        }
+        huterm_config::SessionNumbering::Increasing => {
+            huterm_core::AutomaticNumbering::Increasing
+        }
+    }
+}
+
+/// Applies `[general] session_numbering` after a reload, on a worker since
+/// the UI thread never takes the Mux lock after startup.
+fn apply_session_numbering(
+    cx: &mut App,
+    numbering: huterm_config::SessionNumbering,
+) {
+    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    let numbering = automatic_numbering(numbering);
+    cx.background_spawn(async move {
+        runtime.lock().set_automatic_numbering(numbering);
+    })
+    .detach();
+}
+
 /// A structural result with the hierarchy sequence read under the same
 /// lock before releasing it, whether the operation succeeded or failed after
 /// committing. Completions wait for the projection to reach `seq`.
@@ -1650,7 +1677,12 @@ pub(super) fn run_with_startup(
         huterm_core::DEFAULT_SOCKET_NAME,
         loaded.config.general.restore_sessions,
     );
+    let mut mux = Mux::default();
+    mux.set_automatic_numbering(automatic_numbering(
+        loaded.config.general.session_numbering,
+    ));
     let runtime = Arc::new(DesktopRuntime {
+        mux: Mutex::new(mux),
         persistence,
         ..DesktopRuntime::default()
     });
@@ -12498,6 +12530,7 @@ fn finish_reload(
             warn_transparency(&config, desktop.transparency_support);
             desktop.config = config.clone();
             restore::apply_setting(cx, config.general.restore_sessions);
+            apply_session_numbering(cx, config.general.session_numbering);
             let desktop = cx.global_mut::<Desktop>();
             desktop.config_report = ConfigReport::reloaded(
                 &config,

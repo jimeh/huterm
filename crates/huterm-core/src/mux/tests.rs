@@ -455,6 +455,40 @@ fn session_close_stops_its_workers_and_preserves_sibling_input() {
 }
 
 #[test]
+fn lowest_unused_numbering_reuses_closed_numbers_and_skips_custom_named_ones() {
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let second = mux.create_session(None).unwrap();
+    // A custom name keeps its automatic one for Clear Name, so 3 stays used.
+    mux.create_session(Some("work")).unwrap();
+    let alpha = mux.create_workspace(first, None).unwrap();
+    mux.create_workspace(first, None).unwrap();
+    mux.close_session(second).unwrap();
+    mux.close_workspace(alpha).unwrap();
+    let session = mux.create_session(None).unwrap();
+    assert_eq!(mux.session(session).unwrap().display_name(), "Session 2");
+    let next = mux.create_session(None).unwrap();
+    assert_eq!(mux.session(next).unwrap().display_name(), "Session 4");
+    let workspace = mux.create_workspace(session, None).unwrap();
+    assert_eq!(
+        mux.workspace(workspace).unwrap().display_name(),
+        "Workspace 1"
+    );
+
+    // Switching to increasing numbering continues above every number
+    // handed out, so no live name repeats.
+    mux.set_automatic_numbering(AutomaticNumbering::Increasing);
+    mux.close_session(next).unwrap();
+    let after = mux.create_session(None).unwrap();
+    assert_eq!(mux.session(after).unwrap().display_name(), "Session 5");
+    let workspace = mux.create_workspace(after, None).unwrap();
+    assert_eq!(
+        mux.workspace(workspace).unwrap().display_name(),
+        "Workspace 3"
+    );
+}
+
+#[test]
 fn exhausted_creation_does_not_publish_partial_structure() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();
@@ -476,6 +510,8 @@ fn exhausted_creation_does_not_publish_partial_structure() {
     ));
     assert_eq!(mux.sessions().len(), 1);
     assert_eq!(mux.session(session).unwrap().workspaces, [workspace]);
+    // Only increasing numbering can run out of numbers.
+    mux.set_automatic_numbering(AutomaticNumbering::Increasing);
     mux.session_ordinal = u64::MAX;
     mux.workspace_ordinal = u64::MAX;
     mux.next_id = 5;

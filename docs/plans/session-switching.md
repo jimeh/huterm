@@ -626,12 +626,14 @@ Recorded during implementation:
 - Test harnesses and the smoke fixture's `attach-window` adopt an
   attachment only once the projection holds it, as production attaches
   do; adopting earlier owes a spurious emptied close.
-- Added at the maintainer's request after review: a restore resumes
-  automatic session and workspace names after the highest one it
-  restored, custom-named records included, instead of the saved creation
-  ordinal. Switching makes closed sessions common, and their numbers
-  otherwise kept the count climbing across every restart. Within one run
-  the count still only rises.
+- Added at the maintainer's request after review: `[general]
+  session_numbering` picks the number in a new automatic session or
+  workspace name. The default, `lowest_unused`, takes the lowest number no
+  live record of the kind holds, custom-named records included, so a
+  closed session's number is reused. `increasing` counts up within a run,
+  and a restore resumes it after the highest number restored rather than
+  the saved counter. Switching makes closed sessions common, and the saved
+  counter otherwise kept the count climbing across every restart.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-20]: https://github.com/jimeh/huterm/issues/20

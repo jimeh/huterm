@@ -2,7 +2,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::*;
 use crate::mux::tests::{command, shell_pid, wait_for_text};
-use crate::mux::{HierarchyRecvError, HierarchySubscription};
+use crate::mux::{
+    AutomaticNumbering, HierarchyRecvError, HierarchySubscription,
+};
 use crate::test_support::TestClient;
 use huterm_protocol::{
     ApplyOutcome, CaptureError, HierarchyState, NodeId, PaneInfo,
@@ -162,6 +164,7 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 4));
 
     let mut restored = Mux::default();
+    restored.set_automatic_numbering(AutomaticNumbering::Increasing);
     let (mut state, subscription) = restored.subscribe_hierarchy();
     let spawned = spawn_all(&restored, &capture);
     let report = restored.restore(&capture, spawned).unwrap();
@@ -248,7 +251,7 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
 }
 
 #[test]
-fn restored_automatic_names_resume_after_the_highest_one_restored() {
+fn increasing_names_resume_after_the_highest_one_restored() {
     let mut mux = Mux::default();
     let first = mux.create_session(None).unwrap();
     let first_workspace = mux.create_workspace(first, None).unwrap();
@@ -264,6 +267,7 @@ fn restored_automatic_names_resume_after_the_highest_one_restored() {
     assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 3));
 
     let mut restored = Mux::default();
+    restored.set_automatic_numbering(AutomaticNumbering::Increasing);
     let spawned = spawn_all(&restored, &capture);
     restored.restore(&capture, spawned).unwrap();
     let session = restored.create_session(None).unwrap();

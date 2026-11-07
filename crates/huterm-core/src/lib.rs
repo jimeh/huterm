@@ -30,11 +30,11 @@ mod viewer;
 mod wake;
 
 pub use mux::{
-    Beside, CloseAssessment, CloseEffect, CloseRequest, CloseTicket,
-    DEFAULT_SOCKET_NAME, FailedPane, HierarchyRecvError, HierarchySubscription,
-    MoveDestination, Mux, MuxError, OpenedPane, OpenedTab, PaneRef,
-    RestoreDirection, RestoreReport, SelectionTarget, Session, SpawnFailure,
-    SpawnedTerminals, Tab, Workspace,
+    AutomaticNumbering, Beside, CloseAssessment, CloseEffect, CloseRequest,
+    CloseTicket, DEFAULT_SOCKET_NAME, FailedPane, HierarchyRecvError,
+    HierarchySubscription, MoveDestination, Mux, MuxError, OpenedPane,
+    OpenedTab, PaneRef, RestoreDirection, RestoreReport, SelectionTarget,
+    Session, SpawnFailure, SpawnedTerminals, Tab, Workspace,
 };
 pub use terminal::{
     RefusedInput, RuntimeError, SelectUnitsRequest, SelectionRequest,

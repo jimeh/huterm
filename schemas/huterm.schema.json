@@ -260,6 +260,20 @@
           "x-huterm-order": 15,
           "x-huterm-section": "general"
         },
+        "session_numbering": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionNumbering"
+            }
+          ],
+          "default": "lowest_unused",
+          "description": "How a new session picks the number in its automatic name, such as\n\"Session 2\": the lowest number no session uses, or one more than\nthe highest so far. Workspaces number the same way.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sessions",
+          "x-huterm-label": "Number new sessions",
+          "x-huterm-order": 16,
+          "x-huterm-section": "general"
+        },
         "watch_config": {
           "default": true,
           "description": "Reload config.toml when it, or a theme file it uses, changes on disk.",
@@ -10609,6 +10623,23 @@
         }
       },
       "type": "object"
+    },
+    "SessionNumbering": {
+      "description": "How new sessions and workspaces number their automatic names. A session\nwith a custom name keeps its number for Clear Name, so it counts as\nused.",
+      "oneOf": [
+        {
+          "const": "lowest_unused",
+          "description": "The lowest number no open session uses, so closing \"Session 2\"\nfrees 2 for the next one.",
+          "type": "string",
+          "x-huterm-label": "Lowest unused number"
+        },
+        {
+          "const": "increasing",
+          "description": "One more than the highest number used since launch; a restart\ncontinues after the highest restored one.",
+          "type": "string",
+          "x-huterm-label": "Keep counting up"
+        }
+      ]
     },
     "SettingsConfig": {
       "additionalProperties": false,
