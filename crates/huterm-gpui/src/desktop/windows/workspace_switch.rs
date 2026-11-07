@@ -439,7 +439,7 @@ mod tests {
             layout: huterm_protocol::PaneLayout::single(
                 huterm_protocol::PaneInfo {
                     id: huterm_protocol::PaneId::in_runtime(runtime, n + 100),
-                    terminal_id: TerminalId::new(n + 200),
+                    terminal_id: TerminalId::in_runtime(runtime, n + 200),
                     fallback_name: "sh".to_owned(),
                     custom_name: None,
                 },
