@@ -452,6 +452,70 @@ fn a_target_closed_after_the_commit_removes_the_window_and_keeps_its_old_session
 }
 
 #[gpui::test]
+fn a_target_closed_after_the_commit_on_linux_quits_and_keeps_its_old_session(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.as_linux(window);
+    let other = harness.other_session("other", 1);
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Switched);
+    harness.select_session(window, other.session).unwrap();
+    harness.wait_for("the switch to commit", |_| {
+        runtime.worker_hooks.held(Stage::Switched) == 1
+    });
+    runtime.lock().close_session(other.session).unwrap();
+    runtime.worker_hooks.release(Stage::Switched);
+    // The session-gone path cannot assess its emptied close, whose
+    // attachment went with the session, yet the last window still quits
+    // rather than leave its old session running with no window.
+    let session = harness.session;
+    harness.wait_quit(session);
+    harness.cx.update(|cx| {
+        assert_eq!(
+            cx.global::<Desktop>().emptied_quit,
+            Some(window.window_id())
+        );
+    });
+    assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 1);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_refused_emptied_close_whose_session_then_closes_on_linux_quits(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.as_linux(window);
+    let unviewed = harness.unviewed_session();
+    harness.wait_projection();
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Assess);
+    harness.close_tab(tab);
+    harness.wait_for("the emptied close to assess", |_| {
+        hooks.held(Stage::Assess) == 1
+    });
+    // A tab another client opens makes the runtime refuse the close, and
+    // the session closes before the window settles the refusal.
+    harness.open_tab(ECHO);
+    hooks.hold(Stage::Assessed);
+    hooks.release(Stage::Assess);
+    harness
+        .wait_for("the refusal to hold", |_| hooks.held(Stage::Assessed) == 1);
+    harness.close_session();
+    hooks.release(Stage::Assessed);
+    // The window still quits rather than strand the unviewed session.
+    harness.wait_quit(unviewed);
+    assert_eq!(hooks.entered(Stage::Commit), 1);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
 fn every_install_failing_keeps_the_attachment_and_its_notices(
     cx: &mut TestAppContext,
 ) {
@@ -2419,13 +2483,20 @@ fn a_cancelled_emptied_quit_that_can_show_nothing_follows_the_last_window_rule(
     harness.wait_switched(window, left.session, &left.tabs);
 }
 
-#[gpui::test]
-fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
+/// Closes the window's own session twice while no shell command can be
+/// built, with the last-window rule of `platform`: the first follow-up
+/// passes over a session that needs a shell, and the second has nothing
+/// left it can show.
+fn close_session_follow_ups_without_a_shell(
     cx: &mut TestAppContext,
+    platform: Platform,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
+    harness.update_view(window, |view, _, _| {
+        view.test_platform = Some(platform);
+    });
     // Two sessions no window shows: the first has no tab, so showing it
     // needs a shell; the second has one.
     let bare = {
@@ -2448,7 +2519,10 @@ fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
     // Only the bare session is left, and the fresh session needs a shell
     // too: the window says why and closes by the last-window rule.
     harness.invoke(window, ids::CLOSE_SESSION).unwrap();
-    if Platform::current() == Platform::Linux {
+    if platform == Platform::Linux {
+        // The bare session would be stranded, so the window quits, keeping
+        // the notice: the emptied close its gone session owed does not run
+        // first and remove it.
         let runtime = Arc::clone(&harness.runtime);
         harness.wait_for("the application to quit", |_| {
             runtime.terminating.load(Ordering::Acquire)
@@ -2460,6 +2534,10 @@ fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
                     .iter()
                     .any(|notice| notice.contains("Cannot open a new session")),
                 "{shown:?}"
+            );
+            assert_eq!(
+                cx.global::<Desktop>().emptied_quit,
+                Some(window.window_id())
             );
         });
     } else {
@@ -2482,6 +2560,20 @@ fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
             0
         );
     }
+}
+
+#[gpui::test]
+fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
+    cx: &mut TestAppContext,
+) {
+    close_session_follow_ups_without_a_shell(cx, Platform::MacOs);
+}
+
+#[gpui::test]
+fn a_close_session_follow_up_without_a_shell_on_linux_quits_with_its_notice(
+    cx: &mut TestAppContext,
+) {
+    close_session_follow_ups_without_a_shell(cx, Platform::Linux);
 }
 
 #[gpui::test]

@@ -12021,7 +12021,8 @@ impl WorkspaceView {
     ///
     /// - A window or emptied close whose attachment core invalidated
     ///   removes the window without a notice: its session closed elsewhere,
-    ///   and nothing is left to close.
+    ///   and nothing is left to close. An emptied one applies the
+    ///   last-window rule first ([`Self::close_gone_emptied`]).
     /// - A refused emptied close keeps the window, as
     ///   [`Self::emptied_close_refused`] describes.
     /// - Another emptied failure raises one notice and clears the mark;
@@ -12035,10 +12036,12 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         match (checking, error) {
-            (
-                CloseTarget::Window | CloseTarget::Emptied,
-                MuxError::UnknownAttachment(_),
-            ) => self.remove_detached_window(window, cx),
+            (CloseTarget::Window, MuxError::UnknownAttachment(_)) => {
+                self.remove_detached_window(window, cx);
+            }
+            (CloseTarget::Emptied, MuxError::UnknownAttachment(_)) => {
+                self.close_gone_emptied(window, cx);
+            }
             (CloseTarget::Emptied, MuxError::ViewNotEmpty(_)) => {
                 self.emptied_close_refused(window, cx);
             }
@@ -12093,10 +12096,10 @@ impl WorkspaceView {
 
     /// Settles an emptied close the runtime refused while the window's
     /// workspace held tabs, once the projection reached the hierarchy it
-    /// was refused at. A session closed meanwhile removes the window
-    /// without a notice; a workspace left with nothing to install asks
-    /// again; otherwise the window stays, marked refused while it shows no
-    /// view, and installs the tabs.
+    /// was refused at. A session closed meanwhile takes the session-gone
+    /// path ([`Self::close_gone_emptied`]); a workspace left with nothing
+    /// to install asks again; otherwise the window stays, marked refused
+    /// while it shows no view, and installs the tabs.
     fn emptied_close_refused(
         &mut self,
         window: &mut Window,
@@ -12104,7 +12107,7 @@ impl WorkspaceView {
     ) {
         self.close.current = None;
         if self.attached_session_gone(cx) {
-            self.remove_detached_window(window, cx);
+            self.close_gone_emptied(window, cx);
             return;
         }
         let emptied = if !self.tabs.is_empty() {

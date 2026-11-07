@@ -81,14 +81,6 @@ impl DesktopHarness {
         });
     }
 
-    /// Makes `window`'s close pipeline apply the last-window rule as on
-    /// Linux.
-    fn as_linux(&mut self, window: AnyWindowHandle) {
-        self.update_view(window, |view, _, _| {
-            view.test_platform = Some(Platform::Linux);
-        });
-    }
-
     fn workspace_exists(&self, workspace: WorkspaceId) -> bool {
         self.runtime.lock().workspace(workspace).is_some()
     }
@@ -940,15 +932,20 @@ fn a_linux_emptied_quit_saves_neither_the_emptied_session_nor_its_window(
 }
 
 /// Holds the emptied close of the harness session's only workspace at
-/// `stage`, takes a checkpoint, and checks that it saves neither the
-/// session nor its window, while it saves a session no window shows.
+/// `stage`, with the last-window rule of `platform`, takes a checkpoint,
+/// and checks that it saves neither the session nor its window, while it
+/// saves a session no window shows.
 fn a_checkpoint_during_an_emptied_close_saves_neither(
     cx: &mut TestAppContext,
+    platform: Platform,
     stage: Stage,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
+    harness.update_view(window, |view, _, _| {
+        view.test_platform = Some(platform);
+    });
     let unviewed = harness.unviewed_session();
     harness.wait_projection();
     let runtime = Arc::clone(&harness.runtime);
@@ -967,28 +964,61 @@ fn a_checkpoint_during_an_emptied_close_saves_neither(
     assert!(saves_session(&captured, unviewed), "{captured:?}");
     assert!(layout.windows.is_empty(), "{layout:?}");
     runtime.worker_hooks.release(stage);
-    harness.wait_closed(window);
+    if platform == Platform::Linux {
+        // The last window would strand the unviewed session, so the close
+        // becomes Quit (W36), whose capture saves neither either.
+        harness.wait_quit(unviewed);
+        let (captured, layout) = recorder.saved().pop().unwrap();
+        assert!(!saves_session(&captured, harness.session), "{captured:?}");
+        assert!(layout.windows.is_empty(), "{layout:?}");
+    } else {
+        harness.wait_closed(window);
+    }
 }
 
 #[gpui::test]
 fn a_checkpoint_while_an_emptied_close_assesses_saves_neither(
     cx: &mut TestAppContext,
 ) {
-    a_checkpoint_during_an_emptied_close_saves_neither(cx, Stage::Assess);
+    a_checkpoint_during_an_emptied_close_saves_neither(
+        cx,
+        Platform::MacOs,
+        Stage::Assess,
+    );
 }
 
 #[gpui::test]
 fn a_checkpoint_after_an_emptied_close_assessed_saves_neither(
     cx: &mut TestAppContext,
 ) {
-    a_checkpoint_during_an_emptied_close_saves_neither(cx, Stage::Assessed);
+    a_checkpoint_during_an_emptied_close_saves_neither(
+        cx,
+        Platform::MacOs,
+        Stage::Assessed,
+    );
 }
 
 #[gpui::test]
 fn a_checkpoint_while_an_emptied_close_commits_saves_neither(
     cx: &mut TestAppContext,
 ) {
-    a_checkpoint_during_an_emptied_close_saves_neither(cx, Stage::Commit);
+    a_checkpoint_during_an_emptied_close_saves_neither(
+        cx,
+        Platform::MacOs,
+        Stage::Commit,
+    );
+}
+
+/// On Linux the held commit is the check that turns the close into Quit.
+#[gpui::test]
+fn a_checkpoint_while_a_linux_emptied_close_checks_for_quit_saves_neither(
+    cx: &mut TestAppContext,
+) {
+    a_checkpoint_during_an_emptied_close_saves_neither(
+        cx,
+        Platform::Linux,
+        Stage::Commit,
+    );
 }
 
 #[gpui::test]

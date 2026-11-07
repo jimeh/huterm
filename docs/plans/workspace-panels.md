@@ -524,6 +524,8 @@ follow-up settles; an emptied close converts to Quit only after a fresh
 | W36  | Linux last window on the session's only workspace; an unviewed session                                        | Its last tab closes; the emptied close becomes Quit       | The Quit saves neither the emptied session nor the window; the unviewed session is saved                                        | `a_linux_emptied_quit_saves_neither_the_emptied_session_nor_its_window`                                                                                                                                                                                                                                                                                                         |
 | W37  | Emptied close of the session's only workspace assessing, assessed, or committing (held)                       | Checkpoint                                                | Saves neither the session nor the window; other sessions are saved                                                              | `a_checkpoint_while_an_emptied_close_assesses_saves_neither`, `a_checkpoint_after_an_emptied_close_assessed_saves_neither`, `a_checkpoint_while_an_emptied_close_commits_saves_neither`                                                                                                                                                                                         |
 | W38  | Emptied close of the session's only workspace refused while a tab installs into it (install held)             | Checkpoint                                                | Saves the window and its session; a refused close is not departing                                                              | `a_checkpoint_before_a_refused_emptied_close_installs_saves_the_window`                                                                                                                                                                                                                                                                                                         |
+| W39  | Linux last window, an unviewed session; its session closes elsewhere (switch target or refused close)         | Its emptied close cannot be assessed                      | Session-gone path: the last-window rule still applies, so the window quits rather than removing itself (session row 7)          | `a_target_closed_after_the_commit_on_linux_quits_and_keeps_its_old_session`, `a_refused_emptied_close_whose_session_then_closes_on_linux_quits`, plus the Linux branches of the session-gone tests                                                                                                                                                                              |
+| W40  | Linux last window, own Close Session follow-up could open nothing                                             | Its gone session owes an emptied close                    | The Quit replaces that close, which no longer runs first and removes the window; the notice stays (Q6, row 35)                  | `a_close_session_follow_up_without_a_shell_on_linux_quits_with_its_notice`                                                                                                                                                                                                                                                                                                      |
 
 ## Observable success
 
@@ -666,6 +668,17 @@ Recorded while implementing PR A:
   not departing, so it and its session are still saved, and neither is
   one whose emptied close the runtime refused, which stays saved while
   its tabs install.
+- 2026-11-07, after Linux CI on PR A: removing the pre-assessment
+  conversion also removed the only Quit conversion of the session-gone
+  path, whose emptied close core cannot assess (`UnknownAttachment`, or a
+  refusal whose session then closed), so a Linux last window removed
+  itself and stranded unviewed sessions (W39). That close now applies the
+  last-window rule before removing the window; with its session gone, no
+  sibling workspace can make a stale answer. A Close Session follow-up
+  that becomes Quit also clears the emptied close its gone session owed,
+  which otherwise ran before the deferred Quit and removed the window and
+  its notice (W40). The emptied close's freshness check enters the commit
+  stage's worker hook, so a Linux Quit queued behind it commits second.
 - Switch Workspace… on the empty state opens the `select_workspace`
   palette prompt in PR A; PR B's workspace menu replaces it. Dismissing
   the prompt, or any overlay or menu, in a window that shows the empty

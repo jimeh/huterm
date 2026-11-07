@@ -2106,6 +2106,14 @@ impl DesktopHarness {
         self.runtime.lock().close_session(self.session).unwrap();
     }
 
+    /// Makes `window`'s close pipeline apply the last-window rule as on
+    /// Linux.
+    fn as_linux(&mut self, window: AnyWindowHandle) {
+        self.update_view(window, |view, _, _| {
+            view.test_platform = Some(Platform::Linux);
+        });
+    }
+
     /// Closes `tab` through Mux, as another client would.
     fn close_tab(&self, tab: TabId) {
         self.runtime.lock().close_tab(self.workspace, tab).unwrap();
@@ -3010,11 +3018,12 @@ fn a_quit_queued_behind_a_committing_emptied_close_still_quits(
         Stage::Commit,
     );
     if Platform::current() == Platform::Linux {
-        // The last window would strand the session, so the close became
-        // Quit as it began committing; that Quit's commit is what waits.
+        // The last window would strand the session, so what waits is the
+        // emptied close's check under the Mux lock, which commits nothing
+        // and turns the close into Quit; the Quit's own commit follows.
         harness.runtime.worker_hooks.release(Stage::Commit);
         harness.wait_quit(unviewed);
-        assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 1);
+        assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 2);
         return;
     }
     harness.queue_quit(window);

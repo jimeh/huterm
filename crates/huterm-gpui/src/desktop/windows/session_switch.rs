@@ -1205,6 +1205,9 @@ impl WorkspaceView {
             if let Some(message) = failure {
                 self.report_failure("Cannot show a session", message, cx);
             }
+            // The Quit takes the place of the emptied close the gone
+            // session owed; run first, that close would remove the window.
+            self.set_emptied(EmptiedClose::None, cx);
             cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
             cx.defer(request_quit);
         } else {
@@ -1443,6 +1446,25 @@ impl WorkspaceView {
         self.set_emptied(EmptiedClose::None, cx);
         cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
         self.end_close_as_quit(window, cx);
+    }
+
+    /// Ends an emptied close whose session closed elsewhere, so core can
+    /// no longer assess it, the session-gone path: on Linux the last window
+    /// quits rather than strand sessions no window shows; otherwise the
+    /// window goes without a notice.
+    pub(super) fn close_gone_emptied(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.emptied_close_target(self.close_platform(), cx)
+            == CloseTarget::Application
+        {
+            self.close.current = None;
+            self.emptied_becomes_quit(window, cx);
+        } else {
+            self.remove_detached_window(window, cx);
+        }
     }
 
     fn end_close_as_quit(

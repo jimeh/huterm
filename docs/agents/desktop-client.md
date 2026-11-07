@@ -359,7 +359,11 @@ session went away after core refused. After the wait, a session gone removes
 the window, a window with nothing to install asks again, and otherwise it is
 refused. `UnknownAttachment` removes the window without a notice, for a
 `CloseTarget::Window` close as well as an emptied one: the session closed
-elsewhere and nothing is left to close. Any other emptied assessment failure
+elsewhere and nothing is left to close. A gone session's emptied close
+(`UnknownAttachment` or a refusal whose session went) applies the
+last-window rule first (`close_gone_emptied`): no assessment can turn it into
+Quit at its commit, so without it a Linux last window removed itself and
+stranded unviewed sessions. Any other emptied assessment failure
 raises one notice and clears the mark without cancelling queued closes, which
 run next.
 
@@ -419,9 +423,12 @@ session" notice. The completion installs the result as a switch does
 too, the window also closes by the last-window rule
 (`close_by_last_window_rule`), and so does a `show_left_session` that could
 show nothing: on Linux the last window runs Quit through `request_quit`
-when it would strand unviewed sessions (`window_close_target`) and records
-itself in `emptied_quit`, so a cancelled Quit tries `show_left_session`
-again; else the window goes, removed when its session closed and through
+when it would strand unviewed sessions (`window_close_target`), clears
+the emptied close its gone session owed, and records itself in
+`emptied_quit`, so a cancelled Quit tries `show_left_session` again. Left
+owed, that close was requested before the deferred Quit ran, failed with
+`UnknownAttachment`, and removed the window and its notice. Else the window
+goes, removed when its session closed and through
 its emptied close while still attached, and its notice waits in the
 failure latch for the next window. A completion whose close generation
 moved detaches the follow-up attachment it no longer takes. Tier 2 tests
