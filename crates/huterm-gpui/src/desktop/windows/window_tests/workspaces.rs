@@ -991,6 +991,52 @@ fn a_checkpoint_while_an_emptied_close_commits_saves_neither(
     a_checkpoint_during_an_emptied_close_saves_neither(cx, Stage::Commit);
 }
 
+#[gpui::test]
+fn a_checkpoint_before_a_refused_emptied_close_installs_saves_the_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.wait_projection();
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Assess);
+    harness.close_tab(tab);
+    harness.wait_for("the emptied close to hold", |_| {
+        runtime.worker_hooks.held(Stage::Assess) == 1
+    });
+    // A tab another client opens in the window's only workspace makes the
+    // runtime refuse the close; its install holds before it fills the
+    // window's record.
+    runtime.worker_hooks.hold(Stage::Subscribe);
+    let arrived = harness.open_tab(ECHO);
+    runtime.worker_hooks.release(Stage::Assess);
+    harness.wait_for("the refused close and the held install", |cx| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 1
+            && window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                        let view = view.read(cx);
+                        view.tabs.is_empty()
+                            && view.close.current.is_none()
+                            && view.close.emptied == EmptiedClose::Refused
+                    })
+                })
+                .unwrap_or(false)
+    });
+    let recorder = harness.recorder.clone();
+    let before = recorder.saved().len();
+    harness.cx.update(take_checkpoint);
+    harness.runtime.persistence.flush();
+    harness.wait_for("the checkpoint", |_| recorder.saved().len() > before);
+    let (captured, layout) = recorder.saved().pop().unwrap();
+    assert!(saves_session(&captured, harness.session), "{captured:?}");
+    assert_eq!(layout.windows.len(), 1, "{layout:?}");
+    assert_eq!(layout.windows[0].workspace.get(), harness.workspace.get());
+    runtime.worker_hooks.release(Stage::Subscribe);
+    harness.wait_workspace(window, harness.workspace, &[arrived]);
+}
+
 /// Holds `window`'s emptied close of the harness workspace, assessed as
 /// `LeaveWorkspace` beside a populated sibling, on Linux with a session no
 /// window shows. Returns the sibling, its tab, and that session.
@@ -1732,6 +1778,33 @@ fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
     assert!(harness.update_view(window, |view, _, _| view.menu.is_some()));
     harness.press(window, "escape");
     assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-new-tab")
+    );
+    harness.press(window, "tab");
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-switch-workspace")
+    );
+}
+
+#[gpui::test]
+fn a_cancelled_quit_returns_focus_to_the_empty_state(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let job = harness.open_tab(RUNS_JOB);
+    let window = harness.attach_showing(&[job]);
+    harness.wait_text(window, job, "READY");
+    let (empty, _) = harness.add_workspace(0);
+    harness.activate_window(window);
+    harness.show_workspace(window, empty, &[]);
+    harness.resume_quits();
+    // The Quit asks, because the workspace the window left runs a job.
+    harness.cx.update(request_quit);
+    wait_quit_dialog(&mut harness, window);
+    harness.press(window, "escape");
+    assert_eq!(confirmation(&mut harness, window), None);
+    harness.cx.update(|cx| assert!(!quitting(cx)));
     assert_eq!(
         empty_state_focus(&mut harness, window),
         Some("empty-new-tab")

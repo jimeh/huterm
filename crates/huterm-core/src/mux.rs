@@ -482,6 +482,8 @@ impl Mux {
     /// Appends a workspace to a session with one tab running `command`,
     /// as one step: when the tab fails to open, the workspace closes again
     /// and the error is returned, so a failure leaves no empty workspace.
+    /// The whole addition is admitted first, so a limit refusal changes
+    /// nothing.
     /// # Errors
     /// Rejects what [`Self::create_workspace`] and [`Self::open_tab`]
     /// reject.
@@ -491,6 +493,10 @@ impl Mux {
         name: Option<&str>,
         command: &TerminalCommand,
     ) -> Result<(WorkspaceId, OpenedTab), MuxError> {
+        self.select_session(session)?;
+        validate_name(name)?;
+        // A workspace, its tab, and the tab's pane.
+        self.admit_items(0, 3)?;
         let workspace = self.create_workspace(session, name)?;
         match self.open_tab(workspace, command) {
             Ok(opened) => Ok((workspace, opened)),

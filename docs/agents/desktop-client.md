@@ -603,12 +603,14 @@ launch. A stash whose workspace closes or moves follows to another
 (`Reopen::follow_workspace`), and its saved layout takes that workspace's
 navigation and the remaining remembered list with it.
 `capture_windows` leaves out departing windows: one that shows no tab,
-owes or had refused an emptied close (`WindowRecord::emptied_close`) or
-became the Quit under way (`Desktop::emptied_quit`), and whose session
-holds no other workspace. Both runtime captures keep a tabless session
-only when the layout's windows or stashes show it (`shown_sessions`), so
-Quit and checkpoints never save a session a close already ended, while a
-window settled on an empty workspace keeps its session.
+owes an emptied close (`WindowRecord::emptied_close`) or became the Quit
+under way (`Desktop::emptied_quit`), and whose session holds no other
+workspace. A refused emptied close is not owed: the runtime kept the
+window, which stays saved while its tabs install. Both runtime captures
+keep a tabless session only when the layout's windows or stashes show it
+(`shown_sessions`), so Quit and checkpoints never save a session a close
+already ended, while a window settled on an empty workspace keeps its
+session.
 A reload (`quake_windows::reconcile`, through
 `restore::reconcile_stash`, before the windows drop the renames it read)
 moves a stash to its profile's recorded new name and opens one whose

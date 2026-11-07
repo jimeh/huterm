@@ -2478,10 +2478,11 @@ fn capture_windows(cx: &App) -> huterm_state::DesktopLayout {
 }
 
 /// Whether a window's close already decided to end it and its session:
-/// it shows no tab, its emptied close is owed, refused, assessing, or
-/// committing, or became the Quit under way, and its session holds no
-/// workspace other than the one it shows. Captures save neither the window
-/// nor, through [`shown_sessions`], its tabless session.
+/// it shows no tab, its emptied close is owed (still to be assessed,
+/// assessing, or committing) or became the Quit under way, and its
+/// session holds no workspace other than the one it shows. Captures save
+/// neither the window nor, through [`shown_sessions`], its tabless session.
+/// A refused emptied close kept the window, which stays saved.
 fn departing(desktop: &Desktop, record: &WindowRecord) -> bool {
     record.tabs.is_empty()
         && (record.emptied_close || desktop.emptied_quit == Some(record.id))
@@ -5646,13 +5647,13 @@ impl WorkspaceView {
         }
     }
 
-    /// Sets whether the window owes an emptied close, and notes it on the
-    /// window's record, where captures read it.
+    /// Sets the window's emptied close, and notes on the window's record,
+    /// where captures read it, whether the close is owed.
     fn set_emptied(&mut self, emptied: EmptiedClose, cx: &mut App) {
         self.close.emptied = emptied;
         cx.global_mut::<Desktop>()
             .windows
-            .set_emptied_close(self.window, emptied != EmptiedClose::None);
+            .set_emptied_close(self.window, emptied == EmptiedClose::Owed);
     }
 
     /// Applies canonical order to the model entries and tab views; returns
@@ -12293,10 +12294,7 @@ impl WorkspaceView {
             show_left_session_after_cancel(cx);
         }
         self.sync_dialog(window, cx);
-        if let Some(tab) = self.active_view(cx) {
-            let focus = tab.read(cx).focus.clone();
-            focus.focus(window, cx);
-        }
+        self.restore_tab_focus(window, cx);
         cx.notify();
     }
 

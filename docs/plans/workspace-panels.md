@@ -655,14 +655,16 @@ Recorded while implementing PR A:
   emptied close of the session's only workspace became Quit still held
   its attachment, so the Quit saved the session and the window, and the
   relaunch brought both back with a fresh shell. A departing window, one
-  that shows no tab, whose emptied close is owed, refused, assessing, or
+  that shows no tab, whose emptied close is owed, assessing, or
   committing or became the Quit under way, and whose session holds no
   other workspace, is now left out of the saved layout, and the desktop
   passes the sessions the saved layout shows to the runtime capture as
   its keep set, for Quit and checkpoints alike (W36, W37). A tear-off's
   destination session, whose window is not yet a saved record, is no
   longer saved either. A window settled on an empty workspace (EM1) is
-  not departing, so it and its session are still saved.
+  not departing, so it and its session are still saved, and neither is
+  one whose emptied close the runtime refused, which stays saved while
+  its tabs install.
 - Switch Workspace… on the empty state opens the `select_workspace`
   palette prompt in PR A; PR B's workspace menu replaces it. Dismissing
   the prompt, or any overlay or menu, in a window that shows the empty
