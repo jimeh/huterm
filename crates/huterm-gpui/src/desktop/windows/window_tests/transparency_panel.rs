@@ -683,13 +683,23 @@ fn a_pane_press_before_the_reveal_settles_cancels_it(cx: &mut TestAppContext) {
     let file = ScratchConfig::new("panel-reveal-press", "");
     let mut harness = DesktopHarness::new(cx);
     open_settings(&mut harness, &file.path());
-    harness.cx.update(|cx| {
+    // A drawn section taller than the pane leaves the scrollbar strip
+    // mounted for the next frame, where its own listeners take the press.
+    let reveal = |cx: &mut App| {
         settings_window::open_at_group(
             cx,
             SectionId::Appearance,
             "Transparency",
         );
-    });
+    };
+    harness.cx.update(reveal);
+    visual(&harness).run_until_parked();
+    assert!(
+        with_view(&mut harness, |view, _| view.pane_scroll_limit()) > px(0.0),
+        "Appearance drew taller than the pane"
+    );
+    // A second request replaces the first, with no frame drawn since.
+    harness.cx.update(reveal);
     assert!(with_view(&mut harness, |view, _| view.group_reveal_pending()));
     // A press and its release on the scrollbar's track, both before the
     // reveal's next check, as a quick click lands between two frames.
