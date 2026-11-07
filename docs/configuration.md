@@ -301,14 +301,19 @@ startup file that assigns the hook arrays gets Huterm's hooks back at the first
 prompt. Commands see the prompt without Huterm's markers. Huterm puts the
 undecorated prompt back only while `PROMPT` still equals the value Huterm set,
 so it never removes a framework's markers or a prompt the user changed. When
-other hooks
-follow the decoration hook, as on the first prompt after startup files add
-theme hooks, decoration runs as a `zsh/sched` command after all `precmd` hooks
-and before the prompt is expanded. Zsh uses no ZLE widgets and never resets the
-prompt, so `prompt_subst` commands expand once. With `prompt_percent` unset,
-zsh cannot mark text as zero-width, so Huterm prints the prompt marker directly
-and omits the input marker. Both shells detect framework markers in the final
-prompt string and keep OSC 7 and `path` when they suppress OSC 133.
+other hooks follow the decoration hook, as on the first prompt after startup
+files add theme hooks, decoration runs as a `zsh/sched` command after all
+`precmd` hooks and before the prompt is expanded. Huterm adds no ZLE widgets
+and never resets the prompt itself, so `prompt_subst` commands expand once.
+Some themes rebuild `PROMPT` while the line is being edited and redraw it with
+`zle reset-prompt`: Spaceship's asynchronous sections, Powerlevel10k's
+transient prompt, and vi mode indicators do this. For those redraws, Huterm
+defines a `zle` function that passes every call to the builtin. During a
+`reset-prompt` call, it adds the markers to a prompt that has none, then gives
+the theme its own `PROMPT` value back. With `prompt_percent` unset, zsh cannot
+mark text as zero-width, so Huterm prints the prompt marker directly and omits
+the input marker. Both shells detect framework markers in the final prompt
+string and keep OSC 7 and `path` when they suppress OSC 133.
 
 Fish, nushell, and elvish remove only Huterm's entry from `XDG_DATA_DIRS` if a
 startup file changed its value. If it still matches the injected value, they
@@ -437,6 +442,20 @@ Limitations:
 - Elvish emits A, C, D, and OSC 7, with no B marker because its asynchronous
   prompt renderer filters control sequences. Its guarded `use` keeps a broken
   module from stopping the rest of `rc.elv`.
+- A triple-click on typed input stops at the input marker. In zsh, the
+  selection also takes the prompt in these cases:
+  - `prompt_percent` is unset, so the prompt has no input marker;
+  - a framework's own markers, which Huterm leaves alone, omit the input
+    marker;
+  - the window is resized after a theme redrew its own prompt, because zsh
+    redraws the theme's unmarked `PROMPT`; the next prompt is marked again;
+  - a theme redraws with `builtin zle reset-prompt`, which skips Huterm's
+    `zle` function, or a `zle` function defined by a startup file replaces it.
+- Huterm's `zle` is a function. With a `ZERR` trap set, zsh does not apply
+  `err_return` to a failing function, so a widget with both continues after a
+  failing `zle` call. A trap that runs `return` just as Huterm marks a redrawn
+  prompt can leave the marks in `PROMPT`. Later commands then get no execution
+  or completion markers until the theme sets `PROMPT` again.
 - An `/etc/zshenv` that changes `ZDOTDIR` before the stub can bypass loading.
   Startup files that replace `XDG_DATA_DIRS` before fish or nushell discover
   vendor files can also bypass it.
