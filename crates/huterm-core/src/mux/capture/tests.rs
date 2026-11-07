@@ -138,7 +138,7 @@ fn assert_reaped(pids: &[nix::unistd::Pid]) {
 #[test]
 fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     let mut fixture = fixture();
-    let capture = fixture.mux.capture_runtime();
+    let capture = fixture.mux.capture_runtime(&HashSet::new());
     // The tabless session is left out; the unviewed one is kept.
     let sessions: Vec<u64> =
         capture.sessions.iter().map(|s| s.info.id.get()).collect();
@@ -171,7 +171,7 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     assert!(report.failed.is_empty(), "{report:?}");
     assert_eq!(report.removed_tabs, Vec::<TabId>::new());
     assert_eq!(report.empty_sessions, Vec::<SessionId>::new());
-    assert_eq!(restored.capture_runtime(), capture);
+    assert_eq!(restored.capture_runtime(&HashSet::new()), capture);
     assert_eq!(restored.terminal_count(), 6);
 
     // Saved identities now name records in the restoring runtime's scope.
@@ -263,7 +263,7 @@ fn increasing_names_resume_after_the_highest_one_restored() {
     // Holding no tab, the highest of each kind is left out of the capture.
     let gone = mux.create_session(None).unwrap();
     mux.create_workspace(gone, None).unwrap();
-    let capture = mux.capture_runtime();
+    let capture = mux.capture_runtime(&HashSet::new());
     assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 3));
 
     let mut restored = Mux::default();
@@ -296,10 +296,16 @@ fn a_tabless_session_a_window_shows_is_captured_and_restored_empty() {
     // now shows, so its session holds no tab but is still shown.
     mux.close_tab(emptied, tab).unwrap();
     mux.close_workspace(emptied).unwrap();
-    // A tabless session nothing holds, as a transfer leaves in flight.
+    // A tabless session an attachment holds but no saved window shows, as
+    // a window whose close ends it or a transfer in flight leaves it.
+    let departing = mux.create_session(None).unwrap();
+    mux.create_workspace(departing, None).unwrap();
+    mux.attach_session(departing).unwrap();
+    // A tabless session nothing holds.
     let transient = mux.create_session(None).unwrap();
     mux.create_workspace(transient, None).unwrap();
-    let capture = mux.capture_runtime();
+    let shown = HashSet::from([SessionId::new(session.get())]);
+    let capture = mux.capture_runtime(&shown);
     let sessions: Vec<u64> =
         capture.sessions.iter().map(|s| s.info.id.get()).collect();
     assert_eq!(sessions, [session.get()]);
@@ -358,7 +364,7 @@ fn capture_lists_local_directories_in_preference_order_without_repeats() {
         }
     };
     let directories = |mux: &Mux| {
-        mux.capture_runtime()
+        mux.capture_runtime(&HashSet::new())
             .terminal(terminal)
             .unwrap()
             .directories
@@ -390,7 +396,7 @@ fn capture_lists_local_directories_in_preference_order_without_repeats() {
 #[test]
 fn a_failed_spawn_leaves_its_pane_and_an_emptied_tab_and_reports_both() {
     let mut fixture = fixture();
-    let capture = fixture.mux.capture_runtime();
+    let capture = fixture.mux.capture_runtime(&HashSet::new());
     let unviewed_terminal = capture.sessions[1].workspaces[0].tabs[0]
         .layout
         .first_pane()
@@ -458,7 +464,7 @@ fn a_failed_spawn_leaves_its_pane_and_an_emptied_tab_and_reports_both() {
 #[test]
 fn a_refused_restore_changes_nothing_and_reaps_every_spawned_child() {
     let mut fixture = fixture();
-    let capture = fixture.mux.capture_runtime();
+    let capture = fixture.mux.capture_runtime(&HashSet::new());
 
     // An invalid capture is refused before anything spawns.
     let mut invalid = capture.clone();
@@ -536,7 +542,7 @@ fn a_refused_restore_changes_nothing_and_reaps_every_spawned_child() {
 #[test]
 fn a_restore_needs_a_fresh_runtime_of_the_captured_socket() {
     let mut fixture = fixture();
-    let capture = fixture.mux.capture_runtime();
+    let capture = fixture.mux.capture_runtime(&HashSet::new());
 
     // Emptied after allocating, so restored identities could repeat ones
     // already handed out.
@@ -568,7 +574,7 @@ fn a_restore_needs_a_fresh_runtime_of_the_captured_socket() {
 #[test]
 fn restored_children_stop_on_shutdown_and_a_cancelled_spawn_reaps_its_own() {
     let mut fixture = fixture();
-    let capture = fixture.mux.capture_runtime();
+    let capture = fixture.mux.capture_runtime(&HashSet::new());
     let mut restored = Mux::default();
     let spawned = spawn_all(&restored, &capture);
     let pids = spawned_pids(&spawned);

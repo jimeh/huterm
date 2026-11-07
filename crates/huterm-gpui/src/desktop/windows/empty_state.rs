@@ -12,7 +12,10 @@
 //!
 //! Keyboard: New Tab takes focus when the state appears; the buttons take
 //! the `Panel` key context, so Tab and Shift-Tab cycle them and Enter and
-//! Space press the focused one, as in the transparency panel.
+//! Space press the focused one, as in the transparency panel. An overlay
+//! that closes returns focus to the button that opened it, else New Tab.
+
+use std::cell::Cell;
 
 use gpui::{
     AnyElement, App, Bounds, Context, FocusHandle, IntoElement, ParentElement,
@@ -46,6 +49,9 @@ pub(super) struct EmptyState {
     new_tab: FocusHandle,
     switch: FocusHandle,
     close: FocusHandle,
+    /// The button whose press opened the overlay showing now, which takes
+    /// focus back when that overlay closes.
+    opener: Cell<Option<Control>>,
 }
 
 impl EmptyState {
@@ -54,6 +60,7 @@ impl EmptyState {
             new_tab: cx.focus_handle().tab_stop(true),
             switch: cx.focus_handle().tab_stop(true),
             close: cx.focus_handle().tab_stop(true),
+            opener: Cell::new(None),
         }
     }
 
@@ -150,6 +157,31 @@ impl WorkspaceView {
         }
     }
 
+    /// Returns focus to the empty state, when it shows and no overlay holds
+    /// focus, after an overlay closed in a window with no terminal: to the
+    /// button that opened the overlay, else New Tab. Returns whether it
+    /// focused a button.
+    pub(super) fn restore_empty_state_focus(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        if self.overlay_holds_focus() {
+            return false;
+        }
+        let opener = self.empty_state.opener.take();
+        let Some(controls) =
+            self.empty_state_model(cx).map(|model| model.controls())
+        else {
+            return false;
+        };
+        let control = opener
+            .filter(|control| controls.contains(control))
+            .unwrap_or(Control::NewTab);
+        self.empty_state.handle(control).clone().focus(window, cx);
+        true
+    }
+
     /// Runs a `panel_*` command on the empty state when one of its
     /// buttons holds focus; `None` leaves the command to the open panel.
     pub(super) fn run_empty_state_command(
@@ -228,6 +260,9 @@ impl WorkspaceView {
                 }
             }
         };
+        if control == Control::SwitchWorkspace && self.palette.is_some() {
+            self.empty_state.opener.set(Some(control));
+        }
         if let Err(error) = result {
             let title = match control {
                 Control::NewTab => "Cannot open tab",

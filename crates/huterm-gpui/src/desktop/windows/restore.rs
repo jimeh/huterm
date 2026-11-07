@@ -13,7 +13,7 @@
 //! so termination waits for it through [`Worker`].
 
 use super::layout_history::LayoutHistory;
-use super::model::NavigationMemory;
+use super::model::{NavigationMemory, saved_memory};
 use super::persistence::{Persistence, State};
 use super::*;
 use huterm_core::{RestoreReport, SpawnedTerminals};
@@ -338,7 +338,9 @@ impl Reopen {
     /// session to the workspace its window would follow to, as a session
     /// switch resolves one: the one it remembers in the session, else the
     /// first that holds tabs, else the first, taking that workspace's
-    /// remembered navigation. Returns whether it moved.
+    /// remembered navigation. The stash's saved layout takes the same
+    /// navigation and remembered list, so a capture before the summon
+    /// saves where the window will reopen. Returns whether it moved.
     pub(super) fn follow_workspace(&mut self, state: &HierarchyState) -> bool {
         if state.workspace_session(self.workspace) == Some(self.session) {
             return false;
@@ -375,7 +377,20 @@ impl Reopen {
             })
             .unwrap_or_default();
         if let Some(layout) = &mut self.stashed {
-            layout.workspace = WorkspaceId::new(workspace.get());
+            let shown = saved_memory(&NavigationMemory {
+                session: self.session,
+                workspace,
+                active: self.focus.active,
+                history: self.focus.history.clone(),
+                panes: self.focus.panes.clone(),
+                layout_history: LayoutHistory::default(),
+            });
+            layout.workspace = shown.workspace;
+            layout.active_tab = shown.active_tab;
+            layout.tab_history = shown.tab_history;
+            layout.focused_panes = shown.focused_panes;
+            layout.remembered =
+                self.remembered.iter().map(saved_memory).collect();
         }
         true
     }

@@ -465,7 +465,7 @@ fn the_saved_layout_takes_open_attached_windows_in_opening_order() {
     );
     model.begin_close(window(4));
 
-    let saved = model.desktop_layout(Some(window(1)));
+    let saved = model.desktop_layout(Some(window(1)), |_| false);
     assert_eq!(saved.active_window, Some(0));
     let [first, quake] = saved.windows.as_slice() else {
         panic!("two windows: {saved:?}");
@@ -503,7 +503,12 @@ fn the_saved_layout_takes_open_attached_windows_in_opening_order() {
     assert_eq!(quake.mode, huterm_state::WindowMode::Windowed);
     assert_eq!(quake.appearance, None);
     // A Quake window is never the window activated last.
-    assert_eq!(model.desktop_layout(Some(window(3))).active_window, None);
+    assert_eq!(
+        model
+            .desktop_layout(Some(window(3)), |_| false)
+            .active_window,
+        None
+    );
 }
 
 #[test]
@@ -557,7 +562,7 @@ fn every_reader_answers_from_the_model_alone() {
     );
     assert_eq!(model.recent_tab(window(1)), Some(TabId::new(1)));
     assert_eq!(model.tab_titles(TitleScope::Open).len(), 3);
-    assert_eq!(model.desktop_layout(None).windows.len(), 1);
+    assert_eq!(model.desktop_layout(None, |_| false).windows.len(), 1);
 }
 
 #[test]
@@ -595,7 +600,11 @@ fn a_switch_files_the_session_left_and_hands_back_the_targets_memory() {
     assert_eq!(left.history, [TabId::new(2), TabId::new(1)]);
     assert_eq!(left.panes, [(TabId::new(1), PaneId::new(5))]);
     // Saved like the window's own navigation, most recent last.
-    let saved = model.desktop_layout(None).windows.remove(0).remembered;
+    let saved = model
+        .desktop_layout(None, |_| false)
+        .windows
+        .remove(0)
+        .remembered;
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].tab_history, [TabId::new(1), TabId::new(2)]);
 
@@ -629,7 +638,7 @@ fn memory_keeps_the_most_recently_left_sessions_within_the_saved_bound() {
     let record = model.record(window(1)).unwrap();
     assert_eq!(record.memory.len(), bound);
     assert_eq!(record.memory[0].session, SessionId::new(last - 1));
-    assert!(model.desktop_layout(None).validate().is_ok());
+    assert!(model.desktop_layout(None, |_| false).validate().is_ok());
 }
 
 #[test]
@@ -670,7 +679,11 @@ fn memory_is_kept_per_workspace_and_saved_once_per_workspace() {
         None
     );
     // Saved as one entry per workspace, so the session appears twice.
-    let saved = model.desktop_layout(None).windows.remove(0).remembered;
+    let saved = model
+        .desktop_layout(None, |_| false)
+        .windows
+        .remove(0)
+        .remembered;
     assert_eq!(
         saved
             .iter()

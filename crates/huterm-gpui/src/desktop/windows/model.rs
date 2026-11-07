@@ -146,6 +146,10 @@ pub(super) struct WindowRecord {
     /// last-window rule counts the window as going, though it becomes
     /// `closing` only once the commit's completion removes it.
     pub(super) close_committing: bool,
+    /// The window owes an emptied close, or the runtime refused one while
+    /// it shows no view. Captures leave out such a window when it shows no
+    /// tab and its session holds no other workspace: the close ends it.
+    pub(super) emptied_close: bool,
     /// The window's own transparency overrides, runtime state over the
     /// configured defaults and its Quake profile.
     pub(super) transparency: crate::transparency::Layer,
@@ -251,6 +255,7 @@ impl WindowModel {
             memory: Vec::new(),
             closing: false,
             close_committing: false,
+            emptied_close: false,
             transparency: crate::transparency::Layer::default(),
         });
     }
@@ -822,6 +827,13 @@ impl WindowModel {
         }
     }
 
+    /// Notes whether `id` owes an emptied close or had one refused.
+    pub(super) fn set_emptied_close(&mut self, id: WindowId, emptied: bool) {
+        if let Some(record) = self.record_mut(id) {
+            record.emptied_close = emptied;
+        }
+    }
+
     /// Marks a window as being removed and ends its profile association.
     pub(super) fn begin_close(&mut self, id: WindowId) {
         let Some(record) = self.saved_mut(id) else {
@@ -986,13 +998,17 @@ impl WindowModel {
     /// with identities unscoped as the runtime capture writes them, and
     /// `active` as the window activated last when it is an open regular
     /// window. Quake windows keep their profile and are not activated.
+    /// Windows `departing` names, whose close already ends them, are left
+    /// out.
     pub(super) fn desktop_layout(
         &self,
         active: Option<WindowId>,
+        departing: impl Fn(&WindowRecord) -> bool,
     ) -> huterm_state::DesktopLayout {
         let mut active_window = None;
         let windows = self
             .open_records()
+            .filter(|record| !departing(record))
             .filter_map(|record| {
                 let layout = saved_window(record)?;
                 if active == Some(record.id) && record.quake.is_none() {
@@ -1080,7 +1096,9 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
 }
 
 /// One remembered workspace's saved navigation, unscoped like the window's.
-fn saved_memory(memory: &NavigationMemory) -> huterm_state::SessionNavigation {
+pub(super) fn saved_memory(
+    memory: &NavigationMemory,
+) -> huterm_state::SessionNavigation {
     huterm_state::SessionNavigation {
         session: SessionId::new(memory.session.get()),
         workspace: WorkspaceId::new(memory.workspace.get()),

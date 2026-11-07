@@ -2,11 +2,12 @@
 //! shows another workspace of its session and returns to its own
 //! navigation there, New Workspace and Close Workspace, the window that
 //! leaves a workspace that empties or goes (L1), the empty state, and the
-//! Quit, close, and switch interleavings W1 to W31, W34, and W35 of
+//! Quit, close, and switch interleavings W1 to W31 and W34 to W37 of
 //! `docs/plans/workspace-panels.md`. Ordering comes from worker hooks and
 //! sequence waits, never sleeps.
 
 use super::super::empty_state::EmptyStateModel;
+use super::super::session_switch::quit_underway;
 use super::pane_moves::active;
 use super::sessions::{
     confirm_quit, confirmation, installing, shown_session, shown_tabs,
@@ -900,6 +901,96 @@ fn a_stale_emptied_detach_on_linux_does_not_quit(cx: &mut TestAppContext) {
     assert!(runtime.lock().session(unviewed).is_some());
 }
 
+/// Whether `captured` saved the session `session` names.
+fn saves_session(
+    captured: &huterm_protocol::RuntimeCapture,
+    session: SessionId,
+) -> bool {
+    captured
+        .sessions
+        .iter()
+        .any(|kept| kept.info.id.get() == session.get())
+}
+
+#[gpui::test]
+fn a_linux_emptied_quit_saves_neither_the_emptied_session_nor_its_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.as_linux(window);
+    let unviewed = harness.unviewed_session();
+    harness.wait_projection();
+    harness.resume_quits();
+    // Closing the last tab of the session's only workspace in the last
+    // window becomes Quit, which ends the session the user just emptied.
+    harness.activate(window, tab);
+    harness.invoke(window, ids::CLOSE_TAB).unwrap();
+    harness.wait_quit(unviewed);
+    harness.cx.update(|cx| {
+        assert_eq!(
+            cx.global::<Desktop>().emptied_quit,
+            Some(window.window_id())
+        );
+    });
+    let (captured, layout) = harness.recorder.saved().remove(0);
+    assert!(!saves_session(&captured, harness.session), "{captured:?}");
+    assert!(layout.windows.is_empty(), "{layout:?}");
+}
+
+/// Holds the emptied close of the harness session's only workspace at
+/// `stage`, takes a checkpoint, and checks that it saves neither the
+/// session nor its window, while it saves a session no window shows.
+fn a_checkpoint_during_an_emptied_close_saves_neither(
+    cx: &mut TestAppContext,
+    stage: Stage,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let unviewed = harness.unviewed_session();
+    harness.wait_projection();
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(stage);
+    harness.close_tab(tab);
+    harness.wait_for("the emptied close to hold", |_| {
+        runtime.worker_hooks.held(stage) == 1
+    });
+    let recorder = harness.recorder.clone();
+    let before = recorder.saved().len();
+    harness.cx.update(take_checkpoint);
+    harness.runtime.persistence.flush();
+    harness.wait_for("the checkpoint", |_| recorder.saved().len() > before);
+    let (captured, layout) = recorder.saved().pop().unwrap();
+    assert!(!saves_session(&captured, harness.session), "{captured:?}");
+    assert!(saves_session(&captured, unviewed), "{captured:?}");
+    assert!(layout.windows.is_empty(), "{layout:?}");
+    runtime.worker_hooks.release(stage);
+    harness.wait_closed(window);
+}
+
+#[gpui::test]
+fn a_checkpoint_while_an_emptied_close_assesses_saves_neither(
+    cx: &mut TestAppContext,
+) {
+    a_checkpoint_during_an_emptied_close_saves_neither(cx, Stage::Assess);
+}
+
+#[gpui::test]
+fn a_checkpoint_after_an_emptied_close_assessed_saves_neither(
+    cx: &mut TestAppContext,
+) {
+    a_checkpoint_during_an_emptied_close_saves_neither(cx, Stage::Assessed);
+}
+
+#[gpui::test]
+fn a_checkpoint_while_an_emptied_close_commits_saves_neither(
+    cx: &mut TestAppContext,
+) {
+    a_checkpoint_during_an_emptied_close_saves_neither(cx, Stage::Commit);
+}
+
 /// Holds `window`'s emptied close of the harness workspace, assessed as
 /// `LeaveWorkspace` beside a populated sibling, on Linux with a session no
 /// window shows. Returns the sibling, its tab, and that session.
@@ -1584,6 +1675,74 @@ fn selecting_an_empty_workspace_shows_the_empty_state(cx: &mut TestAppContext) {
     assert_eq!(layout.windows[0].workspace.get(), empty.get());
 }
 
+/// The empty-state button holding focus in `window`, by element id.
+fn empty_state_focus(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> Option<&'static str> {
+    harness.update_view(window, |view, window, _| {
+        let (new_tab, switch, close) = view.empty_state_handles();
+        [
+            ("empty-new-tab", new_tab),
+            ("empty-switch-workspace", switch),
+            ("empty-close-workspace", close),
+        ]
+        .into_iter()
+        .find(|(_, handle)| handle.is_focused(window))
+        .map(|(name, _)| name)
+    })
+}
+
+#[gpui::test]
+fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let (empty, _) = harness.add_workspace(0);
+    harness.activate_window(window);
+    harness.show_workspace(window, empty, &[]);
+    harness.press(window, "tab");
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-switch-workspace")
+    );
+    // Escape from the picker Switch Workspace… opened returns focus to it,
+    // where Tab still moves through the buttons.
+    harness.press(window, "enter");
+    harness.wait_for("the workspace prompt", |cx| {
+        palette_state(cx, window).is_some_and(|state| {
+            state.contains("slots command=select_workspace")
+        })
+    });
+    harness.press(window, "escape");
+    harness.wait_for("the palette to close", |cx| {
+        palette_state(cx, window).is_none()
+    });
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-switch-workspace")
+    );
+    harness.press(window, "tab");
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-close-workspace")
+    );
+    // A menu a button did not open returns focus to New Tab.
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    assert!(harness.update_view(window, |view, _, _| view.menu.is_some()));
+    harness.press(window, "escape");
+    assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-new-tab")
+    );
+    harness.press(window, "tab");
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-switch-workspace")
+    );
+}
+
 #[gpui::test]
 fn the_empty_state_cycles_its_buttons_and_opens_a_tab(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
@@ -1597,23 +1756,8 @@ fn the_empty_state_cycles_its_buttons_and_opens_a_tab(cx: &mut TestAppContext) {
             .invoke(window, command)
             .expect("the empty state takes the panel command");
     };
-    let focused = |harness: &mut DesktopHarness| {
-        harness.update_view(window, |view, window, _| {
-            [
-                "empty-new-tab",
-                "empty-switch-workspace",
-                "empty-close-workspace",
-            ]
-            .into_iter()
-            .zip([
-                &view.empty_state_handles().0,
-                &view.empty_state_handles().1,
-                &view.empty_state_handles().2,
-            ])
-            .find(|(_, handle)| handle.is_focused(window))
-            .map(|(name, _)| name)
-        })
-    };
+    let focused =
+        |harness: &mut DesktopHarness| empty_state_focus(harness, window);
     assert_eq!(focused(&mut harness), Some("empty-new-tab"));
     run(&mut harness, ids::PANEL_FOCUS_NEXT);
     assert_eq!(focused(&mut harness), Some("empty-switch-workspace"));
@@ -1635,10 +1779,11 @@ fn the_empty_state_cycles_its_buttons_and_opens_a_tab(cx: &mut TestAppContext) {
     harness.wait_for("the palette to close", |cx| {
         palette_state(cx, window).is_none()
     });
-    // New Tab opens a shell in the empty workspace.
-    harness.update_view(window, |view, window, cx| {
-        view.empty_state_handles().0.clone().focus(window, cx);
-    });
+    // Focus returned to Switch Workspace…; New Tab opens a shell in the
+    // empty workspace.
+    assert_eq!(focused(&mut harness), Some("empty-switch-workspace"));
+    run(&mut harness, ids::PANEL_FOCUS_PREVIOUS);
+    assert_eq!(focused(&mut harness), Some("empty-new-tab"));
     run(&mut harness, ids::PANEL_PRESS);
     harness.wait_for("the new tab", |cx| shown_tabs(cx, window).len() == 1);
     let opened = harness.cx.update(|cx| shown_tabs(cx, window))[0];
@@ -1754,6 +1899,16 @@ fn a_window_leaving_a_workspace_still_counts_as_open(cx: &mut TestAppContext) {
             CloseTarget::Window
         );
         view.close_window(Platform::Linux, window, cx);
+    });
+    // Window two's close decides at its commit while window one's leave
+    // still holds there: the last-window rule ran again and kept a close.
+    harness.wait_for("window two's close to reach its commit", |cx| {
+        runtime.worker_hooks.held(Stage::Commit) == 2 || quit_underway(cx)
+    });
+    harness.cx.update(|cx| {
+        assert!(!quit_underway(cx), "the close became Quit");
+        let record = cx.global::<Desktop>().windows.record(two.window_id());
+        assert!(record.unwrap().close_committing);
     });
     runtime.worker_hooks.release(Stage::Commit);
     harness.wait_closed(two);

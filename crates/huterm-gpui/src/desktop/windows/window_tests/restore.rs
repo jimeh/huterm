@@ -1799,10 +1799,18 @@ fn a_session_left_on_an_empty_workspace_survives_quit_and_restore(
 }
 
 #[gpui::test]
-fn a_quake_stash_on_a_closed_workspace_shows_another(cx: &mut TestAppContext) {
+fn a_quake_stash_on_a_closed_workspace_shows_another(
+    cx: &mut TestAppContext,
+    relaunched: &mut TestAppContext,
+) {
     let scratch = Scratch::new();
     let mut saved = quake_layout();
-    saved.windows[0].remembered = vec![navigation(1, 17, Some(18))];
+    let mut remembered = navigation(1, 17, Some(18));
+    remembered.focused_panes = vec![huterm_state::FocusedPane {
+        tab: TabId::new(18),
+        pane: PaneId::new(19),
+    }];
+    saved.windows[0].remembered = vec![remembered];
     let mut harness = DesktopHarness::restoring_quake(
         cx,
         two_workspace_capture(&scratch),
@@ -1817,18 +1825,56 @@ fn a_quake_stash_on_a_closed_workspace_shows_another(cx: &mut TestAppContext) {
         .close_workspace(WorkspaceId::in_runtime(runtime, 2))
         .unwrap();
     harness.wait_projection();
-    // The stash now names the workspace it remembers, and a checkpoint
-    // saves that.
+    // The stash now names the workspace it remembers, with that
+    // workspace's navigation, and a checkpoint saves that.
     assert_eq!(harness.stashed(), [DROP]);
     let recorder = harness.recorder.clone();
+    let stashed = |layout: &huterm_state::DesktopLayout| {
+        layout
+            .windows
+            .iter()
+            .find(|window| window.quake_profile.as_deref() == Some(DROP))
+            .filter(|window| window.workspace == WorkspaceId::new(17))
+            .cloned()
+    };
     harness.wait_for("a checkpoint naming the kept workspace", |_| {
-        recorder.saved().last().is_some_and(|(_, layout)| {
-            layout.windows.iter().any(|window| {
-                window.quake_profile.as_deref() == Some(DROP)
-                    && window.workspace == WorkspaceId::new(17)
-            })
-        })
+        recorder
+            .saved()
+            .last()
+            .is_some_and(|(_, layout)| stashed(layout).is_some())
     });
+    let (checkpoint, layout) = recorder.saved().pop().unwrap();
+    let window = stashed(&layout).unwrap();
+    assert_eq!(window.active_tab, Some(TabId::new(18)));
+    assert_eq!(window.tab_history, [TabId::new(18)]);
+    assert_eq!(
+        window.focused_panes,
+        [huterm_state::FocusedPane {
+            tab: TabId::new(18),
+            pane: PaneId::new(19),
+        }]
+    );
+    assert!(window.remembered.is_empty(), "{:?}", window.remembered);
+    // A relaunch from that checkpoint stashes the kept workspace with its
+    // remembered tab and pane.
+    let mut relaunch =
+        DesktopHarness::restoring_quake(relaunched, checkpoint, layout);
+    assert_eq!(relaunch.stashed(), [DROP]);
+    let relaunched_runtime = relaunch.runtime_id();
+    relaunch.cx.update(|cx| {
+        let reopen = quake_windows::take_stash(cx, DROP).unwrap();
+        let tab = TabId::in_runtime(relaunched_runtime, 18);
+        assert_eq!(
+            reopen.workspace,
+            WorkspaceId::in_runtime(relaunched_runtime, 17)
+        );
+        assert_eq!(reopen.focus.active, Some(tab));
+        assert_eq!(
+            reopen.focus.panes,
+            [(tab, PaneId::in_runtime(relaunched_runtime, 19))]
+        );
+    });
+    relaunch.runtime.terminate().unwrap();
     // The summon takes the stash and shows the remembered workspace.
     let before = harness.cx.update(|cx| cx.windows());
     harness.cx.update(|cx| {

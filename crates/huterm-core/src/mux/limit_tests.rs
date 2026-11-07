@@ -314,7 +314,7 @@ fn a_capture_past_the_name_or_item_limits_is_refused_before_anything_spawns() {
     let workspace = mux.create_workspace(session, None).unwrap();
     mux.open_test_tab(workspace, &command("read value"))
         .unwrap();
-    let capture = mux.capture_runtime();
+    let capture = mux.capture_runtime(&std::collections::HashSet::new());
     mux.shutdown().unwrap();
     let mut long = capture.clone();
     long.sessions[0].workspaces[0].tabs[0].custom_name =

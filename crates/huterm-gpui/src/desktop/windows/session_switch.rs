@@ -837,6 +837,7 @@ impl WorkspaceView {
         self.switch = Some(SwitchPhase::Installing);
         self.switch_recovers = recovers;
         self.close.emptied = EmptiedClose::None;
+        desktop.windows.set_emptied_close(self.window, false);
         self.restore_focus = None;
         self.reopen = Some(remembered_focus(memory));
         if !self.overlay_holds_focus() {
@@ -1439,7 +1440,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        self.close.emptied = EmptiedClose::None;
+        self.set_emptied(EmptiedClose::None, cx);
         cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
         self.end_close_as_quit(window, cx);
     }

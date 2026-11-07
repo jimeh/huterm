@@ -799,8 +799,9 @@ impl DesktopRuntime {
     /// later captures, such as the empty hierarchy `shutdown` leaves, are
     /// rejected.
     fn capture(&self, mux: &Mux, windows: huterm_state::DesktopLayout) {
-        let finished =
-            self.persistence.finish(|| (mux.capture_runtime(), windows));
+        let finished = self.persistence.finish(|| {
+            (mux.capture_runtime(&shown_sessions(&windows)), windows)
+        });
         if let Some((written, elapsed)) = finished
             && std::env::var_os("HUTERM_STATE_TIMING").is_some()
         {
@@ -2448,8 +2449,8 @@ fn show_left_session_after_cancel(cx: &mut App) {
     });
 }
 
-/// The saved layout of every open window, with the regular window used
-/// most recently as the one to activate last.
+/// The saved layout of every open window that is not departing, with the
+/// regular window used most recently as the one to activate last.
 fn capture_windows(cx: &App) -> huterm_state::DesktopLayout {
     let desktop = cx.global::<Desktop>();
     let regular = |id: gpui::WindowId| {
@@ -2469,9 +2470,42 @@ fn capture_windows(cx: &App) -> huterm_state::DesktopLayout {
                 .map(|handle| handle.window_id())
                 .filter(|id| regular(*id))
         });
-    let mut layout = desktop.windows.desktop_layout(active);
+    let mut layout = desktop
+        .windows
+        .desktop_layout(active, |record| departing(desktop, record));
     layout.windows.extend(restore::stashed_layouts(cx));
     layout
+}
+
+/// Whether a window's close already decided to end it and its session:
+/// it shows no tab, its emptied close is owed, refused, assessing, or
+/// committing, or became the Quit under way, and its session holds no
+/// workspace other than the one it shows. Captures save neither the window
+/// nor, through [`shown_sessions`], its tabless session.
+fn departing(desktop: &Desktop, record: &WindowRecord) -> bool {
+    record.tabs.is_empty()
+        && (record.emptied_close || desktop.emptied_quit == Some(record.id))
+        && record.session.zip(record.workspace).is_some_and(
+            |(session, workspace)| {
+                desktop
+                    .hierarchy
+                    .state()
+                    .session_workspaces(session)
+                    .unwrap_or_default()
+                    .iter()
+                    .all(|other| *other == workspace)
+            },
+        )
+}
+
+/// The unscoped sessions `layout`'s windows and Quake stashes show: the
+/// tabless sessions a runtime capture keeps.
+fn shown_sessions(layout: &huterm_state::DesktopLayout) -> HashSet<SessionId> {
+    layout
+        .windows
+        .iter()
+        .map(|window| SessionId::new(window.session.get()))
+        .collect()
 }
 
 fn maybe_exit(cx: &mut App) {
@@ -5465,7 +5499,7 @@ impl WorkspaceView {
             focused: Some(tab.focused().pane),
         };
         self.tabs.push(tab);
-        self.close.emptied = EmptiedClose::None;
+        self.set_emptied(EmptiedClose::None, cx);
         let windows = &mut cx.global_mut::<Desktop>().windows;
         if spawned {
             windows.open_tab(self.window, entry);
@@ -5607,9 +5641,18 @@ impl WorkspaceView {
     /// pipeline, which takes it once idle.
     fn owe_emptied_close(&mut self, cx: &mut Context<'_, Self>) {
         if self.close.emptied != EmptiedClose::Owed && !terminating(cx) {
-            self.close.emptied = EmptiedClose::Owed;
+            self.set_emptied(EmptiedClose::Owed, cx);
             cx.notify();
         }
+    }
+
+    /// Sets whether the window owes an emptied close, and notes it on the
+    /// window's record, where captures read it.
+    fn set_emptied(&mut self, emptied: EmptiedClose, cx: &mut App) {
+        self.close.emptied = emptied;
+        cx.global_mut::<Desktop>()
+            .windows
+            .set_emptied_close(self.window, emptied != EmptiedClose::None);
     }
 
     /// Applies canonical order to the model entries and tab views; returns
@@ -8441,13 +8484,16 @@ impl WorkspaceView {
         changed
     }
 
-    /// Focuses the active terminal, or the showing dialog.
+    /// Focuses the active terminal, or the showing dialog, or else the
+    /// empty state when it shows.
     fn restore_tab_focus(&self, window: &mut Window, cx: &mut App) {
         if self.dialog_showing() {
             self.focus_dialog(window, cx);
         } else if let Some(tab) = self.active_view(cx) {
             let focus = tab.read(cx).focus.clone();
             focus.focus(window, cx);
+        } else {
+            self.restore_empty_state_focus(window, cx);
         }
     }
 
@@ -9651,7 +9697,7 @@ impl WorkspaceView {
         } else if let Some(terminal) = self.active_view(cx) {
             let focus = terminal.read(cx).focus.clone();
             focus.focus(window, cx);
-        } else {
+        } else if !self.restore_empty_state_focus(window, cx) {
             self.focus.focus(window, cx);
         }
     }
@@ -12029,7 +12075,7 @@ impl WorkspaceView {
                     cx,
                 );
                 self.close.current = None;
-                self.close.emptied = EmptiedClose::None;
+                self.set_emptied(EmptiedClose::None, cx);
                 self.resume_close(window, cx);
                 cx.notify();
             }
@@ -12060,13 +12106,14 @@ impl WorkspaceView {
             self.remove_detached_window(window, cx);
             return;
         }
-        self.close.emptied = if !self.tabs.is_empty() {
+        let emptied = if !self.tabs.is_empty() {
             EmptiedClose::None
         } else if self.has_nothing_to_install(cx) {
             EmptiedClose::Owed
         } else {
             EmptiedClose::Refused
         };
+        self.set_emptied(emptied, cx);
         // Queued user closes run first.
         cx.notify();
     }
@@ -15980,11 +16027,13 @@ impl WorkspaceView {
         true
     }
 
+    /// Focuses the active terminal, else the empty state when it shows,
+    /// else the window.
     fn focus_terminal(&self, window: &mut Window, cx: &mut App) {
         if let Some(terminal) = self.active_view(cx) {
             let focus = terminal.read(cx).focus.clone();
             focus.focus(window, cx);
-        } else {
+        } else if !self.restore_empty_state_focus(window, cx) {
             self.focus.focus(window, cx);
         }
     }

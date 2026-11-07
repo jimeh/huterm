@@ -9,7 +9,10 @@
 //! the same way from its first phase to its last.
 
 use super::persistence::{CHECKPOINT_DELAY, State};
-use super::{App, Arc, Desktop, Duration, Instant, Ordering, capture_windows};
+use super::{
+    App, Arc, Desktop, Duration, Instant, Ordering, capture_windows,
+    shown_sessions,
+};
 
 /// The debounce state on `Desktop`.
 pub(super) struct Checkpoints {
@@ -139,7 +142,7 @@ pub(super) fn take_checkpoint(cx: &mut App) {
             .worker_hooks
             .enter(super::worker_hooks::Stage::Checkpoint)
             .await;
-        let capture = runtime.lock().capture_runtime();
+        let capture = runtime.lock().capture_runtime(&shown_sessions(&layout));
         if runtime.transfers.load(Ordering::Acquire) != transfers {
             return false;
         }

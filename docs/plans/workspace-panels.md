@@ -314,8 +314,10 @@ covers that.
 A window whose shown workspace holds no tab hides its tab bar and draws,
 in the pane area, the workspace icon, "No tabs in `name`", a primary New
 Tab button with its shortcut hint, Switch Workspace… (opens the workspace
-menu anchored to it; absent with one workspace), and Close Workspace
-(absent for the session's only workspace). Switch Workspace… keeps
+menu anchored to it; absent with one workspace; in PR A it opens the
+`select_workspace` palette prompt until PR B adds the workspace menu, see
+[Deviations](#deviations)), and Close Workspace (absent for the session's
+only workspace). Switch Workspace… keeps
 fullscreen, Quake, and server-decorated Linux windows, which have no
 title row to host the dropdown, from getting stuck. Focus moves to New
 Tab; Tab and Shift-Tab cycle the buttons. The buttons are `huterm-ui`
@@ -519,6 +521,8 @@ follow-up settles; an emptied close converts to Quit only after a fresh
 | W33  | PR B: session menu or workspace menu open                                                                     | Collapse, reload, or the host disappears                  | The menu closes or re-anchors to a remaining host; focus returns to the terminal                                                | `a_menu_whose_host_goes_closes_cleanly`                                                                                                                                                                                                                                                                                                                                         |
 | W34  | A commits `LeaveWorkspace` (commit held); Linux; an unviewed session                                          | Close Window in B                                         | A still counts as open, so B closes without becoming Quit                                                                       | `a_window_leaving_a_workspace_still_counts_as_open`                                                                                                                                                                                                                                                                                                                             |
 | W35  | Emptied close assessed in A                                                                                   | Quit confirming in B, then A reaches its commit           | `LeaveWorkspace` commits and follows, and the Quit waits for its hold; `Detach` and `Session` behave as today                   | `a_leave_workspace_commits_while_a_quit_confirms`                                                                                                                                                                                                                                                                                                                               |
+| W36  | Linux last window on the session's only workspace; an unviewed session                                        | Its last tab closes; the emptied close becomes Quit       | The Quit saves neither the emptied session nor the window; the unviewed session is saved                                        | `a_linux_emptied_quit_saves_neither_the_emptied_session_nor_its_window`                                                                                                                                                                                                                                                                                                         |
+| W37  | Emptied close of the session's only workspace assessing, assessed, or committing (held)                       | Checkpoint                                                | Saves neither the session nor the window; other sessions are saved                                                              | `a_checkpoint_while_an_emptied_close_assesses_saves_neither`, `a_checkpoint_after_an_emptied_close_assessed_saves_neither`, `a_checkpoint_while_an_emptied_close_commits_saves_neither`                                                                                                                                                                                         |
 
 ## Observable success
 
@@ -637,16 +641,43 @@ Recorded while implementing PR A:
   appearing, and W12 splits into W12 (the only sibling closes or moves
   away) and W12a (the only populated sibling empties, which keeps the
   leave). The follow-up target rule is unchanged.
-- 2026-11-07, after the UX re-check of PR A: a tabless session an
-  attachment holds is now captured. With the rule above, a window can be
-  left on a session whose workspaces are all empty, and Quit dropped that
+- 2026-11-07, after the UX re-check of PR A: a tabless session a staying
+  window shows is now captured. With the rule above, a window can be left
+  on a session whose workspaces are all empty, and Quit dropped that
   session because capture skipped every tabless session. Restore already
   gives a restored tabless session one fresh tab in its first workspace,
   so its workspaces and names survive and the window reopens on the
-  workspace it showed. A tear-off's destination session also holds an
-  attachment while its tab is in flight; checkpoints defer during
-  transfers, so only a Quit landing in that moment could save it, and it
-  would come back with one fresh shell.
+  workspace it showed.
+- 2026-11-07, after the code review of PR A: capture keeps a tabless
+  session only when a saved window or Quake stash shows it, replacing a
+  first rule that kept any tabless session an attachment held. That rule
+  saved a session the user had just ended: a Linux last window whose
+  emptied close of the session's only workspace became Quit still held
+  its attachment, so the Quit saved the session and the window, and the
+  relaunch brought both back with a fresh shell. A departing window, one
+  that shows no tab, whose emptied close is owed, refused, assessing, or
+  committing or became the Quit under way, and whose session holds no
+  other workspace, is now left out of the saved layout, and the desktop
+  passes the sessions the saved layout shows to the runtime capture as
+  its keep set, for Quit and checkpoints alike (W36, W37). A tear-off's
+  destination session, whose window is not yet a saved record, is no
+  longer saved either. A window settled on an empty workspace (EM1) is
+  not departing, so it and its session are still saved.
+- Switch Workspace… on the empty state opens the `select_workspace`
+  palette prompt in PR A; PR B's workspace menu replaces it. Dismissing
+  the prompt, or any overlay or menu, in a window that shows the empty
+  state returns focus to the button that opened it, else New Tab, so Tab
+  keeps cycling the buttons.
+- W16 when the Quit is confirmed rather than cancelled: the Quit absorbs
+  an owed `LeaveWorkspace`, so the emptied workspace is saved and
+  restored empty, and the window reopens on it in the empty state. This
+  is accepted; the window is not departing, since its session holds
+  another workspace.
+- A Quake stash that follows its closed or moved workspace (W29) also
+  moves its saved layout's active tab, tab history, focused panes, and
+  remembered list to the followed workspace's, so a checkpoint or Quit
+  before the summon keeps that workspace's remembered selection. W29's
+  test relaunches from that checkpoint as well.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-26]: https://github.com/jimeh/huterm/issues/26
