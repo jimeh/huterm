@@ -355,11 +355,12 @@ assessment carries the hierarchy sequence read under the Mux lock, and a
 `ViewNotEmpty` waits for the projection to reach it before deciding: batches
 that arrived while the window was busy only kept the mark owed, so an
 unconditional `Refused` would strand a window whose last installing tab or
-session went away after core refused. After the wait, a session gone removes
-the window, a window with nothing to install asks again, and otherwise it is
-refused. `UnknownAttachment` removes the window without a notice, for a
-`CloseTarget::Window` close as well as an emptied one: the session closed
-elsewhere and nothing is left to close. A gone session's emptied close
+session went away after core refused. After the wait, a session gone ends
+the close by the last-window rule below, a window with nothing to install asks
+again, and otherwise it is refused. `UnknownAttachment` removes the window
+without a notice, for a `CloseTarget::Window` close as well as an emptied one
+(an emptied one only after the rule below): the session closed elsewhere and
+nothing is left to close. A gone session's emptied close
 (`UnknownAttachment` or a refusal whose session went) applies the
 last-window rule first (`close_gone_emptied`): no assessment can turn it into
 Quit at its commit, so without it a Linux last window removed itself and

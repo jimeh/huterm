@@ -508,6 +508,9 @@ fn a_refused_emptied_close_whose_session_then_closes_on_linux_quits(
     harness
         .wait_for("the refusal to hold", |_| hooks.held(Stage::Assessed) == 1);
     harness.close_session();
+    // The window settles the refusal only after it sees the session gone,
+    // so the refused branch, not a later assessment, takes the close.
+    harness.wait_projection();
     hooks.release(Stage::Assessed);
     // The window still quits rather than strand the unviewed session.
     harness.wait_quit(unviewed);
