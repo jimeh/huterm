@@ -2,8 +2,9 @@
 
 Status: in progress. Plans [issue #27][issue-27] (parent [#11][issue-11]).
 The maintainer picked the mockups and settled the open questions on
-2026-11-07; see [Settled decisions](#settled-decisions). PR A is
-implemented; see [Deviations](#deviations). PR B and PR C remain.
+2026-11-07; see [Settled decisions](#settled-decisions). PR A and PR B are
+implemented; see [Deviations](#deviations) and
+[PR B deviations](#pr-b-deviations). PR C remains.
 
 A window can show any workspace of its session, switch between them from
 a panel at any window edge or a dropdown in the tab bar, and create,
@@ -694,6 +695,42 @@ Recorded while implementing PR A:
   remembered list to the followed workspace's, so a checkpoint or Quit
   before the summon keeps that workspace's remembered selection. W29's
   test relaunches from that checkpoint as well.
+
+### PR B deviations
+
+Recorded while implementing PR B, stacked on PR A:
+
+- Settings hides Position and Start collapsed under `show = "never"`
+  through `x-huterm-visible-when`, as every dependent setting does, rather
+  than dimming them; the model has no dimmed state. Their values stay in
+  the file.
+- Panel keys use a `WorkspacePanel` key context with eight
+  `workspace_panel_*` commands (next, previous, first, last, show, rename,
+  menu, exit), bound like the `Panel` and `menu` contexts, so they appear
+  in the keybindings editor and can be rebound. Both arrow pairs move, so
+  one set of bindings serves a vertical panel and a horizontal bar.
+- `toggle_workspace_panel` and `focus_workspace_panel` are unavailable
+  under `never`; `open_workspace_menu` stays available, since the empty
+  state's Switch Workspace… opens it.
+- The workspace menu's panel row reads Show Workspace Panel while the
+  window is collapsed and Collapse Workspace Panel while a panel or bar
+  shows, and is absent while a small window shows the dropdown on its own
+  (SW1), where neither would change what shows.
+- Rows show name and tab count (R1); the status dot is PR C.
+- The bar's chips scroll with floating arrows; they draw no slim position
+  indicator.
+- `Touched` gains `chrome`, the sessions whose workspace list, workspace
+  names, or tab counts changed; a rearrangement counts only when a
+  workspace's tab count changed.
+- A top bar over a title row draws inside the title row element, which
+  already carries the row's gestures, window buttons, and corner controls.
+- The panel's collapse buttons use Lucide's `panel-left-close`,
+  `panel-right-close`, `panel-top-close`, and `panel-bottom-close`; the
+  menu's panel row uses `panel-left-open` and `panel-left-close`.
+- A new window counts the band in its initial size only under
+  `show = "always"`, since a new window's session has one workspace.
+- A window restored from a file saved before PR B has no saved collapse
+  state and shows the panel; `collapsed` applies to new windows only.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-26]: https://github.com/jimeh/huterm/issues/26

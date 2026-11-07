@@ -14922,19 +14922,21 @@ impl Render for WorkspaceView {
                         bar.rounded_tl(FRAME_RADIUS).rounded_tr(FRAME_RADIUS)
                     })
                     .when(!translucent, |bar| {
-                        bar.bg(
-                            if shelf_bar
-                                || top_chrome_uses_bar(
-                                    position,
-                                    self.presentation(),
-                                    self.reveal.progress,
-                                )
-                            {
-                                colors.bar
-                            } else {
-                                background
-                            },
-                        )
+                        bar.bg(if top_bar_row {
+                            // A top workspace bar takes the row in the
+                            // panel's outer-level background.
+                            Self::workspace_panel_background(colors)
+                        } else if shelf_bar
+                            || top_chrome_uses_bar(
+                                position,
+                                self.presentation(),
+                                self.reveal.progress,
+                            )
+                        {
+                            colors.bar
+                        } else {
+                            background
+                        })
                     })
                     .when(translucent, |bar| {
                         bar.child(chrome_background(
