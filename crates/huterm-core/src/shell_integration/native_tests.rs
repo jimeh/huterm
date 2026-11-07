@@ -1591,9 +1591,17 @@ fn native_zsh_marks_a_prompt_a_widget_reassigns_and_redraws() {
     let Some(binary) = executable("zsh") else {
         return;
     };
-    for redraw in ["reset-prompt", ".reset-prompt"] {
+    // A startup file that sets ksh_arrays before Huterm loads must not stop
+    // Huterm from installing its `zle` function.
+    for (redraw, zshenv) in [
+        ("reset-prompt", ""),
+        (".reset-prompt", ""),
+        ("reset-prompt", "setopt ksh_arrays\n"),
+    ] {
         let (home, mut command) = fixture("zsh", false);
         command.program.clone_from(&binary);
+        home.write(".zshenv", &format!("skip_global_compinit=1\n{zshenv}"));
+        let case = format!("{redraw} {zshenv:?}");
         // Like a vi mode indicator. The widget's own options must govern the
         // expansion: without its prompt_subst the prompt shows `$(`.
         home.write(
@@ -1621,22 +1629,22 @@ bindkey '^X' fixture_redraw
         let transcript = String::from_utf8_lossy(&shell.transcript);
         assert!(
             transcript.contains("READY> REDRAWN "),
-            "{redraw}: {transcript:?}"
+            "{case}: {transcript:?}"
         );
         assert_eq!(
             markers(&shell.transcript),
             ["A", "B"],
-            "{redraw}: {transcript:?}"
+            "{case}: {transcript:?}"
         );
         assert_eq!(
             shell.line_selection("echo typed").as_deref(),
             Some("echo typed"),
-            "{redraw}: the redrawn prompt bounds the input"
+            "{case}: the redrawn prompt bounds the input"
         );
         assert_eq!(
             fs::read_to_string(home.0.join("after")).unwrap(),
             "READY> $(print -rn -- REDRAWN) \n",
-            "{redraw}: the widget gets its own prompt back"
+            "{case}: the widget gets its own prompt back"
         );
         shell.send("\x15");
         assert_stream(&mut shell, "zsh", "false", "1");
@@ -1676,6 +1684,87 @@ fn native_zsh_transient_prompt_keeps_marks_and_commands_see_the_user_prompt() {
         "the transient prompt bounds the command in history"
     );
     assert_stream(&mut shell, "zsh", "false", "1");
+}
+
+#[test]
+fn native_zsh_failed_redraw_restores_the_prompt_and_keeps_the_stream() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    let (home, mut command) = fixture("zsh", false);
+    command.program = binary;
+    // With err_return, the widget returns as soon as reset-prompt fails. A
+    // marked prompt left behind would reach the command, and the next prompt
+    // would take it for a framework's and drop C and D.
+    home.write(
+        ".zshrc",
+        r"PROMPT='READY> '
+fixture_fail() { return 1; }
+zle -N reset-prompt fixture_fail
+fixture_redraw() {
+    setopt local_options err_return
+    PROMPT='READY> x '
+    zle reset-prompt
+}
+zle -N fixture_redraw
+bindkey '^X' fixture_redraw
+",
+    );
+    let mut shell = Shell::spawn(&command);
+    shell.prompt();
+    shell.send("\x18");
+    shell.cycle(r#"print -r -- "$PROMPT" > "$HOME/seen""#);
+    assert_eq!(
+        fs::read_to_string(home.0.join("seen")).unwrap(),
+        "READY> x \n",
+        "the command sees the widget's prompt without Huterm's marks"
+    );
+    for (input, status) in [("false", "1"), ("true", "0")] {
+        assert_stream(&mut shell, "zsh", input, status);
+    }
+}
+
+#[test]
+fn native_zsh_redraw_adds_no_marks_where_huterm_cannot_mark() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    for (startup, prompt, expected) in [
+        // Without prompt_percent, `%{` would print as text.
+        ("unsetopt prompt_percent", "'READY> x '", &[][..]),
+        // A framework's own markers stay single.
+        (
+            "",
+            r"$'%{\e]133;A\a%}READY> x %{\e]133;B\a%}'",
+            &["A", "B"][..],
+        ),
+    ] {
+        let (home, mut command) = fixture("zsh", false);
+        command.program.clone_from(&binary);
+        home.write(
+            ".zshrc",
+            &format!(
+                "{startup}\nPROMPT='READY> '\nfixture_redraw() {{ PROMPT={prompt}; zle reset-prompt; }}\nzle -N fixture_redraw\nbindkey '^X' fixture_redraw\n"
+            ),
+        );
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        shell.transcript.clear();
+        shell.send("echo typed\x18");
+        shell.until(|bytes| {
+            String::from_utf8_lossy(bytes).matches("echo typed").count() == 2
+        });
+        let transcript = String::from_utf8_lossy(&shell.transcript);
+        assert!(
+            transcript.contains("READY> x ") && !transcript.contains("%{"),
+            "{startup:?}: {transcript:?}"
+        );
+        assert_eq!(
+            markers(&shell.transcript),
+            expected,
+            "{startup:?}: {transcript:?}"
+        );
+    }
 }
 
 #[test]

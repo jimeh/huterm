@@ -161,8 +161,11 @@ _huterm_zsh_keep() { return 0; }
 # wraps the zle builtin: while a caller's reset-prompt runs, an unmarked prompt
 # carries Huterm's marks, and the caller's value comes back straight after.
 # The wrapper changes no options, because the caller's options govern the
-# prompt expansion.
+# prompt expansion. It runs the builtin as the head of a list, so the caller's
+# err_return and ZERR act once, on the wrapper's status, as for the builtin. The
+# always block restores the prompt even when a trap returns from the wrapper.
 typeset -g _huterm_zsh_redraw_set= _huterm_zsh_redraw_user= _huterm_zsh_zle=
+typeset -gi _huterm_zsh_redraw_status=0
 _huterm_zsh_redraw_mark() {
     local percent=0
     [[ -o prompt_percent ]] && percent=1
@@ -176,20 +179,24 @@ _huterm_zsh_redraw_mark() {
     _huterm_zsh_redraw_set=$PROMPT
 }
 _huterm_zsh_redraw_restore() {
+    emulate -L zsh
     [[ $PROMPT != "$_huterm_zsh_redraw_set" ]] || PROMPT=$_huterm_zsh_redraw_user
     _huterm_zsh_redraw_set= _huterm_zsh_redraw_user=
-    return $1
 }
-if (( ! $+functions[zle] )); then
+# Braced subscripts keep working when a startup file set ksh_arrays.
+if (( ! ${+functions[zle]} )); then
     zle() {
         if [[ ${1-} != reset-prompt && ${1-} != .reset-prompt ]] || ! _huterm_zsh_redraw_mark; then
-            builtin zle "$@"
-            return
+            builtin zle "$@" && return 0 || return $?
         fi
-        builtin zle "$@"
-        _huterm_zsh_redraw_restore $?
+        {
+            builtin zle "$@" && _huterm_zsh_redraw_status=0 || _huterm_zsh_redraw_status=$?
+        } always {
+            _huterm_zsh_redraw_restore
+        }
+        return $_huterm_zsh_redraw_status
     }
-    _huterm_zsh_zle=$functions[zle]
+    _huterm_zsh_zle=${functions[zle]}
 fi
 _huterm_zsh_preexec() {
     emulate -L zsh
