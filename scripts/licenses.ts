@@ -11,7 +11,7 @@ const repoRoot = resolve(import.meta.dir, "..");
 export const artifactPath = "third-party/licenses/licenses.json";
 const componentsPath = "third-party/licenses/components.json";
 const clarificationsPath = "third-party/licenses/crates.json";
-const provenancePaths = ["third-party/licenses/provenance.json", "third-party/ghostty/provenance.json", "third-party/dejavu/provenance.json"];
+const provenancePaths = ["third-party/licenses/provenance.json", "third-party/ghostty/provenance.json", "third-party/dejavu/provenance.json", "third-party/nerd-fonts/provenance.json"];
 
 /** The release targets; each shipped component records the ones that carry it. */
 export const TARGETS = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"] as const;

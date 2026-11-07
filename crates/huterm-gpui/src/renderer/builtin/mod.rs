@@ -62,6 +62,11 @@ impl GeometryCache {
 
     /// Returns the geometry and whether it was already cached. `ch` must come
     /// from [`character`]; any other scalar yields empty geometry.
+    ///
+    /// The hit path is inlined into the per-cell prepare loop. When that loop
+    /// grew, LLVM stopped inlining this method with its geometry builder,
+    /// which slowed builtin-heavy prepares by about 15%.
+    #[inline]
     pub(super) fn get_or_insert(
         &mut self,
         ch: char,
@@ -76,9 +81,20 @@ impl GeometryCache {
         if let Some(geometry) = entry {
             return (Arc::clone(geometry), true);
         }
+        (Self::insert(entry, ch, columns, metrics), false)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn insert(
+        entry: &mut Option<Arc<Geometry>>,
+        ch: char,
+        columns: u16,
+        metrics: GridMetrics,
+    ) -> Arc<Geometry> {
         let geometry = Arc::new(Geometry::new(ch, metrics, columns));
         *entry = Some(Arc::clone(&geometry));
-        (geometry, false)
+        geometry
     }
 
     pub(super) fn get(&self, ch: char, columns: u16) -> Option<&Arc<Geometry>> {

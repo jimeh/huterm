@@ -261,7 +261,8 @@ fn install_menus(cx: &mut App) {
 fn resolve_terminal_family(config: &Config, cx: &App) -> ResolvedFamily {
     let names = cx.text_system().all_font_names();
     ResolvedFamily::resolve(&config.font.family, |family| {
-        names.iter().any(|name| name == family)
+        crate::terminal_font::is_selectable_family(family)
+            && names.iter().any(|name| name == family)
     })
 }
 
