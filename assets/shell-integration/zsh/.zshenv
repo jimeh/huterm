@@ -26,7 +26,7 @@ if [[ ${HUTERM_SHELL_INTEGRATION-} == zsh ]]; then
         } always {
             _huterm_zsh_result=$?
             if (( TRY_BLOCK_ERROR || _huterm_zsh_result != 0 )); then
-                (( $+functions[_huterm_zsh_disable] )) && _huterm_zsh_disable
+                (( ${+functions[_huterm_zsh_disable]} )) && _huterm_zsh_disable
                 print -u2 -r -- "huterm: shell integration failed to load: $_huterm_zsh_body"
                 TRY_BLOCK_ERROR=0
             fi

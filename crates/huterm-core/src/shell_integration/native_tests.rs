@@ -1592,11 +1592,12 @@ fn native_zsh_marks_a_prompt_a_widget_reassigns_and_redraws() {
         return;
     };
     // A startup file that sets ksh_arrays before Huterm loads must not stop
-    // Huterm from installing its `zle` function.
+    // Huterm from installing its `zle` function, and warn_nested_var must not
+    // make the function warn.
     for (redraw, zshenv) in [
         ("reset-prompt", ""),
         (".reset-prompt", ""),
-        ("reset-prompt", "setopt ksh_arrays\n"),
+        ("reset-prompt", "setopt ksh_arrays warn_nested_var\n"),
     ] {
         let (home, mut command) = fixture("zsh", false);
         command.program.clone_from(&binary);
@@ -1628,7 +1629,8 @@ bindkey '^X' fixture_redraw
         });
         let transcript = String::from_utf8_lossy(&shell.transcript);
         assert!(
-            transcript.contains("READY> REDRAWN "),
+            transcript.contains("READY> REDRAWN ")
+                && !transcript.contains("enclosing scope"),
             "{case}: {transcript:?}"
         );
         assert_eq!(
@@ -1687,40 +1689,52 @@ fn native_zsh_transient_prompt_keeps_marks_and_commands_see_the_user_prompt() {
 }
 
 #[test]
-fn native_zsh_failed_redraw_restores_the_prompt_and_keeps_the_stream() {
+fn native_zsh_failed_or_nested_redraw_restores_the_prompt_and_keeps_the_stream()
+{
     let Some(binary) = executable("zsh") else {
         return;
     };
-    let (home, mut command) = fixture("zsh", false);
-    command.program = binary;
-    // With err_return, the widget returns as soon as reset-prompt fails. A
-    // marked prompt left behind would reach the command, and the next prompt
+    // A marked prompt left behind would reach the command, and the next prompt
     // would take it for a framework's and drop C and D.
-    home.write(
-        ".zshrc",
-        r"PROMPT='READY> '
-fixture_fail() { return 1; }
-zle -N reset-prompt fixture_fail
-fixture_redraw() {
+    for (case, reset_prompt) in [
+        // With err_return, the widget returns as soon as reset-prompt fails.
+        ("failed", "fixture_reset() { return 1; }\n"),
+        // A reset-prompt widget that redraws a temporary prompt inside the
+        // outer redraw, which zsh puts back when its function returns.
+        (
+            "nested",
+            "fixture_inner() { zle .reset-prompt; }\nfixture_reset() { PROMPT='INNER> ' fixture_inner; }\n",
+        ),
+    ] {
+        let (home, mut command) = fixture("zsh", false);
+        command.program.clone_from(&binary);
+        home.write(
+            ".zshrc",
+            &format!(
+                r"PROMPT='READY> '
+{reset_prompt}zle -N reset-prompt fixture_reset
+fixture_redraw() {{
     setopt local_options err_return
     PROMPT='READY> x '
     zle reset-prompt
-}
+}}
 zle -N fixture_redraw
 bindkey '^X' fixture_redraw
-",
-    );
-    let mut shell = Shell::spawn(&command);
-    shell.prompt();
-    shell.send("\x18");
-    shell.cycle(r#"print -r -- "$PROMPT" > "$HOME/seen""#);
-    assert_eq!(
-        fs::read_to_string(home.0.join("seen")).unwrap(),
-        "READY> x \n",
-        "the command sees the widget's prompt without Huterm's marks"
-    );
-    for (input, status) in [("false", "1"), ("true", "0")] {
-        assert_stream(&mut shell, "zsh", input, status);
+"
+            ),
+        );
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        shell.send("\x18");
+        shell.cycle(r#"print -r -- "$PROMPT" > "$HOME/seen""#);
+        assert_eq!(
+            fs::read_to_string(home.0.join("seen")).unwrap(),
+            "READY> x \n",
+            "{case}: the command sees the widget's prompt without Huterm's marks"
+        );
+        for (input, status) in [("false", "1"), ("true", "0")] {
+            assert_stream(&mut shell, "zsh", input, status);
+        }
     }
 }
 

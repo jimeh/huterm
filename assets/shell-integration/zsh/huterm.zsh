@@ -164,7 +164,10 @@ _huterm_zsh_keep() { return 0; }
 # prompt expansion. It runs the builtin as the head of a list, so the caller's
 # err_return and ZERR act once, on the wrapper's status, as for the builtin. The
 # always block restores the prompt even when a trap returns from the wrapper.
-typeset -g _huterm_zsh_redraw_set= _huterm_zsh_redraw_user= _huterm_zsh_zle=
+# A reset-prompt widget can redraw again inside the call, so each marked call
+# pushes its own prompt pair and pops it when it ends.
+typeset -ga _huterm_zsh_redraw_sets _huterm_zsh_redraw_users
+typeset -g _huterm_zsh_zle=
 typeset -gi _huterm_zsh_redraw_status=0
 _huterm_zsh_redraw_mark() {
     local percent=0
@@ -174,14 +177,16 @@ _huterm_zsh_redraw_mark() {
     case $PROMPT in
         (*$'\e]133;'*|*'\e]133;'*|*'\E]133;'*|*'\033]133;'*|*'\x1b]133;'*) return 1 ;;
     esac
-    _huterm_zsh_redraw_user=$PROMPT
+    _huterm_zsh_redraw_users+=("$PROMPT")
     PROMPT=$_huterm_zsh_amark$PROMPT$_huterm_zsh_bmark
-    _huterm_zsh_redraw_set=$PROMPT
+    _huterm_zsh_redraw_sets+=("$PROMPT")
 }
 _huterm_zsh_redraw_restore() {
     emulate -L zsh
-    [[ $PROMPT != "$_huterm_zsh_redraw_set" ]] || PROMPT=$_huterm_zsh_redraw_user
-    _huterm_zsh_redraw_set= _huterm_zsh_redraw_user=
+    if [[ $PROMPT == "${_huterm_zsh_redraw_sets[-1]}" ]]; then
+        PROMPT=${_huterm_zsh_redraw_users[-1]}
+    fi
+    _huterm_zsh_redraw_sets[-1]=() _huterm_zsh_redraw_users[-1]=()
 }
 # Braced subscripts keep working when a startup file set ksh_arrays.
 if (( ! ${+functions[zle]} )); then
@@ -190,7 +195,8 @@ if (( ! ${+functions[zle]} )); then
             builtin zle "$@" && return 0 || return $?
         fi
         {
-            builtin zle "$@" && _huterm_zsh_redraw_status=0 || _huterm_zsh_redraw_status=$?
+            builtin zle "$@" && typeset -g _huterm_zsh_redraw_status=0 ||
+                typeset -g _huterm_zsh_redraw_status=$?
         } always {
             _huterm_zsh_redraw_restore
         }
