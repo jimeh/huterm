@@ -190,7 +190,9 @@ impl Reassembler {
             return Err(StreamError::OverBudget);
         }
         let inbound = &mut self.open[index];
-        inbound.last_frame = now;
+        // A frame read while the clock is paused counts from the pause, so
+        // resuming does not credit the paused span twice.
+        inbound.last_frame = self.paused.unwrap_or(now);
         if let Some((_, total)) = inbound.declared
             && inbound.bytes.len() + frame.payload.len() > total
         {

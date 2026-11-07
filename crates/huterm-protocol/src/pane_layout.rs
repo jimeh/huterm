@@ -1203,7 +1203,6 @@ fn check_within(
     Err(LayoutError::UnknownPane)
 }
 
-/// The axis of the split that directly holds `target` under `node`.
 /// The nodes on the path from `node`, at `depth`, to the pane `target`.
 fn pane_depth(node: &PaneNode, target: PaneId, depth: usize) -> Option<usize> {
     match node {
@@ -1215,6 +1214,7 @@ fn pane_depth(node: &PaneNode, target: PaneId, depth: usize) -> Option<usize> {
     }
 }
 
+/// The axis of the split that directly holds `target` under `node`.
 fn parent_axis(node: &SplitNode, target: PaneId) -> Option<SplitAxis> {
     node.children.iter().find_map(|child| match &child.node {
         PaneNode::Pane(pane) if pane.id == target => Some(node.axis),

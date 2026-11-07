@@ -377,6 +377,42 @@ fn fallback_notices_count_panes_and_name_where_they_started() {
     );
 }
 
+#[test]
+fn a_pane_that_failed_to_start_is_reported_and_not_counted_as_moved() {
+    // The capture's identities are unscoped; the report's are the restored
+    // runtime's.
+    let capture = capture();
+    let runtime = RuntimeId::new(9);
+    let report = RestoreReport {
+        failed: vec![huterm_core::FailedPane {
+            terminal: TerminalId::in_runtime(runtime, 5),
+            pane: PaneId::in_runtime(runtime, 4),
+            tab: TabId::in_runtime(runtime, 3),
+            error: huterm_core::RuntimeError::Spawn("no shell".into()),
+        }],
+        ..RestoreReport::default()
+    };
+    let fallbacks = HashMap::from([(TerminalId::new(5), Fallback::Default)]);
+    let notices = window_notices(
+        &capture,
+        &report,
+        &fallbacks,
+        SessionId::in_runtime(runtime, 1),
+    );
+    let shown: Vec<_> = notices
+        .iter()
+        .map(|notice| (notice.severity, notice.message.as_str()))
+        .collect();
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert_eq!(shown[0].0, Severity::Warning);
+    assert!(
+        shown[0]
+            .1
+            .starts_with("1 pane couldn't start and was left out: "),
+        "{shown:?}"
+    );
+}
+
 fn rect(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
     Bounds {
         origin: point(px(x), px(y)),

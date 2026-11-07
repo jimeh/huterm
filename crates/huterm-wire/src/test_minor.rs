@@ -136,9 +136,6 @@ impl TestHierarchy {
         let older = match event {
             TestEvent::Base(event) => {
                 self.advance(seq, event.clone())?;
-                if let HierarchyEvent::TabClosed { tab } = event {
-                    self.pinned.remove(tab);
-                }
                 Delivery::Event(event.clone())
             }
             TestEvent::TabPinned { tab, pinned } => {
@@ -165,6 +162,10 @@ impl TestHierarchy {
                 Delivery::Resync(self.project())
             }
         };
+        // A tab that closed by any path, its workspace's or session's close
+        // included, leaves the appended state with it.
+        let state = &self.state;
+        self.pinned.retain(|tab| state.tab(*tab).is_some());
         Some(if peer_minor >= TEST_MINOR {
             Delivery::Native(event.clone())
         } else {
