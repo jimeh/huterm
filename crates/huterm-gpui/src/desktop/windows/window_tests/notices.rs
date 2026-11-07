@@ -4,8 +4,8 @@
 //! Small windows: the column stays inside, older toasts collapse until
 //! focused or hovered, and a toast taller than the window scrolls.
 //! Accessibility: each toast is an `Alert` that reads its whole notice,
-//! even collapsed, and announces once through a live leaf in the first
-//! frame that shows it in front.
+//! even collapsed, announces once through a live leaf from the first frame
+//! that shows it in front, and returns from the overflow as a new node.
 
 use std::time::{Duration, Instant};
 
@@ -738,23 +738,29 @@ fn redraw(harness: &mut DesktopHarness, window: AnyWindowHandle) {
     harness.cx.run_until_parked();
 }
 
-/// Runs `raise` while `window` is behind, then brings it forward, so the
-/// frame that announces is the last one drawn. A notice raised in front
-/// announces in its first frame, but scrolling to it draws another before
-/// a test can read the tree.
-fn raise_behind(
+/// Waits for the window's own wake to draw `label`'s toast without the
+/// live leaf that announced it.
+fn wait_for_release(
     harness: &mut DesktopHarness,
     window: AnyWindowHandle,
-    raise: impl FnOnce(&mut DesktopHarness),
+    label: &str,
 ) {
-    harness.deactivate(window);
-    raise(harness);
-    harness.cx.run_until_parked();
-    harness
-        .cx
-        .update(|cx| window.update(cx, |_, window, _| window.activate_window()))
-        .unwrap();
-    harness.cx.run_until_parked();
+    harness.wait_for(&format!("{label}'s leaf to go"), |cx| {
+        let json = window
+            .update(cx, |_, window, _| window.debug_a11y_tree_json())
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let tree: serde_json::Value =
+            serde_json::from_str(&json).unwrap_or_default();
+        !tree["nodes"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .any(|(_, node)| {
+                node["synthetic"] == true && node["aria"]["value"] == label
+            })
+    });
 }
 
 const DAMAGED: &str = "Saved state is damaged.";
@@ -767,9 +773,7 @@ fn each_toast_reads_its_whole_notice_and_announces_it_once(
     let restore = format!(
         "Error: {RESTORE}. {DAMAGED} ~/.local/state/huterm/sessions.json"
     );
-    raise_behind(&mut harness, window, |harness| {
-        raise_persistent(harness, window, RESTORE, DAMAGED, true);
-    });
+    raise_persistent(&mut harness, window, RESTORE, DAMAGED, true);
     let toasts = toast_nodes(&mut harness, window);
     let first = toast(&toasts, &restore);
     let announcement = first.announcement().expect("a new toast announces");
@@ -788,26 +792,26 @@ fn each_toast_reads_its_whole_notice_and_announces_it_once(
         "only the leaf is live"
     );
 
+    wait_for_release(&mut harness, window, &restore);
     redraw(&mut harness, window);
     let toasts = toast_nodes(&mut harness, window);
     assert!(
         toast(&toasts, &restore).announcement().is_none(),
-        "the leaf lasts one frame"
+        "announced once"
     );
 
     // A newer failure interrupts, and the older toast, collapsed in this
     // small window, still reads its message and stays quiet.
-    raise_behind(&mut harness, window, |harness| {
-        harness.update_view(window, |view, _, cx| {
-            view.notify(
-                NoticeContent::command_failure(
-                    "Copy failed",
-                    "Nothing is selected",
-                ),
-                cx,
-            );
-        });
+    harness.update_view(window, |view, _, cx| {
+        view.notify(
+            NoticeContent::command_failure(
+                "Copy failed",
+                "Nothing is selected",
+            ),
+            cx,
+        );
     });
+    harness.cx.run_until_parked();
     let toasts = toast_nodes(&mut harness, window);
     let failure = toast(&toasts, "Error: Copy failed. Nothing is selected");
     assert_eq!(
@@ -827,6 +831,62 @@ fn each_toast_reads_its_whole_notice_and_announces_it_once(
         older.size.height < newer.size.height,
         "the older toast collapsed: {older:?} vs {newer:?}"
     );
+}
+
+#[gpui::test]
+fn a_toast_back_from_the_overflow_is_a_new_node(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let window = ready_window(&mut harness);
+    let label = |title: &str| format!("Error: {title}. Another process saves.");
+    let node_id = |harness: &mut DesktopHarness, title: &str| {
+        toast(&toast_nodes(harness, window), &label(title)).node["accesskit_id"]
+            .clone()
+    };
+    raise_persistent(
+        &mut harness,
+        window,
+        "first",
+        "Another process saves.",
+        false,
+    );
+    let before = node_id(&mut harness, "first");
+    for title in ["second", "third", "fourth"] {
+        raise_persistent(
+            &mut harness,
+            window,
+            title,
+            "Another process saves.",
+            false,
+        );
+    }
+    let overflow = |harness: &mut DesktopHarness| {
+        harness
+            .cx
+            .update(|cx| {
+                window.update(cx, |_, window, _| window.debug_a11y_tree_json())
+            })
+            .unwrap()
+            .is_some_and(|json| json.contains("\"1 more notice\""))
+    };
+    assert!(overflow(&mut harness), "the chip reads its count");
+    assert!(
+        toast_nodes(&mut harness, window)
+            .iter()
+            .all(|toast| toast.label() != label("first")),
+        "the first is in the overflow"
+    );
+    harness.update_view(window, |view, _, cx| {
+        view.notices
+            .dismiss_where(|notice| notice.title == "fourth");
+        cx.notify();
+    });
+    harness.cx.run_until_parked();
+    assert_ne!(
+        node_id(&mut harness, "first"),
+        before,
+        "AT-SPI reports the old node defunct, so the toast is a new one"
+    );
+    assert!(!overflow(&mut harness));
 }
 
 #[gpui::test]
@@ -859,7 +919,7 @@ fn a_toast_raised_behind_announces_when_its_window_comes_forward(
         toast(&toasts, &label).announcement().is_some(),
         "activation redraws and announces"
     );
-    redraw(&mut harness, window);
+    wait_for_release(&mut harness, window, &label);
     harness.deactivate(window);
     harness.activate(window, tab);
     harness.cx.run_until_parked();

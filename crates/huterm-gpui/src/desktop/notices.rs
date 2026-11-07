@@ -11,8 +11,10 @@
 //! Each toast is an accessibility `Alert` named by
 //! [`NoticeContent::accessible_text`]. [`NoticeStack::begin_frame`] decides
 //! which toasts announce in the frame being drawn: each notice once, through
-//! a live leaf added for that frame only, since AccessKit announces a live
-//! node when it is added and its descendants inherit its live state.
+//! a live leaf added when it announces, since AccessKit announces a live
+//! node when it is added and its descendants inherit its live state. The
+//! leaf stays for [`ANNOUNCEMENT_HOLD`], because AT-SPI announces from the
+//! leaf's own object and a screen reader may read it after the event.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -39,6 +41,10 @@ use crate::ui::animation::AnimationSchedule;
 pub(crate) const NOTICE_LIFETIME: Duration = Duration::from_secs(6);
 /// Toasts shown at once; the rest are counted in the overflow chip.
 pub(crate) const VISIBLE_NOTICES: usize = 3;
+/// How long a toast keeps the live leaf that announced it. AT-SPI sends
+/// the announcement from the leaf, and a removed leaf's object is defunct,
+/// so it outlasts the frames that follow, such as scrolling to the toast.
+pub(crate) const ANNOUNCEMENT_HOLD: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Severity {
@@ -292,8 +298,9 @@ pub(crate) struct Notice {
     pub(crate) content: NoticeContent,
     created: Instant,
     deadline: Option<Instant>,
-    /// Whether assistive technology was told about the notice.
-    announced: bool,
+    /// When its announcement started and the mount it was drawn in; `None`
+    /// until it announces.
+    announced: Option<(Instant, u64)>,
     /// How many times its toast was drawn after a frame without it. Each
     /// return is a new accessibility node: AT-SPI reports a removed node's
     /// object defunct, and Orca then ignores it for good.
@@ -322,6 +329,8 @@ pub(crate) struct NoticeStack {
     overflow_drawn: bool,
     /// The overflow chip's returns, as [`Notice::mounts`] counts a toast's.
     overflow_mounts: u64,
+    /// When the earliest live leaf the last frame drew is due to go.
+    holding_until: Option<Instant>,
 }
 
 impl NoticeStack {
@@ -344,28 +353,45 @@ impl NoticeStack {
                 content,
                 created: now,
                 deadline,
-                announced: false,
+                announced: None,
                 mounts: 0,
             },
         );
         id
     }
 
-    /// Records the toasts the frame being drawn shows, and returns those
-    /// that announce in it: shown, not announced before, and only while
-    /// `announce`, which the owner passes while its window is in front and
-    /// can show notices. A notice shown while `announce` is false announces
-    /// in the first frame that has it true, if it is still shown.
-    pub(crate) fn begin_frame(&mut self, announce: bool) -> HashSet<NoticeId> {
+    /// Records the toasts the frame being drawn at `now` shows, and returns
+    /// those that carry the live leaf announcing them. A notice announces
+    /// when it is shown, has not announced before, and `announce` holds,
+    /// which the owner passes while its window is in front, can show
+    /// notices, and builds an accessibility tree; a notice shown before
+    /// that announces in the first frame that has it. Its leaf stays for
+    /// [`ANNOUNCEMENT_HOLD`] while the toast stays drawn: a toast that
+    /// returns, as a new node, does not bring it back.
+    pub(crate) fn begin_frame(
+        &mut self,
+        announce: bool,
+        now: Instant,
+    ) -> HashSet<NoticeId> {
         let shown = self.notices.len().min(VISIBLE_NOTICES);
         let mut announcing = HashSet::new();
+        self.holding_until = None;
         for notice in &mut self.notices[..shown] {
             if !self.drawn.contains(&notice.id) {
                 notice.mounts += 1;
             }
-            if announce && !notice.announced {
-                notice.announced = true;
-                announcing.insert(notice.id);
+            if announce && notice.announced.is_none() {
+                notice.announced = Some((now, notice.mounts));
+            }
+            if let Some((at, mount)) = notice.announced {
+                let until = at + ANNOUNCEMENT_HOLD;
+                if mount == notice.mounts && now < until {
+                    announcing.insert(notice.id);
+                    self.holding_until = Some(
+                        self.holding_until
+                            .map_or(until, |held| held.min(until)),
+                    );
+                }
             }
         }
         self.drawn = self.notices[..shown].iter().map(|n| n.id).collect();
@@ -375,6 +401,16 @@ impl NoticeStack {
         }
         self.overflow_drawn = overflow;
         announcing
+    }
+
+    /// Whether a live leaf the last frame drew is due to go by `now`, so
+    /// the owner redraws to remove it.
+    pub(crate) fn release_announcements(&mut self, now: Instant) -> bool {
+        if self.holding_until.is_some_and(|until| now >= until) {
+            self.holding_until = None;
+            return true;
+        }
+        false
     }
 
     /// Replaces every notice from `source` with `replacements`, so a reload
@@ -520,14 +556,22 @@ impl NoticeStack {
     }
 
     /// The window's wake: frames while [`Self::animating`], so the progress
-    /// line moves without other repaints, and the earliest expiry as a
+    /// line moves without other repaints, the earliest expiry as a
     /// deadline, so a window that draws no frames, such as a covered one,
-    /// still expires on time. Idle while paused or when every notice is
-    /// persistent.
+    /// still expires on time, and the earliest live leaf's removal. Idle
+    /// while paused, when a held leaf waits for the resume, or when every
+    /// notice is persistent and no leaf is held.
     pub(crate) fn schedule(&self) -> AnimationSchedule {
+        if self.paused_since.is_some() {
+            return AnimationSchedule::IDLE;
+        }
         let deadline = self
             .next_deadline()
-            .map_or(AnimationSchedule::IDLE, AnimationSchedule::at);
+            .map_or(AnimationSchedule::IDLE, AnimationSchedule::at)
+            .merge(
+                self.holding_until
+                    .map_or(AnimationSchedule::IDLE, AnimationSchedule::at),
+            );
         if self.animating() {
             deadline.merge(AnimationSchedule::FRAME)
         } else {
@@ -1044,10 +1088,11 @@ fn render_toast(
             handlers,
         ));
     if announce {
-        // A leaf added for one frame: AccessKit announces a live node when
-        // it is added, on macOS from its value and on AT-SPI from its name,
-        // which a label takes from its value. Live on the toast itself
-        // would pass to its buttons, which would announce too.
+        // A leaf added when the toast announces: AccessKit announces a live
+        // node when it is added, on macOS from its value and on AT-SPI from
+        // its name, which a label takes from its value. Live on the toast
+        // itself would pass to its buttons, which would announce too. The
+        // leaf keeps its id while it is held, so it announces only once.
         let live = content.politeness();
         toast = toast.a11y_synthetic_children(move |builder| {
             let id = builder.synthetic_node_id("announcement");
@@ -1192,45 +1237,79 @@ mod tests {
     #[test]
     fn each_notice_announces_once_when_first_shown_in_front() {
         let now = Instant::now();
+        let at = |ms: u64| now + Duration::from_millis(ms);
         let mut stack = NoticeStack::default();
         let push = |stack: &mut NoticeStack, tab: u64| {
             stack.push(content(terminal(tab), "n", Lifetime::Persistent), now)
         };
+        let set = |ids: &[NoticeId]| ids.iter().copied().collect();
         let mounts = |stack: &NoticeStack, id| stack.get(id).unwrap().mounts;
         let first = push(&mut stack, 0);
         assert!(
-            stack.begin_frame(false).is_empty(),
+            stack.begin_frame(false, at(0)).is_empty(),
             "nothing announces while the window is behind"
         );
-        assert_eq!(stack.begin_frame(true), HashSet::from([first]));
-        assert!(stack.begin_frame(true).is_empty(), "announced once");
+        assert_eq!(stack.begin_frame(true, at(100)), set(&[first]));
+        assert_eq!(
+            stack.begin_frame(true, at(600)),
+            set(&[first]),
+            "the leaf holds across frames"
+        );
+        assert_eq!(
+            stack.schedule(),
+            AnimationSchedule::at(at(1100)),
+            "a wake removes the leaf"
+        );
+        assert!(!stack.release_announcements(at(1099)));
+        assert!(stack.release_announcements(at(1100)));
+        assert!(
+            stack.begin_frame(true, at(1100)).is_empty(),
+            "announced once"
+        );
+        assert_eq!(stack.schedule(), AnimationSchedule::IDLE);
         assert_eq!(mounts(&stack, first), 1, "drawn ever since");
 
         // Three newer notices push the first into the overflow, and its
         // return after a dismissal is a new node that stays quiet.
         let newer: Vec<NoticeId> =
             (1..4).map(|tab| push(&mut stack, tab)).collect();
-        assert_eq!(stack.begin_frame(true), newer.iter().copied().collect());
+        assert_eq!(stack.begin_frame(true, at(2000)), set(&newer));
         assert_eq!(stack.overflow_mounts, 1, "the chip appeared");
         assert!(stack.dismiss(newer[2]));
-        assert!(stack.begin_frame(true).is_empty(), "no repeat on return");
+        assert_eq!(
+            stack.begin_frame(true, at(2100)),
+            set(&newer[..2]),
+            "held leaves stay, and the returning toast is quiet"
+        );
         assert_eq!(mounts(&stack, first), 2, "a new node on return");
-        assert!(stack.begin_frame(true).is_empty());
-        assert_eq!(mounts(&stack, first), 2, "shown without a gap");
         assert_eq!(stack.overflow_mounts, 1);
+
+        // A toast that leaves and returns while its leaf is held comes back
+        // without it, since its new node would announce again.
+        let x = push(&mut stack, 8);
+        let y = push(&mut stack, 9);
+        stack.begin_frame(true, at(2200));
+        assert!(stack.dismiss(x) && stack.dismiss(y));
+        assert_eq!(
+            stack.begin_frame(true, at(2300)),
+            set(&[newer[1]]),
+            "newer[0] returned as a new node"
+        );
+        assert!(stack.begin_frame(true, at(3300)).is_empty());
 
         // Notices that overflowed before any frame showed them announce
         // when they are first shown.
         let hidden: Vec<NoticeId> =
             (4..8).map(|tab| push(&mut stack, tab)).collect();
-        assert_eq!(
-            stack.begin_frame(true),
-            hidden[1..].iter().copied().collect()
-        );
+        assert_eq!(stack.begin_frame(true, at(4000)), set(&hidden[1..]));
         assert!(stack.dismiss(hidden[3]));
-        assert_eq!(stack.begin_frame(true), HashSet::from([hidden[0]]));
+        assert_eq!(
+            stack.begin_frame(true, at(5000)),
+            set(&[hidden[0]]),
+            "first shown now"
+        );
         assert!(stack.dismiss_all());
-        assert!(stack.begin_frame(true).is_empty());
+        assert!(stack.begin_frame(true, at(5100)).is_empty());
         assert!(!stack.overflow_drawn);
     }
 
