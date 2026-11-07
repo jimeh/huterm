@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.31.0](https://github.com/jimeh/huterm/compare/v0.30.0...v0.31.0) (2026-11-07)
+
+
+### Features
+
+* switch a window between sessions from a title-bar session menu ([#432](https://github.com/jimeh/huterm/issues/432)) ([f0ab740](https://github.com/jimeh/huterm/commit/f0ab74021863bdaaab5e5a811e965d2c9efbf661))
+* upgrade GPUI to gpui-pre 0.3.11 and add a power frame-limit setting ([#419](https://github.com/jimeh/huterm/issues/419)) ([5efb227](https://github.com/jimeh/huterm/commit/5efb227bc11d38354fe65c5b7655827dbdd0489a))
+
+
+### Bug Fixes
+
+* animate timed notices and keep the notice stack inside small windows ([#431](https://github.com/jimeh/huterm/issues/431)) ([0a002c3](https://github.com/jimeh/huterm/commit/0a002c3344b42d3e71a522b6fffb8950ac310441))
+* stop dropping clipboard writes from terminal programs, and rerun only registered flaky tests in CI ([#430](https://github.com/jimeh/huterm/issues/430)) ([3397561](https://github.com/jimeh/huterm/commit/3397561de92b5277f4c056b74bb2855a0fe5ec91))
+
 ## [0.30.0](https://github.com/jimeh/huterm/compare/v0.29.0...v0.30.0) (2026-11-06)
 
 
