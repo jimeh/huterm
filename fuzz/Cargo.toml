@@ -1,0 +1,42 @@
+# cargo-fuzz targets for the runtime IPC wire contract. This crate stays
+# outside the main workspace because libFuzzer needs a nightly toolchain;
+# run it through `mise run fuzz:wire`.
+[package]
+name = "huterm-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+huterm-ipc-sim = { path = "../crates/huterm-ipc-sim" }
+huterm-protocol = { path = "../crates/huterm-protocol" }
+huterm-wire = { path = "../crates/huterm-wire", features = ["test-minor", "vectors"] }
+libfuzzer-sys = "=0.4.13"
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "messages"
+path = "fuzz_targets/messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sim_schedule"
+path = "fuzz_targets/sim_schedule.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

@@ -1,0 +1,5 @@
+# The dated nightly cargo-fuzz builds with. Pick one at least three days old
+# to satisfy the release-age policy; see docs/agents/dependencies.md.
+[toolchain]
+channel = "nightly-2026-11-03"
+profile = "minimal"

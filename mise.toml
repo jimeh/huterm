@@ -210,6 +210,11 @@ fi
 description = "Check that huterm-protocol and huterm-wire with its golden vectors build for wasm32-unknown-unknown"
 run = "cargo check --locked --target wasm32-unknown-unknown -p huterm-protocol -p huterm-wire --features huterm-wire/vectors"
 
+[tasks."fuzz:wire"]
+description = "Fuzz the wire decoders and the IPC simulation's schedule on the pinned nightly (optional target and libFuzzer flags)"
+tools = { "cargo:cargo-fuzz" = "0.13.2" }
+run = "bash scripts/fuzz-wire.sh"
+
 [tasks."sim:ipc"]
 description = "Run the runtime IPC design simulation over many seeds per scenario"
 run = "cargo run --quiet --locked --release -p huterm-ipc-sim --"
