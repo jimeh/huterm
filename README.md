@@ -24,8 +24,9 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
   clickable links, file drops, clipboard writes from applications (OSC 52,
   OSC 1337 `Copy`, and Kitty's OSC 5522), color and geometry queries, the
   Kitty keyboard protocol's disambiguation and alternate-key flags, an audible
-  bell on macOS, an optional visual bell, and an opt-in private `xterm-huterm`
-  terminfo entry.
+  bell on macOS, an optional visual bell, attention requests from inactive
+  windows, program notifications (OSC 9 and OSC 777) and progress (OSC 9;4),
+  and an opt-in private `xterm-huterm` terminfo entry.
 - **Windows and tabs:** several windows, each with ordered tabs in a top,
   bottom, left, or right bar or merged into the title bar. Tabs can be
   reordered by dragging, renamed, and labelled by program, title, or working
@@ -65,7 +66,7 @@ These are not available yet:
 - A background server, local IPC, a command-line client, a TUI, or a browser
   client.
 - Saving and restoring sessions or terminal history across restarts.
-- Shell integration, desktop notifications, and inline graphics.
+- Shell integration and inline graphics.
 
 [Roadmap](#roadmap) summarizes the plan for these.
 
@@ -292,9 +293,8 @@ next stages are:
   presets and layout undo, moving tabs between windows, shell
   integration, and restoring sessions and history after
   a restart.
-- **Terminal compatibility:** notifications and progress, extended underlines,
-  SGR-pixel mouse reports, the remaining Kitty keyboard flags, and inline
-  graphics.
+- **Terminal compatibility:** extended underlines, SGR-pixel mouse reports,
+  the remaining Kitty keyboard flags, and inline graphics.
 - **Optional server:** versioned local IPC, named servers, CLI control, and
   attaching the desktop to a server.
 - **More clients:** a browser client, a TUI, and remote attachment.

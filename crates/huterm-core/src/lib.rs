@@ -15,12 +15,14 @@ mod input;
 mod jobs;
 mod limits;
 pub use host_effects::{
-    DesktopHostEffectClient, HostEffectClientOrigin, HostEffectRecipient,
-    HostEffectRecipientOptions, PendingHostEffect,
+    DesktopHostEffectClient, HostEffectClientOrigin, HostEffectPermissions,
+    HostEffectRecipient, HostEffectRecipientOptions, PendingHostEffect,
 };
 pub use jobs::{COMMAND_LINE_MAX_CHARS, JobProcess, JobState};
 pub use limits::raise_open_file_limit;
+pub use notifications::{NotificationLimiter, notification_heading};
 mod mux;
+mod notifications;
 mod pty;
 mod shell_integration;
 mod terminal;

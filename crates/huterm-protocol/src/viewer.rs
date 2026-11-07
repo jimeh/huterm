@@ -122,6 +122,22 @@ pub enum CommandState {
     Abandoned,
 }
 
+/// A program's progress report (OSC 9;4), as the terminal last holds it.
+/// Progress is transient presentation: it is never terminal history, never
+/// captured for session restore, and expires once the program stops
+/// reporting it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalProgress {
+    /// Determinate progress, a percentage from 0 through 100.
+    Determinate(u8),
+    /// Progress with no known completion.
+    Indeterminate,
+    /// The operation is paused, at a percentage when the program sent one.
+    Paused(Option<u8>),
+    /// The operation failed, at a percentage when the program sent one.
+    Error(Option<u8>),
+}
+
 /// The current non-cell state of a terminal. Viewers read the latest value
 /// when woken instead of receiving a queue of events, so a viewer that wakes
 /// late, or starts late, sees the same state as one that saw every change.
@@ -146,6 +162,8 @@ pub struct TerminalStatus {
     /// [`COMMAND_RECORD_CAPACITY`]. A record whose rows have left history
     /// leaves the list, except the newest.
     pub commands: Arc<[CommandRecord]>,
+    /// The program's current progress report, if any.
+    pub progress: Option<TerminalProgress>,
 }
 
 impl Default for TerminalStatus {
@@ -159,6 +177,7 @@ impl Default for TerminalStatus {
             bells: 0,
             failures: Vec::new(),
             commands: Arc::new([]),
+            progress: None,
         }
     }
 }

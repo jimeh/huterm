@@ -409,6 +409,8 @@ fn terminal_option_keys_read_exactly_their_value_type() {
         "PwdChanged",
         "ClipboardWrite",
         "SemanticPrompt",
+        "DesktopNotification",
+        "ProgressReport",
     ]);
 
     // Values read back exactly despite 0xFF bytes after them.

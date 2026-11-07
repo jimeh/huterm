@@ -206,6 +206,20 @@ must not take another of these locks, so free `PendingHostEffect` reservations
 after releasing the queue, as `try_next` and `clear_queue` do.
 The runtime closes every viewer's wake when it stops, through a guard that also
 runs on panic, and closes a revoked viewer's wake when it finalizes that viewer.
+Host effects have kinds (`HostEffectKind`). Eligibility, permission, and the
+permission generation are per kind, so revoking notifications never cancels a
+queued clipboard write; `clear_queue` takes a kind filter and still frees the
+dropped reservations after releasing the queue. Notifications are admitted from
+`drain_effects` after `notifications::normalize` and the terminal's
+`NotificationLimiter`; one over the limit is dropped, never deferred. Progress
+is status, not an effect: `StatusPublisher::progress` extends a 15-second
+expiry on every report and publishes only a changed value. The loop expires
+it at the top of every turn, before the status flush, so neither output nor
+controls that never pause hold it, and both the idle and the backed-up waits
+include its deadline. Exit clears it and refuses later reports; Reset
+Terminal clears it through `EngineEffect::Progress(None)`, because Ghostty's C
+reset reports no removal. See
+[the notifications and progress plan](../plans/terminal-notifications-progress.md).
 
 Reconcile only through `Owner::reconcile`, which runs when the registry changed
 and waits while writes are backed up: freed slots would let subscribe-and-drop

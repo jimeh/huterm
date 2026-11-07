@@ -7,6 +7,7 @@
 
 use std::cell::{Cell as StdCell, RefCell};
 use std::sync::Arc;
+use std::time::Instant;
 
 use huterm_ghostty::{
     self as ghostty, Boundaries, CellContent, CellWidth, ClipboardLocation,
@@ -20,8 +21,8 @@ use huterm_protocol::{
     CommandRecord, Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding,
     MouseTracking, Rgb, RowPrompt, ScrollCommand, ScrollbackLimit,
     SelectionUnit, TerminalAppearance, TerminalId, TerminalModes,
-    TerminalPresentation, TerminalRow, TerminalSnapshot, Viewport,
-    appearance_for_background,
+    TerminalPresentation, TerminalProgress, TerminalRow, TerminalSnapshot,
+    Viewport, appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
@@ -32,6 +33,7 @@ use super::{DirectoryUpdate, EngineEffect, normalize_directory};
 use crate::host_effects::{
     HostEffectAdmission, HostEffectSink, TERMINAL_BYTE_LIMIT,
 };
+use crate::notifications::{self, NotificationLimiter};
 use crate::terminal::RuntimeError;
 
 /// Page allocation allowed, without an explicit byte limit, per configured
@@ -52,6 +54,22 @@ impl From<ghostty::Error> for RuntimeError {
     fn from(error: ghostty::Error) -> Self {
         Self::Engine(format!("ghostty: {error}"))
     }
+}
+
+/// Maps a progress report to the effect that records it; a state this
+/// binding does not know changes nothing.
+fn progress_effect(report: ghostty::Progress) -> Option<EngineEffect> {
+    use ghostty::ProgressState;
+    Some(EngineEffect::Progress(match report.state {
+        ProgressState::Remove => None,
+        ProgressState::Set => {
+            Some(TerminalProgress::Determinate(report.percent.unwrap_or(0)))
+        }
+        ProgressState::Indeterminate => Some(TerminalProgress::Indeterminate),
+        ProgressState::Pause => Some(TerminalProgress::Paused(report.percent)),
+        ProgressState::Error => Some(TerminalProgress::Error(report.percent)),
+        _ => return None,
+    }))
 }
 
 /// Clipboard and color-scheme policy consulted during writes.
@@ -264,6 +282,7 @@ pub(super) struct TerminalEngine {
     effects: Vec<ghostty::Effect>,
     commands: CommandLog,
     server_hostname: Option<String>,
+    notifications: NotificationLimiter,
     #[cfg(test)]
     stats: super::SnapshotStats,
 }
@@ -324,9 +343,25 @@ impl TerminalEngine {
             effects: Vec::new(),
             commands: CommandLog::default(),
             server_hostname: server_hostname(),
+            notifications: NotificationLimiter::default(),
             #[cfg(test)]
             stats: super::SnapshotStats::default(),
         })
+    }
+
+    /// Offers a program's notification to one eligible client, if its text
+    /// is presentable and the terminal is within its rate limit. A
+    /// notification no client takes is dropped, never kept for later.
+    fn notify(&mut self, title: &[u8], body: &[u8], now: Instant) {
+        let Some(notification) = notifications::normalize(title, body) else {
+            return;
+        };
+        if !self.notifications.admit(now) {
+            return;
+        }
+        if let Some(sink) = &self.terminal.host_mut().sink {
+            let _ = sink.admit_notification(notification);
+        }
     }
 
     pub(super) fn set_host_effect_sink(&mut self, sink: HostEffectSink) {
@@ -456,7 +491,10 @@ impl TerminalEngine {
         self.pending_clear = false;
         self.terminal.reset()?;
         self.overrides_stale = true;
-        self.drain_effects()
+        let mut effects = self.drain_effects()?;
+        // The C reset reports no progress removal, unlike a parsed RIS.
+        effects.push(EngineEffect::Progress(None));
+        Ok(effects)
     }
 
     pub(super) fn resize(
@@ -548,10 +586,11 @@ impl TerminalEngine {
     }
 
     fn drain_effects(&mut self) -> Result<Vec<EngineEffect>, RuntimeError> {
-        self.terminal.take_effects(&mut self.effects);
-        let mut effects = Vec::with_capacity(self.effects.len());
+        let mut queued = std::mem::take(&mut self.effects);
+        self.terminal.take_effects(&mut queued);
+        let mut effects = Vec::with_capacity(queued.len());
         let mut title = false;
-        for effect in self.effects.drain(..) {
+        for effect in queued.drain(..) {
             match effect {
                 ghostty::Effect::PtyWrite(bytes) => {
                     if let Some(bytes) = supported_reply(bytes) {
@@ -578,11 +617,19 @@ impl TerminalEngine {
                         }
                     }
                 }
+                ghostty::Effect::DesktopNotification(request) => {
+                    self.notify(&request.title, &request.body, Instant::now());
+                }
+                ghostty::Effect::Progress(report) => {
+                    effects.extend(progress_effect(report));
+                }
                 // Semantic prompts were handled at the stop that parsed
                 // them; see `write_output`.
                 _ => {}
             }
         }
+        // Keep the buffer's allocation for the next write.
+        self.effects = queued;
         if title {
             let title = String::from_utf8_lossy(self.terminal.title()?);
             effects.push(EngineEffect::Title(title.into_owned()));

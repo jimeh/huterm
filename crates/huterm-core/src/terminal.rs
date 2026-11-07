@@ -771,6 +771,9 @@ pub(crate) enum RuntimeControl {
     /// Installs a probe on the runtime's idle compression.
     #[cfg(test)]
     CompressionProbe(CompressionProbe),
+    /// Replaces how long progress lasts without a new report.
+    #[cfg(test)]
+    ProgressTimeout(Duration),
     /// Reports the engine's page memory.
     #[cfg(test)]
     MemoryUsage(Sender<Result<huterm_ghostty::MemoryUsage, RuntimeError>>),
@@ -993,10 +996,14 @@ impl Owner<'_> {
             self.compression.finished(result, Instant::now());
             return Ok(());
         }
-        let deadline = match (probes.deadline(), self.compression.deadline()) {
-            (Some(probe), Some(compress)) => Some(probe.min(compress)),
-            (probe, compress) => probe.or(compress),
-        };
+        let deadline = [
+            probes.deadline(),
+            self.compression.deadline(),
+            self.status.progress_deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         wake.wait_until(deadline);
         Ok(())
     }
@@ -1255,6 +1262,10 @@ impl Owner<'_> {
                 status.bell();
                 WriterQueueState::Drained
             }
+            EngineEffect::Progress(progress) => {
+                status.progress(progress, Instant::now());
+                WriterQueueState::Drained
+            }
         }
     }
 }
@@ -1502,6 +1513,9 @@ fn run_terminal(
                     owner.metadata.publish(probe.name, &mut owner.status);
                 }
             }
+            // Every turn, so neither output nor controls that never pause
+            // keep progress alive.
+            owner.status.expire_progress(Instant::now());
             owner.status.flush(registry);
             let mut controls_drained = 0;
             while controls_drained < MESSAGE_CAPACITY {
@@ -1719,6 +1733,10 @@ fn run_terminal(
                     RuntimeControl::MemoryUsage(reply) => {
                         let _ = reply.send(owner.engine.memory_usage());
                     }
+                    #[cfg(test)]
+                    RuntimeControl::ProgressTimeout(timeout) => {
+                        owner.status.progress_timeout = Some(timeout);
+                    }
                 }
             }
             if closing.load(Ordering::Acquire) {
@@ -1735,7 +1753,14 @@ fn run_terminal(
                 WriterQueueState::Full => {
                     owner.status.flush(registry);
                     if controls_drained < MESSAGE_CAPACITY {
-                        wake.wait_until(probes.deadline());
+                        let deadline = [
+                            probes.deadline(),
+                            owner.status.progress_deadline(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .min();
+                        wake.wait_until(deadline);
                     }
                     continue;
                 }

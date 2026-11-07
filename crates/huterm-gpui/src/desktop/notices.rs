@@ -79,6 +79,13 @@ pub(crate) enum NoticeSource {
         tab: TabId,
         title: String,
     },
+    /// A program's notification (OSC 9 or OSC 777). Each tab keeps only its
+    /// newest, so a program that keeps notifying cannot grow the stack, and
+    /// a terminal failure in the tab does not replace it.
+    Program {
+        tab: TabId,
+        title: String,
+    },
 }
 
 impl NoticeSource {
@@ -90,7 +97,8 @@ impl NoticeSource {
             | (Self::Keymap, Self::Keymap)
             | (Self::Command, Self::Command)
             | (Self::Sessions, Self::Sessions) => true,
-            (Self::Terminal { tab, .. }, Self::Terminal { tab: other, .. }) => {
+            (Self::Terminal { tab, .. }, Self::Terminal { tab: other, .. })
+            | (Self::Program { tab, .. }, Self::Program { tab: other, .. }) => {
                 tab == other
             }
             _ => false,
@@ -190,6 +198,9 @@ impl NoticeContent {
             NoticeSource::Sessions => "sessions".to_owned(),
             NoticeSource::Terminal { title, .. } => {
                 format!("terminal:{}", title.replace(['|', '\n'], " "))
+            }
+            NoticeSource::Program { title, .. } => {
+                format!("program:{}", title.replace(['|', '\n'], " "))
             }
         };
         format!(
@@ -974,6 +985,36 @@ mod tests {
             tab: TabId::new(tab),
             title: format!("tab {tab}"),
         }
+    }
+
+    #[test]
+    fn program_notices_keep_one_per_tab_and_outlive_its_failures() {
+        let now = Instant::now();
+        let mut stack = NoticeStack::default();
+        let program = |tab: u64| NoticeSource::Program {
+            tab: TabId::new(tab),
+            title: format!("tab {tab}"),
+        };
+        for title in ["first", "second", "third"] {
+            stack.replace_source(
+                &program(1),
+                vec![content(program(1), title, Lifetime::Expiring)],
+                now,
+            );
+        }
+        stack.replace_source(
+            &program(2),
+            vec![content(program(2), "other tab", Lifetime::Expiring)],
+            now,
+        );
+        assert_eq!(titles(&stack), ["other tab", "third"]);
+        // A failure replaces the tab's terminal notices, not its program's.
+        stack.replace_source(
+            &terminal(1),
+            vec![content(terminal(1), "failed", Lifetime::Expiring)],
+            now,
+        );
+        assert_eq!(titles(&stack), ["failed", "other tab", "third"]);
     }
 
     #[test]

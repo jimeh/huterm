@@ -1143,6 +1143,7 @@ mod tests {
                 "Keyboard",
                 "Mouse",
                 "Clipboard",
+                "Notifications and progress",
                 "Bell",
                 "Shell integration",
                 "Compatibility"
@@ -1151,11 +1152,16 @@ mod tests {
         assert_eq!(groups[3].1, ["terminal.clipboard_write"]);
         assert_eq!(
             groups[4].1,
+            ["terminal.notifications", "terminal.progress_bar"]
+        );
+        assert_eq!(
+            groups[5].1,
             [
                 "terminal.bell.visual",
                 "terminal.bell.audio",
                 "terminal.bell.sound",
                 "terminal.bell.volume",
+                "terminal.bell.attention",
             ]
         );
         assert_eq!(model.setting("terminal.bell.audio").unwrap().default, None);

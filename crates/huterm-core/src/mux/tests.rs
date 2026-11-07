@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::TestClient;
 use crate::{
-    DesktopHostEffectClient, HostEffectRecipientOptions,
+    DesktopHostEffectClient, HostEffectPermissions, HostEffectRecipientOptions,
     HostEffectViewerOptions,
 };
 use huterm_protocol::{
@@ -24,7 +24,12 @@ fn subscribe_clipboard(
         ViewerOptions {
             host_effects: Some(HostEffectViewerOptions {
                 process: process.clone(),
-                options: HostEffectRecipientOptions::local_desktop(allowed),
+                options: HostEffectRecipientOptions::local_desktop(
+                    HostEffectPermissions {
+                        clipboard: allowed,
+                        notifications: allowed,
+                    },
+                ),
             }),
             ..ViewerOptions::new(ViewerCapabilities::ALL)
         },

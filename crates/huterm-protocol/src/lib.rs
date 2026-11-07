@@ -39,7 +39,7 @@ pub use pane_layout::{
 pub use viewer::{
     COMMAND_RECORD_CAPACITY, CommandRecord, CommandState, InputStamp,
     TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
-    TerminalStatus, ViewerCapabilities,
+    TerminalProgress, TerminalStatus, ViewerCapabilities,
 };
 
 macro_rules! opaque_id {
@@ -163,12 +163,108 @@ impl std::fmt::Debug for ClipboardWrite {
     }
 }
 
+/// A desktop notification a program requested (OSC 9 or OSC 777).
+///
+/// Core builds it from untrusted terminal text: control and bidirectional
+/// formatting characters are removed, whitespace is collapsed, and both
+/// fields are bounded. Clients still present it only as plain text.
+#[derive(Clone, Eq, PartialEq)]
+pub struct TerminalNotification {
+    title: String,
+    body: String,
+}
+
+impl TerminalNotification {
+    /// Creates a notification from text core already normalized.
+    #[must_use]
+    pub fn new(title: String, body: String) -> Self {
+        Self { title, body }
+    }
+
+    /// The program's title; empty when it sent none, as OSC 9 never does.
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    /// The notification text.
+    #[must_use]
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    /// Returns the retained allocation capacity charged to delivery budgets.
+    #[must_use]
+    pub fn allocation_capacity(&self) -> usize {
+        self.title.capacity().saturating_add(self.body.capacity())
+    }
+}
+
+impl std::fmt::Debug for TerminalNotification {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TerminalNotification")
+            .field("title", &"<redacted>")
+            .field("body", &"<redacted>")
+            .finish()
+    }
+}
+
 /// A client-mediated effect requested by terminal content.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum HostEffect {
     /// Replace the selected clipboard with decoded terminal text.
     ClipboardWrite(ClipboardWrite),
+    /// Present a desktop notification.
+    Notification(TerminalNotification),
+}
+
+impl HostEffect {
+    /// The kind whose eligibility and permission govern this effect.
+    #[must_use]
+    pub fn kind(&self) -> HostEffectKind {
+        match self {
+            Self::ClipboardWrite(_) => HostEffectKind::Clipboard,
+            Self::Notification(_) => HostEffectKind::Notification,
+        }
+    }
+
+    /// Returns the retained allocation capacity charged to delivery budgets.
+    #[must_use]
+    pub fn allocation_capacity(&self) -> usize {
+        match self {
+            Self::ClipboardWrite(write) => write.allocation_capacity(),
+            Self::Notification(notification) => {
+                notification.allocation_capacity()
+            }
+        }
+    }
+}
+
+/// The kinds of host effect. A recipient is eligible for an effect only
+/// while it supports and permits that kind, and each kind has its own
+/// permission generation.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum HostEffectKind {
+    /// Clipboard writes (OSC 52, OSC 1337 Copy, Kitty OSC 5522).
+    Clipboard,
+    /// Desktop notifications (OSC 9, OSC 777).
+    Notification,
+}
+
+impl HostEffectKind {
+    /// Every kind, in a stable order.
+    pub const ALL: [Self; 2] = [Self::Clipboard, Self::Notification];
+
+    /// This kind's position in [`Self::ALL`].
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Clipboard => 0,
+            Self::Notification => 1,
+        }
+    }
 }
 
 /// Runtime ordering information for one host effect.

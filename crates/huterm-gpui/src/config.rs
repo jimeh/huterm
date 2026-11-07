@@ -9,8 +9,9 @@ use crate::themes::{self, ThemePair};
 pub(super) use huterm_config::{
     ClipboardWritePolicy, ConfigError, FontConfig, GeneralConfig,
     KeybindingEntry, LegacyTerminalEngine, LinkModifiers, MacosFullscreenMode,
-    MacosOptionAsAlt, RawConfig, RightClickAction, TabPosition, TabsConfig,
-    TerminalConfig, Theme, UpdateConfig, WindowConfig, keybinding_diagnostic,
+    MacosOptionAsAlt, NotificationPolicy, RawConfig, RightClickAction,
+    TabPosition, TabsConfig, TerminalConfig, Theme, UpdateConfig, WindowConfig,
+    keybinding_diagnostic,
 };
 
 /// Serializes every desktop configuration writer across windows and Settings.
@@ -63,6 +64,11 @@ new_tab_directory = "inherit"
 # Allow terminal content such as tmux to replace the system clipboard.
 # Reload applies this to existing terminals: "allow" or "deny".
 clipboard_write = "allow"
+# Let programs show notifications (OSC 9, OSC 777): a system notification
+# while Huterm is in the background, a notice while it is in front.
+notifications = "allow" # or "deny"
+# Draw a thin bar across a pane while its program reports progress (OSC 9;4).
+progress_bar = true
 # Send Option character chords as terminal Meta: "off", "both", "left", or
 # "right"; the other Option key still types macOS characters. Reload applies
 # this to existing terminals. Linux always uses Alt as Meta.
@@ -85,6 +91,9 @@ visual = false
 # audio = true # macOS default; Linux default: false
 sound = "system"
 volume = 0.5
+# Bounce the Dock icon (macOS) or mark the window urgent (X11) when a bell
+# rings in a window that is not active. Focus never moves.
+attention = true
 
 [font]
 # Defaults to Menlo on macOS and bundled DejaVu Sans Mono on Linux.
@@ -380,17 +389,19 @@ fn load_path(path: PathBuf) -> LoadedConfig {
                 inputs: consumed.finish(),
             },
             Err(error) => {
-                let (warning, clipboard_write, fatal, error) =
-                    match fallback_terminal(&source) {
-                        Ok((warning, clipboard_write)) => {
-                            (warning, clipboard_write, false, error)
-                        }
-                        Err(error) => {
-                            (None, ClipboardWritePolicy::default(), true, error)
-                        }
-                    };
+                let (fallback, fatal, error) = match fallback_terminal(&source)
+                {
+                    Ok(fallback) => (fallback, false, error),
+                    Err(error) => (FallbackTerminal::default(), true, error),
+                };
+                let FallbackTerminal {
+                    warning,
+                    clipboard_write,
+                    notifications,
+                } = fallback;
                 let terminal = TerminalConfig {
                     clipboard_write,
+                    notifications,
                     ..TerminalConfig::default()
                 };
                 LoadedConfig {
@@ -565,9 +576,17 @@ pub(super) fn validator(
     }
 }
 
-fn fallback_terminal(
-    source: &str,
-) -> Result<(Option<String>, ClipboardWritePolicy), ConfigError> {
+/// The terminal settings a configuration that fails to load still applies:
+/// a legacy engine warning and the host-effect policies, so an explicit
+/// `deny` survives an unrelated settings error.
+#[derive(Default)]
+struct FallbackTerminal {
+    warning: Option<String>,
+    clipboard_write: ClipboardWritePolicy,
+    notifications: NotificationPolicy,
+}
+
+fn fallback_terminal(source: &str) -> Result<FallbackTerminal, ConfigError> {
     let value: toml::Value =
         toml::from_str(source).map_err(ConfigError::Toml)?;
     let terminal = value.get("terminal");
@@ -590,7 +609,18 @@ fn fallback_terminal(
             || Ok(ClipboardWritePolicy::default()),
             |value| value.try_into().map_err(ConfigError::Toml),
         )?;
-    Ok((warning, clipboard_write))
+    let notifications = terminal
+        .and_then(|terminal| terminal.get("notifications"))
+        .cloned()
+        .map_or_else(
+            || Ok(NotificationPolicy::default()),
+            |value| value.try_into().map_err(ConfigError::Toml),
+        )?;
+    Ok(FallbackTerminal {
+        warning,
+        clipboard_write,
+        notifications,
+    })
 }
 
 fn parse_engine(name: &str) -> Result<Option<String>, ConfigError> {
@@ -660,6 +690,8 @@ fn parse_consumed(
             new_tab_directory: raw.terminal.new_tab_directory,
             bell: raw.terminal.bell,
             clipboard_write: raw.terminal.clipboard_write,
+            notifications: raw.terminal.notifications,
+            progress_bar: raw.terminal.progress_bar,
             links: raw.terminal.links,
             link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,

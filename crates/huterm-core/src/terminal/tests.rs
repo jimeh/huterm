@@ -1611,6 +1611,43 @@ fn enabling_compression_compresses_existing_history_without_new_output() {
     runtime.shutdown().unwrap();
 }
 
+#[test]
+fn progress_expires_while_output_streams_and_while_idle() {
+    for (id, rest) in [(130, "exec yes FLOOD"), (131, "read l")] {
+        let runtime = TerminalRuntime::spawn(
+            TerminalId::new(id),
+            &command(&format!(
+                "printf READY; read go; printf '\\033]9;4;1;5\\007'; {rest}"
+            )),
+        )
+        .unwrap();
+        let client = test_client(&runtime);
+        wait_for_text(&client, "READY");
+        client
+            .control
+            .controls
+            .send(RuntimeControl::ProgressTimeout(Duration::from_millis(500)))
+            .unwrap();
+        let reported = Instant::now();
+        client
+            .send_input(TerminalInput::Text("go\n".into()))
+            .unwrap();
+        wait_until("the progress report", || {
+            let progress = runtime.registry().status().progress;
+            progress.is_some().then_some(()).ok_or(progress)
+        });
+        wait_until("the progress to expire", || {
+            let progress = runtime.registry().status().progress;
+            progress.is_none().then_some(()).ok_or(progress)
+        });
+        assert!(
+            reported.elapsed() >= Duration::from_millis(500),
+            "{rest}: progress expired early"
+        );
+        runtime.shutdown().unwrap();
+    }
+}
+
 fn command(script: &str) -> TerminalCommand {
     TerminalCommand {
         program: PathBuf::from("/bin/sh"),

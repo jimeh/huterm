@@ -34,6 +34,7 @@ mod native_appearance;
 mod native_fullscreen;
 #[cfg(target_os = "macos")]
 mod native_live_resize;
+mod native_notifications;
 #[cfg(target_os = "macos")]
 mod native_quit;
 #[cfg(target_os = "macos")]

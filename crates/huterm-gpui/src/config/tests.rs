@@ -521,6 +521,7 @@ fn config_fallback_validates_legacy_engine_and_preserves_clipboard_policy() {
         "[terminal]\nengine = 'unknown'\n[font]\nsize =",
         "[terminal]\nclipboard_write = 'prompt'\n[font]\nsize = 'bad'",
         "[terminal]\nclipboard_write = 1\n[font]\nsize = 'bad'",
+        "[terminal]\nnotifications = 'ask'\n[font]\nsize = 'bad'",
         "[terminal]\nengine = 'ghostty'\n[font]\nsize =",
         "[font]\nsize =",
     ] {
@@ -566,6 +567,18 @@ fn config_fallback_validates_legacy_engine_and_preserves_clipboard_policy() {
         assert_eq!(loaded.config.terminal.clipboard_write, expected_clipboard);
         assert_eq!(loaded.config.font, Config::default().font);
     }
+    // An explicit notification denial survives an unrelated error too.
+    fs::write(
+        &file,
+        "[terminal]\nnotifications = 'deny'\n[font]\nsize = 'bad'",
+    )
+    .unwrap();
+    let loaded = load_path(file.clone());
+    assert!(!loaded.fatal);
+    assert_eq!(
+        loaded.config.terminal.notifications,
+        huterm_config::NotificationPolicy::Deny
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 

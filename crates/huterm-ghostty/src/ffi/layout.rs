@@ -524,6 +524,41 @@ pub(crate) const STRUCTS: &[Struct] = &[
         ],
     },
     Struct {
+        name: "GhosttyTerminalDesktopNotification",
+        size: size_of::<ffi::GhosttyTerminalDesktopNotification>(),
+        align: align_of::<ffi::GhosttyTerminalDesktopNotification>(),
+        fields: &[
+            (
+                "size",
+                offset_of!(ffi::GhosttyTerminalDesktopNotification, size),
+            ),
+            (
+                "title",
+                offset_of!(ffi::GhosttyTerminalDesktopNotification, title),
+            ),
+            (
+                "body",
+                offset_of!(ffi::GhosttyTerminalDesktopNotification, body),
+            ),
+        ],
+    },
+    Struct {
+        name: "GhosttyTerminalProgressReport",
+        size: size_of::<ffi::GhosttyTerminalProgressReport>(),
+        align: align_of::<ffi::GhosttyTerminalProgressReport>(),
+        fields: &[
+            ("size", offset_of!(ffi::GhosttyTerminalProgressReport, size)),
+            (
+                "state",
+                offset_of!(ffi::GhosttyTerminalProgressReport, state),
+            ),
+            (
+                "progress",
+                offset_of!(ffi::GhosttyTerminalProgressReport, progress),
+            ),
+        ],
+    },
+    Struct {
         name: "GhosttyTerminalSemanticPrompt",
         size: size_of::<ffi::GhosttyTerminalSemanticPrompt>(),
         align: align_of::<ffi::GhosttyTerminalSemanticPrompt>(),
@@ -1298,6 +1333,37 @@ pub(crate) const ENUMS: &[Enum] = &[
             (
                 "GHOSTTY_CLIPBOARD_WRITE_RESULT_MAX_VALUE",
                 ffi::GHOSTTY_CLIPBOARD_WRITE_RESULT_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
+        name: "GhosttyTerminalProgressState",
+        size: size_of::<ffi::GhosttyTerminalProgressState>(),
+        align: align_of::<ffi::GhosttyTerminalProgressState>(),
+        values: &[
+            (
+                "GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE",
+                ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_PROGRESS_STATE_SET",
+                ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_SET as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR",
+                ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE",
+                ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE",
+                ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE as i64,
+            ),
+            (
+                "GHOSTTY_TERMINAL_PROGRESS_STATE_MAX_VALUE",
+                ffi::GHOSTTY_TERMINAL_PROGRESS_STATE_MAX_VALUE as i64,
             ),
         ],
     },
@@ -2772,6 +2838,8 @@ pub(crate) const UNCHECKED: &[&str] = &[
     "GhosttyTerminalBellFn",
     "GhosttyClipboardWriteReplyFn",
     "GhosttyTerminalClipboardWriteFn",
+    "GhosttyTerminalDesktopNotificationFn",
+    "GhosttyTerminalProgressReportFn",
     "GhosttyTerminalSemanticPromptFn",
     "GhosttyTerminalColorSchemeFn",
     "GhosttyTerminalDeviceAttributesFn",

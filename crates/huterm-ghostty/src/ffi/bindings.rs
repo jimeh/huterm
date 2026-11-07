@@ -51,6 +51,21 @@ pub type GhosttyTerminalClipboardWriteFn = ::core::option::Option<
         write: *const GhosttyClipboardWrite,
     ),
 >;
+pub type GhosttyTerminalDesktopNotificationFn = ::core::option::Option<
+    unsafe extern "C" fn(
+        terminal: GhosttyTerminal,
+        userdata: *mut ::core::ffi::c_void,
+        notification: *const GhosttyTerminalDesktopNotification,
+    ),
+>;
+pub type GhosttyTerminalProgressState = ::core::ffi::c_int;
+pub type GhosttyTerminalProgressReportFn = ::core::option::Option<
+    unsafe extern "C" fn(
+        terminal: GhosttyTerminal,
+        userdata: *mut ::core::ffi::c_void,
+        report: *const GhosttyTerminalProgressReport,
+    ),
+>;
 pub type GhosttySemanticPromptKind = ::core::ffi::c_int;
 pub type GhosttySemanticPromptPromptKind = ::core::ffi::c_int;
 pub type GhosttyTerminalSemanticPromptFn = ::core::option::Option<
@@ -404,6 +419,20 @@ pub struct GhosttyClipboardWrite {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalDesktopNotification {
+    pub size: usize,
+    pub title: GhosttyString,
+    pub body: GhosttyString,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalProgressReport {
+    pub size: usize,
+    pub state: GhosttyTerminalProgressState,
+    pub progress: i8,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct GhosttyTerminalSemanticPrompt {
     pub size: usize,
     pub kind: GhosttySemanticPromptKind,
@@ -653,6 +682,17 @@ pub const GHOSTTY_CLIPBOARD_WRITE_RESULT_IO_ERROR: GhosttyClipboardWriteResult =
     5;
 pub const GHOSTTY_CLIPBOARD_WRITE_RESULT_MAX_VALUE:
     GhosttyClipboardWriteResult = 2147483647;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE: GhosttyTerminalProgressState =
+    0;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_SET: GhosttyTerminalProgressState = 1;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR: GhosttyTerminalProgressState =
+    2;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE:
+    GhosttyTerminalProgressState = 3;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE: GhosttyTerminalProgressState =
+    4;
+pub const GHOSTTY_TERMINAL_PROGRESS_STATE_MAX_VALUE:
+    GhosttyTerminalProgressState = 2147483647;
 pub const GHOSTTY_SEMANTIC_PROMPT_INVALID: GhosttySemanticPromptKind = 0;
 pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_START: GhosttySemanticPromptKind = 1;
 pub const GHOSTTY_SEMANTIC_PROMPT_INPUT_START: GhosttySemanticPromptKind = 2;
@@ -1317,6 +1357,24 @@ impl Default for GhosttyClipboardWriteReply {
     }
 }
 impl Default for GhosttyClipboardWrite {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl Default for GhosttyTerminalDesktopNotification {
+    fn default() -> Self {
+        let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
+        unsafe {
+            ::core::ptr::write_bytes(s.as_mut_ptr(), 0, 1);
+            s.assume_init()
+        }
+    }
+}
+impl Default for GhosttyTerminalProgressReport {
     fn default() -> Self {
         let mut s = ::core::mem::MaybeUninit::<Self>::uninit();
         unsafe {

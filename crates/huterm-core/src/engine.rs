@@ -11,7 +11,7 @@ use crate::terminal::RuntimeError;
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandRecord, GridSize, ScrollCommand,
     ScrollbackLimit, SelectionUnit, TerminalDirectory, TerminalId,
-    TerminalModes, TerminalPresentation, TerminalSnapshot,
+    TerminalModes, TerminalPresentation, TerminalProgress, TerminalSnapshot,
 };
 use std::sync::Arc;
 
@@ -30,6 +30,8 @@ pub(crate) enum EngineEffect {
     Title(String),
     Directory(Option<TerminalDirectory>),
     Bell,
+    /// The program's progress report; `None` removes it.
+    Progress(Option<TerminalProgress>),
 }
 
 fn normalize_directory(
@@ -383,6 +385,9 @@ mod record_tests;
 
 #[cfg(test)]
 mod clipboard_tests;
+
+#[cfg(test)]
+mod notification_tests;
 
 #[cfg(test)]
 mod scrollback_tests;

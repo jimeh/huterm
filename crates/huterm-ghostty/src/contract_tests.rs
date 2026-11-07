@@ -5,10 +5,11 @@ use crate::native::{self, ProbeEvent};
 use crate::test_alloc;
 use crate::{
     Boundaries, CellContent, CellWidth, ClipboardLocation, ClipboardWrite,
-    ClipboardWriteResult, ColorScheme, DeviceAttributes, Dirty, Effect, Error,
-    Fill, Host, Mode, MouseProbe, Options, Point, ProbedFormat, ProbedTracking,
-    PromptKind, RenderState, Rgb, RowSemanticPrompt, Screen, Scroll,
-    SemanticPrompt, SemanticPromptKind, Terminal,
+    ClipboardWriteResult, ColorScheme, DesktopNotification, DeviceAttributes,
+    Dirty, Effect, Error, Fill, Host, Mode, MouseProbe, Options, Point,
+    ProbedFormat, ProbedTracking, Progress, ProgressState, PromptKind,
+    RenderState, Rgb, RowSemanticPrompt, Screen, Scroll, SemanticPrompt,
+    SemanticPromptKind, Terminal,
 };
 
 /// A recorded clipboard write: location, (MIME, data) pairs, and name.
@@ -1623,4 +1624,141 @@ fn osc_end_stops_follow_semantic_prompt_dispatch_for_bel_and_st() {
         terminal.write_until(b"x", Boundaries::NONE),
         Err(Error::InvalidValue)
     ));
+}
+
+fn notifications<H>(terminal: &mut Terminal<H>) -> Vec<(String, String)> {
+    effects(terminal)
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::DesktopNotification(DesktopNotification {
+                title,
+                body,
+            }) => Some((
+                String::from_utf8_lossy(&title).into_owned(),
+                String::from_utf8_lossy(&body).into_owned(),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+fn progress<H>(terminal: &mut Terminal<H>) -> Vec<Progress> {
+    effects(terminal)
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Progress(report) => Some(report),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn desktop_notifications_report_osc_9_and_osc_777() {
+    let note =
+        |title: &str, body: &str| vec![(title.to_owned(), body.to_owned())];
+    let mut terminal = terminal();
+    for (input, expected) in [
+        ("\x1b]9;Build done\x07", note("", "Build done")),
+        ("\x1b]9;Build done\x1b\\", note("", "Build done")),
+        ("\x1b]777;notify;Title;Body\x07", note("Title", "Body")),
+        // OSC 777's body keeps later semicolons.
+        ("\x1b]777;notify;T;a;b\x07", note("T", "a;b")),
+        // A ConEmu command is not a notification, but a malformed one is.
+        ("\x1b]9;1;100\x07", vec![]),
+        ("\x1b]9;4;9\x07", note("", "4;9")),
+        // CAN and SUB cancel the sequence before it dispatches.
+        ("\x1b]9;cancelled\x18", vec![]),
+        ("\x1b]9;cancelled\x1a", vec![]),
+    ] {
+        terminal.write(input.as_bytes()).unwrap();
+        assert_eq!(notifications(&mut terminal), expected, "{input:?}");
+    }
+}
+
+#[test]
+fn desktop_notifications_survive_chunk_splits_and_keep_raw_bytes() {
+    let mut terminal = terminal();
+    terminal.write(b"\x1b]9;Hel").unwrap();
+    assert_eq!(notifications(&mut terminal), []);
+    terminal.write(b"lo\x1b").unwrap();
+    assert_eq!(
+        notifications(&mut terminal),
+        [(String::new(), "Hello".to_owned())]
+    );
+    terminal.write(b"\\").unwrap();
+    assert_eq!(notifications(&mut terminal), []);
+
+    // Bytes reach the host as sent: invalid UTF-8 is not replaced.
+    terminal.write(b"\x1b]9;\xff\xfe\x07").unwrap();
+    let raw: Vec<_> = effects(&mut terminal)
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::DesktopNotification(note) => Some(note.body),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(raw, [vec![0xff, 0xfe]]);
+}
+
+#[test]
+fn desktop_notifications_longer_than_the_osc_capture_are_dropped_whole() {
+    let mut terminal = terminal();
+    let fits = "a".repeat(2047);
+    terminal
+        .write(format!("\x1b]9;{fits}\x07").as_bytes())
+        .unwrap();
+    assert_eq!(notifications(&mut terminal), [(String::new(), fits)]);
+    let long = "a".repeat(2048);
+    terminal
+        .write(format!("\x1b]9;{long}\x07").as_bytes())
+        .unwrap();
+    assert_eq!(notifications(&mut terminal), []);
+    // The parser recovers for the next sequence.
+    terminal.write(b"\x1b]9;next\x07").unwrap();
+    assert_eq!(
+        notifications(&mut terminal),
+        [(String::new(), "next".to_owned())]
+    );
+}
+
+#[test]
+fn progress_reports_states_and_clamped_percentages() {
+    use ProgressState::{Error, Indeterminate, Pause, Remove, Set};
+    let report = |state, percent| vec![Progress { state, percent }];
+    let mut terminal = terminal();
+    for (input, expected) in [
+        ("9;4;1;42", report(Set, Some(42))),
+        ("9;4;1", report(Set, Some(0))),
+        ("9;4;1;150", report(Set, Some(100))),
+        ("9;4;1;abc", report(Set, None)),
+        ("9;4;2", report(Error, None)),
+        ("9;4;2;50", report(Error, Some(50))),
+        ("9;4;3", report(Indeterminate, None)),
+        ("9;4;3;50", report(Indeterminate, None)),
+        ("9;4;4;60", report(Pause, Some(60))),
+        ("9;4;0", report(Remove, None)),
+        ("9;4;0;50", report(Remove, None)),
+    ] {
+        terminal
+            .write(format!("\x1b]{input}\x07").as_bytes())
+            .unwrap();
+        assert_eq!(progress(&mut terminal), expected, "{input}");
+    }
+}
+
+#[test]
+fn full_reset_reports_progress_removal_but_soft_reset_does_not() {
+    let mut terminal = terminal();
+    terminal.write(b"\x1b]9;4;1;42\x07").unwrap();
+    assert_eq!(progress(&mut terminal).len(), 1);
+    terminal.write(b"\x1b[!p").unwrap();
+    assert_eq!(progress(&mut terminal), []);
+    terminal.write(b"\x1bc").unwrap();
+    assert_eq!(
+        progress(&mut terminal),
+        [Progress {
+            state: ProgressState::Remove,
+            percent: None
+        }]
+    );
 }

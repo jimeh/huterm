@@ -33,7 +33,8 @@ use crate::ffi::{self, keys::terminal_data as data};
 use crate::native::{NativeTerminal, TerminalRef, string_bytes};
 use crate::types::{
     ClipboardContent, ClipboardLocation, ClipboardWrite, ClipboardWriteResult,
-    ColorScheme, Effect, PromptKind, Rgb, SemanticPrompt, SemanticPromptKind,
+    ColorScheme, DesktopNotification, Effect, Progress, ProgressState,
+    PromptKind, Rgb, SemanticPrompt, SemanticPromptKind,
 };
 
 /// Host policy invoked from inside a terminal write.
@@ -210,6 +211,65 @@ unsafe extern "C" fn semantic_prompt<H: Host>(
             prompt: PromptKind::from_ffi(event.prompt_kind),
             exit_code: event.has_exit_code.then_some(event.exit_code),
             command,
+        }));
+    });
+}
+
+/// # Safety
+///
+/// C calls this with the configured userdata pointer and a notification that
+/// is valid until the callback returns.
+unsafe extern "C" fn desktop_notification<H: Host>(
+    _terminal: ffi::GhosttyTerminal,
+    userdata: *mut c_void,
+    notification: *const ffi::GhosttyTerminalDesktopNotification,
+) {
+    guard::<H, ()>(userdata, (), |state| {
+        // SAFETY: terminal.h `GhosttyTerminalDesktopNotificationFn`:
+        // `notification` and its strings are borrowed for the callback.
+        let Some(notification) = (unsafe { notification.as_ref() }) else {
+            return;
+        };
+        // The request is a sized struct; every field read here predates it.
+        if notification.size
+            < size_of::<ffi::GhosttyTerminalDesktopNotification>()
+        {
+            return;
+        }
+        state.push(Effect::DesktopNotification(DesktopNotification {
+            // SAFETY: the title is borrowed for the callback and copied here.
+            title: unsafe { string_bytes(notification.title) }.to_vec(),
+            // SAFETY: as above.
+            body: unsafe { string_bytes(notification.body) }.to_vec(),
+        }));
+    });
+}
+
+/// # Safety
+///
+/// C calls this with the configured userdata pointer and a report that is
+/// valid until the callback returns.
+unsafe extern "C" fn progress_report<H: Host>(
+    _terminal: ffi::GhosttyTerminal,
+    userdata: *mut c_void,
+    report: *const ffi::GhosttyTerminalProgressReport,
+) {
+    guard::<H, ()>(userdata, (), |state| {
+        // SAFETY: terminal.h `GhosttyTerminalProgressReportFn`: `report` is
+        // borrowed for the callback.
+        let Some(report) = (unsafe { report.as_ref() }) else {
+            return;
+        };
+        // The report is a sized struct; every field read here predates it.
+        if report.size < size_of::<ffi::GhosttyTerminalProgressReport>() {
+            return;
+        }
+        state.push(Effect::Progress(Progress {
+            state: ProgressState::from_ffi(report.state),
+            // terminal.h: -1 when omitted, otherwise 0 through 100.
+            percent: u8::try_from(report.progress)
+                .ok()
+                .map(|value| value.min(100)),
         }));
     });
 }
@@ -472,6 +532,12 @@ impl<H: Host> Bound<H> {
         native.set_callback::<option::ColorScheme>(Some(color_scheme::<H>))?;
         native.set_callback::<option::ClipboardWrite>(Some(
             clipboard_write::<H>,
+        ))?;
+        native.set_callback::<option::DesktopNotification>(Some(
+            desktop_notification::<H>,
+        ))?;
+        native.set_callback::<option::ProgressReport>(Some(
+            progress_report::<H>,
         ))?;
         if has_device_attributes {
             native.set_callback::<option::DeviceAttributes>(Some(
