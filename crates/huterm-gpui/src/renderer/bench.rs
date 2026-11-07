@@ -47,12 +47,13 @@ const MAX_ITERATIONS: usize = 10_000;
 const FRAME_DEADLINE: Duration = Duration::from_secs(15);
 /// Distinguishes missing frames, a display problem, from benchmark failures.
 const FRAME_STALL_EXIT_CODE: i32 = 3;
-const SCENARIOS: [&str; 7] = [
+const SCENARIOS: [&str; 8] = [
     "ascii",
     "blocks",
     "boxes",
     "churn",
     "colors",
+    "icons",
     "scroll",
     "selection",
 ];
@@ -202,6 +203,9 @@ impl Scenario {
             // A heat map: every cell has its own background and foreground,
             // so no background run merges.
             "colors" => Self::alternating("colors", cycles, color_cell),
+            // A file listing with a Nerd Font icon before every name, drawn
+            // from the bundled symbols font.
+            "icons" => Self::alternating("icons", cycles, icon_cell),
             "selection" => Self::selection(cycles),
             "scroll" => Self::scroll(cycles),
             // Three frames per cycle: fewer cycles keep sampling early, but
@@ -430,6 +434,33 @@ fn box_cell(row: usize, column: usize, variant: usize) -> Cell {
         };
     }
     cell
+}
+
+fn icon_cell(row: usize, column: usize, variant: usize) -> Cell {
+    const ICONS: [char; 12] = [
+        '\u{f07b}',
+        '\u{f115}',
+        '\u{e7a8}',
+        '\u{e60b}',
+        '\u{f0001}',
+        '\u{e0a0}',
+        '\u{f023}',
+        '\u{f489}',
+        '\u{e615}',
+        '\u{f15b}',
+        '\u{f1af0}',
+        '\u{f31a}',
+    ];
+    const ENTRY: usize = 20;
+    match column % ENTRY {
+        0 => {
+            let mut cell = plain(ICONS[(row + column / ENTRY + variant) % 12]);
+            cell.foreground = indexed((row + column / ENTRY) % 6 + 1);
+            cell
+        }
+        1 => plain(' '),
+        _ => ascii_cell(row, column, variant),
+    }
 }
 
 fn color_cell(row: usize, column: usize, variant: usize) -> Cell {
@@ -742,7 +773,9 @@ impl Primitives {
             counts.decorations += row.underlines.len() + row.strikeouts.len();
             for glyph in &row.glyphs {
                 match &glyph.content {
-                    GlyphContent::Font(_) => counts.glyphs += 1,
+                    GlyphContent::Font(_) | GlyphContent::Symbol(..) => {
+                        counts.glyphs += 1;
+                    }
                     GlyphContent::Builtin(geometry) => {
                         let (rectangles, paths) = geometry.primitive_counts();
                         counts.builtins += 1;

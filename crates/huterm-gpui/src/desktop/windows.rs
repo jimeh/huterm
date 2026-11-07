@@ -1868,11 +1868,12 @@ fn apply_typography(cx: &mut App) {
     let scale = font.ui_scale();
     let configured = font.ui_family.clone();
     let family = font.ui_family.clone().filter(|family| {
-        let installed = cx
-            .text_system()
-            .all_font_names()
-            .iter()
-            .any(|name| name == family);
+        let installed = crate::terminal_font::is_selectable_family(family)
+            && cx
+                .text_system()
+                .all_font_names()
+                .iter()
+                .any(|name| name == family);
         if !installed {
             eprintln!(
                 "Huterm interface font {family:?} is unavailable; using the system font"

@@ -619,6 +619,21 @@ quads, then paths, underlines, and sprites, so a quad that must cover glyphs,
 such as the block cursor, needs a later layer or an unlayered paint after it.
 Tessellate built-in paths once per geometry, never per paint.
 
+Nerd Font icons draw from the bundled Symbols Nerd Font Mono through
+`renderer/symbols`, not GPUI's fallback, which Linux lacks. Only standalone
+Private Use Area scalars and the IEC power symbols qualify, after the built-in
+check, and only when the cell's own face (variant included) has no glyph, so
+patched families keep their icons. The choice runs on a layout-cache miss and
+is cached with the layout. Every glyph in the Mono font is a one-em square:
+lay it out at the shorter cell side and centre it, so its size and baseline
+differ from the grid's and travel in `GlyphContent::Symbol`. A few glyphs ink
+up to 6% outside their em; that overlap into neighbours is accepted. Ask GPUI
+for the family only after `symbols_available()`: `resolve_font` panics when a
+family and GPUI's whole fallback stack are missing. GPUI loads the face only
+through the `nerd-font-symbols` vendor patches, because both text systems skip
+faces without an `m` glyph. Keep the family out of Settings' font lists and
+terminal or interface resolution with `is_selectable_family`.
+
 Run `mise run smoke:renderer` for production preparation/paint coverage and
 inspect the held fixture when changing geometry. Keep its license notice in
 the packaged resources independently of the Ghostty VT engine notice.

@@ -479,6 +479,9 @@ assert_file "$bundle/Contents/Resources/lucide/README.md" "Lucide provenance"
 assert_file "$bundle/Contents/Resources/lucide/LICENSE" "Lucide license"
 assert_file "$bundle/Contents/Resources/dejavu/README.md" "DejaVu provenance"
 assert_file "$bundle/Contents/Resources/dejavu/LICENSE" "DejaVu license"
+assert_file "$bundle/Contents/Resources/nerd-fonts/README.md" "Nerd Fonts provenance"
+assert_file "$bundle/Contents/Resources/nerd-fonts/NOTICE.txt" "Nerd Fonts icon notices"
+assert_file "$bundle/Contents/Resources/nerd-fonts/licenses/weather-icons-OFL.txt" "Nerd Fonts icon licenses"
 assert_file "$bundle/Contents/Resources/licenses.json" "open source license notices"
 if ! cmp -s "$bundle/Contents/Resources/licenses.json" third-party/licenses/licenses.json; then
   echo "package verification failed: licenses.json differs from third-party/licenses/licenses.json" >&2
