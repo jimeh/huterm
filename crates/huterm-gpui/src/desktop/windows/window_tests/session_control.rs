@@ -328,6 +328,41 @@ fn the_open_menu_follows_other_clients_and_keeps_its_place(
     });
 }
 
+#[gpui::test]
+fn a_session_rows_detail_is_its_accessible_description(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = control_harness(cx);
+    let (window, _) = harness.named_window("main");
+    {
+        let mut mux = harness.runtime.lock();
+        let workspace = mux.create_workspace(harness.session, None).unwrap();
+        mux.open_tab(workspace, &fixture(ECHO)).unwrap();
+    }
+    harness.wait_projection();
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.wait_for("the session menu to paint", |cx| painted(cx, window));
+    let row = harness.cx.update(|cx| {
+        let json = window
+            .update(cx, |_, window, _| window.debug_a11y_tree_json())
+            .unwrap()
+            .expect("test windows report an accessibility tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).unwrap();
+        tree["nodes"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|node| node["aria"].clone())
+            .find(|aria| {
+                aria["role"] == "MenuItemCheckBox" && aria["label"] == "main"
+            })
+            .expect("the session's row")
+    });
+    // The row shows the detail beside its name; assistive technology
+    // reads it too.
+    assert_eq!(row["description"], "2 workspaces · 2 tabs", "{row}");
+}
+
 /// The title row Huterm draws on both platforms when a window takes
 /// client decorations, with tabs in the title bar and one tab, so the
 /// strip shows the title, the control, and the menu button.

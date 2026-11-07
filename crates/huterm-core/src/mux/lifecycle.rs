@@ -4,7 +4,7 @@ mod holder_fixture;
 
 use super::{
     AttachmentId, HierarchyEvent, Mux, MuxError, PaneId, RuntimeClient,
-    RuntimeId, SessionId, Tab, TabId, TerminalId, Workspace, WorkspaceId,
+    RuntimeId, SessionId, Tab, TabId, TerminalId, WorkspaceId,
 };
 use crate::JobState;
 use std::time::{Duration, Instant};
@@ -49,10 +49,10 @@ pub enum CloseRequest {
     Application,
     /// Close a window whose last tab view went away without stopping any
     /// terminal. Refused while `workspace` still holds tabs in the
-    /// attachment's session; leaves the workspace while another workspace
-    /// of that session holds tabs, or while `workspace` no longer belongs
-    /// to it and the session keeps one; otherwise detaches, or deletes the
-    /// session once it holds no terminal and no other attachment.
+    /// attachment's session; leaves the workspace while that session holds
+    /// any other workspace, empty or not, including when `workspace` no
+    /// longer belongs to it; otherwise detaches, or deletes the session
+    /// once it holds no terminal and no other attachment.
     EmptiedWindow {
         /// The window's attachment.
         attachment: AttachmentId,
@@ -531,11 +531,13 @@ impl Mux {
     /// Resolves an emptied window's close so that it stops no terminal,
     /// deciding under the lock and scoped to the attachment's session:
     /// refused while its workspace belongs to that session and holds
-    /// tabs; a [`CloseEffect::LeaveWorkspace`] while another workspace of
-    /// the session holds tabs, or while the workspace no longer belongs to
-    /// the session (closed, or moved to another) and the session keeps a
-    /// workspace; otherwise a detach while another attachment holds the
-    /// session, else the deletion of the empty session.
+    /// tabs; a [`CloseEffect::LeaveWorkspace`] while the session holds
+    /// another workspace, with or without tabs, including when the
+    /// workspace no longer belongs to the session (closed, or moved to
+    /// another) and the session keeps one; otherwise, when it was the
+    /// session's only workspace, a detach while another attachment holds
+    /// the session, else the deletion of the empty session. So an emptied
+    /// window never ends a session that still holds another workspace.
     fn resolve_emptied_window(
         &self,
         attachment: AttachmentId,
@@ -543,20 +545,16 @@ impl Mux {
     ) -> Result<CloseEffect, MuxError> {
         let session = self.attachment_session(attachment)?;
         self.validate_scope(workspace.runtime())?;
-        let workspaces: Vec<&Workspace> = self
-            .workspaces
-            .values()
-            .filter(|w| w.session_id == session)
-            .collect();
-        let shown = workspaces.iter().find(|w| w.id == workspace);
-        if shown.is_some_and(|w| !w.tabs.is_empty()) {
+        let members = || {
+            self.workspaces
+                .values()
+                .filter(move |w| w.session_id == session)
+        };
+        if members().any(|w| w.id == workspace && !w.tabs.is_empty()) {
             return Err(MuxError::ViewNotEmpty(workspace));
         }
-        let sibling_holds_tabs = workspaces
-            .iter()
-            .any(|w| w.id != workspace && !w.tabs.is_empty());
-        let left_session = shown.is_none() && !workspaces.is_empty();
-        if sibling_holds_tabs || left_session {
+        // Also true when `workspace` left the session that keeps one.
+        if members().any(|w| w.id != workspace) {
             return Ok(CloseEffect::LeaveWorkspace {
                 attachment,
                 workspace,

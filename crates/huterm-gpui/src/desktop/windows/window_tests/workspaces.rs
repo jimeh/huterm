@@ -692,31 +692,157 @@ fn an_exit_close_of_a_workspaces_last_tab_moves_on(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn an_emptied_workspace_with_only_empty_siblings_closes_the_window(
+fn an_emptied_window_on_its_sessions_only_workspace_closes_with_the_session(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    let (empty, _) = harness.add_workspace(0);
-    harness.wait_projection();
     harness.activate(window, tab);
     harness.invoke(window, ids::CLOSE_TAB).unwrap();
     harness.wait_closed(window);
-    // The window's attachment was the session's last, and nothing held a
-    // tab, so the session went with its empty workspace.
+    // The window's attachment was the session's last, and the session
+    // had no other workspace, so it closed as on `main`.
     assert!(!session_exists(&harness));
-    assert!(!harness.workspace_exists(empty));
+}
+
+/// How a window's last tab goes away.
+#[derive(Clone, Copy)]
+enum LastTabGoes {
+    Closed,
+    ExitCloses,
+    LonePaneClosed,
+    MovedToAnotherSession,
+}
+
+/// Empties the harness workspace, which `window` shows beside an empty
+/// sibling, in the way `goes` names, and checks that the window shows the
+/// sibling's empty state and the session survives.
+fn emptying_beside_an_empty_workspace_shows_it(
+    cx: &mut TestAppContext,
+    goes: LastTabGoes,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let script = match goes {
+        LastTabGoes::ExitCloses => EXITS,
+        _ => ECHO,
+    };
+    let tab = harness.open_tab(script);
+    let window = harness.attach_showing(&[tab]);
+    let (empty, _) = harness.add_workspace(0);
+    harness.wait_projection();
+    match goes {
+        LastTabGoes::Closed | LastTabGoes::LonePaneClosed => {
+            harness.activate(window, tab);
+            let command = match goes {
+                LastTabGoes::Closed => ids::CLOSE_TAB,
+                _ => ids::CLOSE_PANE,
+            };
+            harness.invoke(window, command).unwrap();
+        }
+        LastTabGoes::ExitCloses => harness.exit_tab(window, tab),
+        LastTabGoes::MovedToAnotherSession => {
+            let other = harness.other_session("other", 0);
+            harness
+                .runtime
+                .lock()
+                .move_tab(harness.workspace, tab, other.workspace, None)
+                .unwrap();
+        }
+    }
+    harness.wait_workspace(window, empty, &[]);
+    harness.wait_for("the empty state", |cx| empty_state(cx, window).is_some());
+    harness.cx.update(|cx| {
+        assert!(cx.windows().contains(&window));
+        assert!(!terminating(cx) && !quitting(cx));
+        assert_eq!(cx.global::<Desktop>().pending_spawns, 0);
+    });
+    assert!(session_exists(&harness));
+    assert_eq!(harness.workspaces(), [empty]);
 }
 
 #[gpui::test]
-fn a_sibling_gaining_a_tab_turns_a_held_emptied_detach_into_leave_workspace(
+fn closing_the_last_tab_beside_an_empty_workspace_shows_it(
+    cx: &mut TestAppContext,
+) {
+    emptying_beside_an_empty_workspace_shows_it(cx, LastTabGoes::Closed);
+}
+
+#[gpui::test]
+fn an_exit_close_beside_an_empty_workspace_shows_it(cx: &mut TestAppContext) {
+    emptying_beside_an_empty_workspace_shows_it(cx, LastTabGoes::ExitCloses);
+}
+
+#[gpui::test]
+fn closing_the_last_lone_pane_beside_an_empty_workspace_shows_it(
+    cx: &mut TestAppContext,
+) {
+    emptying_beside_an_empty_workspace_shows_it(
+        cx,
+        LastTabGoes::LonePaneClosed,
+    );
+}
+
+#[gpui::test]
+fn moving_the_last_tab_away_beside_an_empty_workspace_shows_it(
+    cx: &mut TestAppContext,
+) {
+    emptying_beside_an_empty_workspace_shows_it(
+        cx,
+        LastTabGoes::MovedToAnotherSession,
+    );
+}
+
+#[gpui::test]
+fn a_linux_last_window_emptied_beside_an_empty_workspace_stays_open(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    let (sibling, _) = harness.add_workspace(0);
+    harness.as_linux(window);
+    let (empty, _) = harness.add_workspace(0);
+    // A session no window shows would make an emptied window close Quit.
+    let unviewed = harness.unviewed_session();
+    harness.wait_projection();
+    harness.resume_quits();
+    harness.activate(window, tab);
+    harness.invoke(window, ids::CLOSE_TAB).unwrap();
+    harness.wait_workspace(window, empty, &[]);
+    harness.cx.update(|cx| {
+        assert!(cx.windows().contains(&window));
+        assert!(!quitting(cx) && !terminating(cx));
+        assert_eq!(cx.global::<Desktop>().emptied_quit, None);
+    });
+    assert!(session_exists(&harness));
+    assert!(harness.runtime.lock().session(unviewed).is_some());
+}
+
+#[gpui::test]
+fn two_windows_emptied_beside_an_empty_workspace_both_show_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let one = harness.attach_showing(&[tab]);
+    let two = harness.attach_showing(&[tab]);
+    let (empty, _) = harness.add_workspace(0);
+    harness.wait_projection();
+    harness.activate(one, tab);
+    harness.invoke(one, ids::CLOSE_TAB).unwrap();
+    harness.wait_workspace(one, empty, &[]);
+    harness.wait_workspace(two, empty, &[]);
+    assert_eq!(harness.workspaces(), [empty]);
+    assert_eq!(harness.attachments_of(harness.session), 2);
+}
+
+#[gpui::test]
+fn a_new_sibling_turns_a_held_emptied_detach_into_leave_workspace(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
     // Another client's attachment makes the emptied close a detach.
     let other_client = harness.runtime.lock().attach_session(harness.session);
     harness.wait_projection();
@@ -727,12 +853,9 @@ fn a_sibling_gaining_a_tab_turns_a_held_emptied_detach_into_leave_workspace(
     harness.wait_for("the emptied close to assess", |_| {
         runtime.worker_hooks.held(Stage::Assessed) == 1
     });
-    let arrived = runtime
-        .lock()
-        .open_tab(sibling, &fixture(ECHO))
-        .unwrap()
-        .tab
-        .id;
+    // Another client creates a workspace with a tab before the commit.
+    let (sibling, arrived) = harness.add_workspace(1);
+    let arrived = arrived[0];
     runtime.worker_hooks.release(Stage::Assessed);
     harness.wait_workspace(window, sibling, &[arrived]);
     harness.cx.update(|cx| {
@@ -749,7 +872,6 @@ fn a_stale_emptied_detach_on_linux_does_not_quit(cx: &mut TestAppContext) {
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     harness.as_linux(window);
-    let (sibling, _) = harness.add_workspace(0);
     let unviewed = harness.unviewed_session();
     harness.wait_projection();
     harness.resume_quits();
@@ -767,12 +889,8 @@ fn a_stale_emptied_detach_on_linux_does_not_quit(cx: &mut TestAppContext) {
     harness.wait_for("the emptied close to assess", |_| {
         runtime.worker_hooks.held(Stage::Assessed) == 1
     });
-    let arrived = runtime
-        .lock()
-        .open_tab(sibling, &fixture(ECHO))
-        .unwrap()
-        .tab
-        .id;
+    let (sibling, arrived) = harness.add_workspace(1);
+    let arrived = arrived[0];
     runtime.worker_hooks.release(Stage::Assessed);
     harness.wait_workspace(window, sibling, &[arrived]);
     harness.cx.update(|cx| {
@@ -782,13 +900,14 @@ fn a_stale_emptied_detach_on_linux_does_not_quit(cx: &mut TestAppContext) {
     assert!(runtime.lock().session(unviewed).is_some());
 }
 
-#[gpui::test]
-fn a_sibling_emptying_turns_a_held_leave_workspace_into_a_window_close(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
-    let tab = harness.open_tab(ECHO);
-    let window = harness.attach_showing(&[tab]);
+/// Holds `window`'s emptied close of the harness workspace, assessed as
+/// `LeaveWorkspace` beside a populated sibling, on Linux with a session no
+/// window shows. Returns the sibling, its tab, and that session.
+fn hold_a_leave_beside_a_populated_sibling(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+    tab: TabId,
+) -> (WorkspaceId, TabId, SessionId) {
     harness.as_linux(window);
     let (sibling, siblings) = harness.add_workspace(1);
     let unviewed = harness.unviewed_session();
@@ -800,9 +919,21 @@ fn a_sibling_emptying_turns_a_held_leave_workspace_into_a_window_close(
     harness.wait_for("the leave to assess", |_| {
         runtime.worker_hooks.held(Stage::Assessed) == 1
     });
-    // The only populated sibling empties before the commit.
-    harness.close_tab_in(sibling, siblings[0]);
-    runtime.worker_hooks.release(Stage::Assessed);
+    (sibling, siblings[0], unviewed)
+}
+
+#[gpui::test]
+fn the_only_sibling_closing_turns_a_held_leave_workspace_into_a_window_close(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let (sibling, _, unviewed) =
+        hold_a_leave_beside_a_populated_sibling(&mut harness, window, tab);
+    // The only sibling closes before the commit.
+    harness.runtime.lock().close_workspace(sibling).unwrap();
+    harness.runtime.worker_hooks.release(Stage::Assessed);
     // Assessed again, the emptied close removes the window, and the
     // last-window rule applies: on Linux it becomes Quit while a session
     // no window shows remains.
@@ -813,6 +944,29 @@ fn a_sibling_emptying_turns_a_held_leave_workspace_into_a_window_close(
             Some(window.window_id())
         );
     });
+}
+
+#[gpui::test]
+fn a_sibling_emptying_keeps_a_held_leave_workspace_leaving(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let (sibling, sibling_tab, unviewed) =
+        hold_a_leave_beside_a_populated_sibling(&mut harness, window, tab);
+    // The only populated sibling empties before the commit.
+    harness.close_tab_in(sibling, sibling_tab);
+    harness.runtime.worker_hooks.release(Stage::Assessed);
+    // Assessed again, the window still leaves, now for the empty sibling.
+    harness.wait_workspace(window, sibling, &[]);
+    harness.cx.update(|cx| {
+        assert!(cx.windows().contains(&window));
+        assert!(!quitting(cx) && !terminating(cx));
+        assert_eq!(cx.global::<Desktop>().emptied_quit, None);
+    });
+    assert_eq!(harness.workspaces(), [sibling]);
+    assert!(harness.runtime.lock().session(unviewed).is_some());
 }
 
 #[gpui::test]

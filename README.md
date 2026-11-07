@@ -160,9 +160,10 @@ see [Shells](docs/configuration.md#shells). The configuration guide also covers
 Closing a pane stops its terminal, and closing a tab stops the terminals of
 all its panes. Closing a window closes its session and stops its terminals. A
 window closes on its own when its last tab goes away, for example when its
-shell exits; that close stops no other terminal and never asks. When another
-workspace of its session still holds tabs, the window instead closes the
-emptied workspace and moves to the workspace it showed before. Close
+shell exits; that close stops no other terminal and never asks. When its
+session has another workspace, the window instead closes the emptied
+workspace and moves to the workspace it showed before, else to one that holds
+tabs, else to an empty one's empty state. Close
 Workspace closes a workspace and its tabs, asking first when jobs run; a
 window left on a workspace without tabs shows an empty state with New Tab.
 

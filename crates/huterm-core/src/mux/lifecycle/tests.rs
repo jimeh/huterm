@@ -1356,73 +1356,201 @@ fn an_emptied_window_whose_workspace_left_its_session_leaves_it_alone() {
     mux.shutdown().unwrap();
 }
 
-#[test]
-fn an_emptied_window_with_only_empty_siblings_detaches_or_closes_its_session() {
-    let mut mux = Mux::default();
-    let session = mux.create_session(None).unwrap();
-    let shown = mux.create_workspace(session, None).unwrap();
-    let empty = mux.create_workspace(session, None).unwrap();
-    let first = mux.attach_session(session).unwrap();
-    let second = mux.attach_session(session).unwrap();
-    let emptied = |attachment| CloseRequest::EmptiedWindow {
-        attachment,
-        workspace: shown,
-    };
-    assert_eq!(
-        mux.prepare_close(emptied(first)).unwrap().effect(),
-        CloseEffect::Detach(first)
-    );
-    commit_idle(&mut mux, emptied(first)).unwrap();
-    assert_eq!(mux.session(session).unwrap().workspaces, [shown, empty]);
-    assert_eq!(
-        mux.prepare_close(emptied(second)).unwrap().effect(),
-        CloseEffect::Session(session)
-    );
-    commit_idle(&mut mux, emptied(second)).unwrap();
-    assert!(mux.session(session).is_none());
+/// How an emptied window's workspace lost its last tab.
+#[derive(Clone, Copy, Debug)]
+enum Emptying {
+    TabClosed,
+    LonePaneClosed,
+    TabMovedAway,
+}
+
+/// Empties `workspace`, whose only tab is `tab`, as `emptying` names,
+/// moving the tab to `destination` when it moves away.
+fn empty_workspace(
+    mux: &mut Mux,
+    emptying: Emptying,
+    workspace: WorkspaceId,
+    tab: &crate::mux::TestTab,
+    destination: WorkspaceId,
+) {
+    match emptying {
+        Emptying::TabClosed => commit_idle(
+            mux,
+            CloseRequest::Tab {
+                workspace,
+                tab: tab.tab.id,
+            },
+        ),
+        Emptying::LonePaneClosed => commit_idle(
+            mux,
+            CloseRequest::Pane {
+                workspace,
+                tab: tab.tab.id,
+                pane: tab.tab.first_pane().id,
+            },
+        ),
+        Emptying::TabMovedAway => {
+            mux.move_tab(workspace, tab.tab.id, destination, None)
+        }
+    }
+    .unwrap();
 }
 
 #[test]
-fn held_emptied_tickets_go_stale_when_a_sibling_gains_or_loses_its_tabs() {
+fn an_emptied_window_never_ends_a_session_that_holds_another_workspace() {
+    for emptying in [
+        Emptying::TabClosed,
+        Emptying::LonePaneClosed,
+        Emptying::TabMovedAway,
+    ] {
+        for (with_sibling, shared) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let case = format!(
+                "{emptying:?}, sibling {with_sibling}, shared {shared}"
+            );
+            let mut mux = Mux::default();
+            let session = mux.create_session(None).unwrap();
+            let shown = mux.create_workspace(session, None).unwrap();
+            let sibling = with_sibling
+                .then(|| mux.create_workspace(session, None).unwrap());
+            let elsewhere = mux.create_session(None).unwrap();
+            let destination = mux.create_workspace(elsewhere, None).unwrap();
+            let tab = open_idle_tabs(&mut mux, shown, 1).remove(0);
+            let attachment = mux.attach_session(session).unwrap();
+            let other = shared.then(|| mux.attach_session(session).unwrap());
+            empty_workspace(&mut mux, emptying, shown, &tab, destination);
+            let emptied = |attachment| CloseRequest::EmptiedWindow {
+                attachment,
+                workspace: shown,
+            };
+            let expected = match (sibling, other) {
+                (Some(_), _) => CloseEffect::LeaveWorkspace {
+                    attachment,
+                    workspace: shown,
+                },
+                (None, Some(_)) => CloseEffect::Detach(attachment),
+                (None, None) => CloseEffect::Session(session),
+            };
+            assert_eq!(
+                mux.prepare_close(emptied(attachment)).unwrap().effect(),
+                expected,
+                "{case}"
+            );
+            commit_idle(&mut mux, emptied(attachment)).unwrap();
+            match (sibling, other) {
+                (Some(sibling), other) => {
+                    // The empty sibling survives, and the session with it.
+                    assert_eq!(
+                        mux.session(session).unwrap().workspaces,
+                        [sibling],
+                        "{case}"
+                    );
+                    assert_eq!(
+                        mux.attachment_session(attachment).unwrap(),
+                        session,
+                        "{case}"
+                    );
+                    // A second window on the closed workspace leaves too.
+                    if let Some(other) = other {
+                        assert_eq!(
+                            mux.prepare_close(emptied(other)).unwrap().effect(),
+                            CloseEffect::LeaveWorkspace {
+                                attachment: other,
+                                workspace: shown
+                            },
+                            "{case}"
+                        );
+                        commit_idle(&mut mux, emptied(other)).unwrap();
+                        assert_eq!(
+                            mux.session(session).unwrap().workspaces,
+                            [sibling],
+                            "{case}"
+                        );
+                    }
+                }
+                (None, Some(other)) => {
+                    assert_eq!(
+                        mux.session(session).unwrap().workspaces,
+                        [shown],
+                        "{case}"
+                    );
+                    assert!(mux.attachment_session(attachment).is_err());
+                    assert_eq!(
+                        mux.attachment_session(other).unwrap(),
+                        session,
+                        "{case}"
+                    );
+                }
+                (None, None) => {
+                    assert!(mux.session(session).is_none(), "{case}");
+                }
+            }
+            mux.shutdown().unwrap();
+        }
+    }
+}
+
+#[test]
+fn held_emptied_tickets_go_stale_when_a_sibling_appears_or_goes() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();
     let shown = mux.create_workspace(session, None).unwrap();
-    let sibling = mux.create_workspace(session, None).unwrap();
+    let elsewhere = mux.create_session(None).unwrap();
     let attachment = mux.attach_session(session).unwrap();
     let request = CloseRequest::EmptiedWindow {
         attachment,
         workspace: shown,
     };
+    let leaves = CloseEffect::LeaveWorkspace {
+        attachment,
+        workspace: shown,
+    };
+    let stale = |mux: &mut Mux, held: &CloseAssessment| {
+        assert!(matches!(
+            mux.validate_close_scope(held),
+            Err(MuxError::StaleClose)
+        ));
+        assert!(matches!(
+            mux.commit_close(held, &held.recheck(), false),
+            Err(MuxError::StaleClose)
+        ));
+    };
 
-    // A sibling gaining a tab turns a held session close into leaving.
+    // A new empty sibling turns a held session close into leaving.
     let held = mux.prepare_close(request.clone()).unwrap().check_jobs();
     assert_eq!(held.effect(), &CloseEffect::Session(session));
     assert!(mux.validate_close_scope(&held).is_ok());
-    let tab = open_idle_tabs(&mut mux, sibling, 1).remove(0);
-    assert!(matches!(
-        mux.validate_close_scope(&held),
-        Err(MuxError::StaleClose)
-    ));
-    assert!(matches!(
-        mux.commit_close(&held, &held.recheck(), false),
-        Err(MuxError::StaleClose)
-    ));
+    let sibling = mux.create_workspace(session, None).unwrap();
+    stale(&mut mux, &held);
     let held = mux.prepare_close(request.clone()).unwrap().check_jobs();
+    assert_eq!(held.effect(), &leaves);
+
+    // The sibling gaining and then losing its tab keeps it leaving.
+    let tab = open_idle_tabs(&mut mux, sibling, 1).remove(0);
+    stale(&mut mux, &held);
+    let held = mux.prepare_close(request.clone()).unwrap().check_jobs();
+    assert_eq!(held.effect(), &leaves);
+    mux.close_tab(sibling, tab.tab.id).unwrap();
+    stale(&mut mux, &held);
+    let held = mux.prepare_close(request.clone()).unwrap().check_jobs();
+    assert_eq!(held.effect(), &leaves);
+
+    // The only sibling closing turns it back.
+    mux.close_workspace(sibling).unwrap();
+    stale(&mut mux, &held);
+    assert_eq!(mux.workspace(shown).unwrap().tabs.len(), 0);
     assert_eq!(
-        held.effect(),
-        &CloseEffect::LeaveWorkspace {
-            attachment,
-            workspace: shown
-        }
+        mux.prepare_close(request.clone()).unwrap().effect(),
+        CloseEffect::Session(session)
     );
 
-    // The only populated sibling emptying turns it back.
-    mux.close_tab(sibling, tab.tab.id).unwrap();
-    assert!(matches!(
-        mux.commit_close(&held, &held.recheck(), false),
-        Err(MuxError::StaleClose)
-    ));
-    assert_eq!(mux.workspace(shown).unwrap().tabs.len(), 0);
+    // So does the only sibling moving to another session.
+    let moved = mux.create_workspace(session, None).unwrap();
+    let held = mux.prepare_close(request.clone()).unwrap().check_jobs();
+    assert_eq!(held.effect(), &leaves);
+    mux.move_workspace(session, moved, elsewhere, None).unwrap();
+    stale(&mut mux, &held);
     assert_eq!(
         mux.prepare_close(request).unwrap().effect(),
         CloseEffect::Session(session)

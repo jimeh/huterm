@@ -330,9 +330,11 @@ last tab (`remove_closed_tabs`), or a batch that touched its workspace found
 its attached session gone or the workspace no longer in that session, which
 needs no removed view (a window on the empty state whose workspace another
 window closed). Core answers, under its lock and scoped to the attachment's
-session, `ViewNotEmpty`, then `CloseEffect::LeaveWorkspace` while another
-workspace of the session holds tabs or the workspace left the session that
-keeps a workspace, else `Detach` or `Session`. `LeaveWorkspace` stops no
+session, `ViewNotEmpty`, then `CloseEffect::LeaveWorkspace` while the
+session holds any other workspace, with tabs or empty, including when the
+workspace left the session that keeps one, else `Detach` or `Session`, which
+apply only to a session's only workspace: an emptied window never ends a
+session that still holds another workspace. `LeaveWorkspace` stops no
 terminal, closes the workspace only if it is still an empty member, and
 keeps the attachment. The completion dispatches by the effect the
 assessment committed (`closes_window`): only `Detach` and `Session` remove
@@ -460,7 +462,7 @@ by the same rule (`emptied_close_target`) only for a `Detach` or `Session`
 assessment, and only after its commit worker found the ticket still fresh
 under the Mux lock (`Mux::validate_close_scope`, the `quit_check` of
 `session_switch::commit_close`), which then commits nothing. A stale ticket
-assesses again, so a sibling that gained a tab turns it into
+assesses again, so a sibling workspace that appeared turns it into
 `LeaveWorkspace`. `LeaveWorkspace` never becomes Quit, and commits even while
 a Quit asks: a Quit confirmed while such a hold is held
 (`quit_waits_for_holds`) waits for it as one requested then would and asks
