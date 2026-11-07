@@ -886,6 +886,12 @@ fn a_toast_back_from_the_overflow_is_a_new_node(cx: &mut TestAppContext) {
         before,
         "AT-SPI reports the old node defunct, so the toast is a new one"
     );
+    assert!(
+        toast(&toast_nodes(&mut harness, window), &label("first"))
+            .announcement()
+            .is_none(),
+        "it returns within its hold, without the leaf that announced it"
+    );
     assert!(!overflow(&mut harness));
 }
 
