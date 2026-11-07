@@ -3165,6 +3165,7 @@ fn an_always_shown_workspace_panel_widens_a_new_window() {
         assert_eq!(
             workspace_reservation(
                 config(show, WorkspacePosition::Left, false),
+                TabsConfig::default(),
                 true
             ),
             none
@@ -3173,12 +3174,17 @@ fn an_always_shown_workspace_panel_widens_a_new_window() {
     let always = |position, title_row| {
         workspace_reservation(
             config(WorkspaceShow::Always, position, false),
+            TabsConfig {
+                position: TabPosition::Top,
+                ..TabsConfig::default()
+            },
             title_row,
         )
     };
     assert_eq!(
         workspace_reservation(
             config(WorkspaceShow::Always, WorkspacePosition::Left, true),
+            TabsConfig::default(),
             false
         ),
         none
@@ -3189,8 +3195,26 @@ fn an_always_shown_workspace_panel_widens_a_new_window() {
             size(workspace_chrome::PANEL_WIDTH, px(0.0))
         );
     }
-    // A top bar takes the title row where there is one.
+    // A top bar takes the title row where there is one; shown title-bar
+    // tabs then drop into a bar beneath it.
     assert_eq!(always(WorkspacePosition::Top, true), none);
+    let titlebar = |always_show| TabsConfig {
+        position: TabPosition::Titlebar,
+        always_show,
+        ..TabsConfig::default()
+    };
+    let top = config(WorkspaceShow::Always, WorkspacePosition::Top, false);
+    assert_eq!(workspace_reservation(top, titlebar(false), true), none);
+    assert_eq!(
+        workspace_reservation(top, titlebar(true), true),
+        size(
+            px(0.0),
+            tab_bar::tab_bar_height(TabsConfig {
+                position: TabPosition::Top,
+                ..titlebar(true)
+            })
+        )
+    );
     for (position, title_row) in [
         (WorkspacePosition::Top, false),
         (WorkspacePosition::Bottom, true),

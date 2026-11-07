@@ -782,6 +782,11 @@ fn an_auto_hidden_bar_hides_a_workspace_bar_only_on_its_edge() {
                 "{edge:?} {position:?}"
             );
         }
+        // The terminal keeps one rectangle through the reveal, so mouse
+        // mapping never moves under the pointer.
+        let halfway = built.present(Presentation::Overlay, position, 0.5);
+        assert_eq!(shown.terminal, hidden.terminal, "{edge:?} {position:?}");
+        assert_eq!(halfway.terminal, hidden.terminal, "{edge:?} {position:?}");
         // Hidden, a joined band slides out with the tabs; revealed, both
         // sit where the reserved layout puts them.
         if joined {

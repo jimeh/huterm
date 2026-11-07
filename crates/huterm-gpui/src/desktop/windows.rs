@@ -2641,6 +2641,7 @@ fn initial_window_size(
     let reserved = reserved
         + workspace_reservation(
             config.workspaces,
+            layout_tabs(config.tabs, host),
             title_row_height(false, frame) > px(0.0),
         );
     let requested = size(
@@ -2665,9 +2666,11 @@ fn initial_window_size(
 
 /// The room a new window's workspace panel or bar takes from its terminal.
 /// Only `show = "always"` shows one in a new window, whose session has one
-/// workspace; a top bar in a window with a title row takes that row.
+/// workspace. A top bar in a window with a title row takes that row, and
+/// pushes merged title-bar tabs, when they show, into a bar beneath it.
 fn workspace_reservation(
     workspaces: huterm_config::WorkspacesConfig,
+    tabs: TabsConfig,
     title_row: bool,
 ) -> gpui::Size<Pixels> {
     if workspaces.show != huterm_config::WorkspaceShow::Always
@@ -2681,7 +2684,19 @@ fn workspace_reservation(
             size(workspace_chrome::PANEL_WIDTH, px(0.0))
         }
         huterm_config::WorkspacePosition::Top if title_row => {
-            size(px(0.0), px(0.0))
+            let displaced =
+                tabs.position == TabPosition::Titlebar && tabs.always_show;
+            size(
+                px(0.0),
+                if displaced {
+                    tab_bar_height(TabsConfig {
+                        position: TabPosition::Top,
+                        ..tabs
+                    })
+                } else {
+                    px(0.0)
+                },
+            )
         }
         huterm_config::WorkspacePosition::Top
         | huterm_config::WorkspacePosition::Bottom => {
@@ -7298,8 +7313,15 @@ impl WorkspaceView {
         } else {
             layout.frame.buttons.trailing.width() + corner
         };
-        let drop_left =
+        let mut drop_left =
             (content.origin.x + leading).clamp(left, bounds.right());
+        // A hidden tab bar's dropdown leads the row and takes no drops.
+        if layout.workspace_chrome.is_dropdown()
+            && !self.bar_drawn()
+            && let Some(trigger) = self.workspace_trigger_bounds.get()
+        {
+            drop_left = drop_left.max(trigger.right()).min(bounds.right());
+        }
         let drop_right =
             (content.right() - trailing).clamp(drop_left, bounds.right());
         // Preserve the title's symmetric padding while the drop region
@@ -8240,15 +8262,12 @@ impl WorkspaceView {
                 && self.native_fullscreen.as_ref().is_some_and(
                     crate::native_fullscreen::Adapter::pointer_in_top_edge,
                 ));
-        // An open window menu holds the bar that anchors its button.
         let hover = !gesture
             && (edge
                 || (self.reveal.progress > 0.0
                     && hovered
                     && layout.reveal_region(position).contains(&pointer))
-                || self.reorder.is_some()
-                || self.resizing_sidebar
-                || self.menu.is_some());
+                || self.reveal_held(window));
         if self
             .reveal
             .set_input(Instant::now(), hover, enabled && !gesture)
@@ -8335,6 +8354,18 @@ impl WorkspaceView {
         self.presentation() == Presentation::Reserved
             || self.presentation() == Presentation::Overlay
                 && self.reveal.progress > 0.0
+    }
+
+    /// Whether something other than the pointer holds a fullscreen bar
+    /// revealed: a tab drag or sidebar resize, an open menu, whose button
+    /// the bar may anchor, or keyboard focus on a workspace chip of a bar
+    /// that hides with it.
+    pub(super) fn reveal_held(&self, window: &Window) -> bool {
+        self.reorder.is_some()
+            || self.resizing_sidebar
+            || self.resizing_workspace
+            || self.menu.is_some()
+            || self.focused_workspace_row(window).is_some()
     }
 
     fn reveal_active(&mut self, window: &Window, cx: &App) {
@@ -8526,10 +8557,13 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // Measured from the column's outer edge, which a workspace panel on
+        // the same side moves in from the window's.
+        let tabs = self.chrome_layout(window).tabs;
         let desired = if self.layout_tabs().position == TabPosition::Left {
-            pointer.x
+            pointer.x - tabs.left()
         } else {
-            window.viewport_size().width - pointer.x
+            tabs.right() - pointer.x
         };
         self.sidebar_width = desired.clamp(px(140.0), px(400.0));
         cx.global_mut::<Desktop>()
@@ -13639,7 +13673,24 @@ impl ChromeLayout {
                 self.terminal.origin.y = band.origin.y;
             }
         }
-        if presentation == Presentation::Overlay && joined {
+        if presentation != Presentation::Reserved && !self.outside_terminal {
+            if position.vertical() {
+                self.terminal.size.width += self.tabs.size.width;
+                if position == TabPosition::Left {
+                    self.terminal.origin.x = self.tabs.origin.x;
+                }
+            } else {
+                self.terminal.size.height += self.tabs.size.height;
+                if position == TabPosition::Top {
+                    // A joined band above the tabs already moved it higher.
+                    self.terminal.origin.y =
+                        self.terminal.origin.y.min(self.tabs.origin.y);
+                }
+            }
+        }
+        // The bars slide only after the terminal took their space, so its
+        // rectangle stays put through the reveal.
+        if joined {
             let hidden = 1.0 - progress.clamp(0.0, 1.0);
             if let Some(band) = &mut self.workspace {
                 let travel =
@@ -13650,19 +13701,6 @@ impl ChromeLayout {
                 } else {
                     band.origin.y -= travel;
                     self.tabs.origin.y -= band.size.height * hidden;
-                }
-            }
-        }
-        if presentation != Presentation::Reserved && !self.outside_terminal {
-            if position.vertical() {
-                self.terminal.size.width += self.tabs.size.width;
-                if position == TabPosition::Left {
-                    self.terminal.origin.x = self.tabs.origin.x;
-                }
-            } else {
-                self.terminal.size.height += self.tabs.size.height;
-                if position == TabPosition::Top {
-                    self.terminal.origin.y = self.tabs.origin.y;
                 }
             }
         }
@@ -16123,11 +16161,17 @@ impl Render for WorkspaceView {
         );
         // A frame that draws no control, because it is hidden, its host is
         // not drawn, or the window shows no session, anchors nothing.
+        // A host that went hands an open session menu to the other, which
+        // shows it expanded from the next frame.
+        let mut host_went = false;
         if !self.session_control_drawn.get() {
-            self.session_button_bounds.set(None);
+            host_went |= self.session_button_bounds.take().is_some();
         }
         if !self.session_sidebar_drawn.get() {
-            self.session_sidebar_bounds.set(None);
+            host_went |= self.session_sidebar_bounds.take().is_some();
+        }
+        if host_went && self.session_menu_open() {
+            window.request_animation_frame();
         }
         if !self.workspace_trigger_drawn.get() {
             self.workspace_trigger_bounds.set(None);
@@ -16741,7 +16785,7 @@ impl WorkspaceView {
                 Self::field_menu_spec(kind, &menu.contexts, cx)
             }
             MenuKind::Session => Some(self.session_menu_spec(cx)),
-            MenuKind::Workspace => Some(self.workspace_menu_spec(None, cx)),
+            MenuKind::Workspace => Some(self.workspace_menu_spec(cx)),
             MenuKind::WorkspaceRow(workspace) => {
                 self.workspace_row_menu_spec(*workspace, cx)
             }

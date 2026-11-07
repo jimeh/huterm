@@ -224,6 +224,26 @@ fn panel_changes_keep_focus_mouse_mapping_and_processes(
         });
         unchanged(&mut harness, &format!("{position:?}").to_lowercase());
     }
+    // A selection survives a change that leaves the grid alone, such as
+    // moving the session control into the panel (settled decision 9).
+    let grid = harness.cx.update(|cx| {
+        terminal(cx, window, tab).unwrap().read(cx).requested_grid
+    });
+    let selection = harness.cx.update(|cx| terminal(cx, window, tab)).unwrap();
+    harness
+        .cx
+        .update(|cx| selection.update(cx, TerminalView::select_all));
+    harness.reload_config(window, |config| {
+        config.window.session_button_placement = SessionButtonPlacement::Both;
+    });
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(
+            terminal(cx, window, tab).unwrap().read(cx).requested_grid,
+            grid
+        );
+        assert!(selected(cx, window, tab), "the selection went");
+    });
 }
 
 #[gpui::test]
@@ -484,6 +504,8 @@ fn a_menu_whose_host_goes_closes_cleanly(cx: &mut TestAppContext) {
         assert!(title.is_some(), "the title bar host shows (F1)");
         assert_eq!(view.session_menu_anchor_for_tests(), title);
     });
+    // Collapsing ran a command, which closed the menu like any other.
+    assert_eq!(harness.cx.update(|cx| open_kind(cx, window)), None);
     harness.press(window, "escape");
     harness.cx.update(|cx| {
         assert_eq!(open_kind(cx, window), None);
@@ -818,4 +840,103 @@ fn showing_a_workspace_scrolls_its_row_into_view(cx: &mut TestAppContext) {
             })
             .unwrap_or(false)
     });
+}
+
+#[gpui::test]
+fn the_workspace_menu_keeps_its_panel_row_through_refreshes(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.workspace_window();
+    harness.add_workspace(1);
+    harness.wait_chrome(window, "the panel", |chrome| {
+        matches!(chrome, WorkspaceChrome::Panel { .. })
+    });
+    harness.invoke(window, ids::OPEN_WORKSPACE_MENU).unwrap();
+    // Every notify rebuilds an open menu's rows.
+    for _ in 0..3 {
+        harness.update_view(window, |_, _, cx| cx.notify());
+        harness.cx.run_until_parked();
+    }
+    let ids = harness.cx.update(|cx| menu_ids(cx, window));
+    assert_eq!(
+        ids.last().map(String::as_str),
+        Some("toggle_workspace_panel"),
+        "{ids:?}"
+    );
+}
+
+#[gpui::test]
+fn a_focused_chip_holds_an_auto_hidden_fullscreen_bar_open(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.auto_hide_in_fullscreen = true;
+        config.tabs.position = huterm_config::TabPosition::Top;
+        config.workspaces.position = WorkspacePosition::Top;
+    });
+    let (window, tab) = harness.workspace_window();
+    harness.add_workspace(1);
+    harness.update_view(window, |view, window, cx| {
+        window.toggle_fullscreen();
+        view.refresh_fullscreen(window, cx);
+        assert_eq!(view.presentation(), Presentation::Overlay);
+        assert_eq!(view.reveal.progress, 0.0);
+        cx.notify();
+    });
+    harness.wait_chrome(window, "the joined top bar", |chrome| {
+        chrome
+            == WorkspaceChrome::Bar {
+                edge: workspace_chrome::Edge::Top,
+            }
+    });
+    let held = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, window, _| view.reveal_held(window))
+    };
+    assert!(!held(&mut harness), "nothing holds the bar yet");
+    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    assert!(held(&mut harness), "a focused chip holds its bar revealed");
+    // Leaving the bar releases it.
+    harness.press(window, "escape");
+    harness.cx.update(|cx| assert!(focused(cx, window, tab)));
+    assert!(!held(&mut harness), "the bar is held without focus");
+}
+
+#[gpui::test]
+fn a_tab_column_beside_a_panel_resizes_from_its_own_edge(
+    cx: &mut TestAppContext,
+) {
+    use huterm_config::TabPosition;
+    for (position, tabs) in [
+        (WorkspacePosition::Left, TabPosition::Left),
+        (WorkspacePosition::Right, TabPosition::Right),
+    ] {
+        let mut harness = DesktopHarness::with_config(cx, |config| {
+            config.workspaces.show = WorkspaceShow::Always;
+            config.workspaces.position = position;
+            config.tabs.position = tabs;
+            config.tabs.always_show = true;
+        });
+        let (window, _) = harness.workspace_window();
+        harness.wait_chrome(window, "the panel", |chrome| {
+            matches!(chrome, WorkspaceChrome::Panel { .. })
+        });
+        let column = harness.cx.update(|cx| chrome(cx, window).tabs);
+        // The pointer drags the column's inner edge to 220 points from its
+        // outer edge, which the panel moved in from the window's.
+        let pointer = if tabs == TabPosition::Left {
+            gpui::point(column.left() + px(220.0), px(10.0))
+        } else {
+            gpui::point(column.right() - px(220.0), px(10.0))
+        };
+        harness.update_view(window, |view, window, cx| {
+            view.resize_sidebar(pointer, window, cx);
+        });
+        harness.cx.update(|cx| {
+            let layout = chrome(cx, window);
+            assert_eq!(layout.tabs.size.width, px(220.0), "{tabs:?}");
+            let band = layout.workspace.unwrap();
+            assert!(!band.intersects(&layout.tabs), "{tabs:?}");
+        });
+    }
 }

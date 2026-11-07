@@ -53,9 +53,8 @@ impl WorkspaceView {
             self.workspace_label = SessionLabel::default();
             return;
         };
-        if self.workspace_label.text == name {
-            return;
-        }
+        // Measured every frame, as the session control is, so a font or
+        // interface size change sizes the dropdown at once.
         let size = typography::ui(menu_trigger::TEXT_SIZE)
             .to_pixels(window.rem_size());
         let mut font = window.text_style().font();
@@ -467,14 +466,10 @@ impl WorkspaceView {
         Ok(())
     }
 
-    /// The workspace menu's rows from the projection and the window model.
-    pub(super) fn workspace_menu_spec(
-        &self,
-        window: Option<&Window>,
-        cx: &App,
-    ) -> MenuSpec {
-        let chrome =
-            window.map(|window| self.workspace_chrome(window.viewport_size()));
+    /// The workspace menu's rows from the projection, the window model, and
+    /// the chrome render last resolved, so a refresh between frames keeps
+    /// the panel row.
+    pub(super) fn workspace_menu_spec(&self, cx: &App) -> MenuSpec {
         let panel = if !self.workspace_ui_shown()
             || self.config.workspaces.show
                 == huterm_config::WorkspaceShow::Never
@@ -482,7 +477,7 @@ impl WorkspaceView {
             PanelRow::None
         } else if self.workspace_collapsed {
             PanelRow::Show
-        } else if chrome.is_some_and(|chrome| chrome.edge().is_some()) {
+        } else if self.workspace_chrome_now.get().edge().is_some() {
             PanelRow::Collapse
         } else {
             PanelRow::None
@@ -540,7 +535,7 @@ impl WorkspaceView {
         }
         self.workspace_menu_from = from;
         let contexts = window.context_stack();
-        let spec = self.workspace_menu_spec(Some(window), cx);
+        let spec = self.workspace_menu_spec(cx);
         let layout = self.chrome_layout(window);
         // The popover opens upward from the window's lower half, as from a
         // bottom bar.
@@ -1285,7 +1280,9 @@ impl WorkspaceView {
         let Some(band) = layout.workspace else {
             return;
         };
-        let desired = if band.origin.x <= layout.content.origin.x {
+        let left = layout.workspace_chrome.edge()
+            == Some(workspace_chrome::Edge::Left);
+        let desired = if left {
             pointer.x - band.origin.x
         } else {
             band.right() - pointer.x

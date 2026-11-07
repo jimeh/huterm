@@ -1506,8 +1506,6 @@ impl HierarchyState {
         Some(entry.workspace)
     }
 
-    /// Removes a workspace record and its tabs, leaving the parent's order
-    /// to the caller.
     /// Notes that `workspace`'s session's chrome changed, while the
     /// workspace exists.
     fn touch_chrome(&self, workspace: WorkspaceId, touched: &mut Touched) {
@@ -1516,6 +1514,8 @@ impl HierarchyState {
         }
     }
 
+    /// Removes a workspace record and its tabs, leaving the parent's order
+    /// to the caller.
     fn remove_workspace(
         &mut self,
         workspace: WorkspaceId,

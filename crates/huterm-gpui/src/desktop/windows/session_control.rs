@@ -322,7 +322,7 @@ impl WorkspaceView {
         let swatch = tokens(&self.config.theme);
         let accessible = state.accessible_name();
         let tooltip = placement.truncated.then(|| state.name.clone().into());
-        let open = state.open && self.session_menu_from == slot;
+        let open = state.open && self.session_anchor_slot() == slot;
         let trigger = MenuTrigger::new(
             match slot {
                 SessionHostSlot::Title => "session-control",
@@ -407,17 +407,25 @@ impl WorkspaceView {
     pub(super) fn session_anchor_cell(
         &self,
     ) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
-        let sidebar = self.session_sidebar_drawn.get();
-        let use_sidebar = match self.session_menu_from {
-            SessionHostSlot::Sidebar => sidebar,
-            SessionHostSlot::Title => {
-                sidebar && !self.session_control_drawn.get()
+        match self.session_anchor_slot() {
+            SessionHostSlot::Sidebar => &self.session_sidebar_bounds,
+            SessionHostSlot::Title => &self.session_button_bounds,
+        }
+    }
+
+    /// The host the session menu anchors to, which also shows it expanded:
+    /// the one clicked while it is painted, else the other.
+    fn session_anchor_slot(&self) -> SessionHostSlot {
+        let sidebar = self.session_sidebar_bounds.get().is_some();
+        let title = self.session_button_bounds.get().is_some();
+        match self.session_menu_from {
+            SessionHostSlot::Sidebar if sidebar || !title => {
+                SessionHostSlot::Sidebar
             }
-        };
-        if use_sidebar {
-            &self.session_sidebar_bounds
-        } else {
-            &self.session_button_bounds
+            SessionHostSlot::Title if sidebar && !title => {
+                SessionHostSlot::Sidebar
+            }
+            _ => SessionHostSlot::Title,
         }
     }
 
