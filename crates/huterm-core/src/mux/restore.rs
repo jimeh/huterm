@@ -13,7 +13,7 @@ use huterm_protocol::{
     TabChange, TabId, TabRecord, TabSnapshot, TerminalId, WorkspaceId,
 };
 
-use super::{Mux, MuxError, Tab, position};
+use super::{Mux, MuxError, Tab, layout_items, position};
 
 /// Which side of a recorded [`LayoutChange`] a restore returns to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,6 +128,7 @@ impl Mux {
         if sorted_panes(&current) != sorted_panes(to) {
             return Err(MuxError::InvalidRestore);
         }
+        self.admit_items(snapshot_items(&current), snapshot_items(to))?;
         self.check_restored_splits(&tabs, to)?;
         let was = pane_homes(&current);
         let names = RestoredNames::new(from, &current, to);
@@ -393,6 +394,16 @@ impl Mux {
 }
 
 /// Every pane the snapshots hold, in identity order.
+/// The tabs, panes, and splits the present records hold, each one hierarchy
+/// item.
+fn snapshot_items(snapshots: &[TabSnapshot]) -> usize {
+    snapshots
+        .iter()
+        .filter_map(|snapshot| snapshot.record.as_ref())
+        .map(|record| 1 + layout_items(&record.layout))
+        .sum()
+}
+
 fn sorted_panes(snapshots: &[TabSnapshot]) -> Vec<(PaneId, TerminalId)> {
     let mut panes: Vec<(PaneId, TerminalId)> = snapshots
         .iter()

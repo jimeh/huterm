@@ -15,9 +15,10 @@ use crate::terminal::RuntimeClient;
 use crate::{RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions};
 use hierarchy::HierarchyPublisher;
 use huterm_protocol::{
-    AttachmentId, CaptureError, HierarchyEvent, LayoutError, NodeId, PaneId,
-    PaneInfo, PaneLayout, RuntimeId, SessionId, SplitDirection, SplitId, TabId,
-    TerminalCommand, TerminalId, WorkspaceId,
+    AttachmentId, CaptureError, HierarchyEvent, LayoutError,
+    MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, NodeId, PaneId, PaneInfo, PaneLayout,
+    RuntimeId, SessionId, SplitDirection, SplitId, TabId, TerminalCommand,
+    TerminalId, WorkspaceId,
 };
 use thiserror::Error;
 
@@ -254,6 +255,32 @@ impl Mux {
             .checked_add(1)
             .expect("structural revision exhausted");
     }
+    /// The sessions, workspaces, tabs, panes, splits, and attachments the
+    /// runtime holds, each one hierarchy item.
+    fn hierarchy_items(&self) -> usize {
+        let tabs: usize = self
+            .workspaces
+            .values()
+            .flat_map(|workspace| &workspace.tabs)
+            .map(|tab| 1 + layout_items(&tab.layout))
+            .sum();
+        self.sessions.len()
+            + self.workspaces.len()
+            + self.attachments.len()
+            + tabs
+    }
+    /// Refuses a change that replaces `before` hierarchy items with `after`
+    /// when it would take the runtime past [`MAX_HIERARCHY_ITEMS`]. Callers
+    /// check before they allocate or change anything, so a refusal leaves
+    /// the revision and every close ticket alone.
+    fn admit_items(&self, before: usize, after: usize) -> Result<(), MuxError> {
+        if after > before
+            && self.hierarchy_items() - before + after > MAX_HIERARCHY_ITEMS
+        {
+            return Err(MuxError::LimitExceeded);
+        }
+        Ok(())
+    }
     fn allocate(&mut self) -> Result<u64, MuxError> {
         self.changed();
         self.next_id =
@@ -380,6 +407,7 @@ impl Mux {
         name: Option<&str>,
     ) -> Result<SessionId, MuxError> {
         validate_name(name)?;
+        self.admit_items(0, 1)?;
         let ordinal = next_ordinal(
             self.numbering,
             self.session_ordinal,
@@ -414,6 +442,7 @@ impl Mux {
     ) -> Result<WorkspaceId, MuxError> {
         self.select_session(session)?;
         validate_name(name)?;
+        self.admit_items(0, 1)?;
         let ordinal = next_ordinal(
             self.numbering,
             self.workspace_ordinal,
@@ -567,6 +596,8 @@ impl Mux {
         command: &TerminalCommand,
     ) -> Result<OpenedTab, MuxError> {
         self.select_workspace(workspace)?;
+        // A tab and its pane.
+        self.admit_items(0, 2)?;
         let value = self.allocate()?;
         let id = TabId::in_runtime(self.runtime_id, value);
         let pane = self.new_pane(command)?;
@@ -629,10 +660,14 @@ impl Mux {
         // Refuse before allocating: allocation advances the close revision,
         // so a refused split leaves pending close tickets valid. A spawn that
         // fails after allocation still advances it, as `open_tab` does.
-        self.tab_record(workspace, tab)?
-            .layout
+        let layout = &self.tab_record(workspace, tab)?.layout;
+        layout
             .check_split(pane, direction)
             .map_err(|error| layout_error(error, pane))?;
+        let forms_split = layout
+            .forms_split(pane, direction)
+            .map_err(|error| layout_error(error, pane))?;
+        self.admit_items(0, 1 + usize::from(forms_split))?;
         let added = self.new_pane(command)?;
         let split = SplitId::in_runtime(self.runtime_id, self.allocate()?);
         let layout = self.tab_record(workspace, tab)?.layout.with_split(
@@ -1292,13 +1327,24 @@ pub(crate) struct TestPane {
 }
 
 /// A pane's label without a title: the launched program's file name.
+/// The launched program's file name, truncated at a character boundary to
+/// [`MAX_NAME_BYTES`].
 fn fallback_name(command: &TerminalCommand) -> String {
-    command
+    let mut name = command
         .program
         .file_name()
         .unwrap_or(command.program.as_os_str())
         .to_string_lossy()
-        .into_owned()
+        .into_owned();
+    if name.len() > MAX_NAME_BYTES {
+        let end = name.floor_char_boundary(MAX_NAME_BYTES);
+        name.truncate(end);
+    }
+    name
+}
+/// The panes and splits of a layout, each one hierarchy item.
+fn layout_items(layout: &PaneLayout) -> usize {
+    layout.pane_count() + layout.split_ids().len()
 }
 /// Maps a rejected layout transform on `pane` to a Mux error.
 fn layout_error(error: LayoutError, pane: PaneId) -> MuxError {
@@ -1351,8 +1397,11 @@ fn next_ordinal<'a>(
     }
 }
 
+/// Rejects a blank name or one longer than [`MAX_NAME_BYTES`].
 fn validate_name(name: Option<&str>) -> Result<(), MuxError> {
-    if name.is_some_and(|name| name.trim().is_empty()) {
+    if name.is_some_and(|name| {
+        name.trim().is_empty() || name.len() > MAX_NAME_BYTES
+    }) {
         Err(MuxError::InvalidName)
     } else {
         Ok(())
@@ -1390,8 +1439,14 @@ pub enum MuxError {
     #[error("runtime identity space exhausted")]
     IdExhausted,
     /// A custom or socket name contained no visible characters.
-    #[error("name must not be blank; use None to clear an override")]
+    #[error(
+        "name must not be blank or longer than {MAX_NAME_BYTES} bytes; use None to clear an override"
+    )]
     InvalidName,
+    /// The operation would take the runtime past [`MAX_HIERARCHY_ITEMS`]
+    /// sessions, workspaces, tabs, panes, splits, and attachments.
+    #[error("the runtime holds at most {MAX_HIERARCHY_ITEMS} hierarchy items")]
+    LimitExceeded,
     /// A target belongs to a different runtime incarnation.
     #[error("target belongs to foreign runtime {0:?}")]
     ForeignRuntime(RuntimeId),
@@ -1448,6 +1503,8 @@ pub enum MuxError {
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
 }
+#[cfg(test)]
+mod limit_tests;
 #[cfg(test)]
 mod live_fixture;
 #[cfg(test)]

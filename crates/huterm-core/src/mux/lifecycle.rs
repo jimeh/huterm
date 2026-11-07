@@ -207,12 +207,14 @@ impl Mux {
     /// Attaches one view to a session without claiming terminal ownership,
     /// and emits [`HierarchyEvent::AttachmentCreated`].
     /// # Errors
-    /// Rejects foreign/missing sessions or exhausted identities.
+    /// Rejects foreign/missing sessions, exhausted identities, or a runtime
+    /// at its hierarchy item limit.
     pub fn attach_session(
         &mut self,
         session: SessionId,
     ) -> Result<AttachmentId, MuxError> {
         self.select_session(session)?;
+        self.admit_items(0, 1)?;
         let id = AttachmentId::in_runtime(self.runtime_id, self.allocate()?);
         self.attachments.insert(id, session);
         self.emit_hierarchy(|_| HierarchyEvent::AttachmentCreated {

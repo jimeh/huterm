@@ -25,9 +25,9 @@ pub use command::{
 };
 pub use hierarchy::{
     ApplyOutcome, DigestProfile, HierarchyEnvelope, HierarchyEvent,
-    HierarchyState, LayoutChange, ResyncReason, SessionInfo, StreamId,
-    TabChange, TabInfo, TabRecord, TabSnapshot, Touched, WorkspaceInfo,
-    resolve_tab_name,
+    HierarchyState, LayoutChange, MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES,
+    ResyncReason, SessionInfo, StreamId, TabChange, TabInfo, TabRecord,
+    TabSnapshot, Touched, WorkspaceInfo, resolve_tab_name,
 };
 pub use layout_template::{
     BUILT_IN_LAYOUTS, LayoutTemplate, MAX_LAYOUT_NAME_LEN, MAX_TEMPLATE_DEPTH,

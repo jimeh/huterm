@@ -8,6 +8,20 @@ use crate::{
     SessionId, SplitAxis, TabId, TerminalId, WorkspaceId,
 };
 
+/// The longest custom or fallback name, in UTF-8 bytes, that a session,
+/// workspace, tab, or pane holds.
+///
+/// Core rejects a longer custom name and truncates a longer fallback name at
+/// a character boundary, so every hierarchy state stays encodable.
+pub const MAX_NAME_BYTES: usize = 256;
+
+/// The most sessions, workspaces, tabs, panes, splits, and attachments one
+/// runtime holds together.
+///
+/// Core refuses a structural operation that would exceed it before changing
+/// anything, so every hierarchy snapshot stays bounded.
+pub const MAX_HIERARCHY_ITEMS: usize = 16_384;
+
 /// Identifies one ordered hierarchy stream.
 ///
 /// An embedded stream is one runtime incarnation within this process. A
