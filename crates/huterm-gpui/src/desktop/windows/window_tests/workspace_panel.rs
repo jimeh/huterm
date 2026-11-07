@@ -459,8 +459,8 @@ fn a_menu_whose_host_goes_closes_cleanly(cx: &mut TestAppContext) {
         assert_eq!(open_kind(cx, window), None);
         assert!(focused(cx, window, tab));
     });
-    // A session menu opened from the panel's host re-anchors to the title
-    // bar's when collapsing takes the panel away.
+    // Collapsing takes the panel's host away; the command closes a session
+    // menu opened from it, and the title bar's host shows instead (F1).
     harness.reload_config(window, |config| {
         config.workspaces.show = WorkspaceShow::Auto;
     });
@@ -900,6 +900,18 @@ fn a_focused_chip_holds_an_auto_hidden_fullscreen_bar_open(
     harness.press(window, "escape");
     harness.cx.update(|cx| assert!(focused(cx, window, tab)));
     assert!(!held(&mut harness), "the bar is held without focus");
+    // A workspace panel that never hides holds nothing for the tab bar.
+    harness.reload_config(window, |config| {
+        config.workspaces.position = WorkspacePosition::Left;
+    });
+    harness.wait_chrome(window, "the left panel", |chrome| {
+        matches!(chrome, WorkspaceChrome::Panel { .. })
+    });
+    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    assert!(harness.update_view(window, |view, window, _| {
+        view.focused_workspace_row(window).is_some()
+    }));
+    assert!(!held(&mut harness), "a side panel's row holds the tab bar");
 }
 
 #[gpui::test]
@@ -939,4 +951,59 @@ fn a_tab_column_beside_a_panel_resizes_from_its_own_edge(
             assert!(!band.intersects(&layout.tabs), "{tabs:?}");
         });
     }
+}
+
+#[gpui::test]
+fn an_open_session_menu_moves_to_the_title_bar_when_its_panel_goes(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+        config.window.session_button_placement = SessionButtonPlacement::Both;
+    });
+    let (window, _) = harness.workspace_window();
+    harness.add_workspace(1);
+    harness.wait_chrome(window, "the panel", |chrome| {
+        matches!(chrome, WorkspaceChrome::Panel { .. })
+    });
+    harness.wait_for("both hosts to paint", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    let view = view.read(cx);
+                    view.session_sidebar_bounds.get().is_some()
+                        && view.session_button_bounds.get().is_some()
+                })
+            })
+            .unwrap_or(false)
+    });
+    let sidebar = harness
+        .update_view(window, |view, _, _| view.session_sidebar_bounds.get())
+        .unwrap();
+    harness.click_at(window, sidebar.center());
+    assert_eq!(
+        harness.cx.update(|cx| open_kind(cx, window)),
+        Some("session")
+    );
+    // A window too narrow for the panel shows the dropdown (SW1), which
+    // takes the sidebar host away while the menu stays open.
+    let height = harness
+        .update_view(window, |_, window, _| window.viewport_size().height);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(500.0), height));
+    harness.wait_chrome(window, "the dropdown", WorkspaceChrome::is_dropdown);
+    harness.wait_for("the title host to take the open menu", |cx| {
+        a11y_node(cx, window, "session-control")["aria"]["expanded"] == true
+    });
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.session_sidebar_bounds.get(), None);
+        assert_eq!(
+            view.session_menu_anchor_for_tests(),
+            view.session_button_bounds.get()
+        );
+    });
+    assert_eq!(
+        harness.cx.update(|cx| open_kind(cx, window)),
+        Some("session")
+    );
 }

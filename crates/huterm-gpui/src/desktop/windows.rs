@@ -8363,9 +8363,11 @@ impl WorkspaceView {
     pub(super) fn reveal_held(&self, window: &Window) -> bool {
         self.reorder.is_some()
             || self.resizing_sidebar
-            || self.resizing_workspace
             || self.menu.is_some()
-            || self.focused_workspace_row(window).is_some()
+            || (self.focused_workspace_row(window).is_some()
+                && self
+                    .chrome_layout(window)
+                    .bar_shares_edge(self.layout_tabs().position))
     }
 
     fn reveal_active(&mut self, window: &Window, cx: &App) {
