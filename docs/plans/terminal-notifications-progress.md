@@ -78,11 +78,11 @@ Core treats notification text as untrusted (`notifications.rs`):
 
 Progress expires 15 seconds after the last report, matching Ghostty, so a
 program that crashed cannot leave a stale indicator. The runtime checks the
-expiry after every message, so continuous output cannot hold it, and waits
-for it while idle or backed up. A repeated, unchanged report extends the
-expiry without publishing a revision. The root's exit clears progress, and
-output parsed after the exit cannot report it again. Reset Terminal clears it
-too, since Ghostty's C reset reports no removal.
+expiry at the top of every turn, so neither continuous output nor a stream of
+controls can hold it, and waits for it while idle or backed up. A repeated,
+unchanged report extends the expiry without publishing a revision. The root's
+exit clears progress, and output parsed after the exit cannot report it again.
+Reset Terminal clears it too, since Ghostty's C reset reports no removal.
 
 ### Delivery and eligibility
 

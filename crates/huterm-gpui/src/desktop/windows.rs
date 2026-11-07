@@ -13478,18 +13478,32 @@ impl Render for WorkspaceView {
         // Before anything measures or lays out chrome text.
         let typography = Typography::of(cx);
         typography.apply(window);
-        // Only indicators this window draws move: each tab's ring shows its
-        // focused pane, and each shown pane its title ring and bar. A pane a
-        // zoom or another tab hides draws nothing.
-        let moving = |view: &TerminalView| {
-            view.progress == Some(TerminalProgress::Indeterminate)
+        // Only indicators this window draws move: each tab's ring, unless
+        // an attention mark replaces it, and each shown pane's title ring
+        // and bar. A pane a zoom or another tab hides draws nothing.
+        let spins = |status: TabStatus| {
+            matches!(
+                status,
+                TabStatus::Progress(TerminalProgress::Indeterminate, _)
+            )
         };
         self.progress_motion = !cx.reduce_motion()
             && self.tabs.iter().any(|tab| {
-                moving(tab.focused_view().read(cx))
+                let others = tab
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.pane != tab.focused().pane)
+                    .map(|pane| pane.status(cx));
+                spins(attention_status(tab.focused().status(cx), others))
                     || tab.panes.iter().any(|pane| {
                         let view = pane.view.read(cx);
-                        view.visible && moving(view)
+                        view.visible
+                            && (spins(pane.status(cx))
+                                || view.progress_bar
+                                    && view.progress
+                                        == Some(
+                                            TerminalProgress::Indeterminate,
+                                        ))
                     })
             });
         self.progress_step = super::progress::phase(Instant::now());

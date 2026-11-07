@@ -961,10 +961,6 @@ impl Owner<'_> {
         probes: &ProbeSchedule,
     ) -> Result<(), RuntimeError> {
         let now = Instant::now();
-        if self.status.expire_progress(now) {
-            // The caller's next turn flushes the cleared status.
-            return Ok(());
-        }
         self.compression
             .observe(self.engine.compression_activity()?, now);
         if self.compression.due(now) {
@@ -1517,6 +1513,9 @@ fn run_terminal(
                     owner.metadata.publish(probe.name, &mut owner.status);
                 }
             }
+            // Every turn, so neither output nor controls that never pause
+            // keep progress alive.
+            owner.status.expire_progress(Instant::now());
             owner.status.flush(registry);
             let mut controls_drained = 0;
             while controls_drained < MESSAGE_CAPACITY {
@@ -1752,7 +1751,6 @@ fn run_terminal(
             match writer_state {
                 WriterQueueState::Drained => {}
                 WriterQueueState::Full => {
-                    owner.status.expire_progress(Instant::now());
                     owner.status.flush(registry);
                     if controls_drained < MESSAGE_CAPACITY {
                         let deadline = [
@@ -1825,8 +1823,6 @@ fn run_terminal(
             if !healthy {
                 closing.store(true, Ordering::Release);
             }
-            // Output that never pauses must not keep progress alive.
-            owner.status.expire_progress(Instant::now());
             // A snapshot that shows this message's output is never ahead of
             // the status the same output produced.
             owner.status.flush(registry);

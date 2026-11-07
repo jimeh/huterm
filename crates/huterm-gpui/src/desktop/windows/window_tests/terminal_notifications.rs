@@ -346,3 +346,34 @@ fn a_notification_while_settings_is_in_front_is_a_notice(
         assert_eq!(notice.message, "Build done");
     });
 }
+
+#[gpui::test]
+fn a_bell_mark_over_the_ring_stops_its_motion(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(PROGRAM);
+    let second = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.wait_text(window, first, "READY");
+    harness.update_view(window, |view, window, cx| {
+        view.select_tab(second, true, window, cx);
+    });
+    harness.activate(window, second);
+    let _spin = harness.send_line(first, "spin");
+    let motion = |cx: &mut App| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .unwrap()
+                    .read(cx)
+                    .progress_motion
+            })
+            .unwrap()
+    };
+    harness.wait_for("the inactive tab's ring to turn", motion);
+    // The notification marks the inactive tab, and the mark replaces its
+    // ring.
+    let _note = harness.send_line(first, "note");
+    harness.wait_for("the mark to stop the ring", |cx| {
+        status(cx, window, first) == TabStatus::Bell && !motion(cx)
+    });
+}
