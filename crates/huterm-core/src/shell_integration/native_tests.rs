@@ -191,6 +191,31 @@ impl Shell {
                 .is_some_and(|(_, rest)| rest.contains("READY>"))
         });
     }
+    /// What a triple-click on the first character of `needle` selects, on the
+    /// lowest screen row that shows it.
+    fn line_selection(&self, needle: &str) -> Option<String> {
+        use huterm_protocol::{BufferPoint, BufferRange, SelectionUnit};
+        let engine = &self.engine;
+        let generation = engine.generation();
+        let size = engine.size();
+        (0..usize::from(size.rows)).find_map(|rows_from_live_bottom| {
+            let point = |column| BufferPoint {
+                rows_from_live_bottom,
+                column,
+            };
+            let row = BufferRange {
+                start: point(0),
+                end: point(size.columns - 1),
+            };
+            let text = engine.extract_text(generation, row).unwrap()?;
+            let column = text[..text.find(needle)?].chars().count();
+            let press = point(u16::try_from(column).unwrap());
+            let range = engine
+                .select_units(generation, press, press, SelectionUnit::Line)
+                .unwrap()?;
+            engine.extract_text(generation, range).unwrap()
+        })
+    }
     fn capture_env(&mut self, name: &str, directory: &Directory) -> String {
         let command = format!(
             "/usr/bin/env {} '{}'",
@@ -1559,6 +1584,98 @@ fn native_zsh_prompt_survives_replaced_and_later_line_init_widgets() {
         );
         assert_stream(&mut shell, "zsh", "false", "1");
     }
+}
+
+#[test]
+fn native_zsh_marks_a_prompt_a_widget_reassigns_and_redraws() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    for redraw in ["reset-prompt", ".reset-prompt"] {
+        let (home, mut command) = fixture("zsh", false);
+        command.program.clone_from(&binary);
+        // Like a vi mode indicator. The widget's own options must govern the
+        // expansion: without its prompt_subst the prompt shows `$(`.
+        home.write(
+            ".zshrc",
+            &format!(
+                r#"PROMPT='READY> '
+fixture_redraw() {{
+    setopt local_options prompt_subst ksh_arrays sh_glob
+    PROMPT='READY> $(print -rn -- REDRAWN) '
+    zle {redraw}
+    print -r -- "$PROMPT" > "$HOME/after"
+}}
+zle -N fixture_redraw
+bindkey '^X' fixture_redraw
+"#
+            ),
+        );
+        let mut shell = Shell::spawn(&command);
+        shell.prompt();
+        shell.transcript.clear();
+        shell.send("echo typed\x18");
+        shell.until(|bytes| {
+            String::from_utf8_lossy(bytes).matches("echo typed").count() == 2
+        });
+        let transcript = String::from_utf8_lossy(&shell.transcript);
+        assert!(
+            transcript.contains("READY> REDRAWN "),
+            "{redraw}: {transcript:?}"
+        );
+        assert_eq!(
+            markers(&shell.transcript),
+            ["A", "B"],
+            "{redraw}: {transcript:?}"
+        );
+        assert_eq!(
+            shell.line_selection("echo typed").as_deref(),
+            Some("echo typed"),
+            "{redraw}: the redrawn prompt bounds the input"
+        );
+        assert_eq!(
+            fs::read_to_string(home.0.join("after")).unwrap(),
+            "READY> $(print -rn -- REDRAWN) \n",
+            "{redraw}: the widget gets its own prompt back"
+        );
+        shell.send("\x15");
+        assert_stream(&mut shell, "zsh", "false", "1");
+    }
+}
+
+#[test]
+fn native_zsh_transient_prompt_keeps_marks_and_commands_see_the_user_prompt() {
+    let Some(binary) = executable("zsh") else {
+        return;
+    };
+    let (home, mut command) = fixture("zsh", false);
+    command.program = binary;
+    // Powerlevel10k's transient prompt assigns PROMPT for one function call
+    // that redraws it as the line finishes, and refreshes before returning.
+    home.write(
+        ".zshrc",
+        "PROMPT='READY> '\nfixture_transient() { zle .reset-prompt; zle -R; }\nfixture_finish() { PROMPT='T> ' fixture_transient; }\nzle -N zle-line-finish fixture_finish\n",
+    );
+    let mut shell = Shell::spawn(&command);
+    shell.prompt();
+    let input = r#"[[ $PROMPT == 'READY> ' ]] && print -r -- user"-"prompt"#;
+    let transcript = shell.cycle(input);
+    let text = String::from_utf8_lossy(&transcript);
+    assert!(
+        text.contains("T> ") && text.contains("user-prompt"),
+        "{text:?}"
+    );
+    assert_eq!(
+        markers(&transcript),
+        ["A", "B", "C", "D;0", "A", "B"],
+        "{text:?}"
+    );
+    assert_eq!(
+        shell.line_selection("[[ $PROMPT").as_deref(),
+        Some(input),
+        "the transient prompt bounds the command in history"
+    );
+    assert_stream(&mut shell, "zsh", "false", "1");
 }
 
 #[test]

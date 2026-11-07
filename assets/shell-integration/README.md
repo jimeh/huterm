@@ -27,11 +27,19 @@ only. Their licenses were checked first.
   installs, so Huterm's entries keep that layout intact and keep 0.7.0's
   pending installer last. The native test fixtures emulate those boundaries in
   their own code.
+- Prompt themes, run in a scratch home and read to find how each one sets and
+  redraws `PROMPT` (all MIT): Powerlevel10k 1.20.0 (commit
+  `35833ea15f14b71dbcebc7e54c104d8d56ca5268`), Pure 1.28.4 (commit
+  `cac55d0b531a0db72294c9bba9453dfa6374c59d`), and Spaceship 4.22.6 (commit
+  `0676854eb49585d6be2b4faf218de92bbf18ce18`). Starship 1.27.0's generated
+  zsh init (ISC) was read too, and Oh My Zsh was only run.
 - Shell sources, to confirm behavior the manuals leave open: zsh 5.9
   (`Src/exec.c`, `Src/jobs.c`, `Src/utils.c`; the zsh licence) for which
-  hook contexts preserve `$?`, `pipestatus`, and `$_`, and bash 5.2 and 5.3
-  (`parse.y`, `eval.c`; GPLv3, read only, nothing copied) for how `\#` is
-  counted in `${var@P}`.
+  hook contexts preserve `$?`, `pipestatus`, and `$_`; zsh 5.9's
+  `Src/Zle/zle_main.c` and `Src/Zle/zle_refresh.c` for when `reset-prompt`
+  expands the prompt and which refreshes run `zle-line-pre-redraw`; and bash
+  5.2 and 5.3 (`parse.y`, `eval.c`; GPLv3, read only, nothing copied) for how
+  `\#` is counted in `${var@P}`.
 
 ## Mechanisms
 
@@ -53,7 +61,8 @@ only. Their licenses were checked first.
   and the `always` error boundary. Hook functions run with the command's
   `$?`, `pipestatus`, and `$_` preserved. Huterm restores the undecorated
   prompt only while `PROMPT` holds the exact value Huterm set, so it never
-  removes a framework's marks.
+  removes a framework's marks. A `zle` function wraps the builtin so that a
+  theme's own `reset-prompt` expands a marked prompt.
 - [Fish initialization](https://fishshell.com/docs/current/language.html#configuration-files),
   event handlers, `fish_preexec`, `fish_postexec`, and `fish_prompt`.
 - [Nushell configuration](https://www.nushell.sh/book/configuration.html),

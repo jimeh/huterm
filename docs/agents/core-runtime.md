@@ -113,7 +113,16 @@ but a `zsh/sched` command does not: it can restore `$?` and `$_` (its return
 value and last argument), never `pipestatus`. Keep zsh decoration in the last
 `precmd` hook, and use the scheduled command only when hooks follow it.
 Changing the precmd array during iteration only affects the next prompt.
-Do not decorate zsh prompts from ZLE widgets or reset-prompt.
+Do not decorate zsh prompts from ZLE widgets or call reset-prompt: Debian and
+oh-my-zsh replace `zle-line-init`, and a second reset expands `prompt_subst`
+twice. A theme that rebuilds `PROMPT` under ZLE redraws it with reset-prompt,
+which expands `PROMPT` at once; `zle-line-pre-redraw` runs only in the key
+loop, after that expansion, and `zle -F` handlers and `zle-line-finish` refresh
+without it. Huterm's `zle` function therefore marks an unmarked `PROMPT` only
+for the caller's reset-prompt and restores the caller's value straight after,
+which also survives a transient `PROMPT=... function` assignment. It must not
+change options around the builtin, because the caller's options govern the
+expansion.
 Native PTY tests cover the launch boundary. `HUTERM_REQUIRE_SHELLS=1` makes
 shell availability mandatory in CI Checks: Apple Bash 3.2 is required on macOS,
 where a `bash` of 4.4 or later is optional; Linux requires one (Ubuntu 24.04

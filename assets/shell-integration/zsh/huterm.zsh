@@ -58,6 +58,9 @@ _huterm_zsh_disable() {
     chpwd_functions=(${chpwd_functions:#_huterm_zsh_*})
     _huterm_zsh_restore
     _huterm_zsh_unschedule
+    if [[ -n $_huterm_zsh_zle && ${functions[zle]-} == "$_huterm_zsh_zle" ]]; then
+        unfunction zle
+    fi
 }
 _huterm_zsh_failed() {
     _huterm_zsh_disable
@@ -152,6 +155,42 @@ _huterm_zsh_late() {
     return $code
 }
 _huterm_zsh_keep() { return 0; }
+# Themes that rebuild PROMPT under ZLE, for asynchronous segments, transient
+# prompts, or vi mode indicators, redraw it with `zle reset-prompt`, which
+# expands PROMPT at once. No ZLE hook runs before that expansion, so Huterm
+# wraps the zle builtin: while a caller's reset-prompt runs, an unmarked prompt
+# carries Huterm's marks, and the caller's value comes back straight after.
+# The wrapper changes no options, because the caller's options govern the
+# prompt expansion.
+typeset -g _huterm_zsh_redraw_set= _huterm_zsh_redraw_user= _huterm_zsh_zle=
+_huterm_zsh_redraw_mark() {
+    local percent=0
+    [[ -o prompt_percent ]] && percent=1
+    emulate -L zsh
+    (( ! _huterm_zsh_disabled && _huterm_zsh_marked && percent )) || return 1
+    case $PROMPT in
+        (*$'\e]133;'*|*'\e]133;'*|*'\E]133;'*|*'\033]133;'*|*'\x1b]133;'*) return 1 ;;
+    esac
+    _huterm_zsh_redraw_user=$PROMPT
+    PROMPT=$_huterm_zsh_amark$PROMPT$_huterm_zsh_bmark
+    _huterm_zsh_redraw_set=$PROMPT
+}
+_huterm_zsh_redraw_restore() {
+    [[ $PROMPT != "$_huterm_zsh_redraw_set" ]] || PROMPT=$_huterm_zsh_redraw_user
+    _huterm_zsh_redraw_set= _huterm_zsh_redraw_user=
+    return $1
+}
+if (( ! $+functions[zle] )); then
+    zle() {
+        if [[ ${1-} != reset-prompt && ${1-} != .reset-prompt ]] || ! _huterm_zsh_redraw_mark; then
+            builtin zle "$@"
+            return
+        fi
+        builtin zle "$@"
+        _huterm_zsh_redraw_restore $?
+    }
+    _huterm_zsh_zle=$functions[zle]
+fi
 _huterm_zsh_preexec() {
     emulate -L zsh
     (( ! _huterm_zsh_disabled )) || return 0
