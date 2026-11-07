@@ -1736,11 +1736,11 @@ each one once, in the window you used most recently that shows the terminal:
 - While Huterm is in the background, it is a system notification, titled with
   the tab's name or with the program's title and the tab's name. Clicking it
   brings Huterm forward with that terminal's window, tab, and pane, summoning a
-  hidden Quake window and leaving a zoom that hid the pane.
-- While Huterm is in front, including while Settings is, it is a notice in
-  the active terminal window. When the terminal is in another tab or window,
-  or behind a zoomed pane, the notice offers **Show Tab**. Each tab keeps only
-  its newest notification notice.
+  hidden Quake window and clearing a zoom that hid the pane.
+- While Huterm is in front, it is a notice in the active window, or in the
+  terminal's own window while Settings is in front. When the terminal is in
+  another tab or window, or behind a zoomed pane, the notice offers
+  **Show Tab**. Each tab keeps only its newest notification notice.
 - A tab that sent a notification you have not seen shows the bell mark until
   you view it.
 
