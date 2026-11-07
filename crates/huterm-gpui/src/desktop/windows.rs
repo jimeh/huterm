@@ -3124,6 +3124,8 @@ fn open_window_with_profile(
                 workspace_width,
                 resizing_workspace: false,
                 workspace_count: 0,
+                workspace_chrome_now: Cell::new(WorkspaceChrome::None),
+                workspace_revealed: None,
                 workspace_label: session_control::SessionLabel::default(),
                 workspace_trigger_bounds: Rc::new(Cell::new(None)),
                 workspace_scroll: workspace_scroll.clone(),
@@ -4669,6 +4671,11 @@ struct WorkspaceView {
     resizing_workspace: bool,
     /// Workspaces in the window's session, as render last read them.
     workspace_count: usize,
+    /// The chrome render last resolved for the window's size, which the
+    /// corner controls' placement reads between frames.
+    workspace_chrome_now: Cell<WorkspaceChrome>,
+    /// The shown workspace whose row the panel or bar last scrolled to.
+    workspace_revealed: Option<WorkspaceId>,
     /// The shown workspace's name the dropdown last measured.
     workspace_label: session_control::SessionLabel,
     /// The dropdown trigger's painted bounds, for the workspace menu's
@@ -7268,11 +7275,13 @@ impl WorkspaceView {
         };
         let titlebar = self.title_row();
         let content = layout.content;
-        let (left, width) = if position.vertical() {
-            (layout.terminal.origin.x, layout.terminal.size.width)
-        } else {
-            (layout.area.origin.x, layout.area.size.width)
-        };
+        // A top workspace bar takes the whole row, above any column.
+        let (left, width) =
+            if position.vertical() && !layout.workspace_chrome.top_bar() {
+                (layout.terminal.origin.x, layout.terminal.size.width)
+            } else {
+                (layout.area.origin.x, layout.area.size.width)
+            };
         let bounds = Bounds::new(
             point(left, content.origin.y),
             size(width, titlebar + self.fullscreen_insets.top.max(px(0.0))),
@@ -14427,6 +14436,7 @@ impl Render for WorkspaceView {
         let tabs = self.layout_tabs();
         let position = tabs.position;
         let layout = self.chrome_layout(window);
+        self.release_stale_row_focus(&layout, window, cx);
         let frame = layout.frame;
         let content = layout.content;
         // Opaque windows retain their root/frame underlay. A translucent
@@ -14811,8 +14821,12 @@ impl Render for WorkspaceView {
         let (lead_held, trail_held) = self.panel_corners(&layout);
         let top_bar_row = layout.workspace_chrome.top_bar()
             && (titlebar > px(0.0) || frame.controls);
-        let sidebar_title_row =
-            position.vertical() && bar_drawn && titlebar > px(0.0);
+        // A top workspace bar owns the whole title row, so a column below
+        // it has no title strip of its own.
+        let sidebar_title_row = position.vertical()
+            && bar_drawn
+            && titlebar > px(0.0)
+            && !top_bar_row;
         let title_menu_button = (menu_placement
             == MenuButtonPlacement::TitleStrip
             && !sidebar_title_row
@@ -15632,6 +15646,7 @@ impl Render for WorkspaceView {
                 // terminal column's title row beside a left column, the
                 // column's own top strip on the right.
                 if session_placement.host == SessionControlHost::TitleStrip
+                    && !trail_held
                     && let Some(control) = self.session_control_element(
                         session_placement,
                         colors,
@@ -15655,7 +15670,9 @@ impl Render for WorkspaceView {
                             ),
                     );
                 }
-                if menu_placement == MenuButtonPlacement::TitleStrip {
+                if menu_placement == MenuButtonPlacement::TitleStrip
+                    && !trail_held
+                {
                     chrome = chrome.child(
                         self.menu_button_element(colors, cx)
                             .absolute()
@@ -16244,9 +16261,22 @@ impl WorkspaceView {
         menu_button_placement(
             self.config.window.menu_button,
             self.title_row() > px(0.0),
-            self.layout_tabs().position,
+            self.corner_tab_position(),
             true,
         )
+    }
+
+    /// The tab position the window's corner controls follow: a right
+    /// workspace panel holds the title row's trailing corner, so merged
+    /// title-bar tabs leave the controls there, as a title strip would.
+    pub(super) fn corner_tab_position(&self) -> TabPosition {
+        let position = self.layout_tabs().position;
+        if position == TabPosition::Titlebar && self.right_panel_holds_corner()
+        {
+            TabPosition::Top
+        } else {
+            position
+        }
     }
 
     /// Where the menu button is drawn this frame.
@@ -16258,7 +16288,7 @@ impl WorkspaceView {
         menu_button_placement(
             self.config.window.menu_button,
             self.title_row() > px(0.0),
-            self.layout_tabs().position,
+            self.corner_tab_position(),
             bar_shown,
         )
     }

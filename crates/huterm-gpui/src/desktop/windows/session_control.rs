@@ -136,7 +136,7 @@ impl WorkspaceView {
         session_control_host(
             self.config.window.session_button && title,
             self.title_row() > px(0.0),
-            self.layout_tabs().position,
+            self.corner_tab_position(),
             bar_shown,
         )
     }

@@ -43,6 +43,8 @@ impl WorkspaceView {
             .attached_session(cx)
             .and_then(|session| state.session_workspaces(session))
             .map_or(0, <[_]>::len);
+        self.workspace_chrome_now
+            .set(self.workspace_chrome(window.viewport_size()));
         let Some(name) = self
             .workspace_id(cx)
             .and_then(|workspace| state.workspace(workspace))
@@ -121,7 +123,7 @@ impl WorkspaceView {
     pub(super) fn workspace_panel_background(colors: TabColors) -> Hsla {
         let bar = colors.bar;
         let lightness = if bar.l > 0.5 {
-            bar.l - 0.05
+            bar.l - 0.03
         } else {
             bar.l * 0.8
         };
@@ -152,6 +154,53 @@ impl WorkspaceView {
             .iter()
             .find(|(_, handle)| handle.is_focused(window))
             .map(|(workspace, _)| *workspace)
+    }
+
+    /// Hands focus to the terminal when the row or chip that holds it is
+    /// no longer drawn: its workspace closed or left the session, or the
+    /// panel or bar went. A focus handle nothing draws would swallow every
+    /// key. Drops the handles of workspaces the session no longer holds.
+    pub(super) fn release_stale_row_focus(
+        &mut self,
+        layout: &ChromeLayout,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let rows: HashSet<WorkspaceId> = self
+            .workspace_rows(cx)
+            .iter()
+            .map(|row| row.workspace)
+            .collect();
+        let focused = self.focused_workspace_row(window);
+        if let Some(focused) = focused
+            && (layout.workspace_chrome.edge().is_none()
+                || !rows.contains(&focused))
+        {
+            cx.defer_in(window, move |view, window, cx| {
+                if view.focused_workspace_row(window) == Some(focused) {
+                    view.focus_terminal(window, cx);
+                }
+            });
+        }
+        self.workspace_focus.retain(|workspace, _| {
+            rows.contains(workspace) || Some(*workspace) == focused
+        });
+        self.workspace_row_bounds
+            .borrow_mut()
+            .retain(|workspace, _| rows.contains(workspace));
+        // A workspace the window starts to show, as one New Workspace just
+        // made past the end of a long list, scrolls into view.
+        let shown = self.workspace_id(cx);
+        if layout.workspace_chrome.edge().is_some() {
+            if shown != self.workspace_revealed
+                && let Some(workspace) = shown
+            {
+                self.reveal_workspace_row(workspace, cx);
+            }
+            self.workspace_revealed = shown;
+        } else {
+            self.workspace_revealed = None;
+        }
     }
 
     /// Whether the window shows a panel or bar, which the panel commands
@@ -720,12 +769,15 @@ impl WorkspaceView {
             .as_ref()
             .is_some_and(|menu| menu.kind == MenuKind::WorkspaceRow(workspace));
         let bounds_cell = Rc::clone(&self.workspace_row_bounds);
+        // Shown, then custom, then automatic names: an automatic name
+        // dims to the tab bar's inactive text and no further, so it still
+        // reads as enabled in light themes.
         let name_color = if shown {
             colors.foreground
         } else if row.automatic {
-            colors.inactive.opacity(0.75)
-        } else {
             colors.inactive
+        } else {
+            colors.foreground.opacity(0.85)
         };
         let element = div()
             .id(gpui::ElementId::Name(
@@ -783,7 +835,7 @@ impl WorkspaceView {
                 div()
                     .flex_none()
                     .text_size(typography::ui(11.0))
-                    .text_color(colors.inactive.opacity(0.8))
+                    .text_color(colors.inactive)
                     .child(row.tabs.to_string()),
             )
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
@@ -947,16 +999,15 @@ impl WorkspaceView {
             .collect();
         let [new, collapse] = self.workspace_controls(colors, cx);
         let view = cx.entity();
+        // Rows are the scrolled region's direct children, so revealing one
+        // indexes it.
         let list = ScrollArea::new("workspace-rows", &self.workspace_scroll)
             .fill()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.0))
-                    .pb(px(6.0))
-                    .children(row_elements),
-            )
+            .padding(gpui::Edges {
+                bottom: px(6.0),
+                ..gpui::Edges::default()
+            })
+            .children(row_elements)
             .render(
                 &mut self.workspace_scrollbar,
                 colors.scrollbar,
@@ -1307,6 +1358,19 @@ impl WorkspaceView {
 }
 
 impl WorkspaceView {
+    /// Whether a right workspace panel, as render last resolved it, holds
+    /// the title row's trailing corner.
+    pub(super) fn right_panel_holds_corner(&self) -> bool {
+        (self.title_row() > px(0.0) || self.window_frame().controls)
+            && matches!(
+                self.workspace_chrome_now.get(),
+                WorkspaceChrome::Panel {
+                    edge: workspace_chrome::Edge::Right,
+                    ..
+                }
+            )
+    }
+
     /// Whether a side workspace panel holds the title row's leading or
     /// trailing corner: only in a window with a title row.
     pub(super) fn panel_corners(&self, layout: &ChromeLayout) -> (bool, bool) {

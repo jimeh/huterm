@@ -263,6 +263,9 @@ fn the_dropdown_opens_the_workspace_menu_which_switches_and_shows_the_panel(
         assert_eq!(aria["expanded"], false);
     });
     harness.click_at(window, trigger.center());
+    harness.wait_for("the dropdown to report its menu", |cx| {
+        a11y_node(cx, window, "workspace-dropdown")["aria"]["expanded"] == true
+    });
     harness.cx.update(|cx| {
         assert_eq!(open_kind(cx, window), Some("workspace"));
         assert_eq!(
@@ -308,6 +311,9 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
         let node = a11y_node(cx, window, &id);
         assert_eq!(node["aria"]["role"], "Button");
         assert_eq!(node["aria"]["label"], "Workspace: Workspace 2, 1 tab");
+        assert_eq!(node["aria"]["selected"], false, "{node}");
+        let shown = format!("workspace-row-{}", harness.workspace.get());
+        assert_eq!(a11y_node(cx, window, &shown)["aria"]["selected"], true);
     });
     // A click shows it.
     harness.click_at(window, row.center());
@@ -655,5 +661,161 @@ fn always_shows_the_panel_with_one_workspace_and_collapse_is_per_window(
         };
         assert!(saved(one));
         assert!(!saved(two));
+    });
+}
+
+#[gpui::test]
+fn every_edge_draws_with_every_tab_position_and_session_placement(
+    cx: &mut TestAppContext,
+) {
+    use huterm_config::TabPosition;
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.workspaces.show = WorkspaceShow::Always;
+        config.tabs.always_show = true;
+    });
+    let (window, tab) = harness.workspace_window();
+    for position in [
+        WorkspacePosition::Left,
+        WorkspacePosition::Top,
+        WorkspacePosition::Right,
+        WorkspacePosition::Bottom,
+    ] {
+        for tabs in [
+            TabPosition::Titlebar,
+            TabPosition::Top,
+            TabPosition::Bottom,
+            TabPosition::Left,
+            TabPosition::Right,
+        ] {
+            for placement in [
+                SessionButtonPlacement::TitleBar,
+                SessionButtonPlacement::Sidebar,
+                SessionButtonPlacement::Both,
+            ] {
+                harness.reload_config(window, |config| {
+                    config.workspaces.position = position;
+                    config.tabs.position = tabs;
+                    config.window.session_button_placement = placement;
+                });
+                let label = format!("{position:?} {tabs:?} {placement:?}");
+                harness.wait_for("the frame to draw", |cx| {
+                    mapped(cx, window, tab) == Some(chrome(cx, window).terminal)
+                });
+                // Every control is drawn once: a duplicate would also
+                // panic in the accessibility tree.
+                harness.cx.update(|cx| {
+                    let menu = a11y_node(cx, window, "window-menu");
+                    assert_eq!(menu["aria"]["role"], "Button", "{label}");
+                    let layout = chrome(cx, window);
+                    let band = layout.workspace.expect("a band");
+                    assert!(
+                        !band.intersects(&layout.terminal),
+                        "{label}: {band:?} {:?}",
+                        layout.terminal
+                    );
+                });
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn closing_the_focused_rows_workspace_returns_focus_to_the_terminal(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.workspaces.position = WorkspacePosition::Top;
+    });
+    let (window, tab) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    harness.wait_chrome(window, "the bar", |chrome| {
+        matches!(chrome, WorkspaceChrome::Bar { .. })
+    });
+    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    harness.press(window, "end");
+    harness.press(window, "shift-f10");
+    assert_eq!(
+        harness.cx.update(|cx| open_kind(cx, window)),
+        Some("workspace_row")
+    );
+    // Close Workspace… is the row menu's last item; the idle workspace
+    // closes without asking.
+    harness.press(window, "end enter");
+    harness.wait_for("the workspace to close", |cx| {
+        let state = cx.global::<Desktop>().hierarchy.state();
+        state.workspace(second).is_none()
+    });
+    harness.wait_chrome(window, "no panel", |chrome| {
+        chrome == WorkspaceChrome::None
+    });
+    harness.cx.update(|cx| {
+        assert!(focused(cx, window, tab), "focus did not return");
+    });
+    harness.type_line(window, "after");
+    harness.wait_text(window, tab, "got:after");
+}
+
+#[gpui::test]
+fn a_focused_row_whose_workspace_goes_hands_focus_to_the_terminal(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.workspaces.show = WorkspaceShow::Always;
+    });
+    let (window, tab) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    let (third, _) = harness.add_workspace(1);
+    harness.wait_chrome(window, "the panel", |chrome| {
+        matches!(chrome, WorkspaceChrome::Panel { .. })
+    });
+    harness.row_bounds(window, third);
+    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    harness.press(window, "down");
+    assert_eq!(
+        harness.update_view(window, |view, window, _| {
+            view.focused_workspace_row(window)
+        }),
+        Some(second)
+    );
+    // Another client closes it, as a native menu's pick does after it
+    // handed focus back to the row.
+    harness.runtime.lock().close_workspace(second).unwrap();
+    harness
+        .wait_for("focus back on the terminal", |cx| focused(cx, window, tab));
+    harness.type_line(window, "after");
+    harness.wait_text(window, tab, "got:after");
+}
+
+#[gpui::test]
+fn showing_a_workspace_scrolls_its_row_into_view(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.workspace_window();
+    let mut last = None;
+    for _ in 0..40 {
+        last = Some(harness.add_workspace(1));
+    }
+    let (last, tabs) = last.unwrap();
+    harness.wait_chrome(window, "the panel", |chrome| {
+        matches!(chrome, WorkspaceChrome::Panel { .. })
+    });
+    let band = harness
+        .cx
+        .update(|cx| chrome(cx, window).workspace.unwrap());
+    harness.show_workspace(window, last, &tabs);
+    harness.wait_for("the shown row inside the panel", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx)
+                        .workspace_row_bounds
+                        .borrow()
+                        .get(&last)
+                        .is_some_and(|row| {
+                            row.top() >= band.top()
+                                && row.bottom() <= band.bottom()
+                        })
+                })
+            })
+            .unwrap_or(false)
     });
 }
