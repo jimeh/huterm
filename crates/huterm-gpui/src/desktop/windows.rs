@@ -77,7 +77,7 @@ use huterm_core::{
 use huterm_protocol::{
     AttachmentId, CommandArgument, CommandScope, HierarchyState, NodeId,
     PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeId, SessionId, SplitAxis,
-    SplitDirection, SplitId, SplitNode, TerminalId, Touched,
+    SplitDirection, SplitId, SplitNode, TerminalId, TerminalProgress, Touched,
     ViewerCapabilities, WorkspaceId, catalog, resolve_tab_name, validate,
     validate_supplied,
 };
@@ -227,6 +227,7 @@ mod tab_position;
 mod tab_strip;
 pub(super) mod tab_visibility;
 mod terminal_menu;
+mod terminal_notifications;
 mod transparency_panel;
 mod view_install;
 mod views;
@@ -986,6 +987,8 @@ struct Desktop {
     menu_presenter: Option<Rc<dyn MenuPresenter>>,
     /// Plays bell sounds under `[terminal.bell] audio`.
     audible_bell: audible_bell::AudibleBell,
+    /// The app-wide notification limit and counts.
+    notifier: terminal_notifications::Notifier,
     /// Close failures reported in any window, including windows since
     /// removed.
     #[cfg(test)]
@@ -1800,6 +1803,7 @@ fn install_desktop(
         #[cfg(not(target_os = "macos"))]
         menu_presenter: None,
         audible_bell: audible_bell::AudibleBell::platform(),
+        notifier: terminal_notifications::Notifier::default(),
         #[cfg(test)]
         close_failures: 0,
         #[cfg(test)]
@@ -1809,6 +1813,7 @@ fn install_desktop(
     });
     system_appearance::follow(cx);
     apply_typography(cx);
+    terminal_notifications::install(cx);
     start_hierarchy_drain(cx);
     checkpoints::observe(cx);
     cross_window::start_smoke_publisher(cx);
@@ -3057,6 +3062,9 @@ fn open_window_with_profile(
                 ),
                 pane_bar_pointer: None,
                 pane_grab: PaneGrab::default(),
+                progress_motion: false,
+                progress_step: 0,
+                attention_requests: 0,
                 drag_right_press: false,
                 layout_pending: false,
                 synced_presentation: None,
@@ -3169,6 +3177,9 @@ fn open_window_with_profile(
                     view.pane_grab.suppress(now);
                     if window.is_window_active() {
                         cx.global_mut::<Desktop>().cross.activated(view.window);
+                        // Permission may have changed while Huterm was in
+                        // the background.
+                        crate::native_notifications::refresh();
                     }
                     if !window.is_window_active() {
                         view.cancel_divider_drag(cx);
@@ -3346,6 +3357,10 @@ impl refresh::Animated for WorkspaceView {
             .merge(self.reveal.schedule(now))
             .merge(self.pane_bars.schedule(now))
             .merge(self.pane_grab.schedule());
+        if self.progress_motion {
+            next = next
+                .merge(AnimationSchedule::at(super::progress::next_step(now)));
+        }
         if let Some(at) = self.pointer_reveal.probe_at {
             next = next.merge(AnimationSchedule::at(at));
         }
@@ -3425,6 +3440,25 @@ impl refresh::Animated for WorkspaceView {
         if self.pane_grab.tick(now) {
             cx.notify();
         }
+        if self.progress_motion
+            && super::progress::phase(now) != self.progress_step
+        {
+            // The tab bar redraws with this view; each moving pane bar
+            // redraws with its own.
+            for tab in &self.tabs {
+                for pane in &tab.panes {
+                    pane.view.update(cx, |view, cx| {
+                        if view.visible
+                            && view.progress
+                                == Some(TerminalProgress::Indeterminate)
+                        {
+                            cx.notify();
+                        }
+                    });
+                }
+            }
+            cx.notify();
+        }
         if self.panel_scrollbar.advance(now)
             | self.notice_scrollbar.advance(now)
         {
@@ -3437,6 +3471,13 @@ impl refresh::Animated for WorkspaceView {
 }
 
 impl WorkspaceView {
+    /// Asks the platform to draw attention to this window without taking
+    /// focus.
+    fn request_attention(&mut self, window: &Window) {
+        self.attention_requests += 1;
+        window.request_attention();
+    }
+
     /// Raises an expiring command failure notice.
     fn report_failure(
         &mut self,
@@ -3734,6 +3775,16 @@ impl WorkspaceView {
             self.restore_tab_focus(window, cx);
             self.reconcile_notices(window, cx);
         }
+        if command.id == terminal_notifications::SHOW_PANE {
+            if let Some(CommandValue::Pane(pane)) = command.argument("pane") {
+                // The reveal updates windows, this one included.
+                let pane = pane.get();
+                cx.defer(move |cx| {
+                    terminal_notifications::reveal_pane(pane, cx);
+                });
+            }
+            return Ok(CommandOutcome::Completed);
+        }
         if command.id == view_install::RETRY_INSTALL {
             if !terminating(cx) {
                 self.reconcile(&Touched::everything(), false, cx);
@@ -4003,10 +4054,21 @@ impl PaneView {
 
     fn status(&self, cx: &App) -> TabStatus {
         let terminal = self.view.read(cx);
+        let progress = terminal.progress.map(|progress| {
+            let phase = if progress == TerminalProgress::Indeterminate
+                && !cx.reduce_motion()
+            {
+                super::progress::phase(Instant::now())
+            } else {
+                0
+            };
+            (progress, phase)
+        });
         TabStatus::new(
             terminal.exited,
             terminal.failed,
-            terminal.bell.unseen,
+            terminal.bell.marked(),
+            progress,
             terminal.metadata.foreground_process(),
         )
     }
@@ -4529,6 +4591,13 @@ struct WorkspaceView {
     pane_bar_pointer: Option<gpui::Point<Pixels>>,
     /// The held modifiers and the modifier pane drag they arm.
     pane_grab: PaneGrab,
+    /// The last render drew indeterminate progress that moves, so the
+    /// window steps it on its deadline timer.
+    progress_motion: bool,
+    /// The indeterminate step the last render drew.
+    progress_step: u32,
+    /// Attention requests this window made, for tests and smoke state.
+    attention_requests: u64,
     /// On macOS, a real Right press that came during a window drag and was
     /// stopped, so no menu opened. Its release clears it and ends nothing.
     drag_right_press: bool,
@@ -8478,6 +8547,24 @@ impl WorkspaceView {
             self.notices
                 .replace_source(&source, replacements, Instant::now());
             self.reconcile_notices(window, cx);
+        }
+        if result.bells
+            && self.config.terminal.bell.attention
+            && !window.is_window_active()
+        {
+            // macOS bounces the Dock icon once, only while Huterm is in the
+            // background; X11 marks the window urgent until it is focused.
+            self.request_attention(window);
+        }
+        if !result.notifications.is_empty() {
+            self.present_notifications(
+                tab_id,
+                pane_id,
+                &exit_title,
+                &result.notifications,
+                window,
+                cx,
+            );
         }
         if result.exited && !self.config.terminal.close_on_exit {
             self.notices.push(
@@ -13390,6 +13477,14 @@ impl Render for WorkspaceView {
         // Before anything measures or lays out chrome text.
         let typography = Typography::of(cx);
         typography.apply(window);
+        self.progress_motion = !cx.reduce_motion()
+            && self.tabs.iter().any(|tab| {
+                tab.panes.iter().any(|pane| {
+                    pane.view.read(cx).progress
+                        == Some(TerminalProgress::Indeterminate)
+                })
+            });
+        self.progress_step = super::progress::phase(Instant::now());
         let active_tab = self.active_tab(cx);
         // A pane drag whose pane left its tab, or under a tab switch it did
         // not make, ends even while the pointer rests.

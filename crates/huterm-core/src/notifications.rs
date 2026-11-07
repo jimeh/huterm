@@ -89,11 +89,14 @@ const fn is_bidi_control(character: char) -> bool {
     )
 }
 
-/// A token bucket: [`NOTIFICATION_BURST`] notifications at once, then one
-/// every [`NOTIFICATION_INTERVAL`]. Notifications over the limit are
-/// dropped, never queued for later.
+/// A token bucket: `burst` notifications at once, then one every
+/// `interval`. Notifications over the limit are dropped, never queued for
+/// later. Each terminal's runtime keeps one at [`NOTIFICATION_BURST`] and
+/// [`NOTIFICATION_INTERVAL`]; a client may keep its own across terminals.
 #[derive(Debug)]
-pub(crate) struct NotificationLimiter {
+pub struct NotificationLimiter {
+    burst: u32,
+    interval: Duration,
     available: u32,
     /// When the next token is earned; `None` while the bucket is full.
     next_token: Option<Instant>,
@@ -101,29 +104,37 @@ pub(crate) struct NotificationLimiter {
 
 impl Default for NotificationLimiter {
     fn default() -> Self {
-        Self {
-            available: NOTIFICATION_BURST,
-            next_token: None,
-        }
+        Self::new(NOTIFICATION_BURST, NOTIFICATION_INTERVAL)
     }
 }
 
 impl NotificationLimiter {
+    /// A full bucket of `burst` tokens that refills one every `interval`.
+    #[must_use]
+    pub const fn new(burst: u32, interval: Duration) -> Self {
+        Self {
+            burst,
+            interval,
+            available: burst,
+            next_token: None,
+        }
+    }
+
     /// Takes a token at `now`, or returns false when none is left.
-    pub(crate) fn admit(&mut self, now: Instant) -> bool {
+    pub fn admit(&mut self, now: Instant) -> bool {
         while let Some(due) = self.next_token
             && now >= due
         {
             self.available += 1;
-            self.next_token = (self.available < NOTIFICATION_BURST)
-                .then(|| due + NOTIFICATION_INTERVAL);
+            self.next_token =
+                (self.available < self.burst).then(|| due + self.interval);
         }
         if self.available == 0 {
             return false;
         }
         self.available -= 1;
         if self.next_token.is_none() {
-            self.next_token = Some(now + NOTIFICATION_INTERVAL);
+            self.next_token = Some(now + self.interval);
         }
         true
     }

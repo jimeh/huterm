@@ -71,6 +71,16 @@
       "additionalProperties": false,
       "description": "Terminal bell presentation settings.",
       "properties": {
+        "attention": {
+          "default": true,
+          "description": "Ask for attention when a bell rings in a window that is not active,\nwithout taking focus: macOS bounces the Dock icon once while Huterm\nis in the background, and X11 marks the window urgent. Wayland has\nno such request.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Bell",
+          "x-huterm-label": "Request attention from inactive windows",
+          "x-huterm-order": 74,
+          "x-huterm-section": "terminal"
+        },
         "audio": {
           "description": "Play a sound when a bell rings in any terminal, focused or not; on by\ndefault on macOS and off on Linux.",
           "type": "boolean",
@@ -665,6 +675,23 @@
           "description": "Always use Huterm's platform launch default.",
           "type": "string",
           "x-huterm-label": "Launch directory"
+        }
+      ]
+    },
+    "NotificationPolicy": {
+      "description": "Permission for desktop notifications requested by terminal content\n(OSC 9 and OSC 777).",
+      "oneOf": [
+        {
+          "const": "allow",
+          "description": "Present notifications from terminal programs.",
+          "type": "string",
+          "x-huterm-label": "Allow"
+        },
+        {
+          "const": "deny",
+          "description": "Drop notifications from terminal programs.",
+          "type": "string",
+          "x-huterm-label": "Deny"
         }
       ]
     },
@@ -10340,6 +10367,30 @@
           "x-huterm-group": "Shell",
           "x-huterm-label": "New tabs and panes start in",
           "x-huterm-order": 10,
+          "x-huterm-section": "terminal"
+        },
+        "notifications": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/NotificationPolicy"
+            }
+          ],
+          "default": "allow",
+          "description": "Whether programs in the terminal may show notifications (OSC 9 and\nOSC 777): a system notification while Huterm is in the background,\na notice while it is in front.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Notifications and progress",
+          "x-huterm-label": "Notifications from programs",
+          "x-huterm-order": 66,
+          "x-huterm-section": "terminal"
+        },
+        "progress_bar": {
+          "default": true,
+          "description": "Draw a thin bar across the top of a pane while its program reports\nprogress (OSC 9;4). The tab's progress ring shows either way.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Notifications and progress",
+          "x-huterm-label": "Progress bar on panes",
+          "x-huterm-order": 67,
           "x-huterm-section": "terminal"
         },
         "refresh": {

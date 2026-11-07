@@ -121,17 +121,38 @@ fn horizontal_dividers_skip_the_first_active_and_following_tabs() {
 #[test]
 fn error_exit_and_bell_take_precedence_over_the_running_dot() {
     let job = Some("cargo");
-    assert_eq!(TabStatus::new(false, false, false, None), TabStatus::Idle);
+    let progress = Some((TerminalProgress::Determinate(42), 0));
+    let shown = TabStatus::Progress(TerminalProgress::Determinate(42), 0);
     assert_eq!(
-        TabStatus::new(false, false, false, Some("")),
+        TabStatus::new(false, false, false, None, None),
+        TabStatus::Idle
+    );
+    assert_eq!(
+        TabStatus::new(false, false, false, None, Some("")),
         TabStatus::Idle,
         "an empty name is no foreground program"
     );
-    assert_eq!(TabStatus::new(false, false, false, job), TabStatus::Busy);
-    assert_eq!(TabStatus::new(false, false, true, job), TabStatus::Bell);
-    assert_eq!(TabStatus::new(false, false, true, None), TabStatus::Bell);
-    assert_eq!(TabStatus::new(true, false, true, job), TabStatus::Exited);
-    assert_eq!(TabStatus::new(true, true, true, job), TabStatus::Failed);
+    assert_eq!(
+        TabStatus::new(false, false, false, None, job),
+        TabStatus::Busy
+    );
+    assert_eq!(TabStatus::new(false, false, false, progress, job), shown);
+    assert_eq!(
+        TabStatus::new(false, false, true, progress, job),
+        TabStatus::Bell
+    );
+    assert_eq!(
+        TabStatus::new(false, false, true, None, None),
+        TabStatus::Bell
+    );
+    assert_eq!(
+        TabStatus::new(true, false, true, progress, job),
+        TabStatus::Exited
+    );
+    assert_eq!(
+        TabStatus::new(true, true, true, progress, job),
+        TabStatus::Failed
+    );
     assert!(TabStatus::Exited.exited());
     assert!(TabStatus::Failed.exited());
     assert!(!TabStatus::Busy.exited());

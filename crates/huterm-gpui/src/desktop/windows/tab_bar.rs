@@ -8,8 +8,10 @@ use huterm_ui::typography::{Typography, ui};
 
 use crate::assets::Icon;
 use crate::desktop::overlay::{Swatch, accent_bar};
+use crate::desktop::progress::{self, ProgressColors};
 use crate::renderer::rgba_color;
 use crate::ui::scrollbar::ScrollbarColors;
+use huterm_protocol::TerminalProgress;
 
 use super::super::scrollbar_colors;
 use super::pane_indicators::DIMMED_SYNC_MARK;
@@ -170,6 +172,16 @@ impl TabColors {
         self.hover
     }
 
+    /// Progress in the accent while it runs, and in the running dot's and
+    /// error icon's colors while paused or failed.
+    pub(super) fn progress(self) -> ProgressColors {
+        ProgressColors {
+            normal: self.accent,
+            paused: self.running,
+            error: self.error,
+        }
+    }
+
     /// A tab-bar or title-row button's colors: its icon in the inactive
     /// tint on no fill, with the bar's control hover and pressed overlays.
     pub(super) fn control(self) -> ButtonColors {
@@ -241,6 +253,9 @@ pub(super) enum TabStatus {
     Idle,
     /// A program holds the foreground; the running dot.
     Busy,
+    /// The program reports progress; the progress ring, at the given
+    /// indeterminate step.
+    Progress(TerminalProgress, u32),
     Bell,
     Exited,
     Failed,
@@ -253,6 +268,7 @@ impl TabStatus {
         exited: bool,
         failed: bool,
         bell: bool,
+        progress: Option<(TerminalProgress, u32)>,
         foreground: Option<&str>,
     ) -> Self {
         if failed {
@@ -261,6 +277,8 @@ impl TabStatus {
             Self::Exited
         } else if bell {
             Self::Bell
+        } else if let Some((progress, phase)) = progress {
+            Self::Progress(progress, phase)
         } else if foreground.is_some_and(|process| !process.is_empty()) {
             Self::Busy
         } else {
@@ -278,7 +296,20 @@ impl TabStatus {
         match self {
             Self::Idle => px(0.0),
             Self::Busy => DOT_SIZE,
-            Self::Bell | Self::Exited | Self::Failed => ICON_SIZE,
+            Self::Progress(..) | Self::Bell | Self::Exited | Self::Failed => {
+                ICON_SIZE
+            }
+        }
+    }
+
+    /// What assistive technology reads after the title, beyond the exit
+    /// suffix every title consumer shows.
+    pub(super) fn description(self) -> Option<String> {
+        match self {
+            Self::Progress(progress, _) => {
+                Some(progress::description(progress))
+            }
+            _ => None,
         }
     }
 }
@@ -636,7 +667,13 @@ impl WorkspaceView {
         div()
             .id(("pane-title", pane.get()))
             .role(gpui::Role::Group)
-            .aria_label(with_status_suffix(title.clone(), status))
+            .aria_label({
+                let label = with_status_suffix(title.clone(), status);
+                match status.description() {
+                    Some(description) => format!("{label}, {description}"),
+                    None => label,
+                }
+            })
             .group("pane-title")
             // Over a terminal, whose text cursor would otherwise show.
             .cursor(gpui::CursorStyle::Arrow)
@@ -922,6 +959,9 @@ fn status_icon(
             Some(icon_element(Icon::Bell, colors.accent).into_any_element())
         }
         TabStatus::Busy => Some(running_dot(colors).into_any_element()),
+        TabStatus::Progress(progress, phase) => {
+            Some(progress::ring(progress, phase, colors.progress()))
+        }
         TabStatus::Idle => None,
     }
 }

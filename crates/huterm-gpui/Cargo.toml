@@ -38,6 +38,10 @@ notify = "=8.2.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "=0.2.7"
+# GPUI's own versions, for the notification permission probe.
+block2 = "=0.6.2"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSBundle", "NSString"] }
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationSettings"] }
 # Match GPUI's Apple font source and trait guards, without new package versions.
 zed-font-kit = { version = "=0.14.1-zed", default-features = false, features = ["source"] }
 core-foundation = "=0.10.1"
@@ -48,6 +52,8 @@ workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true, features = ["poll"] }
+# GPUI's own version and features, for the notification daemon probe.
+notify-rust = "=4.18.2"
 # Unifies into GPUI's font-kit so fontconfig loads at runtime, as it did before
 # GPUI dropped this feature: no build headers or packaged link dependency.
 # Huterm never calls its fontconfig source; Linux font queries use fontdb.

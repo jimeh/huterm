@@ -963,6 +963,27 @@ follow. A successful configuration reload clears the failures still latched,
 so a stale hotkey conflict does not outlive the configuration that caused it;
 an unrelated failure waiting there is dropped with it.
 
+### Program notifications and progress
+
+`windows/terminal_notifications.rs` presents notifications a view's refresh
+took (`RefreshResult::notifications`) and rechecks each with `is_current`
+first. `presentation` decides by whether a Huterm window is active, whether
+the terminal is drawn where the notice would go, and
+`native_notifications::availability`, which tests override through
+`Notifier::availability`, since the test binary has no bundle. Show Tab is the
+private `SHOW_PANE` notice action, handled before the catalog like
+`RETRY_INSTALL`; `reveal_pane` runs from `cx.defer`, because it updates
+windows, the notice's own included. System notification tags name the pane,
+and their click handler reveals it the same way. Linux bodies escape markup.
+The attention mark is `BellPresentation::notified`, which the visual-bell
+setting does not clear.
+
+Progress draws as `TabStatus::Progress` and, with `progress_bar`, the pane's
+bar. Indeterminate motion is a 125 ms step, not a frame animation: the
+workspace render records `progress_motion`, its animation schedule asks for
+the next step's deadline, and the tick notifies the workspace and each
+visible moving pane.
+
 ## UI components
 
 Generic components live in `crates/huterm-ui`, one file per component under

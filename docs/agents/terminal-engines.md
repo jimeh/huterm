@@ -528,6 +528,14 @@ prompt callback copies the command line Ghostty decoded from `cmdline` or
 Ghostty captures 2,048 bytes of an OSC 133 after its `133;` and rejects a
 longer sequence whole, so such a C makes no record.
 
+OSC 9 and OSC 777 notifications and OSC 9;4 progress arrive through
+`DESKTOP_NOTIFICATION` and `PROGRESS_REPORT` as `Effect::DesktopNotification`
+and `Effect::Progress`, copied out raw. They share the fixed 2,048-byte
+capture, Ghostty strips C0 bytes from the payload, and a ConEmu command
+Ghostty does not parse, such as `9;4;9`, arrives as a notification, which
+core drops. A full reset reports progress removal before it returns.
+`contract_tests.rs` pins each case.
+
 Scrollback compression is exposed as plain values only: `compress_step` runs
 one incremental step, `compression_activity` returns Ghostty's opaque token,
 and `memory_usage` reads page metadata without restoring anything. Full mode

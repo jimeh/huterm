@@ -115,6 +115,7 @@ mod links;
 mod notices;
 mod overlay;
 pub(crate) mod palette;
+mod progress;
 mod refresh;
 mod selection;
 mod settings;
@@ -331,9 +332,26 @@ fn copy_availability(
 struct BellPresentation {
     unseen: bool,
     flash_until: Option<Instant>,
+    /// A program's notification arrived while the view was not in front.
+    /// It marks the tab whatever the visual bell setting says.
+    notified: bool,
 }
 
 impl BellPresentation {
+    /// Marks an unseen notification unless the view is in front.
+    fn notify(&mut self, active: bool) -> bool {
+        if active || self.notified {
+            return false;
+        }
+        self.notified = true;
+        true
+    }
+
+    /// Whether the tab shows the attention mark.
+    fn marked(self) -> bool {
+        self.unseen || self.notified
+    }
+
     fn ring(&mut self, now: Instant, active: bool, enabled: bool) -> bool {
         if !enabled {
             return false;
@@ -348,10 +366,11 @@ impl BellPresentation {
     }
 
     fn viewed(&mut self, active: bool) -> bool {
-        if !active || !self.unseen {
+        if !active || !self.marked() {
             return false;
         }
         self.unseen = false;
+        self.notified = false;
         true
     }
 
@@ -368,9 +387,11 @@ impl BellPresentation {
         self.flash_until.is_some_and(|deadline| now < deadline)
     }
 
+    /// Clears the visual bell's marks; a notification's mark stays.
     fn clear(&mut self) -> bool {
         let changed = self.unseen || self.flash_until.is_some();
-        *self = Self::default();
+        self.unseen = false;
+        self.flash_until = None;
         changed
     }
 }
@@ -417,6 +438,10 @@ struct TerminalView {
     bell: BellPresentation,
     bell_flash_count: u64,
     visual_bell: bool,
+    /// The program's progress report, from status.
+    progress: Option<huterm_protocol::TerminalProgress>,
+    /// Whether progress also draws a bar across the top of the pane.
+    progress_bar: bool,
     exited: bool,
     /// The root process's exit status, once it has exited with one.
     exit_code: Option<u32>,
@@ -642,8 +667,17 @@ impl ViewerStart {
 }
 
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag reports an independent change"
+)]
 struct RefreshResult {
     changed: bool,
+    /// A bell rang since the last drain.
+    bells: bool,
+    /// Notifications this view's recipient took, oldest first, still to be
+    /// presented by its window.
+    notifications: Vec<huterm_core::PendingHostEffect>,
     exited: bool,
     /// The exit status when `exited` is set and the OS reported one.
     exit_code: Option<u32>,
@@ -651,6 +685,9 @@ struct RefreshResult {
     /// Failures queued since the last drain, oldest first.
     failures: Vec<TerminalFailure>,
 }
+
+/// Host effects one refresh takes at most; the drain continues for more.
+const HOST_EFFECT_BATCH: usize = 8;
 
 /// Failures the terminal queues at most: later ones are dropped so a stuck
 /// runtime cannot grow the queue without bound.
@@ -872,6 +909,8 @@ impl TerminalView {
             bell: BellPresentation::default(),
             bell_flash_count: 0,
             visual_bell: config.terminal.bell.visual,
+            progress: None,
+            progress_bar: config.terminal.progress_bar,
             exited: false,
             exit_code: None,
             failed: false,
@@ -1113,20 +1152,25 @@ impl TerminalView {
         changed
     }
 
-    fn refresh(
+    /// Runs up to [`HOST_EFFECT_BATCH`] queued host effects: clipboard
+    /// writes here, and notifications returned for the window to present.
+    /// Returns how many it took, with the notifications.
+    fn drain_host_effects(
         &mut self,
-        window: &Window,
         cx: &mut Context<'_, Self>,
-    ) -> RefreshResult {
-        let previously_exited = self.exited;
+    ) -> (usize, Vec<huterm_core::PendingHostEffect>) {
         let mut host_count = 0;
-        if let Some(recipient) = self.viewer.host_effects() {
-            for _ in 0..8 {
-                let Some(pending) = recipient.try_next() else {
-                    break;
-                };
-                host_count += 1;
-                if let HostEffect::ClipboardWrite(write) = pending.effect() {
+        let mut notifications = Vec::new();
+        let Some(recipient) = self.viewer.host_effects() else {
+            return (0, notifications);
+        };
+        for _ in 0..HOST_EFFECT_BATCH {
+            let Some(pending) = recipient.try_next() else {
+                break;
+            };
+            host_count += 1;
+            match pending.effect() {
+                HostEffect::ClipboardWrite(write) => {
                     let item =
                         ClipboardItem::new_string(write.text().to_owned());
                     if recipient.is_current(&pending) {
@@ -1134,8 +1178,22 @@ impl TerminalView {
                         self.clipboard_writes += 1;
                     }
                 }
+                // The window presents it; permission is rechecked there,
+                // immediately before the platform call.
+                HostEffect::Notification(_) => notifications.push(pending),
+                _ => {}
             }
         }
+        (host_count, notifications)
+    }
+
+    fn refresh(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> RefreshResult {
+        let previously_exited = self.exited;
+        let (host_count, notifications) = self.drain_host_effects(cx);
         if self.scroll.displayed() > 0 || self.scroll.desired() > 0 {
             self.cancel_mouse();
         }
@@ -1160,6 +1218,10 @@ impl TerminalView {
                 self.title.clone_from(&status.title);
                 changed = true;
             }
+            if status.progress != self.progress {
+                self.progress = status.progress;
+                changed = true;
+            }
             if status.metadata_revision > self.metadata_revision {
                 if directories_moved(&self.metadata, &status.metadata) {
                     windows::directory_changed(cx);
@@ -1178,6 +1240,10 @@ impl TerminalView {
                     self.bell_flash_count.wrapping_add(update.bells);
             }
             changed |= self.bell.ring(Instant::now(), active, self.visual_bell);
+        }
+        if !notifications.is_empty() {
+            changed |=
+                self.bell.notify(self.visible && window.is_window_active());
         }
         // A view installed after the exit sees no transition, but still
         // shows the terminal as exited; only a transition is announced.
@@ -1216,9 +1282,11 @@ impl TerminalView {
             update.exited.is_some() || (self.seen_running && exit.is_some());
         RefreshResult {
             changed,
+            bells: update.bells > 0,
+            notifications,
             exited: !previously_exited && transition,
             exit_code: self.exit_code,
-            more: host_count == 8,
+            more: host_count == HOST_EFFECT_BATCH,
             failures: std::mem::take(&mut self.failures),
         }
     }
@@ -1404,6 +1472,10 @@ impl TerminalView {
         self.right_click = terminal.right_click;
         self.visual_bell = terminal.bell.visual;
         if !self.visual_bell && self.bell.clear() {
+            cx.notify();
+        }
+        if self.progress_bar != terminal.progress_bar {
+            self.progress_bar = terminal.progress_bar;
             cx.notify();
         }
         if self.option_as_alt != terminal.macos_option_as_alt {
@@ -3946,6 +4018,21 @@ impl Render for TerminalView {
                     .inset_0()
                     .bg(color(self.theme.foreground).opacity(0.14)),
             );
+        }
+        if let Some(shown) = self.progress.filter(|_| self.progress_bar) {
+            let phase = if shown
+                == huterm_protocol::TerminalProgress::Indeterminate
+                && !cx.reduce_motion()
+            {
+                progress::phase(Instant::now())
+            } else {
+                0
+            };
+            root = root.child(progress::bar(
+                shown,
+                phase,
+                progress::ProgressColors::new(&self.theme),
+            ));
         }
         #[cfg(target_os = "macos")]
         {

@@ -1642,6 +1642,17 @@ sound = "glass"
 volume = 0.5
 ```
 
+A bell in a window that is not active also asks for attention without taking
+focus: on macOS the Dock icon bounces once, only while Huterm is in the
+background, and on Linux under X11 the window is marked urgent until you
+focus it. Wayland has no such request, so nothing happens there. Turn it
+off with `attention = false`:
+
+```toml
+[terminal.bell]
+attention = false
+```
+
 ## Links and file drops
 
 Hold Cmd on macOS or Ctrl on Linux and click an underlined HTTP(S) link to open
@@ -1715,6 +1726,51 @@ retried or replayed.
 With tmux, `set-clipboard external` allows tmux copy mode and `set-buffer -w`
 writes while blocking OSC 52 from applications inside tmux. Use
 `set-clipboard on` to let applications inside tmux reach the clipboard too.
+
+## Notifications and progress
+
+Programs can ask for a desktop notification with OSC 9 (`ESC ] 9 ; text
+BEL`) or OSC 777 (`ESC ] 777 ; notify ; title ; text BEL`). Huterm shows
+each one once, in the window you used most recently that shows the terminal:
+
+- While Huterm is in the background, it is a system notification. Clicking
+  it brings Huterm forward with that terminal's window, tab, and pane.
+- While Huterm is in front, it is a notice in the active window. When the
+  terminal is in another tab or window, the notice offers **Show Tab**.
+- A tab that sent a notification you have not seen shows the bell mark until
+  you view it.
+
+If system notifications cannot show, because macOS notification permission
+is off for Huterm, Huterm runs outside an app bundle (as `mise run dev`
+does), or no notification service answers on Linux, the notice appears in
+the terminal's window instead and the window asks for attention as a bell
+does. On macOS, the first notification asks for permission; change it later
+in System Settings > Notifications.
+
+Notification text is plain text. Huterm removes control and bidirectional
+formatting characters, keeps at most 128 characters of a title and 512 of
+the text, and never turns text into a link or button. Each terminal may send
+4 notifications at once and then one every 3 seconds, and all terminals
+together 8 at once and then one a second; extra notifications are dropped.
+Ghostty drops OSC 9 and OSC 777 sequences longer than 2,048 bytes. Kitty's
+OSC 99 notifications are not supported.
+
+Programs report progress with OSC 9;4 (`ESC ] 9 ; 4 ; state ; percent
+BEL`): state 1 sets a percentage, 2 reports an error, 3 progress without a
+percentage, 4 a pause, and 0 removes it. A ring replaces the running dot
+before the tab's and pane's title, and a thin bar runs across the top of the
+pane. Paused progress is yellow and errors are red. Progress clears when the
+program removes it, resets the terminal, or exits, or after 15 seconds
+without a report. It is never saved with sessions.
+
+```toml
+[terminal]
+notifications = "deny" # "allow" or "deny"
+progress_bar = false # keep the tab's ring, drop the pane bar
+```
+
+Reload applies both to open terminals; `deny` also cancels notifications
+that have not been shown yet.
 
 ## Option and Alt as Meta
 
