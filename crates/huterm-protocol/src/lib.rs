@@ -34,9 +34,9 @@ pub use layout_template::{
     MAX_TEMPLATE_LEN, NamedLayout, TemplateError, TemplateErrorKind,
 };
 pub use pane_layout::{
-    Arrangement, LayoutError, MAX_SPLIT_CHILDREN, NORMALIZED_EXTENT, NodeId,
-    NormalizedRect, PaneInfo, PaneLayout, PaneNode, SPLIT_TOTAL, SplitAxis,
-    SplitChild, SplitDirection, SplitNode,
+    Arrangement, LayoutError, MAX_LAYOUT_DEPTH, MAX_SPLIT_CHILDREN,
+    NORMALIZED_EXTENT, NodeId, NormalizedRect, PaneInfo, PaneLayout, PaneNode,
+    SPLIT_TOTAL, SplitAxis, SplitChild, SplitDirection, SplitNode,
 };
 pub use viewer::{
     COMMAND_RECORD_CAPACITY, CommandRecord, CommandState, InputStamp,

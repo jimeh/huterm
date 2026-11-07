@@ -1350,9 +1350,9 @@ fn layout_items(layout: &PaneLayout) -> usize {
 fn layout_error(error: LayoutError, pane: PaneId) -> MuxError {
     match error {
         LayoutError::UnknownPane => MuxError::UnknownPane(pane),
-        LayoutError::PaneTooSmall | LayoutError::TooManyChildren => {
-            MuxError::PaneTooSmall(pane)
-        }
+        LayoutError::PaneTooSmall
+        | LayoutError::TooManyChildren
+        | LayoutError::TooDeep => MuxError::PaneTooSmall(pane),
         error => MuxError::InvalidLayout(error),
     }
 }

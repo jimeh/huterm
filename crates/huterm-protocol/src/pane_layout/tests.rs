@@ -617,7 +617,7 @@ fn needle() -> PaneLayout {
         vec![(1, leaf(50)), (SPLIT_TOTAL - 1, leaf(51))],
     );
     for level in 0..8_u64 {
-        let axis = if level % 2 == 0 {
+        let axis = if level.is_multiple_of(2) {
             SplitAxis::Rows
         } else {
             SplitAxis::Columns
@@ -1293,4 +1293,58 @@ fn moving_a_layout_into_a_runtime_rescopes_identities_and_keeps_its_shape() {
 fn depth_counts_the_nodes_on_the_longest_root_to_pane_path() {
     assert_eq!(layout(leaf(1)).depth(), 1);
     assert_eq!(left_and_stack().depth(), 3);
+}
+
+/// Alternating-axis splits nested until the deepest pane, `depth`, sits
+/// `depth` nodes below the root; each split's other child is a pane.
+fn nested(depth: usize) -> PaneNode {
+    let deepest = u64::try_from(depth).unwrap();
+    let mut node = leaf(deepest);
+    for level in (1..deepest).rev() {
+        let axis = if level.is_multiple_of(2) {
+            SplitAxis::Rows
+        } else {
+            SplitAxis::Columns
+        };
+        node =
+            split(1000 + level, axis, vec![(HALF, leaf(level)), (HALF, node)]);
+    }
+    node
+}
+
+#[test]
+fn layouts_nest_at_most_the_depth_limit_and_splits_refuse_to_pass_it() {
+    let deepest = layout(nested(MAX_LAYOUT_DEPTH));
+    assert_eq!(deepest.depth(), MAX_LAYOUT_DEPTH);
+    assert_eq!(
+        PaneLayout::new(nested(MAX_LAYOUT_DEPTH + 1)),
+        Err(LayoutError::TooDeep)
+    );
+    let bottom = pane_id(u64::try_from(MAX_LAYOUT_DEPTH).unwrap());
+    // A split across the bottom pane's parent axis nests a new split past
+    // the limit; one along it only adds a sibling.
+    let parent = if MAX_LAYOUT_DEPTH.is_multiple_of(2) {
+        SplitDirection::Right
+    } else {
+        SplitDirection::Down
+    };
+    let across = if parent == SplitDirection::Right {
+        SplitDirection::Down
+    } else {
+        SplitDirection::Right
+    };
+    assert!(deepest.forms_split(bottom, across).unwrap());
+    assert_eq!(
+        deepest.check_split(bottom, across),
+        Err(LayoutError::TooDeep)
+    );
+    assert_eq!(
+        deepest.with_split(bottom, across, info(500), split_id(900)),
+        Err(LayoutError::TooDeep)
+    );
+    assert_eq!(deepest.check_split(bottom, parent), Ok(()));
+    let widened = deepest
+        .with_split(bottom, parent, info(500), split_id(900))
+        .unwrap();
+    assert_eq!(widened.depth(), MAX_LAYOUT_DEPTH);
 }

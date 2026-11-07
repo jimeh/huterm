@@ -1,9 +1,9 @@
 //! The hierarchy invariants that keep every runtime state encodable:
-//! [`MAX_NAME_BYTES`] and [`MAX_HIERARCHY_ITEMS`].
+//! [`MAX_NAME_BYTES`], [`MAX_HIERARCHY_ITEMS`], and [`MAX_LAYOUT_DEPTH`].
 
 use super::*;
 use crate::mux::tests::command;
-use huterm_protocol::{Arrangement, SPLIT_TOTAL, SplitAxis};
+use huterm_protocol::{Arrangement, MAX_LAYOUT_DEPTH, SPLIT_TOTAL, SplitAxis};
 
 fn name(bytes: usize) -> String {
     "n".repeat(bytes)
@@ -275,4 +275,34 @@ fn rearrangements_moves_and_restores_refuse_to_grow_past_the_limit() {
         )
     });
     full.mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_split_that_would_nest_past_the_depth_limit_changes_nothing() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let script = command("read value");
+    let tab = mux.open_test_tab(workspace, &script).unwrap().tab.id;
+    let mut pane = mux.tab(tab).unwrap().first_pane().id;
+    // Alternating directions nest one split deeper each time.
+    let directions = [SplitDirection::Right, SplitDirection::Down];
+    for step in 1..MAX_LAYOUT_DEPTH {
+        pane = mux
+            .split_pane(workspace, tab, pane, directions[step % 2], &script)
+            .unwrap()
+            .pane
+            .id;
+    }
+    assert_eq!(mux.tab(tab).unwrap().layout().depth(), MAX_LAYOUT_DEPTH);
+    let (revision, next_id) = (mux.revision, mux.next_id);
+    let terminals = mux.terminal_count();
+    let across = directions[MAX_LAYOUT_DEPTH % 2];
+    assert!(matches!(
+        mux.split_pane(workspace, tab, pane, across, &script),
+        Err(MuxError::PaneTooSmall(refused)) if refused == pane
+    ));
+    assert_eq!((mux.revision, mux.next_id), (revision, next_id));
+    assert_eq!(mux.terminal_count(), terminals);
+    mux.shutdown().unwrap();
 }
