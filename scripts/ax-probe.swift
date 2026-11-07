@@ -5,6 +5,7 @@
 //   ax-probe read <pid> [points] [lines] [ranges]
 //                                          prints one JSON object describing the focused element
 //   ax-probe observe <pid>                 prints "ready", then one line per text notification
+//                                          or announcement request
 //   ax-probe tree <pid>                    prints the application's elements, for diagnosing a failed read
 //
 // `points` is "x,y;x,y" in global display coordinates with a top-left
@@ -193,18 +194,28 @@ let watched = [
     kAXSelectedTextChangedNotification,
     kAXFocusedUIElementChangedNotification,
     kAXLayoutChangedNotification,
+    kAXAnnouncementRequestedNotification,
 ]
 
 func observe(_ pid: pid_t) -> Never {
     guard AXIsProcessTrusted() else { fail("macOS denied Accessibility access to the probe's host") }
     var observer: AXObserver?
-    let callback: AXObserverCallback = { _, element, notification, _ in
+    // An announcement line ends with its userInfo as JSON: the text, under
+    // "AXAnnouncementKey", and its "AXPriorityKey".
+    let callback: AXObserverCallbackWithInfo = { _, element, notification, info, _ in
         var role: AnyObject?
         AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
-        print("\(notification as String) \(role as? String ?? "-")")
+        var line = "\(notification as String) \(role as? String ?? "-")"
+        if (notification as String) == kAXAnnouncementRequestedNotification,
+           let info = info as? [String: Any],
+           let data = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            line += " \(json)"
+        }
+        print(line)
         fflush(stdout)
     }
-    guard AXObserverCreate(pid, callback, &observer) == .success, let observer else {
+    guard AXObserverCreateWithInfoCallback(pid, callback, &observer) == .success, let observer else {
         fail("cannot create an observer for \(pid)")
     }
     let application = AXUIElementCreateApplication(pid)
@@ -227,9 +238,10 @@ func observe(_ pid: pid_t) -> Never {
 
 func tree(_ element: AXUIElement, depth: Int) {
     let role = attribute(element, kAXRoleAttribute) as? String ?? "-"
+    let subrole = (attribute(element, kAXSubroleAttribute) as? String).map { "/\($0)" } ?? ""
     let title = attribute(element, kAXTitleAttribute) as? String ?? ""
     let focused = attribute(element, kAXFocusedAttribute) as? Bool ?? false
-    print("\(String(repeating: "  ", count: depth))\(role) \(title.debugDescription)\(focused ? " focused" : "")")
+    print("\(String(repeating: "  ", count: depth))\(role)\(subrole) \(title.debugDescription)\(focused ? " focused" : "")")
     guard depth < 6, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { return }
     for child in children { tree(child, depth: depth + 1) }
 }

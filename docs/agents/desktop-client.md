@@ -1638,6 +1638,38 @@ pointer press and release at the node's center, so it arrives as
 `ClickEvent::Mouse` and passes the keyboard filter; tests click child-id items
 that way through `testing::a11y_send`.
 
+AccessKit announces a live node when it is added and when its announced
+text changes, never when only its live state changes, and descendants inherit
+live state. The macOS adapter announces the node's value and the AT-SPI
+adapter its name, which a `Label` takes from its value, so only a live
+`Label` with a value announces on both. A live node named only by its label,
+such as Settings' `error_message`, announces on Linux but not on macOS.
+
+### Notice accessibility
+
+Each toast is a `Role::Alert` (`AXApplicationAlert` on macOS, a
+notification on AT-SPI) named by `NoticeContent::accessible_text`: severity,
+title, message, and location. Its drawn text is not exposed, so nothing
+reads twice, and a collapsed toast reads the same as an expanded one. Its
+actions and Dismiss are its children. A toast announces once through a live
+`Label` leaf that its `a11y_synthetic_children` adds in a single frame; live
+state on the toast would pass to its buttons, which would announce too.
+`NoticeStack::begin_frame` picks the toasts that announce: shown, not
+announced before, and only while the window is active and
+`can_show_notices` holds, so a notice raised behind announces when its
+window comes forward (activation redraws), and a hidden Quake window's when
+it is summoned. A notice that returns from the overflow stays quiet, and one
+that overflowed before any frame showed it announces when first shown.
+Each window announces its own notices, so a diagnostic every window raises
+announces again in each window the user brings forward. Failures of
+`Command` and `Terminal` sources are assertive (High priority on macOS);
+everything else is polite (Medium). A toast's element id carries
+`Notice::mounts`, and the overflow chip's (a `Label`, "N more notices")
+carries the stack's count of its returns, for the reason a terminal's
+carries `a11y_shows`. Window tests read the last frame's tree only, and a
+toast raised in front draws a second frame to scroll to it, so tests raise
+behind and bring the window forward to read the announcing frame.
+
 GPUI's `Svg` reports no role, so an icon that needs a node, such as a tab state
 mark (`tab_bar::mark_elements`, an `Image` named by `TabMark::name`), sits in a
 `div` that carries the id and role. Pane title bars are `Group`s named by the

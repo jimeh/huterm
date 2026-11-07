@@ -5,7 +5,9 @@
  * painted cursor, position and line queries at the grid's edges after
  * scrolling and resizing, the selection, and the notifications each change
  * posts. Expected text comes from the literal lines the check writes, and
- * expected rectangles from where the renderer last painted.
+ * expected rectangles from where the renderer last painted. Notices: a
+ * program's notification and a command failure each announce once, at
+ * their priority, and read as an alert holding their Dismiss button.
  */
 import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -80,6 +82,18 @@ export function edgeCells(rows: Row[]): { column: number; row: number; text: str
   return cells;
 }
 
+/** An `AXAnnouncementRequested` line's announcement, or undefined for other notifications. */
+export type Announcement = { text: string; priority: number };
+export function announcement(line: string): Announcement | undefined {
+  const [name, , ...rest] = line.split(" ");
+  if (name !== "AXAnnouncementRequested") return undefined;
+  const info = JSON.parse(rest.join(" ") || "{}");
+  return { text: String(info.AXAnnouncementKey ?? ""), priority: Number(info.AXPriorityKey) };
+}
+
+/** AppKit's announcement priorities: AccessKit sends polite as medium and assertive as high. */
+export const PRIORITY = { polite: 50, assertive: 90 } as const;
+
 /** Whether AXValueChanged came first among a step's text notifications. */
 export function valueChangedFirst(events: string[]): boolean {
   const first = events.find(name => name === "AXValueChanged" || name === "AXSelectedTextChanged");
@@ -130,7 +144,7 @@ async function main(executableArgument: string, probeArgument: string): Promise<
   const directory = await mkdtemp(join(tmpdir(), "huterm-accessibility-"));
   const config = join(directory, "config.toml");
   const shell = join(directory, "shell");
-  await writeFile(config, `[window]\ninitial_columns = 60\ninitial_rows = 16\n[terminal]\nclose_on_exit = false\n[font]\nfamily = "Menlo"\nsize = 14.0\n`);
+  await writeFile(config, `[window]\ninitial_columns = 60\ninitial_rows = 16\n[terminal]\nclose_on_exit = false\nnotifications = "allow"\n[font]\nfamily = "Menlo"\nsize = 14.0\n`);
   // The child echoes every byte the smoke sends, so input draws text and
   // moves the cursor through the real terminal. It records its process id,
   // which `exec` keeps, so the check can end it before quitting: a live
@@ -335,6 +349,7 @@ async function main(executableArgument: string, probeArgument: string): Promise<
     const watching = Bun.spawn([probePath, "observe", pid], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     observer = watching;
     const events: string[] = [];
+    const announcements: Announcement[] = [];
     let observerReady = false;
     (async () => {
       let buffer = "";
@@ -345,7 +360,11 @@ async function main(executableArgument: string, probeArgument: string): Promise<
           const item = buffer.slice(0, newline);
           buffer = buffer.slice(newline + 1);
           if (item === "ready") observerReady = true;
-          else events.push(item.split(" ")[0]!);
+          else {
+            events.push(item.split(" ")[0]!);
+            const announced = announcement(item);
+            if (announced) announcements.push(announced);
+          }
         }
       }
     })();
@@ -439,6 +458,55 @@ async function main(executableArgument: string, probeArgument: string): Promise<
     if (publications < 1 || publications > bound) fail("flood publications exceed the interval", { publications, bound, elapsed });
     if (flood.value < 1 || flood.value > bound) fail("flood AXValueChanged exceeds the interval", { flood, bound });
     report.push(`flood=25inputs/${Math.round(elapsed)}ms publications=${publications} value_changed=${flood.value} bound=${bound}`);
+
+    // Notices announce once, without taking focus, at their priority, and
+    // read as an alert group named by the whole notice.
+    const noticeStep = async (label: string, run: () => Promise<unknown>, expected: (text: string) => boolean, priority: number) => {
+      const since = announcements.length;
+      const before = Number((await state())!.notices);
+      await run();
+      await waitFor(async () => Number((await state())?.notices) > before ? true : undefined, `${label} notice`);
+      await waitFor(async () => announcements.length > since ? true : undefined, `${label} announcement`, 5_000)
+        .catch(() => fail(`${label}: no announcement`, { events: events.slice(-10) }));
+      await Bun.sleep(QUIET_MS);
+      const heard = announcements.slice(since);
+      if (heard.length !== 1) fail(`${label}: expected one announcement`, heard);
+      const [only] = heard;
+      if (!expected(only!.text)) fail(`${label}: announcement text`, only);
+      if (only!.priority !== priority) fail(`${label}: announcement priority`, { only, priority });
+      const read = probe(pid);
+      if (read.applicationFocusRole !== "AXTextArea") fail(`${label}: the notice took focus`, read);
+      // The window's elements only: the menu bar lists the user's recent items.
+      const dump = Bun.spawnSync([probePath, "tree", pid], { stdout: "pipe", stderr: "pipe" }).stdout.toString();
+      const menuBar = dump.indexOf("\n  AXMenuBar");
+      const tree = menuBar < 0 ? dump : dump.slice(0, menuBar);
+      const group = tree.split("\n").find(line => line.includes("AXGroup/AXApplicationAlert") && line.includes(JSON.stringify(only!.text)));
+      if (!group) fail(`${label}: no alert group reads the announcement`, tree);
+      report.push(`${label}=announced:${only!.priority}`);
+      return { text: only!.text, tree };
+    };
+    const program = await noticeStep(
+      "program_notice",
+      () => input("\x1b]9;Build finished\x07"),
+      text => text.startsWith("Info: ") && text.endsWith(". Build finished"),
+      PRIORITY.polite,
+    );
+    if (!/AXButton\S* "Dismiss [^"]+"/.test(program.tree)) fail("program_notice: no Dismiss button", program.tree);
+    await noticeStep(
+      "failure_notice",
+      () => command("notice:Copy failed|Nothing is selected"),
+      text => text === "Error: Copy failed. Nothing is selected",
+      PRIORITY.assertive,
+    );
+    {
+      // Frames that redraw the toasts, such as output beneath them,
+      // announce nothing again.
+      const since = announcements.length;
+      await input("q");
+      await settled(pid, "output beneath notices", current => current.model_text!.includes("q"));
+      await Bun.sleep(QUIET_MS);
+      if (announcements.length !== since) fail("notices announced again", announcements.slice(since));
+    }
 
     console.log(`ACCESSIBILITY_SMOKE ${report.join(" ")}`);
     watching.stdin.end();

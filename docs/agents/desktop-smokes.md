@@ -377,8 +377,12 @@ role, `AXValue`, `AXVisibleCharacterRange` and its string, `AXSelectedText`,
 `AXSelectedTextRange` and its `AXBoundsForRange`, and `AXRangeForPosition`,
 `AXRangeForLine`, and `AXStringForRange` with `AXBoundsForRange` for given
 points, lines, and ranges; `observe` prints each `AXValueChanged`,
-`AXSelectedTextChanged`, focus, and `AXLayoutChanged` notification in order;
-`tree` dumps the elements for diagnosis. The `accessibility_smoke` example
+`AXSelectedTextChanged`, focus, and `AXLayoutChanged` notification in order,
+and each `AXAnnouncementRequested` with its text and priority, which AccessKit
+posts on the window and an observer on the application receives; `tree`
+dumps the elements with their subroles for diagnosis. The check prints only
+the window's part of a tree, because the menu bar lists the user's recent
+items. The `accessibility_smoke` example
 publishes, in global screen points with a top-left origin, where the
 renderer's last paint drew the grid's first cell, its cell size, and its
 cursor quad (recorded at the paint site and converted with `AppKit`'s
@@ -406,7 +410,12 @@ cursor rectangle, and that clearing returns a zero-length range at the cursor.
 It counts notifications for output (which must post `AXValueChanged` before
 `AXSelectedTextChanged`), cursor movement, selection, scrolling, resizing, and
 an equivalent snapshot (which must post none), and bounds a 20 ms output flood
-to one publication per 100 ms plus one. It fails while the application's
+to one publication per 100 ms plus one. Last, a program's OSC 9
+notification, which the fixture's `cat` echoes, and a `notice:` command's
+failure must each post one announcement, at Medium (50) and High (90)
+priority, leave the terminal focused, and appear as an `AXApplicationAlert`
+group named by the announced text; output beneath them must announce
+nothing. It fails while the application's
 `AXFocusedUIElement` stops at the window; see the terminal accessibility rules
 in [the desktop client guide](desktop-client.md#terminal-accessibility).
 

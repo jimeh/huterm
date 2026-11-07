@@ -2,7 +2,7 @@
 //! global screen points, where the active terminal's renderer last painted
 //! its grid and its cursor, so an external Accessibility client can compare
 //! those with what `AppKit` reports, and it drives input, selection,
-//! scrolling, and resizing.
+//! scrolling, and resizing, and raises notices.
 #![allow(unsafe_code, unexpected_cfgs)]
 
 use std::fmt::Write as _;
@@ -16,6 +16,7 @@ use objc::{class, msg_send, sel, sel_impl};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use super::super::TerminalView;
+use super::super::notices::NoticeContent;
 use super::super::selection::Selection;
 use super::WorkspaceView;
 
@@ -79,7 +80,8 @@ fn terminal(
 /// Accessibility clients ask the application for; `input:<JSON string>` sends text to the active terminal, as a paste
 /// would; `select:<column>,<row>,<column>,<row>` selects displayed cells;
 /// `select:none` clears the selection; `scroll:<rows>` moves the viewport
-/// into history; `resize:<width>,<height>` resizes the window's content.
+/// into history; `resize:<width>,<height>` resizes the window's content;
+/// `notice:<title>|<message>` raises a command failure's notice.
 fn execute(cx: &mut App, command: &str) -> anyhow::Result<()> {
     if command == "shutdown" {
         cx.quit();
@@ -143,6 +145,20 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<()> {
             });
             Ok(())
         }
+        "notice" => {
+            let (title, message) = argument
+                .split_once('|')
+                .context("notice takes <title>|<message>")?;
+            let content = NoticeContent::command_failure(title, message);
+            handle.update(cx, |root, _, cx| {
+                let root = root
+                    .downcast::<WorkspaceView>()
+                    .map_err(|_| anyhow::anyhow!("workspace root"))?;
+                root.update(cx, |view, cx| view.notify(content, cx));
+                anyhow::Ok(())
+            })??;
+            Ok(())
+        }
         "resize" => {
             let values = numbers::<f32>(argument)?;
             let [width, height] = values[..] else {
@@ -173,7 +189,13 @@ fn read_state(cx: &mut App) -> String {
         output.push_str("ready=false\n");
         return output;
     };
-    let _ = handle.update(cx, |_, window, cx| {
+    let _ = handle.update(cx, |root, window, cx| {
+        if let Ok(root) = root.downcast::<WorkspaceView>() {
+            output.push_str(&super::super::notices::smoke_lines(
+                "",
+                root.read(cx).notices.contents(),
+            ));
+        }
         let view = view.read(cx);
         write_view(&mut output, view, window);
     });

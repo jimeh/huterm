@@ -3810,6 +3810,13 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<gpui::Div> {
+        // A notice announces once, in the first frame that shows it while
+        // the user is in this window: a background window's waits for its
+        // activation, which redraws, and a hidden Quake window's for its
+        // summons.
+        let announcing = self.notices.begin_frame(
+            window.is_window_active() && self.can_show_notices(cx),
+        );
         if self.notices.is_empty() {
             return None;
         }
@@ -3865,6 +3872,7 @@ impl WorkspaceView {
                 .filter(|(id, _)| Some(*id) == self.focused_notice)
                 .map(|(_, index)| index),
             hovered: &self.hovered_notices,
+            announcing: &announcing,
             fit: StackFit::new(terminal.size, bottom, window.rem_size()),
             swatch,
             handlers: &handlers,

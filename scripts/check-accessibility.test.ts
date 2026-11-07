@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cellRect, close, documentLines, edgeCells, paintedCursor, parseState, valueChangedFirst } from "./check-accessibility";
+import { announcement, cellRect, close, documentLines, edgeCells, paintedCursor, parseState, valueChangedFirst } from "./check-accessibility";
 
 const state = parseState([
   "paint_screen=100,200",
@@ -16,6 +16,12 @@ const rows = [
 ];
 
 describe("accessibility smoke expectations", () => {
+  test("announcement lines carry their text and priority", () => {
+    expect(announcement('AXAnnouncementRequested AXWindow {"AXAnnouncementKey":"Error: a b","AXPriorityKey":90}'))
+      .toEqual({ text: "Error: a b", priority: 90 });
+    expect(announcement("AXValueChanged AXTextArea")).toBeUndefined();
+  });
+
   test("cells sit where the renderer painted the grid", () => {
     expect(cellRect(state, 0, 0)).toEqual([100, 200, 8, 16]);
     expect(cellRect(state, 3, 2)).toEqual([124, 232, 8, 16]);
