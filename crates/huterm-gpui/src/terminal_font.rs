@@ -65,6 +65,13 @@ pub(crate) fn symbols_available() -> bool {
     SYMBOLS_REGISTERED.load(Ordering::Relaxed)
 }
 
+/// The bundled family's regular face, for measuring what GPUI's Linux text
+/// system does not report.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn bundled_regular_face() -> &'static [u8] {
+    BUNDLED_FACES[0]
+}
+
 /// Whether a family belongs in the terminal and interface font lists.
 pub(crate) fn is_selectable_family(family: &str) -> bool {
     family != SYMBOLS_FAMILY

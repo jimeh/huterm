@@ -17,8 +17,8 @@ Usage (through `mise run nerd-fonts:constraints`):
         <cache directory> <output .rs file>
 
 The cache directory holds the downloaded font-patcher and the icon sets'
-source fonts, which supply their original code points. The font-patcher file
-is verified against a pinned SHA-256.
+source fonts, which supply their original code points. Every download is
+verified against a pinned SHA-256.
 """
 
 import ast
@@ -41,6 +41,24 @@ PATCHER_SHA256 = "55be7e619e1b2193ab59b03d04625cd3c1ce3e86cd58ea3bb63f171c9005b8
 GLYPHS_URL = (
     f"https://github.com/ryanoasis/nerd-fonts/raw/refs/tags/v{NF_VERSION}/src/glyphs"
 )
+# The icon sets' source fonts, which map their original code points onto
+# Nerd Font code points. A new or changed set needs its hash here.
+GLYPH_SHA256 = {
+    "Unicode_IEC_symbol_font.otf": "6fac775371f33ea71d2136d5c516ea46287c8627576fb673de1a21bd1b0a7f89",
+    "codicons/codicon.ttf": "92d3aa2a915246b100de1b5397b3faae4c7cb9576ae054351b71eda8f20754cf",
+    "devicons/devicons.otf": "9002b093235b4e0aa86e9c236dfcc7d287c0d868d022197ec1cf929c91d7c977",
+    "extraglyphs.sfd": "7bbbf90b3fce478e3487a5358e90aa7cfa5d214b0f7be414c1fa00f10421697d",
+    "font-awesome-extension.ttf": "b3c40985a8f23bbe450926e87b55fb3937b0aee742805ea4a6443242e224ea33",
+    "font-awesome/FontAwesome.otf": "d1bdb77fe158711f2fde56ea5eb3e72498875224588a4efd4b0063050250197f",
+    "font-logos.ttf": "25d0d6ba1c1ea4700c861c29f18022aa759079fc919b2baa01bd99f377712857",
+    "materialdesign/MaterialDesignIconsDesktop.ttf": "a10085e807b1df0e311402659b04a8468be37f382dbf4edfe7cb18a4ed3233f3",
+    "octicons/octicons.otf": "65549010f09586c48eccd00e4c32b381834ef537a4a5b6c2ef7dcd6b3911acea",
+    "original-source.otf": "85c8e585f4e85a0563acf42e518341d77644768953df182f7bcc44dc0ffc4a06",
+    "pomicons/Pomicons.otf": "b215bcfb88927419b81c8e86ae8948ad83a9ca34870d71566962032e5afd75a9",
+    "powerline-extra/PowerlineExtraSymbols.otf": "f9c74aa14a079c21d1399868ef6bafb8237883fe146be05d79a596ecb683d420",
+    "powerline-symbols/PowerlineSymbols.otf": "829f6e226f492eeebf8dda994aa9c8671e7cb6af61a4fd96d43b2894b9563c60",
+    "weather-icons/weathericons-regular-webfont.ttf": "176bda6661f213dde47c2114d76e476ec8ca9aae07dd54f9550d2d28fe02b4fd",
+}
 
 type PatchSetAttributes = dict[Literal["default"] | int, PatchSetAttributeEntry]
 type ResolvedSymbol = PatchSetAttributes | PatchSetScaleRules | int | None
@@ -195,9 +213,12 @@ def codepoint_tables(
     cmap = nerd_font.getBestCmap()
     for entry in patch_sets:
         name = entry["Name"]
+        if entry["Filename"] not in GLYPH_SHA256:
+            raise ValueError(f"pin {entry['Filename']} in GLYPH_SHA256")
         source = fetch(
             f"{GLYPHS_URL}/{entry['Filename']}",
             cache / "glyphs" / entry["Filename"],
+            GLYPH_SHA256[entry["Filename"]],
         )
         try:
             with TTFont(source) as patchfont:

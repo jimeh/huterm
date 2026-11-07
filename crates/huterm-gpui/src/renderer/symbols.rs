@@ -16,7 +16,7 @@ use gpui::{Font, FontId, Pixels, Point, TextSystem, font, point, px};
 
 use self::constraint::{Constraint, GlyphBox, Metrics, Size};
 use super::GridMetrics;
-use crate::terminal_font::{SYMBOLS_FACE, SYMBOLS_FAMILY};
+use crate::terminal_font::{SYMBOLS_FACE, SYMBOLS_FAMILY, TerminalFont};
 
 /// Scalars the symbols font may draw: the Private Use Areas, where Nerd Fonts
 /// places its icons, and the IEC power symbols. Standard characters the font
@@ -93,8 +93,71 @@ pub(super) fn ink_box(ch: char, font_size: Pixels) -> Option<GlyphBox> {
     (ink.width > 0.0 && ink.height > 0.0).then_some(ink)
 }
 
+/// The regular terminal face's cap height, which one-cell icons scale
+/// against. GPUI reports zero when the font's OS/2 table predates the field,
+/// as the bundled Linux default's does. Like Ghostty, measure the `H` glyph
+/// instead,
+/// and estimate 75% of the ascent when that fails too.
+pub(super) fn cap_height(
+    text_system: &TextSystem,
+    terminal_font: &TerminalFont,
+    metrics: GridMetrics,
+) -> Pixels {
+    let id = text_system.resolve_font(&terminal_font.face(false));
+    let reported = text_system.cap_height(id, metrics.font_size);
+    if reported > px(0.0) {
+        return reported;
+    }
+    measured_cap_height(
+        text_system,
+        id,
+        &terminal_font.family,
+        metrics.font_size,
+    )
+    .filter(|height| *height > px(0.0))
+    .unwrap_or(metrics.ascent * 0.75)
+}
+
+/// `H`'s ink height, from CoreText's glyph bounds.
+#[cfg(target_os = "macos")]
+fn measured_cap_height(
+    text_system: &TextSystem,
+    id: FontId,
+    _family: &str,
+    font_size: Pixels,
+) -> Option<Pixels> {
+    text_system
+        .typographic_bounds(id, font_size, 'H')
+        .ok()
+        .map(|bounds| bounds.size.height)
+}
+
+/// `H`'s ink height in the bundled family, whose bytes Huterm embeds. GPUI's
+/// Linux text system reports advances rather than ink bounds, so other
+/// families fall back to an estimate.
+#[cfg(not(target_os = "macos"))]
+fn measured_cap_height(
+    _text_system: &TextSystem,
+    _id: FontId,
+    family: &str,
+    font_size: Pixels,
+) -> Option<Pixels> {
+    if family != crate::terminal_font::BUNDLED_FAMILY {
+        return None;
+    }
+    let face = ttf_parser::Face::parse(
+        crate::terminal_font::bundled_regular_face(),
+        0,
+    )
+    .ok()?;
+    let rect = face.glyph_bounding_box(face.glyph_index('H')?)?;
+    Some(
+        font_size * (f32::from(rect.height()) / f32::from(face.units_per_em())),
+    )
+}
+
 /// The grid measurements the patcher's rules size icons against.
-/// `cap_height` is the terminal face's.
+/// `cap_height` is the regular terminal face's.
 pub(super) fn grid(metrics: GridMetrics, cap_height: Pixels) -> Metrics {
     let value = |pixels: Pixels| f64::from(f32::from(pixels));
     let face_height = value(metrics.ascent + metrics.descent);

@@ -860,8 +860,8 @@ fn prepare_row(
             layout_cell(
                 window.text_system(),
                 cell.text.as_str(),
-                cell_font(variant, terminal_font),
-                terminal_font.nerd_font_symbols,
+                terminal_font,
+                variant,
                 metrics,
             )
         });
@@ -888,19 +888,20 @@ fn prepare_row(
 fn layout_cell(
     text_system: &WindowTextSystem,
     text: &str,
-    configured: Font,
-    nerd_font_symbols: bool,
+    terminal_font: &TerminalFont,
+    variant: FontVariant,
     metrics: GridMetrics,
 ) -> GlyphContent {
-    if nerd_font_symbols
+    let configured = cell_font(variant, terminal_font);
+    if terminal_font.nerd_font_symbols
         && let Some(ch) = text.parse::<char>().ok()
         && let Some((symbols, _)) =
             symbols::face_for(text_system, &configured, ch, metrics.font_size)
     {
-        let cap_height = text_system.cap_height(
-            text_system.resolve_font(&configured),
-            metrics.font_size,
-        );
+        // Every variant sizes icons from the regular face, as a patched
+        // family's single set of rules does.
+        let cap_height =
+            symbols::cap_height(text_system, terminal_font, metrics);
         let grid = symbols::grid(metrics, cap_height);
         let place = |columns| {
             let placement = symbols::place(ch, metrics, &grid, columns);

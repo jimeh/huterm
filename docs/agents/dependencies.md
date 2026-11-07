@@ -131,9 +131,10 @@ bump it:
    the Linux notice list in `assets/linux/package-policy.json`.
 4. Check that the family is still `Symbols Nerd Font` with PostScript name
    `SymbolsNF`, which the `nerd-font-symbols` vendor patches name.
-5. In `scripts/nerd-font-constraints.py`, set `NF_VERSION` and the new
-   `font-patcher` SHA-256, check the script's evaluation context against the
-   new `setup_patch_set` variables, and run `mise run nerd-fonts:constraints`.
+5. In `scripts/nerd-font-constraints.py`, set `NF_VERSION`, the new
+   `font-patcher` SHA-256, and the icon-set source fonts' SHA-256s. Check the
+   script's evaluation context against the new `setup_patch_set` variables,
+   and run `mise run nerd-fonts:constraints`.
    Review the regenerated `renderer/symbols/constraint/table.rs`; a test fails
    while its version differs from the bundled font's.
 6. In `scripts/nerd-font-reference.py`, move the three families' archive and
