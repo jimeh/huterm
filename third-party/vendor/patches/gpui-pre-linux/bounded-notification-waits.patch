@@ -1,0 +1,62 @@
+diff --git a/src/linux/system_notifications.rs b/src/linux/system_notifications.rs
+index 3530c6f3420987cda1b70809b33bd970baaaef5b..4fc80fb5981f1745e14d46e26903b9649eaa1d8d 100644
+--- a/src/linux/system_notifications.rs
++++ b/src/linux/system_notifications.rs
+@@ -4,6 +4,7 @@
+ use std::cell::RefCell;
+ use std::collections::HashMap;
+ use std::rc::Rc;
++use std::sync::atomic::{AtomicUsize, Ordering};
+ 
+ use futures::StreamExt as _;
+ use futures::channel::mpsc;
+@@ -15,6 +16,35 @@ use gpui::{
+ /// rather than a specific action button.
+ const DEFAULT_ACTION: &str = "default";
+ 
++/// Notifications that may wait for the user's response at once. Each waits
++/// on its own thread and session-bus connection until the notification
++/// closes, which a daemon that retains notifications can delay without
++/// bound. Past this many, a notification is shown without waiting, so its
++/// activation reports nothing.
++const MAX_WAITING: usize = 16;
++
++static WAITING: AtomicUsize = AtomicUsize::new(0);
++
++/// Holds one of the [`MAX_WAITING`] places until dropped.
++struct WaitSlot;
++
++impl WaitSlot {
++    fn take() -> Option<Self> {
++        WAITING
++            .try_update(Ordering::AcqRel, Ordering::Acquire, |waiting| {
++                (waiting < MAX_WAITING).then_some(waiting + 1)
++            })
++            .ok()
++            .map(|_| Self)
++    }
++}
++
++impl Drop for WaitSlot {
++    fn drop(&mut self) {
++        WAITING.fetch_sub(1, Ordering::AcqRel);
++    }
++}
++
+ type ResponseCallback = Rc<RefCell<Option<Box<dyn FnMut(SystemNotificationResponse)>>>>;
+ 
+ pub(crate) struct SystemNotificationState {
+@@ -54,11 +84,13 @@ impl SystemNotificationState {
+ 
+         let sender = self.response_sender.clone();
+         let tag = notification.tag.clone();
++        let slot = WaitSlot::take();
+         // `show` connects to the session bus and `wait_for_action` blocks
+         // until the notification closes, so both run off the UI thread.
+         let spawn_result = std::thread::Builder::new()
+             .name("system-notification".to_string())
+             .spawn(move || match built.show() {
++                Ok(_handle) if slot.is_none() => {}
+                 Ok(handle) => handle.wait_for_action(|action| {
+                     let action_id = match action {
+                         // Sent by `notify-rust` when the notification closes

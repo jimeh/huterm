@@ -1806,7 +1806,7 @@ fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
 fn program_progress_is_status_and_its_notification_reaches_one_recipient() {
     let runtime = spawn(
         235,
-        "stty -echo; printf '\\033]9;4;1;50\\007\\033]9;Build done\\007READY'; read l; exit 0",
+        "stty -echo; printf WAITING; read go; printf '\\033]9;4;1;50\\007\\033]9;Build done\\007READY'; read l; exit 0",
     );
     let recipient = runtime
         .subscribe(ViewerOptions {
@@ -1820,13 +1820,16 @@ fn program_progress_is_status_and_its_notification_reaches_one_recipient() {
         })
         .unwrap();
     let typist = prober(&runtime);
+    wait_for_text(&typist, "WAITING");
+    // The recipient is registered before the program notifies.
+    typist
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
     wait_for_text(&typist, "READY");
     assert_eq!(
         runtime.registry().status().progress,
         Some(huterm_protocol::TerminalProgress::Determinate(50))
     );
-    // The recipient subscribed before the output, so it was eligible when
-    // the notification arrived.
     wait_until("notification", || {
         recipient.host_effects().unwrap().try_next().is_some_and(|pending| {
             matches!(

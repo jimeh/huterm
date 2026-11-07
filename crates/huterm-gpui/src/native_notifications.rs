@@ -104,9 +104,17 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::{Availability, store};
 
+    /// Set while a probe runs, so refreshes never stack up threads.
+    static PROBING: AtomicBool = AtomicBool::new(false);
+
     pub(super) fn refresh() {
+        if PROBING.swap(true, Ordering::AcqRel) {
+            return;
+        }
         // The D-Bus call blocks for up to its timeout.
         let spawned = std::thread::Builder::new()
             .name("notification-probe".into())
@@ -115,9 +123,10 @@ mod platform {
                     Ok(_) => Availability::Available,
                     Err(_) => Availability::Unavailable,
                 });
+                PROBING.store(false, Ordering::Release);
             });
         if spawned.is_err() {
-            store(Availability::Unknown);
+            PROBING.store(false, Ordering::Release);
         }
     }
 }

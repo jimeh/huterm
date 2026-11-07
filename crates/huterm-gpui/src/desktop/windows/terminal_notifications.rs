@@ -10,8 +10,10 @@
 
 use std::time::Duration;
 
-use gpui::{SharedString, SystemNotification, WindowHandle};
-use huterm_core::{NotificationLimiter, PendingHostEffect};
+use gpui::{SharedString, SystemNotification};
+use huterm_core::{
+    NotificationLimiter, PendingHostEffect, notification_heading,
+};
 use huterm_protocol::{
     CommandArgument, CommandId, CommandInvocation, CommandValue,
     TerminalNotification,
@@ -28,7 +30,9 @@ pub(super) const SHOW_PANE: CommandId = CommandId::new("notice_show_pane");
 /// [`APP_INTERVAL`] applies; each terminal has its own limit in core too.
 const APP_BURST: u32 = 8;
 const APP_INTERVAL: Duration = Duration::from_secs(1);
-/// System notification tags name the pane they reveal when clicked.
+/// System notification tags name the pane they reveal when clicked, then a
+/// serial number, so a pane's newer notification does not replace an
+/// earlier one in the notification center.
 const TAG_PREFIX: &str = "huterm-pane-";
 
 /// The app-wide notification state the desktop keeps.
@@ -41,6 +45,8 @@ pub(super) struct Notifier {
     pub(super) posted: u64,
     /// Notifications the app-wide limit dropped.
     pub(super) dropped: u64,
+    /// The serial number the next system notification's tag carries.
+    serial: u64,
     /// Stands in for the platform's answer, which tests cannot choose.
     #[cfg(test)]
     pub(super) availability: Option<Availability>,
@@ -53,6 +59,7 @@ impl Default for Notifier {
             notices: 0,
             posted: 0,
             dropped: 0,
+            serial: 0,
             #[cfg(test)]
             availability: None,
         }
@@ -79,11 +86,15 @@ pub(super) struct NoticeShape {
 }
 
 /// Chooses how a notification appears. `app_active` is whether one of
-/// Huterm's windows is active; `in_front` whether the terminal is drawn
-/// where the notice would appear: in the active window while Huterm is in
-/// front, and in its own window, where a fallback notice goes, otherwise. An undecided macOS permission still
-/// posts, which asks the user, and shows the notice too, since the first
-/// notification is lost if the user declines.
+/// Huterm's windows, the Settings window included, is active; `in_front`
+/// whether the terminal is drawn where the notice would appear: in the
+/// active window while Huterm is in front, and otherwise in its own
+/// window, where a fallback notice goes.
+///
+/// A system notification may not show: an undecided macOS permission
+/// asks the user and loses the notification if they decline, and until
+/// the first probe answers nothing is known. Both post and raise the
+/// fallback notice too.
 pub(super) fn presentation(
     app_active: bool,
     in_front: bool,
@@ -99,8 +110,8 @@ pub(super) fn presentation(
         };
     }
     let (system, fallback) = match availability {
-        Availability::Available | Availability::Unknown => (true, false),
-        Availability::Undecided => (true, true),
+        Availability::Available => (true, false),
+        Availability::Undecided | Availability::Unknown => (true, true),
         Availability::Unavailable => (false, true),
     };
     Presentation {
@@ -112,13 +123,29 @@ pub(super) fn presentation(
     }
 }
 
-/// The heading a notification shows: the program's title, or the tab's
-/// label when it sent none, as OSC 9 never does.
+/// The tab or pane label, bounded and cleaned like a program's title: a
+/// program can set it through its terminal title.
+fn clean_label(label: &str) -> String {
+    notification_heading(label)
+}
+
+/// The heading a notice shows: the program's title, or the label when it
+/// sent none, as OSC 9 never does.
 fn heading(notification: &TerminalNotification, label: &str) -> String {
     if notification.title().is_empty() {
         label.to_owned()
     } else {
         notification.title().to_owned()
+    }
+}
+
+/// The title a system notification shows. A program's own title carries
+/// the label too, so a banner always names the terminal it came from.
+fn system_title(notification: &TerminalNotification, label: &str) -> String {
+    if notification.title().is_empty() {
+        label.to_owned()
+    } else {
+        format!("{} \u{2014} {label}", notification.title())
     }
 }
 
@@ -134,12 +161,14 @@ fn plain_body(body: &str) -> String {
     }
 }
 
-fn tag(pane: PaneId) -> String {
-    format!("{TAG_PREFIX}{}", pane.get())
+fn tag(pane: PaneId, serial: u64) -> String {
+    format!("{TAG_PREFIX}{}-{serial}", pane.get())
 }
 
 fn tagged_pane(tag: &str) -> Option<u64> {
-    tag.strip_prefix(TAG_PREFIX)?.parse().ok()
+    let (pane, serial) = tag.strip_prefix(TAG_PREFIX)?.split_once('-')?;
+    serial.parse::<u64>().ok()?;
+    pane.parse().ok()
 }
 
 /// The notice for `notification` from `pane`, labelled `label`.
@@ -166,7 +195,7 @@ fn notice(
     };
     NoticeContent {
         severity: Severity::Info,
-        source: NoticeSource::Terminal {
+        source: NoticeSource::Program {
             tab,
             title: label.to_owned(),
         },
@@ -189,9 +218,9 @@ pub(super) fn install(cx: &mut App) {
     });
 }
 
-/// Brings the window holding pane number `pane` forward, selects its tab,
-/// and focuses it. Returns whether a window held it. A hidden Quake
-/// window stays hidden, as summoning it is its hotkey's job.
+/// Brings the window holding pane number `pane` forward, summoning a
+/// hidden Quake window, selects its tab, clears a zoom that hides the
+/// pane, and focuses it. Returns whether a window held it.
 pub(super) fn reveal_pane(pane: u64, cx: &mut App) -> bool {
     for handle in cx.windows() {
         let revealed = handle
@@ -199,29 +228,7 @@ pub(super) fn reveal_pane(pane: u64, cx: &mut App) -> bool {
                 let Ok(view) = root.downcast::<WorkspaceView>() else {
                     return false;
                 };
-                view.update(cx, |view, cx| {
-                    let Some(tab) = view.tabs.iter().find(|tab| {
-                        tab.panes.iter().any(|shown| shown.pane.get() == pane)
-                    }) else {
-                        return false;
-                    };
-                    if !view.quake_visible() {
-                        return false;
-                    }
-                    let tab_id = tab.id;
-                    let pane_id = tab
-                        .panes
-                        .iter()
-                        .find(|shown| shown.pane.get() == pane)
-                        .map(|shown| shown.pane);
-                    window.activate_window();
-                    cx.activate(true);
-                    view.select_tab(tab_id, true, window, cx);
-                    if let Some(pane_id) = pane_id {
-                        view.focus_pane(tab_id, pane_id, window, cx);
-                    }
-                    true
-                })
+                view.update(cx, |view, cx| view.reveal(pane, window, cx))
             })
             .unwrap_or(false);
         if revealed {
@@ -231,24 +238,64 @@ pub(super) fn reveal_pane(pane: u64, cx: &mut App) -> bool {
     false
 }
 
-/// Whether any of Huterm's windows is active.
-fn app_active(cx: &App) -> bool {
-    cx.active_window().is_some_and(|window| {
-        cx.global::<Desktop>()
-            .windows
-            .record(window.window_id())
-            .is_some()
+/// The handle of the active Huterm window, if any, checking `window`, the
+/// one being updated, directly. Platform notions of a main window can
+/// outlive activation, so each window is asked whether it is active.
+fn active_window(window: &Window, cx: &mut App) -> Option<AnyWindowHandle> {
+    let current = window.window_handle();
+    if window.is_window_active() {
+        return Some(current);
+    }
+    cx.windows().into_iter().find(|handle| {
+        *handle != current
+            && handle
+                .update(cx, |_, window, _| window.is_window_active())
+                .unwrap_or(false)
     })
 }
 
-/// The window a notice raised while Huterm is in front goes to: the active
-/// one, where the user is looking, when it can show notices.
-fn active_workspace(cx: &App) -> Option<WindowHandle<WorkspaceView>> {
-    let window = cx.active_window()?;
-    window.downcast::<WorkspaceView>()
-}
-
 impl WorkspaceView {
+    /// Reveals pane number `pane` if this window holds it.
+    fn reveal(
+        &mut self,
+        pane: u64,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let Some((tab_id, pane_id)) = self.tabs.iter().find_map(|tab| {
+            tab.panes
+                .iter()
+                .find(|shown| shown.pane.get() == pane)
+                .map(|shown| (tab.id, shown.pane))
+        }) else {
+            return false;
+        };
+        let hidden_quake = self
+            .quake
+            .as_ref()
+            .filter(|_| !self.quake_visible())
+            .map(|state| state.name.clone());
+        if let Some(name) = hidden_quake {
+            let reporter = Some(cx.entity().downgrade());
+            quake_windows::summon_later(cx, name, ids::SHOW_QUAKE, reporter);
+        } else {
+            window.activate_window();
+            cx.activate(true);
+        }
+        self.select_tab(tab_id, true, window, cx);
+        let hidden = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .and_then(|tab| self.shown_zoom(tab, cx))
+            .is_some_and(|zoomed| zoomed != pane_id);
+        if hidden {
+            self.set_zoom(tab_id, None, window, cx);
+        }
+        self.focus_pane(tab_id, pane_id, window, cx);
+        true
+    }
+
     /// Presents the notifications `pane` of `tab` took. Each is rechecked
     /// against its recipient's current permission first.
     pub(super) fn present_notifications(
@@ -286,6 +333,7 @@ impl WorkspaceView {
                 })
                 .collect()
         };
+        let label = clean_label(label);
         for notification in notifications {
             let now = Instant::now();
             let notifier = &mut cx.global_mut::<Desktop>().notifier;
@@ -301,14 +349,17 @@ impl WorkspaceView {
                 .unwrap_or_else(native_notifications::availability);
             #[cfg(not(test))]
             let availability = native_notifications::availability();
-            let app_active = app_active(cx);
-            let in_front =
-                visible && (window.is_window_active() || !app_active);
-            let shown = presentation(app_active, in_front, availability);
+            let active = active_window(window, cx);
+            let in_this_window = active == Some(window.window_handle());
+            let in_front = visible && (in_this_window || active.is_none());
+            let shown = presentation(active.is_some(), in_front, availability);
             if shown.system {
+                let notifier = &mut cx.global_mut::<Desktop>().notifier;
+                notifier.serial += 1;
+                let tag = tag(pane, notifier.serial);
                 cx.show_system_notification(SystemNotification {
-                    tag: SharedString::from(tag(pane)),
-                    title: heading(&notification, label).into(),
+                    tag: SharedString::from(tag),
+                    title: system_title(&notification, &label).into(),
                     body: plain_body(notification.body()).into(),
                     actions: Vec::new(),
                 });
@@ -317,8 +368,8 @@ impl WorkspaceView {
             }
             if let Some(shape) = shown.notice {
                 let content =
-                    notice(tab, pane, label, &notification, shape.reveal);
-                self.raise_notification_notice(content, window, cx);
+                    notice(tab, pane, &label, &notification, shape.reveal);
+                self.raise_notification_notice(content, active, window, cx);
                 if shape.attention {
                     self.request_attention(window);
                 }
@@ -326,25 +377,28 @@ impl WorkspaceView {
         }
     }
 
-    /// Raises a notification's notice in the active window when Huterm is
-    /// in front and that window can show it, and in this window otherwise.
+    /// Raises a notification's notice in `active`, the active window, when
+    /// it is another terminal window that can show it, and in this window
+    /// otherwise, as when the Settings window is active. It replaces the
+    /// tab's earlier notification notice.
     fn raise_notification_notice(
         &mut self,
         content: NoticeContent,
+        active: Option<AnyWindowHandle>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         cx.global_mut::<Desktop>().notifier.notices += 1;
-        let elsewhere = active_workspace(cx).filter(|active| {
-            active.window_id() != window.window_handle().window_id()
-        });
+        let elsewhere = active
+            .filter(|active| *active != window.window_handle())
+            .and_then(|active| active.downcast::<WorkspaceView>());
         if let Some(active) = elsewhere {
             let raised = active
-                .update(cx, |view, _, cx| {
+                .update(cx, |view, window, cx| {
                     if !view.can_show_notices(cx) {
                         return false;
                     }
-                    view.notify(content.clone(), cx);
+                    view.replace_program_notice(content.clone(), window, cx);
                     true
                 })
                 .unwrap_or(false);
@@ -352,7 +406,20 @@ impl WorkspaceView {
                 return;
             }
         }
-        self.notify(content, cx);
+        self.replace_program_notice(content, window, cx);
+    }
+
+    fn replace_program_notice(
+        &mut self,
+        content: NoticeContent,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let source = content.source.clone();
+        self.notices
+            .replace_source(&source, vec![content], Instant::now());
+        self.reconcile_notices(window, cx);
+        cx.notify();
     }
 }
 
@@ -396,7 +463,11 @@ mod tests {
                 notice: None,
             }
         );
-        assert_eq!(presentation(false, false, Availability::Unknown), posted);
+        // Until the probe answers, a notice backs the post up.
+        assert_eq!(
+            presentation(false, false, Availability::Unknown),
+            presentation(false, false, Availability::Undecided)
+        );
         let fallback = |reveal| {
             Some(NoticeShape {
                 reveal,
@@ -422,6 +493,7 @@ mod tests {
         assert_eq!(content.message, "done");
         assert_eq!(content.location, None);
         assert_eq!(content.severity, Severity::Info);
+        assert!(matches!(content.source, NoticeSource::Program { .. }));
         assert_eq!(content.lifetime, Lifetime::Expiring);
         let [action] = content.actions.as_slice() else {
             panic!("one action expected");
@@ -441,11 +513,25 @@ mod tests {
     }
 
     #[test]
-    fn tags_name_their_pane_and_nothing_else() {
+    fn tags_name_their_pane_and_differ_per_notification() {
         let pane = PaneId::new(42);
-        assert_eq!(tagged_pane(&tag(pane)), Some(42));
+        assert_ne!(tag(pane, 1), tag(pane, 2));
+        assert_eq!(tagged_pane(&tag(pane, 7)), Some(42));
         assert_eq!(tagged_pane("gpui-system-notification-1"), None);
-        assert_eq!(tagged_pane("huterm-pane-x"), None);
+        assert_eq!(tagged_pane("huterm-pane-x-1"), None);
+        assert_eq!(tagged_pane("huterm-pane-42"), None);
+    }
+
+    #[test]
+    fn labels_are_cleaned_and_banners_name_their_terminal() {
+        let long = format!("{}\u{202E}x", "t".repeat(200));
+        let label = clean_label(&long);
+        assert!(!label.contains('\u{202E}'));
+        assert!(label.chars().count() <= 129);
+        let titled = TerminalNotification::new("CI".into(), "done".into());
+        assert_eq!(system_title(&titled, "cargo"), "CI \u{2014} cargo");
+        let untitled = TerminalNotification::new(String::new(), "done".into());
+        assert_eq!(system_title(&untitled, "cargo"), "cargo");
     }
 
     #[test]

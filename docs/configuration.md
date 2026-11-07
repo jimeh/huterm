@@ -1733,10 +1733,14 @@ Programs can ask for a desktop notification with OSC 9 (`ESC ] 9 ; text
 BEL`) or OSC 777 (`ESC ] 777 ; notify ; title ; text BEL`). Huterm shows
 each one once, in the window you used most recently that shows the terminal:
 
-- While Huterm is in the background, it is a system notification. Clicking
-  it brings Huterm forward with that terminal's window, tab, and pane.
-- While Huterm is in front, it is a notice in the active window. When the
-  terminal is in another tab or window, the notice offers **Show Tab**.
+- While Huterm is in the background, it is a system notification, titled with
+  the tab's name or with the program's title and the tab's name. Clicking it
+  brings Huterm forward with that terminal's window, tab, and pane, summoning a
+  hidden Quake window and leaving a zoom that hid the pane.
+- While Huterm is in front, including while Settings is, it is a notice in
+  the active terminal window. When the terminal is in another tab or window,
+  or behind a zoomed pane, the notice offers **Show Tab**. Each tab keeps only
+  its newest notification notice.
 - A tab that sent a notification you have not seen shows the bell mark until
   you view it.
 
@@ -1770,7 +1774,11 @@ progress_bar = false # keep the tab's ring, drop the pane bar
 ```
 
 Reload applies both to open terminals; `deny` also cancels notifications
-that have not been shown yet.
+that have not been shown yet. As with `clipboard_write`, an explicit `deny`
+survives a startup fallback caused by an unrelated settings error.
+
+On Linux, at most 16 system notifications wait for a click at once. Later ones
+still show while those remain open, but clicking them does nothing.
 
 ## Option and Alt as Meta
 

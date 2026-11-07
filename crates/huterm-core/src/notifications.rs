@@ -27,7 +27,9 @@ pub(crate) const NOTIFICATION_INTERVAL: Duration = Duration::from_secs(3);
 /// OSC 9 also carries `ConEmu` commands such as `9;4` progress. Ghostty
 /// reports a `ConEmu` command it does not recognize, such as `9;4;9`, as a
 /// notification whose text starts with digits and a semicolon; that text is
-/// a malformed command, not a message, so it is dropped.
+/// a malformed command, not a message, so it is dropped. The callback does
+/// not say which sequence it parsed, so an untitled OSC 777 whose text
+/// starts that way is dropped too; one that is only digits is kept.
 pub(crate) fn normalize(
     title: &[u8],
     body: &[u8],
@@ -43,9 +45,17 @@ pub(crate) fn normalize(
     Some(TerminalNotification::new(title, body))
 }
 
+/// Bounds and cleans text a client shows as a notification's heading in
+/// place of a title the program did not send, such as a tab label, which a
+/// program can set through its own terminal title.
+#[must_use]
+pub fn notification_heading(label: &str) -> String {
+    clean(label.as_bytes(), TITLE_CHAR_LIMIT)
+}
+
 fn looks_like_conemu_command(body: &[u8]) -> bool {
     let digits = body.iter().take_while(|byte| byte.is_ascii_digit()).count();
-    digits > 0 && matches!(body.get(digits), None | Some(b';'))
+    digits > 0 && body.get(digits) == Some(&b';')
 }
 
 fn clean(bytes: &[u8], limit: usize) -> String {
@@ -183,7 +193,8 @@ mod tests {
         assert_eq!(text("", ""), None);
         assert_eq!(text(" \x07 ", "\u{202E}\t"), None);
         assert_eq!(text("", "4;9"), None);
-        assert_eq!(text("", "10"), None);
+        // OSC 777 with no title and a number, or OSC 9 with only a number.
+        assert_eq!(text("", "42"), Some((String::new(), "42".into())));
         // A title means OSC 777, which carries no ConEmu commands.
         assert_eq!(text("T", "4;9"), Some(("T".into(), "4;9".into())));
         assert_eq!(

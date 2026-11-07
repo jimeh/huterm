@@ -21,6 +21,9 @@ pub(crate) struct StatusPublisher {
     dirty: bool,
     /// When the shown progress expires; `None` while there is none.
     progress_expires: Option<Instant>,
+    /// Replaces [`PROGRESS_TIMEOUT`] in tests.
+    #[cfg(test)]
+    pub(crate) progress_timeout: Option<Duration>,
 }
 
 impl StatusPublisher {
@@ -57,20 +60,39 @@ impl StatusPublisher {
     }
 
     /// Records a progress report at `now`. Every report, even an unchanged
-    /// one, extends its expiry.
+    /// one, extends its expiry. Once the root has exited, output parsed
+    /// after the exit can still report progress; nothing would end it, so
+    /// only a removal applies.
     pub(crate) fn progress(
         &mut self,
         progress: Option<TerminalProgress>,
         now: Instant,
     ) {
-        self.progress_expires = progress.map(|_| now + PROGRESS_TIMEOUT);
+        if progress.is_some()
+            && self.status.lifecycle != TerminalLifecycle::Running
+        {
+            return;
+        }
+        self.progress_expires = progress.map(|_| now + self.progress_timeout());
         if self.status.progress != progress {
             self.status.progress = progress;
             self.dirty = true;
         }
     }
 
-    /// When progress expires, for the runtime's idle wait.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "only tests replace the timeout")
+    )]
+    fn progress_timeout(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(timeout) = self.progress_timeout {
+            return timeout;
+        }
+        PROGRESS_TIMEOUT
+    }
+
+    /// When progress expires, for the runtime's waits.
     pub(crate) fn progress_deadline(&self) -> Option<Instant> {
         self.progress_expires
     }
@@ -220,6 +242,10 @@ mod tests {
             success: true,
         });
         assert_eq!(status.status.progress, None, "exit clears progress");
+        assert_eq!(status.progress_deadline(), None);
+        // Output parsed after the exit cannot bring it back.
+        status.progress(Some(TerminalProgress::Determinate(5)), later);
+        assert_eq!(status.status.progress, None);
         assert_eq!(status.progress_deadline(), None);
     }
 }

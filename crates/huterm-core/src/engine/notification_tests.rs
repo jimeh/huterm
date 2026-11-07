@@ -151,4 +151,7 @@ fn progress_reports_become_status_values_and_a_full_reset_clears_them() {
         [Some(Determinate(5))]
     );
     assert_eq!(progress(engine.process(b"\x1bc").unwrap()), [None]);
+    // Reset Terminal resets through the C API, which reports no removal.
+    engine.process(b"\x1b]9;4;1;5\x07").unwrap();
+    assert_eq!(progress(engine.reset().unwrap()), [None]);
 }

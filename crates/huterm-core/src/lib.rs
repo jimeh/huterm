@@ -20,7 +20,7 @@ pub use host_effects::{
 };
 pub use jobs::{COMMAND_LINE_MAX_CHARS, JobProcess, JobState};
 pub use limits::raise_open_file_limit;
-pub use notifications::NotificationLimiter;
+pub use notifications::{NotificationLimiter, notification_heading};
 mod mux;
 mod notifications;
 mod pty;

@@ -5,8 +5,11 @@
 
 use huterm_protocol::TerminalProgress;
 
+use huterm_protocol::SplitDirection;
+
 use super::super::notices::Severity;
 use super::super::terminal_notifications::SHOW_PANE;
+use super::settings::{ScratchConfig, open_settings};
 use super::*;
 use crate::native_notifications::Availability;
 
@@ -235,4 +238,111 @@ fn bell_attention_follows_its_setting(cx: &mut TestAppContext) {
     // The view takes status before the snapshot that shows the same output.
     harness.wait_text(window, tab, "RANG");
     assert_eq!(attention(&mut harness, window), 0);
+}
+
+/// A tab whose first pane runs [`PROGRAM`] beside a second pane, zoomed,
+/// which hides the first.
+fn zoomed_away(
+    harness: &mut DesktopHarness,
+) -> (AnyWindowHandle, TabId, PaneId, PaneId) {
+    let tab = harness.open_tab(PROGRAM);
+    let first = harness.first_pane(tab);
+    let second = harness.split(tab, first, SplitDirection::Right, ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    harness.wait_for("the second pane", |cx| {
+        pane_view(cx, window, tab, second).is_some()
+    });
+    harness.update_view(window, |view, window, cx| {
+        view.set_zoom(tab, Some(second), window, cx);
+    });
+    harness.wait_for("the hidden first pane", |cx| {
+        pane_view(cx, window, tab, first)
+            .is_some_and(|view| !view.read(cx).visible)
+    });
+    (window, tab, first, second)
+}
+
+#[gpui::test]
+fn show_tab_clears_a_zoom_that_hides_the_pane(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, first, _) = zoomed_away(&mut harness);
+    let _note = harness.send_line(tab, "note");
+    harness.wait_for("the notice", |cx| counts(cx) == (1, 0));
+    harness.update_view(window, |view, window, cx| {
+        let id = view.notices.newest().unwrap();
+        let notice = &view.notices.get(id).unwrap().content;
+        assert_eq!(notice.actions[0].command.id, SHOW_PANE);
+        view.run_notice_action(id, None, window, cx).unwrap();
+    });
+    harness.wait_for("the revealed pane", |cx| {
+        pane_view(cx, window, tab, first).is_some_and(|view| {
+            window
+                .update(cx, |_, window, cx| {
+                    view.read(cx).visible
+                        && view.read(cx).focus.is_focused(window)
+                })
+                .unwrap_or(false)
+        })
+    });
+}
+
+#[gpui::test]
+fn a_pane_hidden_by_zoom_does_not_step_progress(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, first, _) = zoomed_away(&mut harness);
+    let _spin = harness.send_line(tab, "spin");
+    harness.wait_for("the hidden pane's progress", |cx| {
+        pane_view(cx, window, tab, first).is_some_and(|view| {
+            view.read(cx).progress == Some(TerminalProgress::Indeterminate)
+        })
+    });
+    harness.update_view(window, |_, window, _| window.refresh());
+    harness.wait_for("a frame", |_| true);
+    assert!(!harness.update_view(window, |view, _, _| view.progress_motion));
+    harness.update_view(window, |view, window, cx| {
+        view.set_zoom(tab, None, window, cx);
+    });
+    harness.wait_for("motion once the pane shows", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .unwrap()
+                    .read(cx)
+                    .progress_motion
+            })
+            .unwrap()
+    });
+}
+
+#[gpui::test]
+fn a_notification_while_settings_is_in_front_is_a_notice(
+    cx: &mut TestAppContext,
+) {
+    let file = ScratchConfig::new("notify-settings", "");
+    let mut harness = DesktopHarness::new(cx);
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().notifier.availability =
+            Some(Availability::Available);
+    });
+    let (window, tab) = ready(&mut harness);
+    open_settings(&mut harness, &file.path());
+    harness.cx.update(|cx| {
+        super::settings::settings(cx)
+            .unwrap()
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+    });
+    harness.wait_for("Settings in front", |cx| {
+        !window
+            .update(cx, |_, window, _| window.is_window_active())
+            .unwrap()
+    });
+    let _note = harness.send_line(tab, "note");
+    harness.wait_for("the notice", |cx| counts(cx) == (1, 0));
+    harness.update_view(window, |view, _, _| {
+        let notice = view.notices.contents().next().expect("one notice");
+        assert_eq!(notice.message, "Build done");
+    });
 }

@@ -967,22 +967,28 @@ an unrelated failure waiting there is dropped with it.
 
 `windows/terminal_notifications.rs` presents notifications a view's refresh
 took (`RefreshResult::notifications`) and rechecks each with `is_current`
-first. `presentation` decides by whether a Huterm window is active, whether
-the terminal is drawn where the notice would go, and
+first. `presentation` decides by whether a Huterm window is active (each
+window's `is_window_active`, the Settings window included, never
+`cx.active_window()`, which is AppKit's main window), whether the terminal is
+drawn where the notice would go, and
 `native_notifications::availability`, which tests override through
 `Notifier::availability`, since the test binary has no bundle. Show Tab is the
 private `SHOW_PANE` notice action, handled before the catalog like
 `RETRY_INSTALL`; `reveal_pane` runs from `cx.defer`, because it updates
-windows, the notice's own included. System notification tags name the pane,
-and their click handler reveals it the same way. Linux bodies escape markup.
+windows, the notice's own included, and it summons a hidden Quake window and
+clears a zoom that hides the pane. Program notices use
+`NoticeSource::Program`, one per tab, so failures never replace them.
+System notification tags name the pane and a serial number, and their click
+handler reveals the pane the same way. Linux bodies escape markup.
 The attention mark is `BellPresentation::notified`, which the visual-bell
 setting does not clear.
 
 Progress draws as `TabStatus::Progress` and, with `progress_bar`, the pane's
 bar. Indeterminate motion is a 125 ms step, not a frame animation: the
-workspace render records `progress_motion`, its animation schedule asks for
-the next step's deadline, and the tick notifies the workspace and each
-visible moving pane.
+workspace render records `progress_motion` from indicators it draws (each
+tab's focused pane and each shown pane; never a pane a zoom hides), its
+animation schedule asks for the next step's deadline, and the tick notifies
+the workspace and each shown pane whose bar moves.
 
 ## UI components
 

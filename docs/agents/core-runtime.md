@@ -213,8 +213,11 @@ dropped reservations after releasing the queue. Notifications are admitted from
 `drain_effects` after `notifications::normalize` and the terminal's
 `NotificationLimiter`; one over the limit is dropped, never deferred. Progress
 is status, not an effect: `StatusPublisher::progress` extends a 15-second
-expiry on every report, publishes only a changed value, and `idle` both
-expires it and waits for its deadline. Exit clears it. See
+expiry on every report and publishes only a changed value. The loop expires
+it after every message, and both the idle and the backed-up waits include its
+deadline. Exit clears it and refuses later reports; Reset Terminal clears it
+through `EngineEffect::Progress(None)`, because Ghostty's C reset reports no
+removal. See
 [the notifications and progress plan](../plans/terminal-notifications-progress.md).
 
 Reconcile only through `Owner::reconcile`, which runs when the registry changed

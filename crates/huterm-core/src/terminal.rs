@@ -771,6 +771,9 @@ pub(crate) enum RuntimeControl {
     /// Installs a probe on the runtime's idle compression.
     #[cfg(test)]
     CompressionProbe(CompressionProbe),
+    /// Replaces how long progress lasts without a new report.
+    #[cfg(test)]
+    ProgressTimeout(Duration),
     /// Reports the engine's page memory.
     #[cfg(test)]
     MemoryUsage(Sender<Result<huterm_ghostty::MemoryUsage, RuntimeError>>),
@@ -1731,6 +1734,10 @@ fn run_terminal(
                     RuntimeControl::MemoryUsage(reply) => {
                         let _ = reply.send(owner.engine.memory_usage());
                     }
+                    #[cfg(test)]
+                    RuntimeControl::ProgressTimeout(timeout) => {
+                        owner.status.progress_timeout = Some(timeout);
+                    }
                 }
             }
             if closing.load(Ordering::Acquire) {
@@ -1745,9 +1752,17 @@ fn run_terminal(
             match writer_state {
                 WriterQueueState::Drained => {}
                 WriterQueueState::Full => {
+                    owner.status.expire_progress(Instant::now());
                     owner.status.flush(registry);
                     if controls_drained < MESSAGE_CAPACITY {
-                        wake.wait_until(probes.deadline());
+                        let deadline = [
+                            probes.deadline(),
+                            owner.status.progress_deadline(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .min();
+                        wake.wait_until(deadline);
                     }
                     continue;
                 }
@@ -1810,6 +1825,8 @@ fn run_terminal(
             if !healthy {
                 closing.store(true, Ordering::Release);
             }
+            // Output that never pauses must not keep progress alive.
+            owner.status.expire_progress(Instant::now());
             // A snapshot that shows this message's output is never ahead of
             // the status the same output produced.
             owner.status.flush(registry);

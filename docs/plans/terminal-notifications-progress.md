@@ -66,8 +66,10 @@ Core treats notification text as untrusted (`notifications.rs`):
   read in a different order than it was written.
 - Whitespace collapses, the title keeps 128 characters and the body 512,
   and each ends in an ellipsis when truncated.
-- An OSC 9 body that starts with digits and a semicolon, or is only digits,
-  is a malformed ConEmu command and is dropped.
+- An untitled body that starts with digits and a semicolon is a malformed
+  ConEmu command and is dropped. Ghostty's callback does not say which
+  sequence it parsed, so an untitled OSC 777 that starts that way is dropped
+  too; a body of only digits is kept.
 - Each terminal may send 4 notifications at once, then one every 3 seconds.
   The desktop adds an app-wide limit of 8 at once, then one a second.
   Notifications over a limit are dropped, never deferred.
@@ -75,9 +77,12 @@ Core treats notification text as untrusted (`notifications.rs`):
   notification daemons parse. The only action is Huterm's own Show Tab.
 
 Progress expires 15 seconds after the last report, matching Ghostty, so a
-program that crashed cannot leave a stale indicator. A repeated, unchanged
-report extends the expiry without publishing a revision. The root's exit
-also clears progress.
+program that crashed cannot leave a stale indicator. The runtime checks the
+expiry after every message, so continuous output cannot hold it, and waits
+for it while idle or backed up. A repeated, unchanged report extends the
+expiry without publishing a revision. The root's exit clears progress, and
+output parsed after the exit cannot report it again. Reset Terminal clears it
+too, since Ghostty's C reset reports no removal.
 
 ### Delivery and eligibility
 
@@ -98,7 +103,14 @@ recipient is eligible only for kinds its client negotiated, and its
 | Client disconnects or the view is removed | Its recipient is revoked and its queue cleared. Nothing moves to another client. |
 | Local text client (TUI) or remote client | `LocalText` and `Remote` recipients stay ineligible for every kind until #48 and #131 define their policies. |
 | Reconnect or session restore | Notifications are never stored. Progress is status, so a new viewer sees the current value, and restore starts with none. |
-| macOS permission denied or undecided, a build outside an app bundle, or no Linux notification daemon | The background case raises a notice in the terminal's window and asks for attention. An undecided macOS permission still posts, which asks the user. |
+| macOS permission denied or undecided, a build outside an app bundle, or no Linux notification daemon | The background case raises a notice in the terminal's window and asks for attention. An undecided macOS permission, or an availability the first probe has not answered yet, still posts, which asks the user. |
+
+A notification's heading falls back to the tab or pane label, which a
+program can set through its terminal title, so the label passes the same
+cleaning and limit. A system notification's title carries the label after a
+program's own title, so a banner always names its terminal. Each system
+notification has its own tag, so a pane's newer notification does not
+replace an earlier one in the notification center.
 
 `native_notifications.rs` learns availability without blocking: on macOS
 it reads the authorization status (`UNUserNotificationCenter`, guarded by
@@ -122,6 +134,10 @@ Jim chose these from HTML mockups on 2026-11-07:
   such as "progress 42%".
 - **Notifications.** Option N2:
 
+  "Huterm in front" means any Huterm window is active, the Settings window
+  included; each window is asked, because a platform's main window can
+  outlive activation.
+
   | Huterm | Terminal | Presentation |
   | --- | --- | --- |
   | Background | Any | System notification and tab mark; clicking it reveals the pane. |
@@ -129,7 +145,16 @@ Jim chose these from HTML mockups on 2026-11-07:
   | Front | In front | Notice only. |
 
   The notice is an expiring Info notice titled with the program's title, or
-  the tab or pane label when it sent none, as OSC 9 never does.
+  the tab or pane label when it sent none, as OSC 9 never does. Its source is
+  `NoticeSource::Program`, so each tab keeps only its newest notification
+  notice, and a terminal failure in that tab does not replace it. Show Tab
+  and a system notification click summon a hidden Quake window and clear a
+  zoom that hides the pane.
+- **Linux delivery.** GPUI's Linux backend waits on a thread and a
+  session-bus connection per notification until it closes. The vendored
+  `bounded-notification-waits` patch lets at most 16 wait; later ones show
+  without waiting, so their click does nothing. The availability probe runs
+  one at a time.
 - **Bell attention.** `window.request_attention()` from a window that is not
   active. macOS bounces the Dock icon once and only while Huterm is in the
   background. X11 sets the urgency hint until the window is focused.

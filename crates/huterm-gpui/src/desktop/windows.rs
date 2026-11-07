@@ -3449,6 +3449,7 @@ impl refresh::Animated for WorkspaceView {
                 for pane in &tab.panes {
                     pane.view.update(cx, |view, cx| {
                         if view.visible
+                            && view.progress_bar
                             && view.progress
                                 == Some(TerminalProgress::Indeterminate)
                         {
@@ -13477,12 +13478,19 @@ impl Render for WorkspaceView {
         // Before anything measures or lays out chrome text.
         let typography = Typography::of(cx);
         typography.apply(window);
+        // Only indicators this window draws move: each tab's ring shows its
+        // focused pane, and each shown pane its title ring and bar. A pane a
+        // zoom or another tab hides draws nothing.
+        let moving = |view: &TerminalView| {
+            view.progress == Some(TerminalProgress::Indeterminate)
+        };
         self.progress_motion = !cx.reduce_motion()
             && self.tabs.iter().any(|tab| {
-                tab.panes.iter().any(|pane| {
-                    pane.view.read(cx).progress
-                        == Some(TerminalProgress::Indeterminate)
-                })
+                moving(tab.focused_view().read(cx))
+                    || tab.panes.iter().any(|pane| {
+                        let view = pane.view.read(cx);
+                        view.visible && moving(view)
+                    })
             });
         self.progress_step = super::progress::phase(Instant::now());
         let active_tab = self.active_tab(cx);

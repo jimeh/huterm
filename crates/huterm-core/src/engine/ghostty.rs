@@ -491,7 +491,10 @@ impl TerminalEngine {
         self.pending_clear = false;
         self.terminal.reset()?;
         self.overrides_stale = true;
-        self.drain_effects()
+        let mut effects = self.drain_effects()?;
+        // The C reset reports no progress removal, unlike a parsed RIS.
+        effects.push(EngineEffect::Progress(None));
+        Ok(effects)
     }
 
     pub(super) fn resize(
