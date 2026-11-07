@@ -66,6 +66,14 @@ fn payloads_at_their_limits_fit_their_caps_and_one_byte_more_is_refused_locally(
 }
 
 #[test]
+fn a_payload_names_the_kind_whose_permission_governs_it() {
+    let Message::HostEffect(effect) = clipboard(String::new()) else {
+        unreachable!("clipboard builds a host effect");
+    };
+    assert_eq!(effect.payload.kind(), HostEffectKind::Clipboard);
+}
+
+#[test]
 fn an_identity_from_another_runtime_refuses_to_encode() {
     let foreign = Message::Paste(Paste {
         viewer: ViewerId::in_runtime(RuntimeId::new(99), 1),

@@ -1106,21 +1106,28 @@ is written.
 
 The lane pops a delivery, rechecks `is_current`, assigns a
 connection-scoped `EffectId`, and sends `HostEffect { effect, viewer,
-permission_generation, terminal, kind, payload, response }`. Large
-payloads span frames like any message.
+permission_generation, terminal, payload, response }`. The payload's
+variant names its `HostEffectKind` (a clipboard write is `Clipboard`, a
+notification is `Notification`), so the message carries no separate kind
+field. Large payloads span frames like any message.
 
-- **Permission travels with the effect.** In process, clipboard permission
-  lives on the recipient, revoking it cancels queued and popped deliveries,
-  and the desktop rechecks `is_current` immediately before the OS call
-  (`host_effects.rs`, `HostEffectRecipient::set_allowed` and `is_current`).
-  Over IPC the client owns the permission and numbers its changes per
-  viewer. `SetHostEffectPermission { viewer, generation, allowed }` is an
+- **Permission travels with the effect, per kind.** In process, permission
+  is per (recipient, kind) since [#81][issue-81]: each kind has its own
+  allowed flag and generation, revoking a kind cancels that kind's queued
+  and popped deliveries and leaves the others alone, and the desktop
+  rechecks `is_current` immediately before the OS call (`host_effects.rs`,
+  `HostEffectRecipient::set_allowed(kind, allowed)` and `is_current`, which
+  compares the generation of the effect's kind). Over IPC the client owns
+  each kind's permission and numbers its changes per viewer and kind.
+  `SetHostEffectPermission { viewer, kind, generation, allowed }` is an
   ordered message, not a request, so it is never refused with `Busy`; the
-  server applies it to the recipient and stamps each effect it admits with
-  the generation it last received. The client executes an effect only if
-  that viewer is still live and the effect's generation equals its current
-  one. An effect already sent when the user revokes permission is discarded
-  on the client, and a revoke followed by a re-grant cannot revive it.
+  server applies it to that kind of the recipient and stamps each effect it
+  admits with the generation it last received for the effect's kind. The
+  client executes an effect only if that viewer is still live and the
+  effect's generation equals its current generation for the payload's kind.
+  An effect already sent when the user revokes its kind is discarded on the
+  client, a revoke followed by a re-grant cannot revive it, and a change to
+  one kind never invalidates effects of another.
 - **No replay.** Effect IDs belong to one connection. A disconnect revokes
   the connection's recipients, which clears their queues, and nothing is
   ever re-sent on a later connection. A client ignores effect frames it
@@ -1522,8 +1529,9 @@ choices within it.
   paste and a clipboard write at their limits, so slice 1 defines the
   `Paste` and `HostEffect` records. A paste is its own kind, so only it
   carries the paste cap. A host effect's `permission_generation` counts the
-  generation of its payload's effect kind, since #81 makes permission per
-  kind. Minor version 0 is unreleased until #45 ships a server, so slices 3b
+  generation of its payload's kind, which `EffectPayload::kind` maps onto
+  #81's `HostEffectKind`; the notification payload arrives with slice 4.
+  Minor version 0 is unreleased until #45 ships a server, so slices 3b
   and 4 may still change these records, as later slices add kinds and error
   codes.
 - **The test-only minor version** is `MINOR + 1`, behind the `test-minor`
@@ -1862,6 +1870,7 @@ each slice may tune with evidence, recorded in this plan when they change.
 [issue-48]: https://github.com/jimeh/huterm/issues/48
 [issue-49]: https://github.com/jimeh/huterm/issues/49
 [issue-80]: https://github.com/jimeh/huterm/issues/80
+[issue-81]: https://github.com/jimeh/huterm/issues/81
 [issue-83]: https://github.com/jimeh/huterm/issues/83
 [issue-88]: https://github.com/jimeh/huterm/issues/88
 [issue-98]: https://github.com/jimeh/huterm/issues/98

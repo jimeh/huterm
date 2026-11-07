@@ -5,7 +5,9 @@
 //! [`decode_message`] accepts only the kinds the receiving side may get and
 //! rejects trailing bytes.
 
-use huterm_protocol::{ClipboardDestination, TerminalId, ViewerId};
+use huterm_protocol::{
+    ClipboardDestination, HostEffectKind, TerminalId, ViewerId,
+};
 
 use crate::caps::{
     CLIPBOARD_PAYLOAD_LIMIT, Direction, MessageCaps, MessageKind,
@@ -42,6 +44,16 @@ pub enum EffectPayload {
         /// The text, at most [`CLIPBOARD_PAYLOAD_LIMIT`] bytes.
         text: String,
     },
+}
+
+impl EffectPayload {
+    /// The kind whose permission and generation govern this payload.
+    #[must_use]
+    pub fn kind(&self) -> HostEffectKind {
+        match self {
+            Self::ClipboardWrite { .. } => HostEffectKind::Clipboard,
+        }
+    }
 }
 
 /// A host effect routed to one client.
