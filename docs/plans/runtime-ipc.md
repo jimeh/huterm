@@ -1500,10 +1500,12 @@ choices within it.
 - **Attachments are hierarchy items.** Snapshots carry every attachment, so
   the hierarchy cap needs them bounded. `MAX_HIERARCHY_ITEMS` counts them,
   and `attach_session` answers `LimitExceeded` at the limit.
-- **Captures hold the invariants too.** `RuntimeCapture::validate` refuses a
-  name longer than `MAX_NAME_BYTES` (`CaptureError::LongName`) and a capture
-  of more than `MAX_HIERARCHY_ITEMS` items (`TooManyItems`), so a restore
-  cannot bring back state the invariants forbid.
+- **Restores hold the invariants too.** Core refuses a capture with a name
+  longer than `MAX_NAME_BYTES` (`InvalidName`) or more than
+  `MAX_HIERARCHY_ITEMS` items (`LimitExceeded`), in `SpawnedTerminals::spawn`
+  before anything starts and again in `Mux::restore`. The check stays out of
+  `RuntimeCapture::validate`, because `huterm-state` shares that validator and
+  keeps its own file bounds, such as 16,384 panes.
 - **Encodings.** `MAJOR` starts at 1. An enum whose variants carry data
   travels as a tag and a record, as the primitives table says; a field-less
   enum (split axis, client kind, retry class, error code, outcome) travels

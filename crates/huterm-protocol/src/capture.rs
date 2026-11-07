@@ -16,8 +16,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::{
-    MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, PaneLayout, SessionInfo, TabId,
-    TabInfo, TerminalId, WorkspaceInfo,
+    PaneLayout, SessionInfo, TabId, TabInfo, TerminalId, WorkspaceInfo,
 };
 
 /// The most directory candidates a terminal capture holds.
@@ -99,11 +98,6 @@ pub enum CaptureError {
     InvalidZoom(TabId),
     /// A custom or automatic name has no visible characters.
     BlankName,
-    /// A name is longer than [`MAX_NAME_BYTES`].
-    LongName,
-    /// The capture holds more than [`MAX_HIERARCHY_ITEMS`] sessions,
-    /// workspaces, tabs, panes, and splits together.
-    TooManyItems,
     /// A terminal record holds more than [`MAX_DIRECTORY_CANDIDATES`]
     /// directories, or repeats one.
     InvalidDirectories(TerminalId),
@@ -127,13 +121,6 @@ impl fmt::Display for CaptureError {
                 write!(f, "tab {} zooms a pane it cannot", tab.get())
             }
             Self::BlankName => f.write_str("a name is blank"),
-            Self::LongName => {
-                write!(f, "a name is longer than {MAX_NAME_BYTES} bytes")
-            }
-            Self::TooManyItems => write!(
-                f,
-                "the capture holds more than {MAX_HIERARCHY_ITEMS} items"
-            ),
             Self::InvalidDirectories(id) => {
                 write!(f, "terminal {} has invalid directories", id.get())
             }
@@ -162,8 +149,7 @@ impl RuntimeCapture {
     /// identities, unique across sessions, workspaces, tabs, panes, splits,
     /// and terminals, none above the watermark; one terminal record for
     /// each pane's terminal and none other; a valid shared zoom; non-blank
-    /// names of at most [`MAX_NAME_BYTES`]; at most [`MAX_HIERARCHY_ITEMS`]
-    /// items; and bounded, distinct directory candidates. Layouts uphold
+    /// names; and bounded, distinct directory candidates. Layouts uphold
     /// their own invariants by construction.
     ///
     /// # Errors
@@ -188,7 +174,9 @@ impl RuntimeCapture {
                 )?;
                 for tab in &workspace.tabs {
                     ids.add(tab.id.get())?;
-                    custom(tab.custom_name.as_deref())?;
+                    if tab.custom_name.as_deref().is_some_and(blank) {
+                        return Err(CaptureError::BlankName);
+                    }
                     layout_ids(&tab.layout, &mut ids, &mut shown)?;
                     if tab.zoomed.is_some_and(|pane| {
                         tab.layout.pane_count() < 2
@@ -216,10 +204,6 @@ impl RuntimeCapture {
         }
         if let Some(missing) = shown.iter().find(|id| !recorded.contains(id)) {
             return Err(CaptureError::MissingTerminal(*missing));
-        }
-        // Every identity except a terminal's is one item.
-        if ids.seen.len() - recorded.len() > MAX_HIERARCHY_ITEMS {
-            return Err(CaptureError::TooManyItems);
         }
         Ok(())
     }
@@ -256,33 +240,19 @@ fn layout_ids(
     for pane in layout.panes() {
         ids.add(pane.id.get())?;
         ids.add(pane.terminal_id.get())?;
-        custom(pane.custom_name.as_deref())?;
-        if pane.fallback_name.len() > MAX_NAME_BYTES {
-            return Err(CaptureError::LongName);
+        if pane.custom_name.as_deref().is_some_and(blank) {
+            return Err(CaptureError::BlankName);
         }
         shown.insert(pane.terminal_id);
     }
     Ok(())
 }
 
-fn names(name: Option<&str>, automatic: &str) -> Result<(), CaptureError> {
-    custom(name)?;
-    if blank(automatic) {
+fn names(custom: Option<&str>, automatic: &str) -> Result<(), CaptureError> {
+    if custom.is_some_and(blank) || blank(automatic) {
         Err(CaptureError::BlankName)
-    } else if automatic.len() > MAX_NAME_BYTES {
-        Err(CaptureError::LongName)
     } else {
         Ok(())
-    }
-}
-
-fn custom(name: Option<&str>) -> Result<(), CaptureError> {
-    match name {
-        Some(name) if blank(name) => Err(CaptureError::BlankName),
-        Some(name) if name.len() > MAX_NAME_BYTES => {
-            Err(CaptureError::LongName)
-        }
-        _ => Ok(()),
     }
 }
 
