@@ -626,6 +626,12 @@ Recorded during implementation:
 - Test harnesses and the smoke fixture's `attach-window` adopt an
   attachment only once the projection holds it, as production attaches
   do; adopting earlier owes a spurious emptied close.
+- Added at the maintainer's request after review: a restore resumes
+  automatic session and workspace names after the highest one it
+  restored, custom-named records included, instead of the saved creation
+  ordinal. Switching makes closed sessions common, and their numbers
+  otherwise kept the count climbing across every restart. Within one run
+  the count still only rises.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-20]: https://github.com/jimeh/huterm/issues/20

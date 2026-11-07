@@ -248,6 +248,39 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
 }
 
 #[test]
+fn restored_automatic_names_resume_after_the_highest_one_restored() {
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let first_workspace = mux.create_workspace(first, None).unwrap();
+    mux.open_tab(first_workspace, &idle()).unwrap();
+    // A custom name keeps its automatic one for Clear Name, so it counts.
+    let named = mux.create_session(Some("work")).unwrap();
+    let named_workspace = mux.create_workspace(named, Some("code")).unwrap();
+    mux.open_tab(named_workspace, &idle()).unwrap();
+    // Holding no tab, the highest of each kind is left out of the capture.
+    let gone = mux.create_session(None).unwrap();
+    mux.create_workspace(gone, None).unwrap();
+    let capture = mux.capture_runtime();
+    assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 3));
+
+    let mut restored = Mux::default();
+    let spawned = spawn_all(&restored, &capture);
+    restored.restore(&capture, spawned).unwrap();
+    let session = restored.create_session(None).unwrap();
+    assert_eq!(
+        restored.session(session).unwrap().display_name(),
+        "Session 3"
+    );
+    let workspace = restored.create_workspace(session, None).unwrap();
+    assert_eq!(
+        restored.workspace(workspace).unwrap().display_name(),
+        "Workspace 3"
+    );
+    restored.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
 fn capture_lists_local_directories_in_preference_order_without_repeats() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();

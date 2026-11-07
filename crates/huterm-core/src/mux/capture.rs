@@ -17,7 +17,10 @@ use huterm_protocol::{
     WorkspaceCapture, WorkspaceId, WorkspaceInfo,
 };
 
-use super::{Mux, MuxError, Session, Tab, Workspace, fallback_name, position};
+use super::{
+    Mux, MuxError, SESSION_NAME, Session, Tab, WORKSPACE_NAME, Workspace,
+    automatic_ordinal, fallback_name, position,
+};
 use crate::{RuntimeError, TerminalRuntime};
 
 /// Captures carry unscoped identities; a restore scopes them.
@@ -182,6 +185,18 @@ impl Drop for SpawnedTerminals {
 }
 
 /// Every terminal the capture's panes show, in pane traversal order.
+/// The highest creation ordinal among automatic names of one kind, or
+/// zero when none carries one.
+fn resumed_ordinal<'a>(
+    kind: &str,
+    names: impl Iterator<Item = &'a str>,
+) -> u64 {
+    names
+        .filter_map(|name| automatic_ordinal(kind, name))
+        .max()
+        .unwrap_or(0)
+}
+
 fn pane_terminals(capture: &RuntimeCapture) -> Vec<TerminalId> {
     capture
         .tabs()
@@ -280,9 +295,12 @@ impl Mux {
     /// Recreates a captured structure in this fresh runtime with its saved
     /// numeric identities, now in this runtime's scope, and the terminals
     /// [`SpawnedTerminals::spawn`] started for it. Sets the allocator to
-    /// the capture's watermark and restores both creation ordinals, so new
-    /// allocations never collide and automatic names continue. Emits the
-    /// events creation emits, so subscribers stay current.
+    /// the capture's watermark, so new allocations never collide, and
+    /// resumes each creation ordinal from the highest automatic name of
+    /// its kind restored, counting records with a custom name too, so a
+    /// new automatic name repeats no restored one and the count does not
+    /// keep the gaps closed records left. Emits the events creation emits,
+    /// so subscribers stay current.
     ///
     /// A pane whose terminal failed leaves its layout, and a tab left with
     /// no pane is removed; the report names both, and each session left
@@ -325,8 +343,24 @@ impl Mux {
         }
         self.changed();
         self.next_id = capture.next_id;
-        self.session_ordinal = capture.session_ordinal;
-        self.workspace_ordinal = capture.workspace_ordinal;
+        // Automatic names resume after the highest one restored, not the
+        // saved ordinals, so records closed before the capture stop
+        // pushing the count up across restarts.
+        self.session_ordinal = resumed_ordinal(
+            SESSION_NAME,
+            capture
+                .sessions
+                .iter()
+                .map(|session| session.info.automatic_name.as_str()),
+        );
+        self.workspace_ordinal = resumed_ordinal(
+            WORKSPACE_NAME,
+            capture
+                .sessions
+                .iter()
+                .flat_map(|session| &session.workspaces)
+                .map(|workspace| workspace.info.automatic_name.as_str()),
+        );
         let failed: HashMap<TerminalId, RuntimeError> = spawned
             .failures
             .drain(..)

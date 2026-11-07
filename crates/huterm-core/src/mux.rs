@@ -375,7 +375,7 @@ impl Mux {
             id,
             workspaces: Vec::new(),
             custom_name: name.map(str::to_owned),
-            automatic_name: format!("Session {ordinal}"),
+            automatic_name: automatic_name(SESSION_NAME, ordinal),
         });
         self.session_ordinal = ordinal;
         let index = position(self.sessions.len() - 1);
@@ -408,7 +408,7 @@ impl Mux {
                 session_id: session,
                 tabs: Vec::new(),
                 custom_name: name.map(str::to_owned),
-                automatic_name: format!("Workspace {ordinal}"),
+                automatic_name: automatic_name(WORKSPACE_NAME, ordinal),
             },
         );
         let siblings = &mut self
@@ -1288,6 +1288,20 @@ fn layout_error(error: LayoutError, pane: PaneId) -> MuxError {
 fn position(index: usize) -> u32 {
     u32::try_from(index).expect("structural position exceeds u32")
 }
+/// The word an automatic session name puts before its creation ordinal.
+const SESSION_NAME: &str = "Session";
+/// The word an automatic workspace name puts before its creation ordinal.
+const WORKSPACE_NAME: &str = "Workspace";
+
+fn automatic_name(kind: &str, ordinal: u64) -> String {
+    format!("{kind} {ordinal}")
+}
+
+/// The creation ordinal an automatic name of this kind carries.
+fn automatic_ordinal(kind: &str, name: &str) -> Option<u64> {
+    name.strip_prefix(kind)?.strip_prefix(' ')?.parse().ok()
+}
+
 fn validate_name(name: Option<&str>) -> Result<(), MuxError> {
     if name.is_some_and(|name| name.trim().is_empty()) {
         Err(MuxError::InvalidName)

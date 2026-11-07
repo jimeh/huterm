@@ -398,7 +398,11 @@ through `RuntimeCapture::validate`, which `huterm-state` shares. Every
 refusal stops and joins the spawned runtimes, and dropping an unused
 `SpawnedTerminals` does the same. A restore sets `next_id` to the
 watermark, so later allocations of every kind land above restored IDs,
-sets both ordinals, scopes saved IDs into its `RuntimeId`, takes pane
+resumes each ordinal from the highest automatic name of its kind it
+restored, custom-named records included, rather than from the saved
+ordinal (so sessions closed before Quit stop raising the count across
+restarts, and no new name repeats a restored one, even after Clear
+Name), scopes saved IDs into its `RuntimeId`, takes pane
 fallback names from the commands it launched (captures blank them, since
 they are process labels), and emits the creation
 events so existing subscribers follow. A pane whose terminal failed
