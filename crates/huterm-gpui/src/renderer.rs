@@ -757,6 +757,11 @@ impl PreparedBackground {
 #[derive(Clone)]
 struct PreparedGlyph {
     column: u16,
+    /// The cell spans two columns. Only symbols read it, to centre across
+    /// both; font layouts and builtin geometry carry their own width. It is
+    /// a flag rather than a content variant because a fourth variant stopped
+    /// LLVM inlining this struct's clone and slowed row reuse.
+    wide: bool,
     content: GlyphContent,
     color: Hsla,
 }
@@ -769,8 +774,6 @@ const _: () = assert!(std::mem::size_of::<PreparedGlyph>() <= 40);
 enum GlyphContent {
     Font(Arc<LineLayout>),
     Symbol(Arc<SymbolGlyph>),
-    /// The same layout centred across a wide cell's two columns.
-    WideSymbol(Arc<SymbolGlyph>),
     Builtin(Arc<builtin::Geometry>),
 }
 
@@ -832,6 +835,7 @@ fn prepare_row(
             cache_activity.record(hit);
             row.glyphs.push(PreparedGlyph {
                 column: u16::try_from(column).unwrap_or(u16::MAX),
+                wide: columns > 1,
                 content: GlyphContent::Builtin(geometry),
                 color: rgb_color(display_foreground(
                     resolve_color(cell.foreground, theme),
@@ -848,24 +852,18 @@ fn prepare_row(
             || GlyphText::Sequence(cell.text.as_str()),
             GlyphText::Scalar,
         );
-        let (mut content, hit) =
-            layouts.get_or_insert_with(key, variant, || {
-                layout_cell(
-                    window.text_system(),
-                    cell.text.as_str(),
-                    cell_font(variant, terminal_font),
-                    metrics,
-                )
-            });
+        let (content, hit) = layouts.get_or_insert_with(key, variant, || {
+            layout_cell(
+                window.text_system(),
+                cell.text.as_str(),
+                cell_font(variant, terminal_font),
+                metrics,
+            )
+        });
         cache_activity.record(hit);
-        if let GlyphContent::Symbol(symbol) = &content
-            && cell.style.wide
-            && column + 1 < cells.len()
-        {
-            content = GlyphContent::WideSymbol(Arc::clone(symbol));
-        }
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
+            wide: cell.style.wide && column + 1 < cells.len(),
             content,
             color: rgb_color(display_foreground(
                 resolve_color(cell.foreground, theme),
@@ -877,7 +875,11 @@ fn prepare_row(
 }
 
 /// Shapes one cell's text in its terminal face, or, for an icon that face
-/// lacks, in the bundled symbols face fitted to the cell.
+/// lacks, in the bundled symbols face fitted to the cell. Only layout-cache
+/// misses reach it, so it stays out of line to keep `prepare_row`'s per-cell
+/// loop as small as the cache-hit path needs.
+#[cold]
+#[inline(never)]
 fn layout_cell(
     text_system: &WindowTextSystem,
     text: &str,
@@ -1004,9 +1006,13 @@ fn paint_row(
             GlyphContent::Font(layout) => {
                 (layout, point(metrics.glyph_offset_x, metrics.baseline))
             }
-            GlyphContent::Symbol(symbol) => (&symbol.layout, symbol.origin),
-            GlyphContent::WideSymbol(symbol) => {
-                (&symbol.layout, point(symbol.wide_x, symbol.origin.y))
+            GlyphContent::Symbol(symbol) => {
+                let x = if glyph.wide {
+                    symbol.wide_x
+                } else {
+                    symbol.origin.x
+                };
+                (&symbol.layout, point(x, symbol.origin.y))
             }
         };
         for run in &layout.runs {
