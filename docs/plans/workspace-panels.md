@@ -731,6 +731,19 @@ Recorded while implementing PR B, stacked on PR A:
   `show = "always"`, since a new window's session has one workspace.
 - A window restored from a file saved before PR B has no saved collapse
   state and shows the panel; `collapsed` applies to new windows only.
+- A focused workspace chip holds a fullscreen bar that hides with the tab
+  bar revealed, as an open menu does, so keyboard focus never sits on a
+  hidden control.
+- W33: running any command closes an open menu, so collapsing the panel
+  from the palette or the menu closes a session or workspace menu opened
+  from it; a host that goes while its menu stays open, as when a narrow
+  window turns the panel into the dropdown, hands the menu to the other
+  host.
+- Open question for the maintainer: with the dropdown showing and a
+  one-tab workspace, a window without a title row (Linux server
+  decorations, Quake, fullscreen) shows no workspace control, as mockup
+  C1's note describes; the palette and `open_workspace_menu` still reach
+  workspaces.
 
 [issue-11]: https://github.com/jimeh/huterm/issues/11
 [issue-26]: https://github.com/jimeh/huterm/issues/26
