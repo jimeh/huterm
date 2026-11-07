@@ -346,14 +346,11 @@ fn check_icons(panel: &Panel, window: &Window) {
     };
     for glyph in &glyphs[..7] {
         let wide = usize::from(glyph.column) == ICON_WIDE;
-        let (symbol, x) = match &glyph.content {
-            GlyphContent::Symbol(symbol) if !wide => (symbol, symbol.origin.x),
-            GlyphContent::WideSymbol(symbol) if wide => (symbol, symbol.wide_x),
-            _ => panic!(
-                "icon at column {} must use the symbols font at its width",
-                glyph.column
-            ),
+        assert_eq!(glyph.wide, wide, "wide flag at column {}", glyph.column);
+        let GlyphContent::Symbol(symbol) = &glyph.content else {
+            panic!("icon at column {} must use the symbols font", glyph.column)
         };
+        let x = if wide { symbol.wide_x } else { symbol.origin.x };
         let (layout, y) = (&symbol.layout, symbol.origin.y);
         assert_eq!(layout.runs.len(), 1);
         assert_eq!(layout.runs[0].font_id, symbols);
