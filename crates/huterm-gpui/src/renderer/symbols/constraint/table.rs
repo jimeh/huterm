@@ -16,7 +16,7 @@ use super::{Align, Constraint, Height, Size};
 pub(super) const NERD_FONTS_VERSION: &str = "3.5.1";
 
 /// Distinct constraints, indexed by `RANGES`.
-pub(super) static CONSTRAINTS: [Constraint; 363] = [
+pub(super) static CONSTRAINTS: [Constraint; 405] = [
     Constraint {
         size: Size::FitCover1,
         height: Height::Icon,
@@ -355,6 +355,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8984375,
         relative_y: 0.0986328125,
+        relative_scale_width: Some(0.9981768459434822),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -364,6 +365,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.87939453125,
         relative_y: 0.1171875,
+        relative_scale_width: Some(0.9908842297174111),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -373,6 +375,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7646484375,
         relative_y: 0.2314453125,
+        relative_scale_width: Some(0.9152233363719234),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -382,6 +385,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.87890625,
         relative_y: 0.1171875,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -391,6 +395,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9755859375,
         relative_y: 0.0244140625,
+        relative_scale_width: Some(0.9206927985414768),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -400,6 +405,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.99658203125,
         relative_y: 0.00146484375,
+        relative_scale_width: Some(0.9156791248860529),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -409,6 +415,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.98681640625,
         relative_y: 0.00927734375,
+        relative_scale_width: Some(0.9165907019143118),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -418,6 +425,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.99462890625,
         relative_y: 0.00390625,
+        relative_scale_width: Some(0.9211485870556062),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -427,6 +435,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.97900390625,
         relative_y: 0.01904296875,
+        relative_scale_width: Some(0.9184138559708296),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -436,6 +445,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9736328125,
         relative_y: 0.02099609375,
+        relative_scale_width: Some(0.9156791248860529),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -445,6 +455,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.96484375,
         relative_y: 0.0302734375,
+        relative_scale_width: Some(0.9143117593436645),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -454,6 +465,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.84375,
         relative_y: 0.1513671875,
+        relative_scale_width: Some(0.9143117593436645),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -463,6 +475,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.802734375,
         relative_y: 0.18310546875,
+        relative_scale_width: Some(0.8113035551504102),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -472,6 +485,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.775390625,
         relative_y: 0.10791015625,
+        relative_scale_width: Some(0.723792160437557),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -481,6 +495,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9833984375,
         relative_y: 0.01611328125,
+        relative_scale_width: Some(0.9202370100273473),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -490,6 +505,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9716796875,
         relative_y: 0.02587890625,
+        relative_scale_width: Some(0.9175022789425706),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -499,6 +515,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.662109375,
         relative_y: 0.0986328125,
+        relative_scale_width: Some(0.7752962625341842),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -508,6 +525,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.64208984375,
         relative_y: 0.1171875,
+        relative_scale_width: Some(0.8103919781221514),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -517,6 +535,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.53173828125,
         relative_y: 0.2314453125,
+        relative_scale_width: Some(0.7566089334548769),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -526,6 +545,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.64111328125,
         relative_y: 0.1181640625,
+        relative_scale_width: Some(0.8432087511394712),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -535,6 +555,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.73876953125,
         relative_y: 0.01904296875,
+        relative_scale_width: Some(0.7055606198723792),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -544,6 +565,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.6787109375,
         relative_y: 0.13525390625,
+        relative_scale_width: Some(0.47817912488605285),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -553,6 +575,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.748046875,
         relative_y: 0.00927734375,
+        relative_scale_width: Some(0.7051048313582498),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -562,6 +585,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.75341796875,
         relative_y: 0.00439453125,
+        relative_scale_width: Some(0.7064721969006381),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -571,6 +595,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.73193359375,
         relative_y: 0.02587890625,
+        relative_scale_width: Some(0.7055606198723792),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -580,6 +605,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.740234375,
         relative_y: 0.01904296875,
+        relative_scale_width: Some(0.7078395624430265),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -589,6 +615,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7294921875,
         relative_y: 0.0283203125,
+        relative_scale_width: Some(0.7055606198723792),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -598,6 +625,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.607421875,
         relative_y: 0.14990234375,
+        relative_scale_width: Some(0.7055606198723792),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -607,6 +635,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.736328125,
         relative_y: 0.02197265625,
+        relative_scale_width: Some(0.7064721969006381),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -616,6 +645,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.74609375,
         relative_y: 0.01220703125,
+        relative_scale_width: Some(0.7064721969006381),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -625,6 +655,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.26708984375,
         relative_y: 0.3310546875,
+        relative_scale_width: Some(0.7051048313582498),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -634,6 +665,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.736328125,
         relative_y: 0.0986328125,
+        relative_scale_width: Some(0.8185961713764813),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -643,6 +675,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.71728515625,
         relative_y: 0.1171875,
+        relative_scale_width: Some(0.8614402917046491),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -652,6 +685,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.80859375,
         relative_y: 0.02490234375,
+        relative_scale_width: Some(0.7424794895168642),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -661,6 +695,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.75146484375,
         relative_y: 0.08349609375,
+        relative_scale_width: Some(0.7406563354603464),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -670,6 +705,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.828125,
         relative_y: 0.00927734375,
+        relative_scale_width: Some(0.7447584320875114),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -678,6 +714,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.8349609375,
+        relative_scale_width: Some(0.7452142206016409),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -687,6 +724,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.81494140625,
         relative_y: 0.021484375,
+        relative_scale_width: Some(0.7438468550592525),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -696,6 +734,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.814453125,
         relative_y: 0.01953125,
+        relative_scale_width: Some(0.7438468550592525),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -705,6 +744,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8076171875,
         relative_y: 0.02734375,
+        relative_scale_width: Some(0.7438468550592525),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -714,6 +754,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.6845703125,
         relative_y: 0.150390625,
+        relative_scale_width: Some(0.7415679124886053),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -723,6 +764,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.81689453125,
         relative_y: 0.017578125,
+        relative_scale_width: Some(0.7429352780309936),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -732,6 +774,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.81103515625,
         relative_y: 0.02587890625,
+        relative_scale_width: Some(0.7438468550592525),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -741,6 +784,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.51806640625,
         relative_y: 0.24169921875,
+        relative_scale_width: Some(0.4817684594348222),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -750,6 +794,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.69921875,
         relative_y: 0.10009765625,
+        relative_scale_width: Some(0.8135824977210574),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -759,6 +804,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.67822265625,
         relative_y: 0.1201171875,
+        relative_scale_width: Some(0.8559708295350957),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -768,6 +814,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.56494140625,
         relative_y: 0.232421875,
+        relative_scale_width: Some(0.7283500455788514),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -777,6 +824,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.771484375,
         relative_y: 0.02734375,
+        relative_scale_width: Some(0.7324521422060164),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -786,6 +834,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.71484375,
         relative_y: 0.0830078125,
+        relative_scale_width: Some(0.7297174111212398),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -795,6 +844,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7919921875,
         relative_y: 0.00927734375,
+        relative_scale_width: Some(0.7365542388331814),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -804,6 +854,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.78662109375,
         relative_y: 0.0126953125,
+        relative_scale_width: Some(0.7415679124886053),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -813,6 +864,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.771484375,
         relative_y: 0.0263671875,
+        relative_scale_width: Some(0.731084776663628),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -822,6 +874,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.77734375,
         relative_y: 0.01953125,
+        relative_scale_width: Some(0.7324521422060164),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -831,6 +884,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.77099609375,
         relative_y: 0.0283203125,
+        relative_scale_width: Some(0.7333637192342753),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -840,6 +894,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.64990234375,
         relative_y: 0.150390625,
+        relative_scale_width: Some(0.7329079307201458),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -849,6 +904,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.77587890625,
         relative_y: 0.02294921875,
+        relative_scale_width: Some(0.7324521422060164),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -858,6 +914,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.77978515625,
         relative_y: 0.01806640625,
+        relative_scale_width: Some(0.7301731996353692),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -866,6 +923,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.8445945945945946,
+        relative_scale_width: Some(0.9789103690685413),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -875,6 +933,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.52783203125,
         relative_y: 0.232421875,
+        relative_scale_width: Some(0.707383773928897),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -884,6 +943,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.54443359375,
         relative_y: 0.21484375,
+        relative_scale_width: Some(0.7064721969006381),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -893,6 +953,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.52685546875,
         relative_y: 0.232421875,
+        relative_scale_width: Some(0.7055606198723792),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -902,6 +963,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.52783203125,
         relative_y: 0.23193359375,
+        relative_scale_width: Some(0.707383773928897),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -911,6 +973,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.3293918918918919,
         relative_y: 0.6706081081081081,
+        relative_scale_width: Some(0.3391915641476274),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -920,6 +983,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.52,
         relative_y: 0.27076923076923076,
+        relative_scale_width: Some(0.6080717488789238),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -929,6 +993,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8307692307692308,
         relative_y: 0.08615384615384615,
+        relative_scale_width: Some(0.6188340807174888),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -938,6 +1003,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8327702702702703,
         relative_y: 0.005067567567567568,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -947,6 +1013,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5307692307692308,
         relative_y: 0.20923076923076922,
+        relative_scale_width: Some(0.968609865470852),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -956,6 +1023,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5329674030172413,
         relative_y: 0.20384900323275862,
+        relative_scale_width: Some(0.5356946084218811),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -965,6 +1033,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8307692307692308,
         relative_y: 0.12461538461538461,
+        relative_scale_width: Some(0.6161434977578475),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -974,6 +1051,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5307967032967034,
         relative_y: 0.26153846153846155,
+        relative_scale_width: Some(0.9686457399103139),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -983,6 +1061,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.86572265625,
         relative_y: 0.13427734375,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -991,6 +1070,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9892578125,
+        relative_scale_width: Some(0.9892101855848079),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1000,6 +1080,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.57568359375,
         relative_y: 0.1142578125,
+        relative_scale_width: Some(0.49522799575821846),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1009,6 +1090,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.65380859375,
         relative_y: 0.13232421875,
+        relative_scale_width: Some(0.7226890756302521),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1018,6 +1100,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5215384615384615,
         relative_y: 0.2846153846153846,
+        relative_scale_width: Some(0.6071748878923767),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1027,6 +1110,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8308012820512821,
         relative_y: 0.12304487179487178,
+        relative_scale_width: Some(0.6188699551569506),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1036,6 +1120,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9935233160621761,
         relative_y: 0.0025906735751295338,
+        relative_scale_width: Some(0.9948119325551232),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1044,6 +1129,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9961139896373057,
+        relative_scale_width: Some(0.996757457846952),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1053,6 +1139,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9935233160621761,
         relative_y: 0.0012953367875647669,
+        relative_scale_width: Some(0.9974059662775616),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1062,6 +1149,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9987046632124352,
         relative_y: 0.0012953367875647669,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1071,6 +1159,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.76904296875,
         relative_y: 0.0302734375,
+        relative_scale_width: Some(0.7333637192342753),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1080,6 +1169,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.990234375,
         relative_y: 0.00927734375,
+        relative_scale_width: Some(0.9202370100273473),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1089,6 +1179,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7900390625,
         relative_y: 0.00927734375,
+        relative_scale_width: Some(0.7333637192342753),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1098,6 +1189,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8251953125,
         relative_y: 0.00927734375,
+        relative_scale_width: Some(0.7429352780309936),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1107,6 +1199,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.783203125,
         relative_y: 0.01611328125,
+        relative_scale_width: Some(0.7333637192342753),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1116,6 +1209,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.490234375,
         relative_y: 0.25537109375,
+        relative_scale_width: Some(0.4899853444064485),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.8044817927170869),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1125,6 +1227,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.93408203125,
         relative_y: 0.0263671875,
+        relative_scale_width: Some(0.8869227449287872),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1134,6 +1237,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7075427827380952,
         relative_y: 0.1083984375,
+        relative_scale_width: Some(0.4061624649859944),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1143,6 +1247,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.84326171875,
         relative_y: 0.06201171875,
+        relative_scale_width: Some(0.8985994397759104),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1152,6 +1257,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7534290660511364,
         relative_y: 0.09520374644886363,
+        relative_scale_width: Some(0.7373686837644269),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1161,6 +1267,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.68359375,
         relative_y: 0.12451171875,
+        relative_scale_width: Some(0.7826330532212885),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1170,6 +1277,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.86376953125,
         relative_y: 0.0625,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1179,6 +1287,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.6103515625,
         relative_y: 0.19287109375,
+        relative_scale_width: Some(0.5406162464985994),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1188,6 +1297,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.794921875,
         relative_y: 0.05712890625,
+        relative_scale_width: Some(0.7596638655462185),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1197,6 +1307,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.86572265625,
         relative_y: 0.00537109375,
+        relative_scale_width: Some(0.769187675070028),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1206,6 +1317,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.31591796875,
         relative_y: 0.28564453125,
+        relative_scale_width: Some(0.8448179271708683),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1215,6 +1327,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.6767578125,
         relative_y: 0.13037109375,
+        relative_scale_width: Some(0.861624649859944),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1224,6 +1337,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.69921875,
         relative_y: 0.13330078125,
+        relative_scale_width: Some(0.7525068368277119),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1233,6 +1347,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7314453125,
         relative_y: 0.15478515625,
+        relative_scale_width: Some(0.7766636280765725),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1242,6 +1357,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.73095703125,
         relative_y: 0.154296875,
+        relative_scale_width: Some(0.7780309936189608),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1251,6 +1367,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5751953125,
         relative_y: 0.18212890625,
+        relative_scale_width: Some(0.5619872379216043),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1260,6 +1377,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.52685546875,
         relative_y: 0.22802734375,
+        relative_scale_width: Some(0.8103919781221514),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1269,6 +1387,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5751953125,
         relative_y: 0.18310546875,
+        relative_scale_width: Some(0.5601640838650866),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1278,6 +1397,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.900390625,
         relative_y: 0.09521484375,
+        relative_scale_width: Some(0.9206927985414768),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1287,6 +1407,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.6015625,
         relative_y: 0.23193359375,
+        relative_scale_width: Some(0.7397447584320875),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1296,6 +1417,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.52,
         relative_y: 0.2784615384615385,
+        relative_scale_width: Some(0.6062780269058295),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1305,6 +1427,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.52,
         relative_y: 0.2630769230769231,
+        relative_scale_width: Some(0.6080717488789238),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1471,6 +1594,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.990234375,
         relative_y: 0.0078125,
+        relative_scale_width: Some(0.9202370100273473),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1480,6 +1604,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7900390625,
         relative_y: 0.005859375,
+        relative_scale_width: Some(0.7333637192342753),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1489,6 +1614,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8251953125,
         relative_y: 0.00732421875,
+        relative_scale_width: Some(0.7429352780309936),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1498,6 +1624,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.75146484375,
         relative_y: 0.0068359375,
+        relative_scale_width: Some(0.7092069279854147),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1507,6 +1634,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.615234375,
         relative_y: 0.23193359375,
+        relative_scale_width: Some(0.723792160437557),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1516,6 +1644,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9986072423398329,
         relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.836335160532498),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1525,6 +1654,115 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9958217270194986,
         relative_y: 0.004178272980501393,
+        relative_scale_width: Some(0.7102584181675803),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9958217270194986,
+        relative_y: 0.004178272980501393,
+        relative_scale_width: Some(0.8445575567736884),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9958217270194986,
+        relative_y: 0.004178272980501393,
+        relative_scale_width: Some(0.836335160532498),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.8425998433829287),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.8418167580266249),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.8453406421299922),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.8527799530148786),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.8394675019577134),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.8320281910728269),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.9929522317932654),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(0.86530931871574),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9986072423398329,
+        relative_y: 0.001392757660167131,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1534,6 +1772,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.65966796875,
         relative_y: 0.134765625,
+        relative_scale_width: Some(0.5925841794819374),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1542,6 +1781,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.79443359375,
+        relative_scale_width: Some(0.5925840489336687),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1829,6 +2069,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         pad_right: -0.025,
         pad_top: -0.005,
         pad_bottom: -0.005,
+        relative_scale_width: Some(0.8681172291296625),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1842,6 +2083,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         pad_right: -0.05,
         pad_top: -0.005,
         pad_bottom: -0.005,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1855,6 +2097,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         pad_right: -0.025,
         pad_top: -0.005,
         pad_bottom: -0.005,
+        relative_scale_width: Some(0.8685612788632326),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1947,6 +2190,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.978618435460558,
         relative_y: 0.010395131619289563,
+        relative_scale_width: Some(0.9001269572577232),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1956,6 +2200,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9780123516271736,
         relative_y: 0.01040252288555034,
+        relative_scale_width: Some(0.799830723656369),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1965,6 +2210,35 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9999664113932554,
         relative_y: 3.35886067445846e-05,
+        relative_scale_width: Some(0.999855835190163),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.999165766660439),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.978618435460558,
+        relative_y: 0.010395131619289563,
+        relative_scale_width: Some(0.5002115954295387),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.978618435460558,
+        relative_y: 0.010395131619289563,
+        relative_scale_width: Some(0.6999576809140923),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1974,6 +2248,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9764207980652962,
         relative_y: 0.02357920193470375,
+        relative_scale_width: Some(0.8539325842696629),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1983,6 +2258,17 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.998792270531401,
         relative_y: 0.0006038647342995169,
+        relative_scale_width: Some(0.7775785537795464),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.998792270531401,
+        relative_y: 0.0006038647342995169,
+        relative_scale_width: Some(0.666630223252356),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -1992,6 +2278,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9989935587761675,
         relative_y: 0.0004025764895330055,
+        relative_scale_width: Some(0.7775785537795464),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2000,6 +2287,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9925925925925926,
+        relative_scale_width: Some(0.90715667311412),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2009,6 +2297,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8751322751322751,
         relative_y: 0.06243386243386243,
+        relative_scale_width: Some(0.7998065764023211),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2018,6 +2307,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8577706898990622,
         relative_y: 0.07118925863415371,
+        relative_scale_width: Some(0.6253968253968254),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2027,6 +2317,17 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8579450878868969,
         relative_y: 0.07101486064631894,
+        relative_scale_width: Some(1.0),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.8577706898990622,
+        relative_y: 0.07118925863415371,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2036,6 +2337,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9997041418532618,
         relative_y: 0.0002958581467381415,
+        relative_scale_width: Some(0.7502645502645503),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2045,6 +2347,17 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8572940020656472,
         relative_y: 0.07134040355694385,
+        relative_scale_width: Some(0.6253968253968254),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.8572940020656472,
+        relative_y: 0.07134040355694385,
+        relative_scale_width: Some(0.7502645502645503),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2054,6 +2367,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7138835298072554,
         relative_y: 0.14334792953172001,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2062,6 +2376,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.999974809179535,
+        relative_scale_width: Some(0.8752417442072614),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.5709969788519638),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2071,6 +2394,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.856797583081571,
         relative_y: 0.07190332326283988,
+        relative_scale_width: Some(1.0),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.8579201934703748),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2080,6 +2412,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9987915407854985,
         relative_y: 0.0006042296072507553,
+        relative_scale_width: Some(0.8579201934703748),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2089,6 +2422,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5700483091787439,
         relative_y: 0.286231884057971,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2098,6 +2432,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5700483091787439,
         relative_y: 0.14371980676328502,
+        relative_scale_width: Some(1.0),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.5002644103648863),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2107,6 +2450,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.4989429175475687,
         relative_y: 0.25052854122621565,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2116,6 +2460,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9998488512696494,
         relative_y: 0.00015114873035066076,
+        relative_scale_width: Some(0.7741542549424105),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2125,6 +2470,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7502645502645503,
         relative_y: 0.12486772486772486,
+        relative_scale_width: Some(1.0),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.7502645502645503),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2134,6 +2488,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.4281400966183575,
         relative_y: 0.20531400966183574,
+        relative_scale_width: Some(0.9994366468119018),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2143,6 +2498,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.4281400966183575,
         relative_y: 0.3472222222222222,
+        relative_scale_width: Some(0.9994366468119018),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2152,6 +2508,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7140772371750631,
         relative_y: 0.13334627329192547,
+        relative_scale_width: Some(0.5982810857602175),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2161,12 +2518,14 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7140396210163651,
         relative_y: 0.13338388945062352,
+        relative_scale_width: Some(0.599971145324512),
         ..Constraint::DEFAULT
     },
     Constraint {
         size: Size::FitCover1,
         height: Height::Icon,
         align_horizontal: Align::Center1,
+        relative_scale_width: Some(0.9994366468119018),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2175,6 +2534,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         relative_height: 0.427536231884058,
         relative_y: 0.0012077294685990338,
+        relative_scale_width: Some(0.9994366468119018),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2183,6 +2543,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         relative_height: 0.428743961352657,
         relative_y: 0.571256038647343,
+        relative_scale_width: Some(0.9994366468119018),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2192,6 +2553,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8573155985489722,
         relative_y: 0.07134220072551391,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2201,6 +2563,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9286577992744861,
         relative_y: 0.07134220072551391,
+        relative_scale_width: Some(0.923828125),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2209,6 +2572,17 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9286577992744861,
+        relative_scale_width: Some(0.923828125),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.8573155985489722,
+        relative_y: 0.07134220072551391,
+        relative_scale_width: Some(0.5384114583333334),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2218,6 +2592,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.5006045949214026,
         relative_y: 0.28536880290205563,
+        relative_scale_width: Some(0.923828125),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2226,6 +2601,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9998602571268865,
+        relative_scale_width: Some(0.5500899185443775),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.999682640431609),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2235,6 +2619,43 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.2593984962406015,
         relative_y: 0.36967418546365916,
+        relative_scale_width: Some(1.0),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.2589341692789969),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.8751322751322751,
+        relative_y: 0.06243386243386243,
+        relative_scale_width: Some(0.6245738204110751),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.8751322751322751,
+        relative_y: 0.06243386243386243,
+        relative_scale_width: Some(0.6253613886028323),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.5645794520717571),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2244,6 +2665,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8752505446623093,
         relative_y: 0.0623155929038282,
+        relative_scale_width: Some(0.8740995161332579),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2253,6 +2675,17 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8756468797564688,
         relative_y: 0.06243386243386243,
+        relative_scale_width: Some(0.6244022504277511),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.8751322751322751,
+        relative_y: 0.06243386243386243,
+        relative_scale_width: Some(0.7492772227943355),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2262,6 +2695,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8756067947646895,
         relative_y: 0.06234920634920635,
+        relative_scale_width: Some(0.9996446258939432),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.7343465808285431),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2271,6 +2713,15 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9989423585404548,
         relative_y: 0.0005288207297726071,
+        relative_scale_width: Some(0.6253968253968254),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.6253968253968254),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2280,6 +2731,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.6250661025912215,
         relative_y: 0.18773135906927552,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2296,6 +2748,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9992913608441985,
+        relative_scale_width: Some(0.5501481168006771),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2305,6 +2758,61 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.8745121221356107,
         relative_y: 0.06238961935429387,
+        relative_scale_width: Some(0.6999576809140923),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.5501481168006771),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9992913608441985,
+        relative_scale_width: Some(0.6250528988573847),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9992913608441985,
+        relative_scale_width: Some(0.799830723656369),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9992913608441985,
+        relative_scale_width: Some(0.9500634786288616),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.8745121221356107,
+        relative_y: 0.06238961935429387,
+        relative_scale_width: Some(1.0),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.9992913608441985,
+        relative_scale_width: Some(1.0),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2314,6 +2822,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.9369017414899046,
         relative_y: 0.06238961935429387,
+        relative_scale_width: Some(0.7498942022852306),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2322,6 +2831,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9998200864319468,
+        relative_scale_width: Some(0.5002115954295387),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2331,6 +2841,17 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.6873432640727292,
         relative_y: 0.15650277397348294,
+        relative_scale_width: Some(0.9250952179432924),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.6873432640727292,
+        relative_y: 0.15650277397348294,
+        relative_scale_width: Some(0.5501481168006771),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2339,6 +2860,16 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.999090774533229,
+        relative_scale_width: Some(0.7497700291899957),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.999090774533229,
+        relative_scale_width: Some(0.9369481605956786),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2348,6 +2879,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7802423191592835,
         relative_y: 0.09409426342164802,
+        relative_scale_width: Some(0.9988801016527891),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2357,6 +2889,24 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_vertical: Align::Center1,
         relative_height: 0.7495823906286343,
         relative_y: 0.12475419195229738,
+        relative_scale_width: Some(0.9993408710642397),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_scale_width: Some(0.9994712482163681),
+        ..Constraint::DEFAULT
+    },
+    Constraint {
+        size: Size::FitCover1,
+        height: Height::Icon,
+        align_horizontal: Align::Center1,
+        align_vertical: Align::Center1,
+        relative_height: 0.999090774533229,
+        relative_scale_width: Some(0.8746721401759192),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -2365,6 +2915,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
         align_horizontal: Align::Center1,
         align_vertical: Align::Center1,
         relative_height: 0.9977156246160116,
+        relative_scale_width: Some(0.811548244342444),
         ..Constraint::DEFAULT
     },
     Constraint {
@@ -3479,7 +4030,7 @@ pub(super) static CONSTRAINTS: [Constraint; 363] = [
 ];
 
 /// Sorted, disjoint, inclusive code point ranges and their constraint.
-pub(super) static RANGES: [(u32, u32, u16); 558] = [
+pub(super) static RANGES: [(u32, u32, u16); 582] = [
     (0x023FB, 0x023FE, 0),
     (0x02630, 0x02630, 1),
     (0x02665, 0x02665, 0),
@@ -3597,445 +4148,469 @@ pub(super) static RANGES: [(u32, u32, u16); 558] = [
     (0x0E345, 0x0E345, 101),
     (0x0E346, 0x0E346, 0),
     (0x0E347, 0x0E347, 102),
-    (0x0E348, 0x0E348, 0),
-    (0x0E349, 0x0E349, 103),
+    (0x0E348, 0x0E348, 103),
+    (0x0E349, 0x0E349, 104),
     (0x0E34A, 0x0E34B, 0),
-    (0x0E34C, 0x0E34C, 104),
-    (0x0E34D, 0x0E34D, 105),
-    (0x0E34E, 0x0E34E, 0),
-    (0x0E34F, 0x0E34F, 106),
-    (0x0E350, 0x0E350, 0),
-    (0x0E351, 0x0E351, 107),
-    (0x0E352, 0x0E352, 108),
-    (0x0E353, 0x0E353, 109),
-    (0x0E354, 0x0E356, 110),
-    (0x0E357, 0x0E357, 111),
-    (0x0E358, 0x0E359, 110),
-    (0x0E35A, 0x0E35A, 112),
-    (0x0E35B, 0x0E35B, 113),
+    (0x0E34C, 0x0E34C, 105),
+    (0x0E34D, 0x0E34D, 106),
+    (0x0E34E, 0x0E34E, 103),
+    (0x0E34F, 0x0E34F, 107),
+    (0x0E350, 0x0E350, 103),
+    (0x0E351, 0x0E351, 108),
+    (0x0E352, 0x0E352, 109),
+    (0x0E353, 0x0E353, 110),
+    (0x0E354, 0x0E356, 111),
+    (0x0E357, 0x0E357, 112),
+    (0x0E358, 0x0E359, 111),
+    (0x0E35A, 0x0E35A, 113),
+    (0x0E35B, 0x0E35B, 114),
     (0x0E35C, 0x0E35D, 0),
     (0x0E35E, 0x0E35E, 60),
     (0x0E35F, 0x0E35F, 44),
-    (0x0E360, 0x0E360, 114),
+    (0x0E360, 0x0E360, 115),
     (0x0E361, 0x0E361, 73),
-    (0x0E362, 0x0E362, 115),
-    (0x0E363, 0x0E363, 116),
-    (0x0E364, 0x0E364, 117),
+    (0x0E362, 0x0E362, 116),
+    (0x0E363, 0x0E363, 117),
+    (0x0E364, 0x0E364, 118),
     (0x0E365, 0x0E365, 48),
-    (0x0E366, 0x0E366, 118),
+    (0x0E366, 0x0E366, 119),
     (0x0E367, 0x0E367, 75),
-    (0x0E368, 0x0E368, 0),
-    (0x0E369, 0x0E369, 119),
-    (0x0E36A, 0x0E36A, 0),
-    (0x0E36B, 0x0E36B, 120),
-    (0x0E36C, 0x0E36C, 121),
-    (0x0E36D, 0x0E36D, 122),
-    (0x0E36E, 0x0E36E, 123),
-    (0x0E36F, 0x0E36F, 124),
-    (0x0E370, 0x0E370, 125),
-    (0x0E371, 0x0E371, 126),
-    (0x0E372, 0x0E372, 127),
-    (0x0E373, 0x0E373, 128),
-    (0x0E374, 0x0E374, 129),
-    (0x0E375, 0x0E375, 130),
-    (0x0E376, 0x0E376, 131),
-    (0x0E377, 0x0E377, 132),
-    (0x0E378, 0x0E378, 133),
-    (0x0E379, 0x0E379, 134),
-    (0x0E37A, 0x0E37A, 135),
-    (0x0E37B, 0x0E37B, 136),
+    (0x0E368, 0x0E368, 103),
+    (0x0E369, 0x0E369, 120),
+    (0x0E36A, 0x0E36A, 121),
+    (0x0E36B, 0x0E36B, 122),
+    (0x0E36C, 0x0E36C, 123),
+    (0x0E36D, 0x0E36D, 124),
+    (0x0E36E, 0x0E36E, 125),
+    (0x0E36F, 0x0E36F, 126),
+    (0x0E370, 0x0E370, 127),
+    (0x0E371, 0x0E371, 128),
+    (0x0E372, 0x0E372, 129),
+    (0x0E373, 0x0E373, 130),
+    (0x0E374, 0x0E374, 131),
+    (0x0E375, 0x0E375, 132),
+    (0x0E376, 0x0E376, 133),
+    (0x0E377, 0x0E377, 134),
+    (0x0E378, 0x0E378, 135),
+    (0x0E379, 0x0E379, 136),
+    (0x0E37A, 0x0E37A, 137),
+    (0x0E37B, 0x0E37B, 138),
     (0x0E37C, 0x0E37C, 0),
-    (0x0E37D, 0x0E37D, 137),
-    (0x0E37E, 0x0E37E, 138),
-    (0x0E37F, 0x0E37F, 139),
-    (0x0E380, 0x0E380, 140),
+    (0x0E37D, 0x0E37D, 139),
+    (0x0E37E, 0x0E37E, 140),
+    (0x0E37F, 0x0E37F, 141),
+    (0x0E380, 0x0E380, 142),
     (0x0E381, 0x0E38D, 0),
-    (0x0E38E, 0x0E391, 141),
-    (0x0E392, 0x0E393, 142),
-    (0x0E394, 0x0E394, 141),
-    (0x0E395, 0x0E395, 143),
-    (0x0E396, 0x0E396, 144),
-    (0x0E397, 0x0E397, 145),
-    (0x0E398, 0x0E398, 146),
-    (0x0E399, 0x0E399, 147),
-    (0x0E39A, 0x0E39A, 148),
-    (0x0E39B, 0x0E39B, 149),
-    (0x0E39C, 0x0E39C, 150),
-    (0x0E39D, 0x0E39D, 151),
-    (0x0E39E, 0x0E39E, 152),
-    (0x0E39F, 0x0E39F, 153),
-    (0x0E3A0, 0x0E3A0, 154),
-    (0x0E3A1, 0x0E3A1, 155),
-    (0x0E3A2, 0x0E3A3, 156),
-    (0x0E3A4, 0x0E3A4, 157),
-    (0x0E3A5, 0x0E3A5, 156),
-    (0x0E3A6, 0x0E3A6, 157),
-    (0x0E3A7, 0x0E3A8, 156),
-    (0x0E3A9, 0x0E3A9, 111),
-    (0x0E3AA, 0x0E3AA, 158),
-    (0x0E3AB, 0x0E3AB, 159),
-    (0x0E3AC, 0x0E3AC, 160),
-    (0x0E3AD, 0x0E3AD, 161),
-    (0x0E3AE, 0x0E3AE, 162),
-    (0x0E3AF, 0x0E3AF, 163),
-    (0x0E3B0, 0x0E3B2, 164),
-    (0x0E3B3, 0x0E3B3, 163),
-    (0x0E3B4, 0x0E3B4, 0),
-    (0x0E3B5, 0x0E3BB, 163),
+    (0x0E38E, 0x0E391, 143),
+    (0x0E392, 0x0E393, 144),
+    (0x0E394, 0x0E394, 143),
+    (0x0E395, 0x0E395, 145),
+    (0x0E396, 0x0E396, 146),
+    (0x0E397, 0x0E397, 147),
+    (0x0E398, 0x0E398, 148),
+    (0x0E399, 0x0E399, 149),
+    (0x0E39A, 0x0E39A, 150),
+    (0x0E39B, 0x0E39B, 151),
+    (0x0E39C, 0x0E39C, 152),
+    (0x0E39D, 0x0E39D, 153),
+    (0x0E39E, 0x0E39E, 154),
+    (0x0E39F, 0x0E39F, 155),
+    (0x0E3A0, 0x0E3A0, 156),
+    (0x0E3A1, 0x0E3A1, 157),
+    (0x0E3A2, 0x0E3A3, 158),
+    (0x0E3A4, 0x0E3A4, 159),
+    (0x0E3A5, 0x0E3A5, 158),
+    (0x0E3A6, 0x0E3A6, 159),
+    (0x0E3A7, 0x0E3A8, 158),
+    (0x0E3A9, 0x0E3A9, 112),
+    (0x0E3AA, 0x0E3AA, 160),
+    (0x0E3AB, 0x0E3AB, 161),
+    (0x0E3AC, 0x0E3AC, 162),
+    (0x0E3AD, 0x0E3AD, 163),
+    (0x0E3AE, 0x0E3AE, 164),
+    (0x0E3AF, 0x0E3AF, 165),
+    (0x0E3B0, 0x0E3B0, 166),
+    (0x0E3B1, 0x0E3B1, 167),
+    (0x0E3B2, 0x0E3B2, 168),
+    (0x0E3B3, 0x0E3B3, 169),
+    (0x0E3B4, 0x0E3B4, 170),
+    (0x0E3B5, 0x0E3B5, 171),
+    (0x0E3B6, 0x0E3B6, 172),
+    (0x0E3B7, 0x0E3B7, 173),
+    (0x0E3B8, 0x0E3B8, 174),
+    (0x0E3B9, 0x0E3B9, 175),
+    (0x0E3BA, 0x0E3BA, 176),
+    (0x0E3BB, 0x0E3BB, 177),
     (0x0E3BC, 0x0E3C0, 0),
-    (0x0E3C1, 0x0E3C1, 165),
-    (0x0E3C2, 0x0E3C2, 166),
+    (0x0E3C1, 0x0E3C1, 178),
+    (0x0E3C2, 0x0E3C2, 179),
     (0x0E3C3, 0x0E3E3, 0),
     (0x0E5FA, 0x0E6BB, 0),
     (0x0E700, 0x0E958, 0),
     (0x0EA60, 0x0EA60, 0),
-    (0x0EA61, 0x0EA61, 167),
+    (0x0EA61, 0x0EA61, 180),
     (0x0EA62, 0x0EA7C, 0),
-    (0x0EA7D, 0x0EA7D, 168),
+    (0x0EA7D, 0x0EA7D, 181),
     (0x0EA7E, 0x0EA88, 0),
     (0x0EA8A, 0x0EA8C, 0),
     (0x0EA8F, 0x0EA98, 0),
-    (0x0EA99, 0x0EA99, 169),
-    (0x0EA9A, 0x0EA9A, 170),
-    (0x0EA9B, 0x0EA9B, 171),
-    (0x0EA9C, 0x0EA9C, 172),
-    (0x0EA9D, 0x0EA9D, 173),
-    (0x0EA9E, 0x0EA9F, 174),
-    (0x0EAA0, 0x0EAA0, 173),
-    (0x0EAA1, 0x0EAA1, 175),
-    (0x0EAA2, 0x0EAA2, 176),
+    (0x0EA99, 0x0EA99, 182),
+    (0x0EA9A, 0x0EA9A, 183),
+    (0x0EA9B, 0x0EA9B, 184),
+    (0x0EA9C, 0x0EA9C, 185),
+    (0x0EA9D, 0x0EA9D, 186),
+    (0x0EA9E, 0x0EA9F, 187),
+    (0x0EAA0, 0x0EAA0, 186),
+    (0x0EAA1, 0x0EAA1, 188),
+    (0x0EAA2, 0x0EAA2, 189),
     (0x0EAA3, 0x0EAB3, 0),
-    (0x0EAB4, 0x0EAB4, 177),
-    (0x0EAB5, 0x0EAB5, 178),
-    (0x0EAB6, 0x0EAB6, 179),
-    (0x0EAB7, 0x0EAB7, 180),
+    (0x0EAB4, 0x0EAB4, 190),
+    (0x0EAB5, 0x0EAB5, 191),
+    (0x0EAB6, 0x0EAB6, 192),
+    (0x0EAB7, 0x0EAB7, 193),
     (0x0EAB8, 0x0EAC7, 0),
     (0x0EAC9, 0x0EAC9, 0),
     (0x0EACC, 0x0EAD3, 0),
-    (0x0EAD4, 0x0EAD5, 181),
-    (0x0EAD6, 0x0EAD6, 182),
+    (0x0EAD4, 0x0EAD5, 194),
+    (0x0EAD6, 0x0EAD6, 195),
     (0x0EAD7, 0x0EB09, 0),
     (0x0EB0B, 0x0EB42, 0),
-    (0x0EB43, 0x0EB43, 183),
+    (0x0EB43, 0x0EB43, 196),
     (0x0EB44, 0x0EB4E, 0),
     (0x0EB50, 0x0EB6D, 0),
-    (0x0EB6E, 0x0EB6E, 184),
-    (0x0EB6F, 0x0EB6F, 185),
-    (0x0EB70, 0x0EB70, 186),
-    (0x0EB71, 0x0EB71, 187),
+    (0x0EB6E, 0x0EB6E, 197),
+    (0x0EB6F, 0x0EB6F, 198),
+    (0x0EB70, 0x0EB70, 199),
+    (0x0EB71, 0x0EB71, 200),
     (0x0EB72, 0x0EB89, 0),
-    (0x0EB8A, 0x0EB8A, 188),
+    (0x0EB8A, 0x0EB8A, 201),
     (0x0EB8B, 0x0EB99, 0),
-    (0x0EB9A, 0x0EB9A, 189),
+    (0x0EB9A, 0x0EB9A, 202),
     (0x0EB9B, 0x0EBCA, 0),
-    (0x0EBCB, 0x0EBCB, 190),
+    (0x0EBCB, 0x0EBCB, 203),
     (0x0EBCC, 0x0EBD4, 0),
-    (0x0EBD5, 0x0EBD5, 191),
+    (0x0EBD5, 0x0EBD5, 204),
     (0x0EBD6, 0x0EC06, 0),
-    (0x0EC07, 0x0EC07, 188),
-    (0x0EC08, 0x0EC09, 192),
+    (0x0EC07, 0x0EC07, 201),
+    (0x0EC08, 0x0EC09, 205),
     (0x0EC0A, 0x0EC0A, 0),
-    (0x0EC0B, 0x0EC0B, 193),
-    (0x0EC0C, 0x0EC0C, 194),
+    (0x0EC0B, 0x0EC0B, 206),
+    (0x0EC0C, 0x0EC0C, 207),
     (0x0EC0D, 0x0EC5E, 0),
     (0x0EC60, 0x0EC84, 0),
     (0x0ED00, 0x0EDFF, 0),
-    (0x0EE00, 0x0EE00, 195),
-    (0x0EE01, 0x0EE01, 196),
-    (0x0EE02, 0x0EE02, 197),
-    (0x0EE03, 0x0EE03, 195),
-    (0x0EE04, 0x0EE04, 196),
-    (0x0EE05, 0x0EE05, 197),
-    (0x0EE06, 0x0EE06, 198),
-    (0x0EE07, 0x0EE07, 199),
-    (0x0EE08, 0x0EE08, 200),
-    (0x0EE09, 0x0EE09, 201),
-    (0x0EE0A, 0x0EE0A, 202),
-    (0x0EE0B, 0x0EE0B, 203),
+    (0x0EE00, 0x0EE00, 208),
+    (0x0EE01, 0x0EE01, 209),
+    (0x0EE02, 0x0EE02, 210),
+    (0x0EE03, 0x0EE03, 208),
+    (0x0EE04, 0x0EE04, 209),
+    (0x0EE05, 0x0EE05, 210),
+    (0x0EE06, 0x0EE06, 211),
+    (0x0EE07, 0x0EE07, 212),
+    (0x0EE08, 0x0EE08, 213),
+    (0x0EE09, 0x0EE09, 214),
+    (0x0EE0A, 0x0EE0A, 215),
+    (0x0EE0B, 0x0EE0B, 216),
     (0x0EE0C, 0x0EEE7, 0),
-    (0x0EEE8, 0x0EEE8, 204),
+    (0x0EEE8, 0x0EEE8, 217),
     (0x0EEE9, 0x0EFCE, 0),
-    (0x0EFCF, 0x0EFCF, 205),
+    (0x0EFCF, 0x0EFCF, 218),
     (0x0F000, 0x0F004, 0),
-    (0x0F005, 0x0F005, 206),
-    (0x0F006, 0x0F025, 0),
-    (0x0F026, 0x0F027, 204),
-    (0x0F028, 0x0F02A, 0),
-    (0x0F02B, 0x0F02B, 207),
-    (0x0F02C, 0x0F030, 0),
-    (0x0F031, 0x0F033, 208),
-    (0x0F034, 0x0F034, 0),
-    (0x0F035, 0x0F035, 209),
+    (0x0F005, 0x0F005, 219),
+    (0x0F006, 0x0F006, 220),
+    (0x0F007, 0x0F025, 0),
+    (0x0F026, 0x0F026, 221),
+    (0x0F027, 0x0F027, 222),
+    (0x0F028, 0x0F028, 103),
+    (0x0F029, 0x0F02A, 0),
+    (0x0F02B, 0x0F02B, 223),
+    (0x0F02C, 0x0F02C, 103),
+    (0x0F02D, 0x0F030, 0),
+    (0x0F031, 0x0F031, 224),
+    (0x0F032, 0x0F033, 225),
+    (0x0F034, 0x0F034, 103),
+    (0x0F035, 0x0F035, 226),
     (0x0F036, 0x0F043, 0),
-    (0x0F044, 0x0F044, 210),
-    (0x0F045, 0x0F045, 0),
-    (0x0F046, 0x0F046, 211),
+    (0x0F044, 0x0F044, 227),
+    (0x0F045, 0x0F045, 103),
+    (0x0F046, 0x0F046, 228),
     (0x0F047, 0x0F047, 0),
-    (0x0F048, 0x0F048, 212),
-    (0x0F049, 0x0F049, 213),
-    (0x0F04A, 0x0F04A, 212),
-    (0x0F04B, 0x0F04B, 214),
-    (0x0F04C, 0x0F04D, 215),
-    (0x0F04E, 0x0F04E, 212),
-    (0x0F04F, 0x0F04F, 216),
-    (0x0F050, 0x0F050, 213),
-    (0x0F051, 0x0F051, 212),
-    (0x0F052, 0x0F052, 217),
-    (0x0F053, 0x0F05F, 0),
-    (0x0F060, 0x0F061, 218),
-    (0x0F062, 0x0F062, 0),
-    (0x0F063, 0x0F063, 219),
+    (0x0F048, 0x0F048, 229),
+    (0x0F049, 0x0F049, 230),
+    (0x0F04A, 0x0F04A, 231),
+    (0x0F04B, 0x0F04B, 232),
+    (0x0F04C, 0x0F04C, 233),
+    (0x0F04D, 0x0F04D, 234),
+    (0x0F04E, 0x0F04E, 231),
+    (0x0F04F, 0x0F04F, 235),
+    (0x0F050, 0x0F050, 230),
+    (0x0F051, 0x0F051, 229),
+    (0x0F052, 0x0F052, 236),
+    (0x0F053, 0x0F054, 237),
+    (0x0F055, 0x0F05F, 0),
+    (0x0F060, 0x0F061, 238),
+    (0x0F062, 0x0F062, 239),
+    (0x0F063, 0x0F063, 240),
     (0x0F064, 0x0F076, 0),
-    (0x0F077, 0x0F077, 220),
-    (0x0F078, 0x0F078, 221),
-    (0x0F079, 0x0F07D, 0),
-    (0x0F07E, 0x0F07E, 222),
+    (0x0F077, 0x0F077, 241),
+    (0x0F078, 0x0F078, 242),
+    (0x0F079, 0x0F07C, 0),
+    (0x0F07D, 0x0F07D, 243),
+    (0x0F07E, 0x0F07E, 244),
     (0x0F07F, 0x0F088, 0),
-    (0x0F089, 0x0F089, 223),
+    (0x0F089, 0x0F089, 245),
     (0x0F08A, 0x0F0A3, 0),
-    (0x0F0A4, 0x0F0A5, 224),
-    (0x0F0A6, 0x0F0D6, 0),
-    (0x0F0D7, 0x0F0D7, 225),
-    (0x0F0D8, 0x0F0D8, 226),
-    (0x0F0D9, 0x0F0D9, 227),
-    (0x0F0DA, 0x0F0DA, 228),
+    (0x0F0A4, 0x0F0A5, 246),
+    (0x0F0A6, 0x0F0A7, 247),
+    (0x0F0A8, 0x0F0D6, 0),
+    (0x0F0D7, 0x0F0D7, 248),
+    (0x0F0D8, 0x0F0D8, 249),
+    (0x0F0D9, 0x0F0D9, 250),
+    (0x0F0DA, 0x0F0DA, 251),
     (0x0F0DB, 0x0F0DB, 0),
-    (0x0F0DC, 0x0F0DC, 229),
-    (0x0F0DD, 0x0F0DD, 230),
-    (0x0F0DE, 0x0F0DE, 231),
+    (0x0F0DC, 0x0F0DC, 252),
+    (0x0F0DD, 0x0F0DD, 253),
+    (0x0F0DE, 0x0F0DE, 254),
     (0x0F0DF, 0x0F0FF, 0),
-    (0x0F100, 0x0F101, 232),
-    (0x0F102, 0x0F102, 233),
-    (0x0F103, 0x0F103, 234),
-    (0x0F104, 0x0F105, 232),
-    (0x0F106, 0x0F107, 235),
+    (0x0F100, 0x0F101, 255),
+    (0x0F102, 0x0F102, 256),
+    (0x0F103, 0x0F103, 257),
+    (0x0F104, 0x0F105, 258),
+    (0x0F106, 0x0F107, 259),
     (0x0F108, 0x0F12F, 0),
-    (0x0F130, 0x0F130, 236),
-    (0x0F131, 0x0F140, 0),
-    (0x0F141, 0x0F141, 237),
-    (0x0F142, 0x0F152, 0),
-    (0x0F153, 0x0F154, 211),
-    (0x0F155, 0x0F155, 0),
-    (0x0F156, 0x0F156, 238),
-    (0x0F157, 0x0F157, 239),
-    (0x0F158, 0x0F158, 211),
-    (0x0F159, 0x0F159, 240),
-    (0x0F15A, 0x0F174, 0),
-    (0x0F175, 0x0F175, 241),
-    (0x0F176, 0x0F176, 0),
-    (0x0F177, 0x0F178, 242),
+    (0x0F130, 0x0F130, 260),
+    (0x0F131, 0x0F131, 261),
+    (0x0F132, 0x0F140, 0),
+    (0x0F141, 0x0F141, 262),
+    (0x0F142, 0x0F142, 263),
+    (0x0F143, 0x0F152, 0),
+    (0x0F153, 0x0F153, 264),
+    (0x0F154, 0x0F154, 265),
+    (0x0F155, 0x0F155, 266),
+    (0x0F156, 0x0F156, 267),
+    (0x0F157, 0x0F157, 268),
+    (0x0F158, 0x0F158, 269),
+    (0x0F159, 0x0F159, 270),
+    (0x0F15A, 0x0F15A, 271),
+    (0x0F15B, 0x0F174, 0),
+    (0x0F175, 0x0F175, 272),
+    (0x0F176, 0x0F176, 273),
+    (0x0F177, 0x0F178, 274),
     (0x0F179, 0x0F181, 0),
-    (0x0F182, 0x0F182, 243),
+    (0x0F182, 0x0F182, 275),
     (0x0F183, 0x0F220, 0),
-    (0x0F221, 0x0F221, 244),
-    (0x0F222, 0x0F222, 245),
-    (0x0F223, 0x0F223, 0),
-    (0x0F224, 0x0F226, 244),
-    (0x0F227, 0x0F227, 245),
-    (0x0F228, 0x0F228, 244),
-    (0x0F229, 0x0F229, 246),
-    (0x0F22A, 0x0F22A, 247),
-    (0x0F22B, 0x0F22B, 248),
-    (0x0F22C, 0x0F22C, 244),
-    (0x0F22D, 0x0F22D, 248),
+    (0x0F221, 0x0F221, 276),
+    (0x0F222, 0x0F222, 277),
+    (0x0F223, 0x0F223, 278),
+    (0x0F224, 0x0F224, 279),
+    (0x0F225, 0x0F225, 280),
+    (0x0F226, 0x0F226, 281),
+    (0x0F227, 0x0F227, 282),
+    (0x0F228, 0x0F228, 283),
+    (0x0F229, 0x0F229, 284),
+    (0x0F22A, 0x0F22A, 285),
+    (0x0F22B, 0x0F22B, 286),
+    (0x0F22C, 0x0F22C, 276),
+    (0x0F22D, 0x0F22D, 287),
     (0x0F22E, 0x0F254, 0),
-    (0x0F255, 0x0F256, 249),
-    (0x0F257, 0x0F257, 250),
-    (0x0F258, 0x0F258, 251),
-    (0x0F259, 0x0F259, 0),
-    (0x0F25A, 0x0F25A, 249),
-    (0x0F25B, 0x0F25B, 252),
+    (0x0F255, 0x0F255, 288),
+    (0x0F256, 0x0F256, 289),
+    (0x0F257, 0x0F257, 290),
+    (0x0F258, 0x0F258, 291),
+    (0x0F259, 0x0F259, 292),
+    (0x0F25A, 0x0F25A, 293),
+    (0x0F25B, 0x0F25B, 294),
     (0x0F25C, 0x0F385, 0),
     (0x0F400, 0x0F415, 0),
-    (0x0F416, 0x0F416, 253),
+    (0x0F416, 0x0F416, 295),
     (0x0F417, 0x0F423, 0),
-    (0x0F424, 0x0F424, 254),
+    (0x0F424, 0x0F424, 296),
     (0x0F425, 0x0F430, 0),
-    (0x0F431, 0x0F431, 255),
-    (0x0F432, 0x0F432, 256),
-    (0x0F433, 0x0F433, 257),
-    (0x0F434, 0x0F434, 258),
+    (0x0F431, 0x0F431, 297),
+    (0x0F432, 0x0F432, 298),
+    (0x0F433, 0x0F433, 299),
+    (0x0F434, 0x0F434, 300),
     (0x0F435, 0x0F437, 0),
-    (0x0F438, 0x0F438, 259),
+    (0x0F438, 0x0F438, 301),
     (0x0F439, 0x0F43D, 0),
-    (0x0F43E, 0x0F43E, 260),
+    (0x0F43E, 0x0F43E, 302),
     (0x0F43F, 0x0F442, 0),
-    (0x0F443, 0x0F443, 261),
-    (0x0F444, 0x0F445, 262),
+    (0x0F443, 0x0F443, 303),
+    (0x0F444, 0x0F445, 304),
     (0x0F446, 0x0F449, 0),
-    (0x0F44A, 0x0F44A, 263),
-    (0x0F44B, 0x0F44B, 264),
+    (0x0F44A, 0x0F44A, 305),
+    (0x0F44B, 0x0F44B, 306),
     (0x0F44C, 0x0F45B, 0),
-    (0x0F45C, 0x0F45C, 265),
+    (0x0F45C, 0x0F45C, 307),
     (0x0F45D, 0x0F45F, 0),
-    (0x0F460, 0x0F460, 266),
-    (0x0F461, 0x0F461, 267),
+    (0x0F460, 0x0F460, 308),
+    (0x0F461, 0x0F461, 309),
     (0x0F462, 0x0F466, 0),
-    (0x0F467, 0x0F467, 268),
+    (0x0F467, 0x0F467, 310),
     (0x0F468, 0x0F46B, 0),
-    (0x0F46C, 0x0F46C, 269),
+    (0x0F46C, 0x0F46C, 311),
     (0x0F46D, 0x0F46F, 0),
-    (0x0F470, 0x0F470, 270),
+    (0x0F470, 0x0F470, 312),
     (0x0F471, 0x0F475, 0),
-    (0x0F476, 0x0F476, 271),
+    (0x0F476, 0x0F476, 313),
     (0x0F477, 0x0F479, 0),
-    (0x0F47A, 0x0F47A, 272),
-    (0x0F47B, 0x0F47C, 273),
-    (0x0F47D, 0x0F47D, 274),
-    (0x0F47E, 0x0F47E, 275),
+    (0x0F47A, 0x0F47A, 314),
+    (0x0F47B, 0x0F47C, 315),
+    (0x0F47D, 0x0F47D, 316),
+    (0x0F47E, 0x0F47E, 317),
     (0x0F47F, 0x0F48A, 0),
-    (0x0F48B, 0x0F48B, 276),
+    (0x0F48B, 0x0F48B, 318),
     (0x0F48C, 0x0F492, 0),
-    (0x0F493, 0x0F493, 277),
+    (0x0F493, 0x0F493, 319),
     (0x0F494, 0x0F499, 0),
-    (0x0F49A, 0x0F49A, 278),
+    (0x0F49A, 0x0F49A, 320),
     (0x0F49B, 0x0F4C2, 0),
-    (0x0F4C3, 0x0F4C3, 262),
+    (0x0F4C3, 0x0F4C3, 304),
     (0x0F4C4, 0x0F4EE, 0),
-    (0x0F4EF, 0x0F4EF, 279),
-    (0x0F4F0, 0x0F4F0, 280),
-    (0x0F4F1, 0x0F4F1, 281),
-    (0x0F4F2, 0x0F4F2, 279),
+    (0x0F4EF, 0x0F4EF, 321),
+    (0x0F4F0, 0x0F4F0, 322),
+    (0x0F4F1, 0x0F4F1, 323),
+    (0x0F4F2, 0x0F4F2, 321),
     (0x0F4F3, 0x0F51C, 0),
-    (0x0F51D, 0x0F51D, 262),
+    (0x0F51D, 0x0F51D, 304),
     (0x0F51E, 0x0F533, 0),
     (0xF0001, 0xF00D9, 0),
-    (0xF00DA, 0xF00DA, 282),
-    (0xF00DB, 0xF00DB, 283),
-    (0xF00DC, 0xF00DC, 284),
+    (0xF00DA, 0xF00DA, 324),
+    (0xF00DB, 0xF00DB, 325),
+    (0xF00DC, 0xF00DC, 326),
     (0xF00DD, 0xF013B, 0),
-    (0xF013C, 0xF013C, 285),
-    (0xF013D, 0xF013D, 286),
-    (0xF013E, 0xF013E, 287),
-    (0xF013F, 0xF013F, 288),
-    (0xF0140, 0xF0140, 289),
-    (0xF0141, 0xF0141, 290),
-    (0xF0142, 0xF0142, 291),
-    (0xF0143, 0xF0143, 292),
+    (0xF013C, 0xF013C, 327),
+    (0xF013D, 0xF013D, 328),
+    (0xF013E, 0xF013E, 329),
+    (0xF013F, 0xF013F, 330),
+    (0xF0140, 0xF0140, 331),
+    (0xF0141, 0xF0141, 332),
+    (0xF0142, 0xF0142, 333),
+    (0xF0143, 0xF0143, 334),
     (0xF0144, 0xF020F, 0),
-    (0xF0210, 0xF0210, 293),
+    (0xF0210, 0xF0210, 335),
     (0xF0211, 0xF035C, 0),
-    (0xF035D, 0xF035D, 294),
-    (0xF035E, 0xF035E, 295),
-    (0xF035F, 0xF035F, 296),
-    (0xF0360, 0xF0360, 294),
+    (0xF035D, 0xF035D, 336),
+    (0xF035E, 0xF035E, 337),
+    (0xF035F, 0xF035F, 338),
+    (0xF0360, 0xF0360, 336),
     (0xF0361, 0xF0386, 0),
-    (0xF0387, 0xF0388, 297),
-    (0xF0389, 0xF0389, 298),
-    (0xF038A, 0xF038A, 299),
-    (0xF038B, 0xF038B, 298),
-    (0xF038C, 0xF038C, 297),
-    (0xF038D, 0xF038D, 300),
+    (0xF0387, 0xF0388, 339),
+    (0xF0389, 0xF0389, 340),
+    (0xF038A, 0xF038A, 341),
+    (0xF038B, 0xF038B, 340),
+    (0xF038C, 0xF038C, 339),
+    (0xF038D, 0xF038D, 342),
     (0xF038E, 0xF0504, 0),
-    (0xF0505, 0xF0505, 301),
-    (0xF0506, 0xF0506, 302),
+    (0xF0505, 0xF0505, 343),
+    (0xF0506, 0xF0506, 344),
     (0xF0507, 0xF0714, 0),
-    (0xF0715, 0xF0715, 303),
+    (0xF0715, 0xF0715, 345),
     (0xF0716, 0xF0718, 0),
-    (0xF0719, 0xF071A, 304),
+    (0xF0719, 0xF071A, 346),
     (0xF071B, 0xF071C, 0),
-    (0xF071D, 0xF071E, 305),
+    (0xF071D, 0xF071E, 347),
     (0xF071F, 0xF081C, 0),
-    (0xF081D, 0xF081D, 293),
+    (0xF081D, 0xF081D, 335),
     (0xF081E, 0xF0856, 0),
-    (0xF0857, 0xF0857, 306),
-    (0xF0858, 0xF0858, 307),
-    (0xF0859, 0xF0859, 308),
-    (0xF085A, 0xF085A, 309),
-    (0xF085B, 0xF085C, 307),
+    (0xF0857, 0xF0857, 348),
+    (0xF0858, 0xF0858, 349),
+    (0xF0859, 0xF0859, 350),
+    (0xF085A, 0xF085A, 351),
+    (0xF085B, 0xF085C, 349),
     (0xF085D, 0xF09DD, 0),
-    (0xF09DE, 0xF09DE, 310),
-    (0xF09DF, 0xF09DF, 311),
+    (0xF09DE, 0xF09DE, 352),
+    (0xF09DF, 0xF09DF, 353),
     (0xF09E0, 0xF0A0F, 0),
-    (0xF0A10, 0xF0A10, 312),
+    (0xF0A10, 0xF0A10, 354),
     (0xF0A11, 0xF0A12, 0),
-    (0xF0A13, 0xF0A13, 310),
+    (0xF0A13, 0xF0A13, 352),
     (0xF0A14, 0xF0A14, 0),
-    (0xF0A15, 0xF0A15, 311),
+    (0xF0A15, 0xF0A15, 353),
     (0xF0A16, 0xF0A6E, 0),
-    (0xF0A6F, 0xF0A6F, 313),
+    (0xF0A6F, 0xF0A6F, 355),
     (0xF0A70, 0xF0AED, 0),
-    (0xF0AEE, 0xF0AF5, 314),
-    (0xF0AF6, 0xF0AF6, 315),
-    (0xF0AF7, 0xF0AF9, 314),
-    (0xF0AFA, 0xF0AFA, 316),
-    (0xF0AFB, 0xF0AFD, 314),
-    (0xF0AFE, 0xF0AFE, 317),
-    (0xF0AFF, 0xF0B03, 314),
-    (0xF0B04, 0xF0B04, 316),
-    (0xF0B05, 0xF0B07, 314),
+    (0xF0AEE, 0xF0AF5, 356),
+    (0xF0AF6, 0xF0AF6, 357),
+    (0xF0AF7, 0xF0AF9, 356),
+    (0xF0AFA, 0xF0AFA, 358),
+    (0xF0AFB, 0xF0AFD, 356),
+    (0xF0AFE, 0xF0AFE, 359),
+    (0xF0AFF, 0xF0B03, 356),
+    (0xF0B04, 0xF0B04, 358),
+    (0xF0B05, 0xF0B07, 356),
     (0xF0B08, 0xF0B39, 0),
-    (0xF0B3A, 0xF0B3A, 318),
+    (0xF0B3A, 0xF0B3A, 360),
     (0xF0B3B, 0xF0BB4, 0),
-    (0xF0BB5, 0xF0BB5, 319),
-    (0xF0BB6, 0xF0BB6, 320),
-    (0xF0BB7, 0xF0BB7, 321),
-    (0xF0BB8, 0xF0BB8, 322),
-    (0xF0BB9, 0xF0BB9, 323),
-    (0xF0BBA, 0xF0BBA, 324),
-    (0xF0BBB, 0xF0BBB, 325),
-    (0xF0BBC, 0xF0BBC, 326),
-    (0xF0BBD, 0xF0BBD, 327),
-    (0xF0BBE, 0xF0BBE, 328),
+    (0xF0BB5, 0xF0BB5, 361),
+    (0xF0BB6, 0xF0BB6, 362),
+    (0xF0BB7, 0xF0BB7, 363),
+    (0xF0BB8, 0xF0BB8, 364),
+    (0xF0BB9, 0xF0BB9, 365),
+    (0xF0BBA, 0xF0BBA, 366),
+    (0xF0BBB, 0xF0BBB, 367),
+    (0xF0BBC, 0xF0BBC, 368),
+    (0xF0BBD, 0xF0BBD, 369),
+    (0xF0BBE, 0xF0BBE, 370),
     (0xF0BBF, 0xF0F60, 0),
-    (0xF0F61, 0xF0F61, 329),
-    (0xF0F62, 0xF0F62, 282),
-    (0xF0F63, 0xF0F63, 330),
-    (0xF0F64, 0xF0F64, 282),
-    (0xF0F65, 0xF0F65, 331),
-    (0xF0F66, 0xF0F66, 332),
-    (0xF0F67, 0xF0F67, 333),
-    (0xF0F68, 0xF0F68, 334),
+    (0xF0F61, 0xF0F61, 371),
+    (0xF0F62, 0xF0F62, 324),
+    (0xF0F63, 0xF0F63, 372),
+    (0xF0F64, 0xF0F64, 324),
+    (0xF0F65, 0xF0F65, 373),
+    (0xF0F66, 0xF0F66, 374),
+    (0xF0F67, 0xF0F67, 375),
+    (0xF0F68, 0xF0F68, 376),
     (0xF0F69, 0xF0F70, 0),
-    (0xF0F71, 0xF0F71, 335),
-    (0xF0F72, 0xF0F72, 297),
+    (0xF0F71, 0xF0F71, 377),
+    (0xF0F72, 0xF0F72, 339),
     (0xF0F73, 0xF0F73, 0),
-    (0xF0F74, 0xF0F74, 335),
-    (0xF0F75, 0xF0F75, 297),
-    (0xF0F76, 0xF0F76, 335),
-    (0xF0F77, 0xF0F77, 336),
+    (0xF0F74, 0xF0F74, 377),
+    (0xF0F75, 0xF0F75, 339),
+    (0xF0F76, 0xF0F76, 377),
+    (0xF0F77, 0xF0F77, 378),
     (0xF0F78, 0xF1087, 0),
-    (0xF1088, 0xF1088, 337),
-    (0xF1089, 0xF1089, 338),
-    (0xF108A, 0xF108A, 339),
-    (0xF108B, 0xF108B, 340),
-    (0xF108C, 0xF108C, 341),
-    (0xF108D, 0xF108D, 342),
-    (0xF108E, 0xF108E, 343),
+    (0xF1088, 0xF1088, 379),
+    (0xF1089, 0xF1089, 380),
+    (0xF108A, 0xF108A, 381),
+    (0xF108B, 0xF108B, 382),
+    (0xF108C, 0xF108C, 383),
+    (0xF108D, 0xF108D, 384),
+    (0xF108E, 0xF108E, 385),
     (0xF108F, 0xF108F, 0),
-    (0xF1090, 0xF1090, 340),
-    (0xF1091, 0xF1091, 341),
+    (0xF1090, 0xF1090, 382),
+    (0xF1091, 0xF1091, 383),
     (0xF1092, 0xF12AA, 0),
-    (0xF12AB, 0xF12AB, 344),
+    (0xF12AB, 0xF12AB, 386),
     (0xF12AC, 0xF13A2, 0),
-    (0xF13A3, 0xF13A3, 345),
-    (0xF13A4, 0xF13A4, 346),
-    (0xF13A5, 0xF13A5, 347),
-    (0xF13A6, 0xF13A6, 346),
-    (0xF13A7, 0xF13A7, 345),
+    (0xF13A3, 0xF13A3, 387),
+    (0xF13A4, 0xF13A4, 388),
+    (0xF13A5, 0xF13A5, 389),
+    (0xF13A6, 0xF13A6, 388),
+    (0xF13A7, 0xF13A7, 387),
     (0xF13A8, 0xF146B, 0),
-    (0xF146C, 0xF146C, 348),
-    (0xF146D, 0xF146E, 349),
-    (0xF146F, 0xF146F, 350),
-    (0xF1470, 0xF1470, 351),
-    (0xF1471, 0xF1471, 352),
-    (0xF1472, 0xF1474, 353),
+    (0xF146C, 0xF146C, 390),
+    (0xF146D, 0xF146E, 391),
+    (0xF146F, 0xF146F, 392),
+    (0xF1470, 0xF1470, 393),
+    (0xF1471, 0xF1471, 394),
+    (0xF1472, 0xF1474, 395),
     (0xF1475, 0xF14DB, 0),
-    (0xF14DC, 0xF14DC, 312),
+    (0xF14DC, 0xF14DC, 354),
     (0xF14DD, 0xF1553, 0),
-    (0xF1554, 0xF1554, 354),
+    (0xF1554, 0xF1554, 396),
     (0xF1555, 0xF171C, 0),
-    (0xF171D, 0xF171D, 353),
+    (0xF171D, 0xF171D, 395),
     (0xF171E, 0xF19AF, 0),
-    (0xF19B0, 0xF19B1, 355),
-    (0xF19B2, 0xF19B3, 356),
-    (0xF19B4, 0xF19B7, 357),
+    (0xF19B0, 0xF19B1, 397),
+    (0xF19B2, 0xF19B3, 398),
+    (0xF19B4, 0xF19B7, 399),
     (0xF19B8, 0xF1A39, 0),
-    (0xF1A3A, 0xF1A3A, 358),
+    (0xF1A3A, 0xF1A3A, 400),
     (0xF1A3B, 0xF1ABB, 0),
-    (0xF1ABC, 0xF1ABC, 359),
-    (0xF1ABD, 0xF1ABD, 360),
-    (0xF1ABE, 0xF1ABE, 361),
-    (0xF1ABF, 0xF1ABF, 362),
+    (0xF1ABC, 0xF1ABC, 401),
+    (0xF1ABD, 0xF1ABD, 402),
+    (0xF1ABE, 0xF1ABE, 403),
+    (0xF1ABF, 0xF1ABF, 404),
     (0xF1AC0, 0xF1AF0, 0),
 ];

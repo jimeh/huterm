@@ -66,8 +66,14 @@ pub(super) struct Constraint {
     relative_height: f64,
     relative_x: f64,
     relative_y: f64,
+    /// The glyph's width relative to its scale group's, for the scale factor
+    /// alone, when the group's glyphs have different advances: font-patcher
+    /// scales the whole group by its combined box but aligns each glyph on
+    /// its own, while `relative_width` covers both. `None` uses
+    /// `relative_width`.
+    relative_scale_width: Option<f64>,
     /// The widest aspect ratio (width / height) a stretch may produce.
-    max_xy_ratio: Option<f64>,
+    pub(super) max_xy_ratio: Option<f64>,
     /// The most cells the glyph may span.
     max_constraint_width: u8,
     pub(super) height: Height,
@@ -86,6 +92,7 @@ impl Constraint {
         relative_height: 1.0,
         relative_x: 0.0,
         relative_y: 0.0,
+        relative_scale_width: None,
         max_xy_ratio: None,
         max_constraint_width: 2,
         height: Height::Cell,
@@ -183,7 +190,15 @@ impl Constraint {
             }
         };
 
-        let factor = self.scale_factor(&group, metrics, columns);
+        let factor = self.scale_factor(
+            &GlyphBox {
+                width: glyph.width
+                    / self.relative_scale_width.unwrap_or(self.relative_width),
+                ..group
+            },
+            metrics,
+            columns,
+        );
         let center_x = group.x + group.width / 2.0;
         let center_y = group.y + group.height / 2.0;
         group.width *= factor;

@@ -631,7 +631,10 @@ credited in `third-party/nerd-font-constraints/`: measure its ink with
 and lay it out at the resulting size. The size and origin differ from the
 grid's and travel in `GlyphContent::Symbol`, one layout per cell width. GPUI
 scales glyphs only uniformly, so stretch rules size like fit. Never edit the
-table by hand; run `mise run nerd-fonts:constraints`. Ask GPUI
+table by hand; run `mise run nerd-fonts:constraints`. The `patched_reference`
+test checks every icon against patched "Nerd Font Mono" builds of three
+families within 5% of a cell; treat a failure there as a placement bug, not a
+tolerance to raise. Ask GPUI
 for the family only after `symbols_available()`: `resolve_font` panics when a
 family and GPUI's whole fallback stack are missing. GPUI loads the face only
 through the `nerd-font-symbols` vendor patches, because both text systems skip

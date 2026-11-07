@@ -354,3 +354,6 @@ mod tests {
         assert!(placed > 20_000, "placed {placed} glyphs");
     }
 }
+
+#[cfg(test)]
+mod patched_reference;

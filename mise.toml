@@ -115,6 +115,10 @@ run = "bun scripts/rust-test-order.ts --files"
 description = "Regenerate the Nerd Font icon constraint table from the pinned font-patcher and the bundled symbols font"
 run = "uv run --no-project --isolated --python 3.13 --with fonttools==4.68.0 python -I scripts/nerd-font-constraints.py crates/huterm-gpui/assets/fonts/nerd-fonts/SymbolsNerdFont-Regular.ttf .native/nerd-fonts crates/huterm-gpui/src/renderer/symbols/constraint/table.rs"
 
+[tasks."nerd-fonts:reference"]
+description = "Regenerate the patched Nerd Font Mono reference fixtures for the icon placement test"
+run = "uv run --no-project --isolated --python 3.13 --with fonttools==4.68.0 python -I scripts/nerd-font-reference.py crates/huterm-gpui/assets/fonts/nerd-fonts/SymbolsNerdFont-Regular.ttf .native/nerd-fonts crates/huterm-gpui/src/renderer/symbols/reference"
+
 [tasks."lint:docs"]
 description = "Lint Markdown documentation"
 run = "markdownlint-cli2 'README.md' 'AGENTS.md' 'docs/**/*.md'"

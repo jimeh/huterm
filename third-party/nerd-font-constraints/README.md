@@ -36,6 +36,11 @@ Huterm's changes:
   widens an icon into a following space; patched "Nerd Font Mono" families,
   which Huterm matches, keep icons to one cell.
 - Plain `center` alignment is omitted because no patcher rule uses it.
+- A scale group whose glyphs have different advances still scales by the
+  group's combined width, as font-patcher does, through an added
+  `relative_scale_width`. Ghostty scales each such glyph by its own width,
+  which drew narrow Font Awesome and Weather Icons glyphs up to twice as
+  large as patched fonts do.
 - The generator targets Nerd Fonts 3.5.1, pins the font-patcher file by
   SHA-256, and writes no intermediate code point module.
 

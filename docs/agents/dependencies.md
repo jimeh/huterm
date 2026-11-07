@@ -136,6 +136,10 @@ bump it:
    new `setup_patch_set` variables, and run `mise run nerd-fonts:constraints`.
    Review the regenerated `renderer/symbols/constraint/table.rs`; a test fails
    while its version differs from the bundled font's.
+6. In `scripts/nerd-font-reference.py`, move the three families' archive and
+   unpatched-font pins to the release, and run `mise run nerd-fonts:reference`.
+   The `patched_reference` test then compares every icon's placement with
+   the Nerd Fonts project's own patched "Nerd Font Mono" builds.
 
 The generator runs through the pinned `uv` Mise tool with an exact `fonttools`
 version, and downloads the font-patcher and icon-set source fonts into

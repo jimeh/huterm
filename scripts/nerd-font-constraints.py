@@ -311,6 +311,10 @@ def collect_entries(
                     if monospace:
                         attr["relative_width"] = (this[2] - this[0]) / group_width
                         attr["relative_x"] = (this[0] - x_min) / group_width
+                    else:
+                        # font-patcher still scales by the group's combined
+                        # width; Ghostty's constraints drop it here.
+                        attr["relative_scale_width"] = (this[2] - this[0]) / group_width
         entries |= patch_set_entries
     return entries
 
@@ -387,6 +391,10 @@ def constraint_literal(attr: PatchSetAttributeEntry) -> str:
         ]
     if xy_ratio > 0:
         fields.append(f"max_xy_ratio: Some({rust_float(xy_ratio)})")
+    if "relative_scale_width" in attr:
+        fields.append(
+            f"relative_scale_width: Some({rust_float(float(attr['relative_scale_width']))})"
+        )
 
     body = "".join(f"        {field},\n" for field in fields)
     return f"    Constraint {{\n{body}        ..Constraint::DEFAULT\n    }}"
