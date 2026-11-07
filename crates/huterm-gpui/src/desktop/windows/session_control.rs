@@ -394,6 +394,14 @@ impl WorkspaceView {
             .unwrap_or_else(|| self.menu_anchor(layout))
     }
 
+    /// The session menu's anchor as the next frame places it.
+    #[cfg(test)]
+    pub(super) fn session_menu_anchor_for_tests(
+        &self,
+    ) -> Option<Bounds<Pixels>> {
+        self.session_anchor_cell().get()
+    }
+
     /// The bounds cell of the host that opens the session menu: the one
     /// clicked, else the first host drawn, title bar first.
     pub(super) fn session_anchor_cell(

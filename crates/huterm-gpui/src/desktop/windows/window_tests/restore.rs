@@ -277,6 +277,8 @@ fn a_restore_reopens_saved_windows_with_fresh_shells_and_saved_focus(
         assert_eq!(record.active, Some(scoped_tab(3)));
         assert_eq!(record.history, [scoped_tab(3), scoped_tab(9)]);
         assert_eq!(record.layout.sidebar_width, px(210.0));
+        assert!(record.layout.workspace_collapsed);
+        assert_eq!(record.layout.workspace_width, px(230.0));
         let state = desktop.hierarchy.state();
         assert_eq!(
             state.session(work).unwrap().custom_name.as_deref(),

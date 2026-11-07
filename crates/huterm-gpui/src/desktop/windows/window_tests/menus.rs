@@ -127,7 +127,11 @@ impl DesktopHarness {
         .center()
     }
 
-    fn click_at(&mut self, window: AnyWindowHandle, at: gpui::Point<Pixels>) {
+    pub(super) fn click_at(
+        &mut self,
+        window: AnyWindowHandle,
+        at: gpui::Point<Pixels>,
+    ) {
         VisualTestContext::from_window(window, &self.cx)
             .simulate_click(at, Modifiers::none());
     }

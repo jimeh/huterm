@@ -728,9 +728,8 @@ impl WorkspaceView {
             colors.inactive
         };
         let element = div()
-            .id(gpui::ElementId::NamedInteger(
-                "workspace-row".into(),
-                workspace.get(),
+            .id(gpui::ElementId::Name(
+                format!("workspace-row-{}", workspace.get()).into(),
             ))
             .role(gpui::Role::Button)
             .aria_label(row.accessible_name())

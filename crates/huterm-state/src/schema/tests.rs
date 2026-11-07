@@ -106,6 +106,43 @@ fn a_window_display_round_trips_and_is_left_out_when_unknown() {
     assert_eq!(text.matches("\"display\"").count(), 1, "{text}");
 }
 
+#[test]
+fn a_windows_workspace_panel_state_round_trips_and_older_files_load() {
+    let mut layout = layout_for(&rich_capture());
+    layout.windows[0].workspace_panel_collapsed = true;
+    layout.windows[0].workspace_panel_width = 230.0;
+    let bytes = encode_desktop(&layout, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_desktop(&bytes) else {
+        panic!("the layout did not decode");
+    };
+    assert_eq!(file.content, layout);
+    // The second window keeps the defaults, so it writes neither field, as
+    // a file from before them has none, and such a file loads them as
+    // defaults.
+    let text = String::from_utf8(bytes).unwrap();
+    for field in ["\"workspace_panel_collapsed\"", "\"workspace_panel_width\""]
+    {
+        assert_eq!(text.matches(field).count(), 1, "{text}");
+    }
+    let plain = layout_for(&rich_capture());
+    let text =
+        String::from_utf8(encode_desktop(&plain, SCOPE, 1).unwrap()).unwrap();
+    assert!(!text.contains("workspace_panel"), "{text}");
+    let Decoded::Ok(file) = decode_desktop(text.as_bytes()) else {
+        panic!("a file without the fields did not load");
+    };
+    assert!(file.content.windows.iter().all(|window| {
+        !window.workspace_panel_collapsed && window.workspace_panel_width == 0.0
+    }));
+    // A width that is not a finite, non-negative number is refused.
+    for width in [-1.0, f32::NAN, f32::INFINITY] {
+        let mut broken = layout.clone();
+        broken.windows[0].workspace_panel_width = width;
+        let refused = encode_desktop(&broken, SCOPE, 1).unwrap_err();
+        assert!(refused.reason().contains("geometry"), "{refused}");
+    }
+}
+
 /// Encodes a desktop layout without checking any rule, as a damaged or
 /// foreign writer might.
 fn unchecked_desktop(layout: &DesktopLayout) -> Vec<u8> {

@@ -17397,6 +17397,11 @@ impl WorkspaceView {
             None if open.kind == MenuKind::Session => {
                 Anchor::Trigger(self.session_menu_anchor(layout))
             }
+            // The dropdown, else the empty state's button, else the menu
+            // button's place: a host that goes hands the menu on.
+            None if open.kind == MenuKind::Workspace => {
+                Anchor::Trigger(self.workspace_menu_anchor(layout))
+            }
             None => Anchor::Trigger(self.menu_anchor(layout)),
         };
         // The menu's labels follow the interface scale, and so does its

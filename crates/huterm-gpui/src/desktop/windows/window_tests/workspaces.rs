@@ -19,7 +19,7 @@ use super::*;
 impl DesktopHarness {
     /// Appends a workspace to the harness session with one tab running
     /// `command` per count, as another client would.
-    fn add_workspace_running(
+    pub(super) fn add_workspace_running(
         &self,
         command: &str,
         tabs: usize,
@@ -33,7 +33,10 @@ impl DesktopHarness {
     }
 
     /// [`Self::add_workspace_running`] with echo tabs.
-    fn add_workspace(&self, tabs: usize) -> (WorkspaceId, Vec<TabId>) {
+    pub(super) fn add_workspace(
+        &self,
+        tabs: usize,
+    ) -> (WorkspaceId, Vec<TabId>) {
         self.add_workspace_running(ECHO, tabs)
     }
 
@@ -55,7 +58,7 @@ impl DesktopHarness {
 
     /// Switches `window` to `workspace` and waits until the switch settled
     /// showing exactly `tabs`.
-    fn show_workspace(
+    pub(super) fn show_workspace(
         &mut self,
         window: AnyWindowHandle,
         workspace: WorkspaceId,
@@ -67,7 +70,7 @@ impl DesktopHarness {
     }
 
     /// Waits until `window` settled on `workspace` showing exactly `tabs`.
-    fn wait_workspace(
+    pub(super) fn wait_workspace(
         &mut self,
         window: AnyWindowHandle,
         workspace: WorkspaceId,
@@ -112,7 +115,7 @@ fn workspace_pick(
 }
 
 /// The workspace `window`'s record shows.
-fn shown_workspace(
+pub(super) fn shown_workspace(
     cx: &mut App,
     window: AnyWindowHandle,
 ) -> Option<WorkspaceId> {
