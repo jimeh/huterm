@@ -108,6 +108,9 @@ pub(super) struct SessionMenuInput {
     pub(super) current: Option<SessionId>,
     /// The binding that opens the selected session in a new window.
     pub(super) alternate: Option<String>,
+    /// The menu offers New Workspace; `[workspaces] show = "never"` hides
+    /// it, though the palette still reaches the command.
+    pub(super) workspaces: bool,
 }
 
 const SESSION_PREFIX: &str = "session:";
@@ -183,7 +186,8 @@ fn windows_text(count: usize) -> String {
 /// The session menu: one row per session in runtime order, a check on the
 /// window's own, the name muted when automatic, the tab count, a window
 /// tag for sessions other windows show, and an "exited" tag; a hint while
-/// the window's session is the only one; then New Session, New Workspace,
+/// the window's session is the only one; then New Session, New Workspace
+/// unless workspaces are hidden,
 /// in native menus Open Session in New Window…, Rename Session…, Clear
 /// Name while the window's session has a custom name, and Close Session….
 /// A session with more than one workspace counts them before its tabs. The
@@ -244,11 +248,13 @@ pub(super) fn session_menu(input: &SessionMenuInput) -> MenuSpec {
     };
     rows.push(MenuRow::Separator);
     rows.push(action(ids::NEW_SESSION, "New Session", Icon::Plus));
-    rows.push(action(
-        ids::NEW_WORKSPACE,
-        "New Workspace",
-        Icon::LayoutGrid,
-    ));
+    if input.workspaces {
+        rows.push(action(
+            ids::NEW_WORKSPACE,
+            "New Workspace",
+            Icon::LayoutGrid,
+        ));
+    }
     // A native menu has no inline buttons and hides each row's Open in New
     // Window behind Command, so it also lists the command, which asks for
     // the session.

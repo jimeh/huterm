@@ -37,6 +37,7 @@ pub enum SectionId {
     General,
     Appearance,
     Windows,
+    Sessions,
     Tabs,
     Panes,
     Terminal,
@@ -48,10 +49,11 @@ pub enum SectionId {
 }
 
 impl SectionId {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::General,
         Self::Appearance,
         Self::Windows,
+        Self::Sessions,
         Self::Tabs,
         Self::Panes,
         Self::Terminal,
@@ -70,6 +72,7 @@ impl SectionId {
             Self::Appearance => "appearance",
             Self::Tabs => "tabs",
             Self::Windows => "windows",
+            Self::Sessions => "sessions",
             Self::Panes => "panes",
             Self::Terminal => "terminal",
             Self::Scrollback => "scrollback",
@@ -87,6 +90,7 @@ impl SectionId {
             Self::Appearance => "Appearance",
             Self::Tabs => "Tabs",
             Self::Windows => "Windows",
+            Self::Sessions => "Sessions",
             Self::Panes => "Panes",
             Self::Terminal => "Terminal",
             Self::Scrollback => "Scrollback",
@@ -938,6 +942,7 @@ mod tests {
                 "General",
                 "Appearance",
                 "Windows",
+                "Sessions",
                 "Tabs",
                 "Panes",
                 "Terminal",
@@ -1085,7 +1090,15 @@ mod tests {
                     {
                         SectionId::Appearance
                     }
+                    // The session control gathers with the workspaces.
+                    Some(("window", key)) if key.starts_with("session_") => {
+                        SectionId::Sessions
+                    }
                     Some(("window", _)) => SectionId::Windows,
+                    Some(
+                        ("workspaces", _)
+                        | ("general", "restore_sessions" | "session_numbering"),
+                    ) => SectionId::Sessions,
                     Some(("panes", _)) => SectionId::Panes,
                     _ => continue,
                 };
@@ -1101,6 +1114,10 @@ mod tests {
                 .collect()
         };
         assert_eq!(groups(SectionId::Windows), ["Window"]);
+        assert_eq!(
+            groups(SectionId::Sessions),
+            ["Session control", "Workspaces", "Restore and names"]
+        );
         assert_eq!(
             groups(SectionId::Panes),
             [
@@ -1290,6 +1307,7 @@ mod tests {
             font: crate::RawFont::default(),
             window: crate::WindowConfig::default(),
             tabs: crate::TabsConfig::default(),
+            workspaces: crate::WorkspacesConfig::default(),
             updates: crate::UpdateConfig {
                 automatic_checks: Some(true),
                 check_interval_hours: Some(24),

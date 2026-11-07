@@ -1220,6 +1220,8 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
             },
             mode: huterm_state::WindowMode::Windowed,
             sidebar_width: 220.0,
+            workspace_panel_collapsed: false,
+            workspace_panel_width: 0.0,
             display: None,
             quake_profile: None,
             appearance: None,

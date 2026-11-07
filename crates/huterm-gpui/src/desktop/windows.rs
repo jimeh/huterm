@@ -236,6 +236,9 @@ mod window_locator;
 mod window_menu;
 #[cfg(all(test, feature = "test-support"))]
 mod worker_hooks;
+mod workspace_chrome;
+mod workspace_menu;
+mod workspace_panel;
 mod workspace_switch;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
@@ -289,6 +292,7 @@ use window_menu::{
     MenuButtonPlacement, SessionControlHost, WindowMenuInput,
     menu_button_placement, split_new_tab_row, window_menu,
 };
+use workspace_chrome::WorkspaceChrome;
 /// Space the tab strip reserves for the new-tab control on its axis.
 const CONTROL_SLOT: Pixels = TAB_HEIGHT;
 /// Visible size of the new-tab and scroll controls. Along the strip they sit
@@ -2082,6 +2086,9 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         // its tab's marks without changing a title.
         if change.changed
             || view
+                .attached_session(cx)
+                .is_some_and(|session| touched.contains_chrome(session))
+            || view
                 .transfer
                 .as_ref()
                 .is_some_and(|pending| pending.installing)
@@ -2836,6 +2843,10 @@ fn open_window_with_profile(
     let sidebar_width = placement
         .as_ref()
         .map_or(SIDEBAR_WIDTH, |placement| placement.sidebar_width);
+    let (workspace_collapsed, workspace_width) = placement.as_ref().map_or(
+        (config.workspaces.collapsed, workspace_chrome::PANEL_WIDTH),
+        |placement| (placement.workspace_collapsed, placement.workspace_width),
+    );
     let result = cx.open_window(
         WindowOptions {
             window_background: crate::transparency::resolve(
@@ -3011,6 +3022,8 @@ fn open_window_with_profile(
                     bounds: window.window_bounds(),
                     display,
                     sidebar_width,
+                    workspace_collapsed,
+                    workspace_width,
                     fullscreen: false,
                 },
             );
@@ -3029,6 +3042,7 @@ fn open_window_with_profile(
             cx.global_mut::<Desktop>()
                 .windows
                 .set_transparency(window_id, own_transparency);
+            let workspace_scroll = gpui::ScrollHandle::new();
             let view = cx.new(|cx| WorkspaceView {
                 native_alpha,
                 transparency_support,
@@ -3074,6 +3088,22 @@ fn open_window_with_profile(
                 tab_scrollbars: Scrollbars::default(),
                 sidebar_width,
                 resizing_sidebar: false,
+                workspace_collapsed,
+                workspace_width,
+                resizing_workspace: false,
+                workspace_count: 0,
+                workspace_label: session_control::SessionLabel::default(),
+                workspace_trigger_bounds: Rc::new(Cell::new(None)),
+                workspace_scroll: workspace_scroll.clone(),
+                workspace_scrollbar:
+                    crate::ui::list_scrollbar::ListScrollbar::new(
+                        workspace_scroll,
+                    ),
+                workspace_focus: HashMap::new(),
+                workspace_row_bounds: Rc::new(RefCell::new(HashMap::new())),
+                workspace_menu_from:
+                    workspace_panel::WorkspaceMenuAnchor::Trigger,
+                workspace_trigger_drawn: Cell::new(false),
                 live_resize: LiveResize::default(),
                 frame_appearance: FrameAppearance::default(),
                 divider_drag: None,
@@ -3147,6 +3177,9 @@ fn open_window_with_profile(
                 menu_button_bounds: Rc::new(Cell::new(None)),
                 session_button_bounds: Rc::new(Cell::new(None)),
                 session_control_drawn: Cell::new(false),
+                session_sidebar_bounds: Rc::new(Cell::new(None)),
+                session_sidebar_drawn: Cell::new(false),
+                session_menu_from: session_control::SessionHostSlot::Title,
                 session_label: session_control::SessionLabel::default(),
                 exited_sessions: HashSet::new(),
                 exited_read: 0,
@@ -3399,6 +3432,7 @@ impl refresh::Animated for WorkspaceView {
             .tab_scrollbars
             .schedule(now)
             .merge(self.panel_scrollbar.schedule(now))
+            .merge(self.workspace_scrollbar.schedule(now))
             .merge(self.notice_scrollbar.schedule(now))
             .merge(self.reveal.schedule(now))
             .merge(self.pane_bars.schedule(now))
@@ -3511,6 +3545,7 @@ impl refresh::Animated for WorkspaceView {
             cx.notify();
         }
         if self.panel_scrollbar.advance(now)
+            | self.workspace_scrollbar.advance(now)
             | self.notice_scrollbar.advance(now)
         {
             cx.notify();
@@ -4594,6 +4629,31 @@ struct WorkspaceView {
     tab_scrollbars: Scrollbars,
     sidebar_width: Pixels,
     resizing_sidebar: bool,
+    /// The window shows the workspace dropdown instead of its panel or
+    /// bar; saved with the window.
+    workspace_collapsed: bool,
+    /// The side workspace panel's preferred width; saved with the window.
+    workspace_width: Pixels,
+    resizing_workspace: bool,
+    /// Workspaces in the window's session, as render last read them.
+    workspace_count: usize,
+    /// The shown workspace's name the dropdown last measured.
+    workspace_label: session_control::SessionLabel,
+    /// The dropdown trigger's painted bounds, for the workspace menu's
+    /// anchor.
+    workspace_trigger_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The workspace panel's rows, or the bar's chips, scroll here.
+    workspace_scroll: gpui::ScrollHandle,
+    workspace_scrollbar: crate::ui::list_scrollbar::ListScrollbar,
+    /// Each workspace row's or chip's focus handle.
+    workspace_focus: HashMap<WorkspaceId, FocusHandle>,
+    /// Each row's or chip's painted bounds, for a keyboard-opened row menu.
+    workspace_row_bounds: Rc<RefCell<HashMap<WorkspaceId, Bounds<Pixels>>>>,
+    /// Where the open workspace menu came from.
+    workspace_menu_from: workspace_panel::WorkspaceMenuAnchor,
+    /// Whether this frame drew the dropdown, so smoke state never reports
+    /// the bounds a hidden one last painted.
+    workspace_trigger_drawn: Cell<bool>,
     live_resize: LiveResize,
     frame_appearance: FrameAppearance,
     divider_drag: Option<DividerDrag>,
@@ -4748,6 +4808,11 @@ struct WorkspaceView {
     /// Whether this render built the session control; one that built none
     /// clears `session_button_bounds`.
     session_control_drawn: Cell<bool>,
+    /// The sidebar host's painted bounds and whether this render built it.
+    session_sidebar_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    session_sidebar_drawn: Cell<bool>,
+    /// The host whose click last opened the session menu, which anchors it.
+    session_menu_from: session_control::SessionHostSlot,
     /// The session name the control last measured and its width, so the
     /// tab strip and title row reserve its slot between renders.
     session_label: session_control::SessionLabel,
@@ -4810,13 +4875,22 @@ enum MenuKind {
     Field(WeakEntity<Input>),
     /// The session menu, from the session control or `open_session_menu`.
     Session,
+    /// The workspace menu, from the dropdown, the empty state, or
+    /// `open_workspace_menu`.
+    Workspace,
+    /// A workspace row's or chip's context menu.
+    WorkspaceRow(WorkspaceId),
 }
 
 impl MenuKind {
     /// The tab the menu's tab-targeted picks act on.
     fn tab(&self) -> Option<TabId> {
         match self {
-            Self::Window | Self::Field(_) | Self::Session => None,
+            Self::Window
+            | Self::Field(_)
+            | Self::Session
+            | Self::Workspace
+            | Self::WorkspaceRow(_) => None,
             Self::Tab(tab)
             | Self::Terminal { tab, .. }
             | Self::Pane { tab, .. } => Some(*tab),
@@ -4831,7 +4905,9 @@ impl MenuKind {
             | Self::Tab(_)
             | Self::Terminal { .. }
             | Self::Field(_)
-            | Self::Session => None,
+            | Self::Session
+            | Self::Workspace
+            | Self::WorkspaceRow(_) => None,
         }
     }
 
@@ -4844,6 +4920,8 @@ impl MenuKind {
             Self::Pane { .. } => "pane",
             Self::Field(_) => "field",
             Self::Session => "session",
+            Self::Workspace => "workspace",
+            Self::WorkspaceRow(_) => "workspace_row",
         }
     }
 }
@@ -7124,9 +7202,11 @@ impl WorkspaceView {
     /// The frame this window's chrome sits in, for its resolved position
     /// and the decorations GPUI last reported.
     fn window_frame(&self) -> WindowFrame {
+        // Whether the window has Huterm's title row is a property of the
+        // configured position and platform, never of a workspace bar.
         WindowFrame::resolve(
             self.frame_platform(),
-            self.layout_tabs().position,
+            self.host_tabs().position,
             self.frame_state,
             self.button_layout,
         )
@@ -7142,28 +7222,41 @@ impl WorkspaceView {
     fn title_row_layout(&self, layout: &ChromeLayout) -> TitleRowLayout {
         let position = self.layout_tabs().position;
         let menu = self.menu_button_placement();
+        // A side workspace panel holds its corner of the row, with the
+        // controls there.
+        let (lead_held, trail_held) = self.panel_corners(layout);
         // The menu button's slot and the session control's beside it.
-        let corner = session_control::title_strip_corner(
-            menu,
-            self.session_control_placement(layout),
-        );
+        let corner = if trail_held {
+            px(0.0)
+        } else {
+            session_control::title_strip_corner(
+                menu,
+                self.session_control_placement(layout),
+            )
+        };
         let titlebar = self.title_row();
         let content = layout.content;
         let (left, width) = if position.vertical() {
             (layout.terminal.origin.x, layout.terminal.size.width)
         } else {
-            (content.origin.x, content.size.width)
+            (layout.area.origin.x, layout.area.size.width)
         };
         let bounds = Bounds::new(
             point(left, content.origin.y),
             size(width, titlebar + self.fullscreen_insets.top.max(px(0.0))),
         );
-        let leading = if layout.frame.controls {
+        let leading = if lead_held {
+            px(0.0)
+        } else if layout.frame.controls {
             layout.frame.buttons.leading.width()
         } else {
             TRAFFIC_LIGHT_INSET
         };
-        let trailing = layout.frame.buttons.trailing.width() + corner;
+        let trailing = if trail_held {
+            px(0.0)
+        } else {
+            layout.frame.buttons.trailing.width() + corner
+        };
         let drop_left =
             (content.origin.x + leading).clamp(left, bounds.right());
         let drop_right =
@@ -7171,8 +7264,7 @@ impl WorkspaceView {
         // Preserve the title's symmetric padding while the drop region
         // uses the actual, potentially asymmetric control groups.
         let title_padding = if position.vertical() {
-            let leading =
-                (content.origin.x + TRAFFIC_LIGHT_INSET - left).max(px(0.0));
+            let leading = (content.origin.x + leading - left).max(px(0.0));
             let trailing =
                 (bounds.right() - (content.right() - corner)).max(px(0.0));
             leading.max(trailing)
@@ -7181,6 +7273,15 @@ impl WorkspaceView {
                 .strip_inset
                 .max(layout.strip_trailing + corner.max(CONTROL_SLOT))
         };
+        // A hidden tab bar's dropdown leads the row, so the title keeps
+        // clear of it.
+        let title_padding =
+            if layout.workspace_chrome.is_dropdown() && !self.bar_drawn() {
+                let lead = if lead_held { TITLE_ROW_LEAD } else { leading };
+                title_padding.max(lead + self.dropdown_lead())
+            } else {
+                title_padding
+            };
         TitleRowLayout {
             bounds,
             drop_region: Bounds::new(
@@ -7233,7 +7334,80 @@ impl WorkspaceView {
     /// Layout, visibility, placement, and the terminals all read this;
     /// `self.config.tabs.position` is only the configured value.
     fn layout_tabs(&self) -> TabsConfig {
+        let tabs = self.host_tabs();
+        if tabs.position == TabPosition::Titlebar
+            && self.workspace_chrome_unsized().top_bar()
+        {
+            // A top workspace bar takes the title row, so the tabs drop
+            // to a top bar beneath it.
+            TabsConfig {
+                position: TabPosition::Top,
+                ..tabs
+            }
+        } else {
+            tabs
+        }
+    }
+
+    /// The tab configuration with its position resolved for the window's
+    /// platform and title row, before a top workspace bar moves the tabs.
+    /// Decorations, the Linux frame, and title-row gestures read this.
+    fn host_tabs(&self) -> TabsConfig {
         layout_tabs(self.config.tabs, self.tab_host())
+    }
+
+    /// What decides the window's workspace chrome, besides its size.
+    pub(super) fn workspace_inputs(&self) -> workspace_chrome::Inputs {
+        workspace_chrome::Inputs {
+            show: self.config.workspaces.show,
+            workspaces: self.workspace_count,
+            collapsed: self.workspace_collapsed,
+            position: self.config.workspaces.position,
+            width: self.workspace_width,
+            dropdown_lead: self.dropdown_lead(),
+        }
+    }
+
+    /// The chrome as far as it does not depend on the window's size: a
+    /// side panel stands for itself, though SW1 may still show it as the
+    /// dropdown. Only whether a top bar shows reads this.
+    fn workspace_chrome_unsized(&self) -> WorkspaceChrome {
+        workspace_chrome::resolve(self.workspace_inputs(), |_| {
+            workspace_chrome::MIN_TERMINAL_WIDTH
+        })
+    }
+
+    /// The workspace chrome for a `viewport`-sized window.
+    pub(super) fn workspace_chrome(
+        &self,
+        viewport: gpui::Size<Pixels>,
+    ) -> WorkspaceChrome {
+        workspace_chrome::resolve(self.workspace_inputs(), |panel| {
+            self.layout_for(viewport, panel)
+                .present(self.presentation(), self.layout_tabs().position, 0.0)
+                .terminal
+                .size
+                .width
+        })
+    }
+
+    /// The window's layout for `viewport` with `workspace` chrome, before
+    /// presentation.
+    fn layout_for(
+        &self,
+        viewport: gpui::Size<Pixels>,
+        workspace: WorkspaceChrome,
+    ) -> ChromeLayout {
+        ChromeLayout::for_tabs(
+            viewport,
+            self.title_row(),
+            self.layout_tabs(),
+            self.sidebar_width,
+            self.fullscreen_insets,
+            self.notch_shelf(),
+            self.window_frame(),
+            workspace,
+        )
     }
 
     fn presentation(&self) -> Presentation {
@@ -7250,44 +7424,45 @@ impl WorkspaceView {
     /// The shelf beside the notch a top bar should occupy, when configured
     /// and available.
     fn notch_shelf(&self) -> Option<Bounds<Pixels>> {
-        select_notch_shelf(self.layout_tabs(), self.notch_shelves)
+        let tabs = self.layout_tabs();
+        if self.workspace_chrome_unsized().top_bar() {
+            // A top workspace bar takes the shelf; the tab bar never does.
+            return select_notch_shelf(
+                TabsConfig {
+                    position: TabPosition::Top,
+                    ..tabs
+                },
+                self.notch_shelves,
+            );
+        }
+        select_notch_shelf(tabs, self.notch_shelves)
+    }
+
+    /// Whether the tab bar itself sits on the notch shelf.
+    fn tabs_on_shelf(&self) -> bool {
+        !self.workspace_chrome_unsized().top_bar()
+            && self.notch_shelf().is_some()
     }
 
     fn chrome_layout(&self, window: &Window) -> ChromeLayout {
-        let tabs = self.layout_tabs();
-        ChromeLayout::for_tabs(
-            window.viewport_size(),
-            self.title_row(),
-            tabs,
-            self.sidebar_width,
-            self.fullscreen_insets,
-            self.notch_shelf(),
-            self.window_frame(),
-        )
-        .present(
-            self.presentation(),
-            tabs.position,
-            self.reveal.progress,
-        )
+        let viewport = window.viewport_size();
+        self.layout_for(viewport, self.workspace_chrome(viewport))
+            .present(
+                self.presentation(),
+                self.layout_tabs().position,
+                self.reveal.progress,
+            )
     }
 
     /// The geometry every terminal view in the window takes: the terminal
     /// bounds with the tab bar shown or hidden, never mid-reveal, and the
     /// standard scrollbar track margins.
     fn terminal_geometry(&self, window: &Window) -> TerminalGeometry {
-        let tabs = self.layout_tabs();
-        let presentation = self.presentation();
-        let bounds = ChromeLayout::for_tabs(
-            window.viewport_size(),
-            self.title_row(),
-            tabs,
-            self.sidebar_width,
-            self.fullscreen_insets,
-            self.notch_shelf(),
-            self.window_frame(),
-        )
-        .present(presentation, tabs.position, 0.0)
-        .terminal;
+        let viewport = window.viewport_size();
+        let bounds = self
+            .layout_for(viewport, self.workspace_chrome(viewport))
+            .present(self.presentation(), self.layout_tabs().position, 0.0)
+            .terminal;
         TerminalGeometry {
             bounds: Some(bounds),
             track_margins: TERMINAL_SCROLLBAR.margins,
@@ -7724,6 +7899,7 @@ impl WorkspaceView {
     fn window_drag_running(&self) -> bool {
         self.divider_drag.is_some()
             || self.resizing_sidebar
+            || self.resizing_workspace
             || self.reorder.is_some()
             || self.pane_drag.is_some()
             || self.tab_scrollbars.dragging()
@@ -8028,7 +8204,7 @@ impl WorkspaceView {
             && (edge
                 || (self.reveal.progress > 0.0
                     && hovered
-                    && layout.tabs.contains(&pointer))
+                    && layout.reveal_region(position).contains(&pointer))
                 || self.reorder.is_some()
                 || self.resizing_sidebar
                 || self.menu.is_some());
@@ -8043,7 +8219,7 @@ impl WorkspaceView {
         let tab_claims = self.presentation() == Presentation::Overlay
             && (edge
                 || (self.reveal.progress > 0.0
-                    && layout.tabs.contains(&pointer)));
+                    && layout.reveal_region(position).contains(&pointer)));
         // Another drag, or a menu or dialog over the bands, claims the
         // pointer too; a bar's own menu holds it through `holds_pane_bar`.
         let claimed = self.pane_drag.as_ref().is_some_and(|drag| drag.dragging)
@@ -9893,6 +10069,23 @@ impl WorkspaceView {
                 }
                 ids::OPEN_MENU => self.check_available(false),
                 ids::OPEN_SESSION_MENU => self.session_menu_availability(cx),
+                ids::OPEN_WORKSPACE_MENU => {
+                    self.workspace_menu_availability(cx)
+                }
+                ids::FOCUS_WORKSPACE_PANEL => {
+                    self.focus_workspace_panel_availability()
+                }
+                ids::TOGGLE_WORKSPACE_PANEL
+                | ids::WORKSPACE_PANEL_NEXT
+                | ids::WORKSPACE_PANEL_PREVIOUS
+                | ids::WORKSPACE_PANEL_FIRST
+                | ids::WORKSPACE_PANEL_LAST
+                | ids::WORKSPACE_PANEL_SHOW
+                | ids::WORKSPACE_PANEL_RENAME
+                | ids::WORKSPACE_PANEL_MENU
+                | ids::WORKSPACE_PANEL_EXIT => {
+                    self.toggle_workspace_panel_availability()
+                }
                 ids::WINDOW_TRANSPARENCY => {
                     if self.panel.is_some() {
                         Ok(())
@@ -10672,7 +10865,38 @@ impl WorkspaceView {
             }
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
-            ids::OPEN_SESSION_MENU => self.open_session_menu(true, window, cx),
+            ids::OPEN_SESSION_MENU => {
+                // The palette's menu anchors to the first host drawn.
+                self.session_menu_from =
+                    session_control::SessionHostSlot::Title;
+                self.open_session_menu(true, window, cx)
+            }
+            ids::OPEN_WORKSPACE_MENU => self.open_workspace_menu(
+                true,
+                workspace_panel::WorkspaceMenuAnchor::Trigger,
+                window,
+                cx,
+            ),
+            ids::TOGGLE_WORKSPACE_PANEL => {
+                self.toggle_workspace_panel(window, cx)
+            }
+            ids::FOCUS_WORKSPACE_PANEL => {
+                self.focus_workspace_panel(window, cx)
+            }
+            ids::WORKSPACE_PANEL_NEXT
+            | ids::WORKSPACE_PANEL_PREVIOUS
+            | ids::WORKSPACE_PANEL_FIRST
+            | ids::WORKSPACE_PANEL_LAST
+            | ids::WORKSPACE_PANEL_SHOW
+            | ids::WORKSPACE_PANEL_RENAME
+            | ids::WORKSPACE_PANEL_MENU
+            | ids::WORKSPACE_PANEL_EXIT => self
+                .run_workspace_panel_command(invocation.id, window, cx)
+                .unwrap_or_else(|| {
+                    Err(CommandError::Unavailable(
+                        "no workspace has focus".to_owned(),
+                    ))
+                }),
             ids::WINDOW_TRANSPARENCY => self.toggle_panel(window, cx),
             ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
@@ -13289,7 +13513,65 @@ pub(super) struct ChromeLayout {
     /// The bar sits on chrome that exists anyway, a notch shelf or the
     /// title bar, so hiding it frees no terminal space.
     outside_terminal: bool,
+    /// What the workspace band leaves for the title row, tab bar, and
+    /// terminal; the content without one.
+    pub(super) area: Bounds<Pixels>,
+    /// The workspace panel or bar.
+    pub(super) workspace: Option<Bounds<Pixels>>,
+    pub(super) workspace_chrome: WorkspaceChrome,
+    /// Where a side panel's rows start below its top, past the title row
+    /// and safe area; or the length a bar's chips avoid at its start, past
+    /// the traffic lights or leading window buttons of the title row it
+    /// takes.
+    pub(super) workspace_inset: Pixels,
+    /// The length a top bar's chips leave free at its end for the trailing
+    /// window buttons of the title row it takes.
+    pub(super) workspace_trailing: Pixels,
+    /// The dropdown's slot, relative to the tab bar's origin, so it moves
+    /// with a revealing bar.
+    dropdown: Option<Bounds<Pixels>>,
 }
+
+/// One fact each about the window the layout partitions.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LayoutInputs {
+    pub(super) window: gpui::Size<Pixels>,
+    pub(super) titlebar: Pixels,
+    /// The tab bar's resolved position.
+    pub(super) position: TabPosition,
+    pub(super) bar_height: Pixels,
+    pub(super) sidebar_width: Pixels,
+    pub(super) safe_area: gpui::Edges<Pixels>,
+    pub(super) notch_shelf: Option<Bounds<Pixels>>,
+    pub(super) frame: WindowFrame,
+    pub(super) workspace: WorkspaceChrome,
+}
+
+/// The part of [`LayoutInputs`] the partition of the area beside a
+/// workspace band reads.
+#[derive(Clone, Copy, Debug)]
+struct Partition {
+    titlebar: Pixels,
+    position: TabPosition,
+    bar_height: Pixels,
+    sidebar_width: Pixels,
+    safe_area: gpui::Edges<Pixels>,
+    notch_shelf: Option<Bounds<Pixels>>,
+    frame: WindowFrame,
+    corners: Corners,
+    /// The dropdown's lead along a horizontal strip, when it shows.
+    dropdown: Option<Pixels>,
+}
+
+/// Whether the partitioned area's top corners are the window's, which the
+/// traffic lights, window buttons, and corner controls occupy; a side
+/// workspace panel holds the corner it sits in.
+#[derive(Clone, Copy, Debug)]
+struct Corners {
+    leading: bool,
+    trailing: bool,
+}
+
 impl ChromeLayout {
     #[cfg(test)]
     pub(super) fn new(
@@ -13305,6 +13587,31 @@ impl ChromeLayout {
         position: TabPosition,
         progress: f32,
     ) -> Self {
+        // A horizontal workspace bar on the tab bar's edge hides and
+        // reveals with it in fullscreen, as one band.
+        let joined = presentation == Presentation::Overlay
+            && !self.outside_terminal
+            && self.bar_shares_edge(position);
+        if joined && let Some(band) = self.workspace {
+            self.terminal.size.height += band.size.height;
+            if band.origin.y < self.terminal.origin.y {
+                self.terminal.origin.y = band.origin.y;
+            }
+        }
+        if presentation == Presentation::Overlay && joined {
+            let hidden = 1.0 - progress.clamp(0.0, 1.0);
+            if let Some(band) = &mut self.workspace {
+                let travel =
+                    (band.size.height + self.tabs.size.height) * hidden;
+                if position == TabPosition::Bottom {
+                    band.origin.y += travel;
+                    self.tabs.origin.y += band.size.height * hidden;
+                } else {
+                    band.origin.y -= travel;
+                    self.tabs.origin.y -= band.size.height * hidden;
+                }
+            }
+        }
         if presentation != Presentation::Reserved && !self.outside_terminal {
             if position.vertical() {
                 self.terminal.size.width += self.tabs.size.width;
@@ -13336,6 +13643,39 @@ impl ChromeLayout {
             }
         }
         self
+    }
+
+    /// Whether a horizontal workspace bar sits on the tab bar's edge.
+    pub(super) fn bar_shares_edge(&self, position: TabPosition) -> bool {
+        match self.workspace_chrome {
+            WorkspaceChrome::Bar {
+                edge: workspace_chrome::Edge::Top,
+            } => matches!(position, TabPosition::Top | TabPosition::Titlebar),
+            WorkspaceChrome::Bar {
+                edge: workspace_chrome::Edge::Bottom,
+            } => position == TabPosition::Bottom,
+            _ => false,
+        }
+    }
+
+    /// The region a revealed fullscreen tab bar holds while hovered: the
+    /// bar, and a workspace bar that reveals with it.
+    pub(super) fn reveal_region(
+        &self,
+        position: TabPosition,
+    ) -> Bounds<Pixels> {
+        match self.workspace {
+            Some(band) if self.bar_shares_edge(position) => {
+                self.tabs.union(&band)
+            }
+            _ => self.tabs,
+        }
+    }
+
+    /// The workspace dropdown's slot in the tab bar, when it shows there.
+    pub(super) fn dropdown(&self) -> Option<Bounds<Pixels>> {
+        self.dropdown
+            .map(|slot| Bounds::new(self.tabs.origin + slot.origin, slot.size))
     }
 
     /// The one-point line where the tab bar meets the terminal.
@@ -13469,6 +13809,10 @@ impl ChromeLayout {
     /// `notch_shelf` places a top bar in that window-relative area beside a
     /// display notch instead of below the safe area. Everything lies
     /// inside `frame`, whose inset is the resize border Huterm owns.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every input is one fact about the window the layout partitions"
+    )]
     pub(super) fn for_tabs(
         viewport: gpui::Size<Pixels>,
         titlebar: Pixels,
@@ -13477,19 +13821,22 @@ impl ChromeLayout {
         safe_area: gpui::Edges<Pixels>,
         notch_shelf: Option<Bounds<Pixels>>,
         frame: WindowFrame,
+        workspace: WorkspaceChrome,
     ) -> Self {
-        Self::build(
-            viewport,
+        Self::build_with(LayoutInputs {
+            window: viewport,
             titlebar,
-            tabs.position,
-            tab_bar_height(tabs),
+            position: tabs.position,
+            bar_height: tab_bar_height(tabs),
             sidebar_width,
             safe_area,
             notch_shelf,
             frame,
-        )
+            workspace,
+        })
     }
 
+    #[cfg(test)]
     #[expect(
         clippy::too_many_arguments,
         reason = "every input is one fact about the window the layout partitions"
@@ -13504,15 +13851,223 @@ impl ChromeLayout {
         notch_shelf: Option<Bounds<Pixels>>,
         frame: WindowFrame,
     ) -> Self {
+        Self::build_with(LayoutInputs {
+            window,
+            titlebar,
+            position,
+            bar_height,
+            sidebar_width,
+            safe_area,
+            notch_shelf,
+            frame,
+            workspace: WorkspaceChrome::None,
+        })
+    }
+
+    /// Carves the workspace panel or bar from the content first, then
+    /// partitions the rest into title row, tab bar, and terminal exactly as
+    /// a window without one. A side panel spans the content height and
+    /// takes that corner of the title row; a top bar takes the title row,
+    /// or a bar below the safe area, or the notch shelf; a bottom bar sits
+    /// at the content's bottom.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per workspace edge before the shared partition"
+    )]
+    pub(super) fn build_with(inputs: LayoutInputs) -> Self {
+        let LayoutInputs {
+            window,
+            titlebar,
+            mut position,
+            bar_height,
+            sidebar_width,
+            safe_area,
+            notch_shelf,
+            frame,
+            workspace,
+        } = inputs;
         // The layout partitions the content inside the frame; the frame's
         // origin is added back at the end. A notch shelf is already
         // window-relative and never coexists with a frame, so it is
         // brought into content coordinates like everything else.
         let content = content_inside(window, frame);
         let viewport = content.size;
-        let notch_shelf = notch_shelf.map(|shelf| {
+        let mut notch_shelf = notch_shelf.map(|shelf| {
             Bounds::new(shelf.origin - content.origin, shelf.size)
         });
+        let safe = gpui::Edges {
+            top: safe_area.top.max(px(0.0)),
+            right: safe_area.right.max(px(0.0)),
+            bottom: safe_area.bottom.max(px(0.0)),
+            left: safe_area.left.max(px(0.0)),
+        };
+        let mut area = Bounds::new(point(px(0.0), px(0.0)), viewport);
+        let mut rest_safe = safe;
+        let mut rest_titlebar = titlebar;
+        let mut corners = Corners {
+            leading: true,
+            trailing: true,
+        };
+        let mut band = None;
+        let mut band_inset = px(0.0);
+        let mut band_trailing = px(0.0);
+        match workspace {
+            WorkspaceChrome::Panel { edge, width } => {
+                let available =
+                    (viewport.width - safe.left - safe.right).max(px(0.0));
+                let width = workspace_chrome::panel_width(width, available);
+                // The background spans the content height above the bottom
+                // safe area; rows stay below the title row and top safe
+                // area, as a tab column's do.
+                let height = (viewport.height - safe.bottom).max(px(0.0));
+                if edge == workspace_chrome::Edge::Left {
+                    let x = safe.left.min(viewport.width);
+                    band = Some(Bounds::new(
+                        point(x, px(0.0)),
+                        size(width, height),
+                    ));
+                    area.origin.x = (x + width).min(viewport.width);
+                    area.size.width = viewport.width - area.origin.x;
+                    rest_safe.left = px(0.0);
+                    corners.leading = false;
+                } else {
+                    let x = (viewport.width - safe.right - width).max(px(0.0));
+                    band = Some(Bounds::new(
+                        point(x, px(0.0)),
+                        size(width, height),
+                    ));
+                    area.size.width = x;
+                    rest_safe.right = px(0.0);
+                    corners.trailing = false;
+                }
+                band_inset = (titlebar + safe.top).min(height);
+            }
+            WorkspaceChrome::Bar {
+                edge: workspace_chrome::Edge::Top,
+            } => {
+                let shelf = notch_shelf.filter(|shelf| {
+                    shelf.size.height >= workspace_chrome::BAR_HEIGHT
+                });
+                if titlebar > px(0.0) {
+                    // The title row becomes the bar: chips start after the
+                    // traffic lights or the leading window buttons and end
+                    // before the trailing ones.
+                    let row = titlebar.min(viewport.height);
+                    band = Some(Bounds::new(
+                        point(px(0.0), px(0.0)),
+                        size(viewport.width, row),
+                    ));
+                    band_inset = if frame.controls {
+                        if frame.buttons.leading.is_empty() {
+                            TITLE_ROW_LEAD
+                        } else {
+                            frame.buttons.leading.width()
+                        }
+                    } else {
+                        TRAFFIC_LIGHT_INSET
+                    };
+                    band_trailing = frame.buttons.trailing.width();
+                    area.origin.y = row;
+                    area.size.height = viewport.height - row;
+                    rest_titlebar = px(0.0);
+                } else if let Some(shelf) = shelf {
+                    // The bar takes the shelf beside the notch, at the
+                    // shelf's bottom; the tab bar never selects it then.
+                    // The terminal keeps the area under the safe area less
+                    // one point for the border line.
+                    band = Some(Bounds::new(
+                        point(
+                            shelf.origin.x,
+                            shelf.bottom() - workspace_chrome::BAR_HEIGHT,
+                        ),
+                        size(shelf.size.width, workspace_chrome::BAR_HEIGHT),
+                    ));
+                    let top = (safe.top + px(1.0)).min(viewport.height);
+                    area.origin.y = top;
+                    area.size.height = viewport.height - top;
+                    rest_safe.top = px(0.0);
+                } else {
+                    let top = safe.top.min(viewport.height);
+                    let height =
+                        workspace_chrome::BAR_HEIGHT.min(viewport.height - top);
+                    band = Some(Bounds::new(
+                        point(px(0.0), top),
+                        size(viewport.width, height),
+                    ));
+                    area.origin.y = top + height;
+                    area.size.height = viewport.height - top - height;
+                    rest_safe.top = px(0.0);
+                }
+                notch_shelf = None;
+                // The tab bar's own layout sees a top bar under it.
+                if position == TabPosition::Titlebar {
+                    position = TabPosition::Top;
+                }
+            }
+            WorkspaceChrome::Bar { .. } => {
+                let bottom = (viewport.height - safe.bottom).max(px(0.0));
+                let height = workspace_chrome::BAR_HEIGHT.min(bottom);
+                band = Some(Bounds::new(
+                    point(px(0.0), bottom - height),
+                    size(viewport.width, height),
+                ));
+                area.size.height = bottom - height;
+                rest_safe.bottom = px(0.0);
+            }
+            WorkspaceChrome::None | WorkspaceChrome::Dropdown { .. } => {}
+        }
+        let dropdown = match workspace {
+            WorkspaceChrome::Dropdown { lead } => Some(lead),
+            _ => None,
+        };
+        let mut layout = Self::partition(
+            area,
+            Partition {
+                titlebar: rest_titlebar,
+                position,
+                bar_height,
+                sidebar_width,
+                safe_area: rest_safe,
+                notch_shelf,
+                frame,
+                corners,
+                dropdown,
+            },
+        );
+        let origin = content.origin;
+        layout.terminal.origin += origin;
+        layout.tabs.origin += origin;
+        layout.area.origin += origin;
+        layout.content = content;
+        layout.workspace =
+            band.map(|band| Bounds::new(band.origin + origin, band.size));
+        layout.workspace_chrome = workspace;
+        layout.workspace_inset = band_inset;
+        layout.workspace_trailing = band_trailing;
+        layout
+    }
+
+    /// Partitions `area`, in content coordinates, into title row, tab bar,
+    /// and terminal. The result is in content coordinates too.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per tab position, as before the workspace band"
+    )]
+    fn partition(area: Bounds<Pixels>, inputs: Partition) -> Self {
+        let Partition {
+            titlebar,
+            position,
+            bar_height,
+            sidebar_width,
+            safe_area,
+            notch_shelf,
+            frame,
+            corners,
+            dropdown,
+        } = inputs;
+        let viewport = area.size;
+        let notch_shelf = notch_shelf
+            .map(|shelf| Bounds::new(shelf.origin - area.origin, shelf.size));
         let left = safe_area.left.max(px(0.0)).min(viewport.width.max(px(0.0)));
         let top = (titlebar + safe_area.top)
             .max(px(0.0))
@@ -13528,25 +14083,31 @@ impl ChromeLayout {
         let mut strip_trailing = px(0.0);
         let mut outside_terminal = false;
         if position == TabPosition::Titlebar {
-            // The merged row is the title strip itself: the full window
-            // width above the terminal, at the strip's height. Its tabs
-            // start after the traffic lights, or after a small lead in the
-            // row Huterm draws, whose window controls end the row; the
-            // terminal keeps the whole area below the strip.
+            // The merged row is the title strip itself: the full width
+            // above the terminal, at the strip's height. Its tabs start
+            // after the traffic lights, or after a small lead in the row
+            // Huterm draws, whose window controls end the row; the
+            // terminal keeps the whole area below the strip. A side
+            // workspace panel holds the corner it takes, so the row starts
+            // or ends at the panel with a small lead.
             let row = titlebar.max(px(0.0)).min(viewport.height.max(px(0.0)));
             tabs = Bounds::new(
                 point(px(0.0), px(0.0)),
                 size(viewport.width.max(px(0.0)), row),
             );
-            if frame.controls {
-                strip_inset = if frame.buttons.leading.is_empty() {
+            strip_inset = if !corners.leading {
+                TITLE_ROW_LEAD
+            } else if frame.controls {
+                if frame.buttons.leading.is_empty() {
                     TITLE_ROW_LEAD
                 } else {
                     frame.buttons.leading.width()
-                };
-                strip_trailing = frame.buttons.trailing.width();
+                }
             } else {
-                strip_inset = TRAFFIC_LIGHT_INSET;
+                TRAFFIC_LIGHT_INSET
+            };
+            if frame.controls && corners.trailing {
+                strip_trailing = frame.buttons.trailing.width();
             }
             outside_terminal = true;
         } else if position.vertical() {
@@ -13593,16 +14154,64 @@ impl ChromeLayout {
                 tabs.origin.y += terminal.size.height;
             }
         }
-        terminal.origin += content.origin;
-        tabs.origin += content.origin;
+        // The dropdown leads the strip: a slot before the first tab of a
+        // horizontal bar, or a row above a column's first tab.
+        let dropdown = dropdown.map(|lead| {
+            if position.vertical() {
+                let row = workspace_chrome::DROPDOWN_ROW
+                    .min((tabs.size.height - strip_inset).max(px(0.0)));
+                let margin = tab_bar::VERTICAL_ROW_MARGIN_X
+                    .min((tabs.size.width / 2.0).max(px(0.0)));
+                let slot = Bounds::new(
+                    point(
+                        margin,
+                        strip_inset + (row - CONTROL_SIZE).max(px(0.0)) / 2.0,
+                    ),
+                    size(
+                        (tabs.size.width - margin * 2.0).max(px(0.0)),
+                        CONTROL_SIZE.min(row),
+                    ),
+                );
+                strip_inset += row;
+                slot
+            } else {
+                let room = (tabs.size.width - strip_inset).max(px(0.0));
+                let lead = lead.min(room);
+                let x = (strip_inset + workspace_chrome::DROPDOWN_MARGIN)
+                    .min(tabs.size.width.max(px(0.0)));
+                let slot = Bounds::new(
+                    point(
+                        x,
+                        ((tabs.size.height - CONTROL_SIZE) / 2.0).max(px(0.0)),
+                    ),
+                    size(
+                        (lead
+                            - workspace_chrome::DROPDOWN_MARGIN
+                            - workspace_chrome::DROPDOWN_DIVIDER)
+                            .max(px(0.0)),
+                        CONTROL_SIZE.min(tabs.size.height.max(px(0.0))),
+                    ),
+                );
+                strip_inset += lead;
+                slot
+            }
+        });
+        terminal.origin += area.origin;
+        tabs.origin += area.origin;
         Self {
             terminal,
             tabs,
-            content,
+            content: area,
+            area,
             frame,
             strip_inset,
             strip_trailing,
             outside_terminal,
+            workspace: None,
+            workspace_chrome: WorkspaceChrome::None,
+            workspace_inset: px(0.0),
+            workspace_trailing: px(0.0),
+            dropdown,
         }
     }
 
@@ -13770,6 +14379,8 @@ impl Render for WorkspaceView {
             });
         }
         self.measure_tab_widths(window, cx);
+        self.sync_workspace_chrome(window, cx);
+        self.workspace_trigger_drawn.set(false);
         self.sync_frame(window);
         self.sync_transparency(window, cx);
         self.frame_appearance.sync(
@@ -13805,6 +14416,7 @@ impl Render for WorkspaceView {
         let session_placement = self.session_control_placement(&layout);
         // Set again when a host builds the control; see the end of render.
         self.session_control_drawn.set(false);
+        self.session_sidebar_drawn.set(false);
         // The menu button's slot, which the session control sits before.
         let menu_slot = if menu_placement == MenuButtonPlacement::Hidden {
             px(0.0)
@@ -13939,6 +14551,13 @@ impl Render for WorkspaceView {
                                         cx.stop_propagation();
                                     } else if view.resizing_sidebar {
                                         view.resize_sidebar(
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    } else if view.resizing_workspace {
+                                        view.resize_workspace_panel(
                                             event.position,
                                             window,
                                             cx,
@@ -14082,6 +14701,14 @@ impl Render for WorkspaceView {
                                             );
                                             view.resizing_sidebar = false;
                                             cx.stop_propagation();
+                                        } else if view.resizing_workspace {
+                                            view.resize_workspace_panel(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            view.resizing_workspace = false;
+                                            cx.stop_propagation();
                                         } else if view.reorder.is_some() {
                                             view.finish_reorder(
                                                 event.position,
@@ -14144,19 +14771,27 @@ impl Render for WorkspaceView {
         // strip, whose trailing space keeps the title bar's gestures.
         let merged_row = position == TabPosition::Titlebar && bar_drawn;
         // A top bar on the notch shelf, currently shown.
-        let shelf_bar = self.notch_shelf().is_some()
+        let shelf_bar = self.tabs_on_shelf()
             && self.presentation() == Presentation::Reserved;
+        // A side workspace panel holds the title row's corner it sits in,
+        // with the traffic lights or window buttons and corner controls
+        // there; a top bar takes the whole title row.
+        let (lead_held, trail_held) = self.panel_corners(&layout);
+        let top_bar_row = layout.workspace_chrome.top_bar()
+            && (titlebar > px(0.0) || frame.controls);
         let sidebar_title_row =
             position.vertical() && bar_drawn && titlebar > px(0.0);
         let title_menu_button = (menu_placement
             == MenuButtonPlacement::TitleStrip
-            && !sidebar_title_row)
+            && !sidebar_title_row
+            && !trail_held)
             .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
         // The session control sits in its slot just before the menu
         // button, or in the button's slot without it.
         let title_session_control = (session_placement.host
             == SessionControlHost::TitleStrip
-            && !sidebar_title_row)
+            && !sidebar_title_row
+            && !trail_held)
             .then(|| {
                 self.session_control_element(session_placement, colors, cx)
             })
@@ -14169,15 +14804,16 @@ impl Render for WorkspaceView {
                 })
             });
         // The window buttons that start the row Huterm draws.
-        let title_leading = (!frame.buttons.leading.is_empty()).then(|| {
-            self.window_controls_element(
-                frame.buttons.leading,
-                true,
-                colors,
-                window,
-                cx,
-            )
-        });
+        let title_leading = (!frame.buttons.leading.is_empty() && !lead_held)
+            .then(|| {
+                self.window_controls_element(
+                    frame.buttons.leading,
+                    true,
+                    colors,
+                    window,
+                    cx,
+                )
+            });
         // The strip's trailing group: the menu button when the strip holds
         // it, then the window buttons that end the row Huterm draws.
         let title_trailing = div()
@@ -14186,15 +14822,61 @@ impl Render for WorkspaceView {
             .items_center()
             .children(title_session_control)
             .children(title_menu_button)
-            .when(!frame.buttons.trailing.is_empty(), |trailing| {
-                trailing.child(self.window_controls_element(
-                    frame.buttons.trailing,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-            });
+            .when(
+                !frame.buttons.trailing.is_empty() && !trail_held,
+                |trailing| {
+                    trailing.child(self.window_controls_element(
+                        frame.buttons.trailing,
+                        false,
+                        colors,
+                        window,
+                        cx,
+                    ))
+                },
+            );
+        let title_dropdown = !bar_drawn
+            && layout.workspace_chrome.is_dropdown()
+            && titlebar > px(0.0);
+        let title_lead = if !frame.buttons.leading.is_empty() && !lead_held {
+            px(4.0)
+        } else if frame.controls || lead_held {
+            TITLE_ROW_LEAD
+        } else {
+            TRAFFIC_LIGHT_INSET
+        };
+        let title_workspace = if top_bar_row {
+            let session = self.sidebar_session_element(&layout, colors, cx);
+            Some(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .items_center()
+                    .pl(title_lead)
+                    .pr(px(6.0))
+                    .child(
+                        self.workspace_chips_element(
+                            colors, session, window, cx,
+                        ),
+                    )
+                    .into_any_element(),
+            )
+        } else if title_dropdown {
+            let width = self.dropdown_width();
+            self.workspace_dropdown_element(width, colors, cx)
+                .map(|trigger| {
+                    self.workspace_trigger_drawn.set(true);
+                    div()
+                        .relative()
+                        .flex_none()
+                        .pl(title_lead)
+                        .child(trigger)
+                        .into_any_element()
+                })
+        } else {
+            None
+        };
         if top_chrome > px(0.0) {
             root = root.child(
                 div()
@@ -14266,13 +14948,16 @@ impl Render for WorkspaceView {
                             },
                         ))
                     })
-                    .when(titlebar > px(0.0), |bar| {
+                    .when(titlebar > px(0.0) || top_bar_row, |bar| {
                         // The strip stays draggable and keeps the menu
-                        // button at its right end.
+                        // button at its right end. A top workspace bar's
+                        // chips, or a hidden tab bar's dropdown, follow
+                        // the traffic lights or leading window buttons.
                         bar.flex()
                             .items_center()
                             .window_control_area(WindowControlArea::Drag)
                             .children(title_leading)
+                            .children(title_workspace)
                             .child(title_trailing)
                     })
                     .when(titlebar > px(0.0) || frame.controls, |bar| {
@@ -14282,69 +14967,75 @@ impl Render for WorkspaceView {
                         // opens the window manager's menu.
                         self.title_row_gestures(bar)
                     })
-                    .when(titlebar > px(0.0) && !merged_row, |bar| {
-                        // The active tab's title, centred across the strip
-                        // and kept clear of the traffic lights and the
-                        // menu button. A merged row shows the tabs instead.
-                        // While the tab bar is hidden, the tab's marks
-                        // come before the title, since they would
-                        // otherwise show nowhere.
-                        let active = self
-                            .tabs
-                            .iter()
-                            .find(|tab| Some(tab.id) == active_tab);
-                        let strip_title = active.map_or_else(
-                            || "Huterm".to_owned(),
-                            |tab| tab.title(self.config.tabs, cx),
-                        );
-                        let marks = active
-                            .filter(|_| {
-                                self.presentation() == Presentation::Hidden
-                            })
-                            .map(|tab| self.tab_marks(tab, cx))
-                            .unwrap_or_default();
-                        #[cfg(test)]
-                        self.drawn_title_marks.replace(Some(marks.clone()));
-                        bar.child(
-                            div()
-                                .absolute()
-                                .inset_0()
-                                .px(title_row.title_padding)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex()
-                                        .items_center()
-                                        .gap(TITLE_MARK_GAP)
-                                        .when(!marks.is_empty(), |row| {
-                                            row.child(
+                    .when(
+                        titlebar > px(0.0) && !merged_row && !top_bar_row,
+                        |bar| {
+                            // The active tab's title, centred across the strip
+                            // and kept clear of the traffic lights and the
+                            // menu button. A merged row shows the tabs instead.
+                            // While the tab bar is hidden, the tab's marks
+                            // come before the title, since they would
+                            // otherwise show nowhere.
+                            let active = self
+                                .tabs
+                                .iter()
+                                .find(|tab| Some(tab.id) == active_tab);
+                            let strip_title = active.map_or_else(
+                                || "Huterm".to_owned(),
+                                |tab| tab.title(self.config.tabs, cx),
+                            );
+                            let marks = active
+                                .filter(|_| {
+                                    self.presentation() == Presentation::Hidden
+                                })
+                                .map(|tab| self.tab_marks(tab, cx))
+                                .unwrap_or_default();
+                            #[cfg(test)]
+                            self.drawn_title_marks.replace(Some(marks.clone()));
+                            bar.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .px(title_row.title_padding)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex()
+                                            .items_center()
+                                            .gap(TITLE_MARK_GAP)
+                                            .when(!marks.is_empty(), |row| {
+                                                row.child(
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap(TITLE_MARK_GAP)
+                                                        .debug_selector(|| {
+                                                            "title-marks"
+                                                                .to_owned()
+                                                        })
+                                                        .children(
+                                                            mark_elements(
+                                                                &marks, colors,
+                                                            ),
+                                                        ),
+                                                )
+                                            })
+                                            .child(
                                                 div()
-                                                    .flex_shrink_0()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap(TITLE_MARK_GAP)
+                                                    .truncate()
                                                     .debug_selector(|| {
-                                                        "title-marks".to_owned()
+                                                        "strip-title".to_owned()
                                                     })
-                                                    .children(mark_elements(
-                                                        &marks, colors,
-                                                    )),
-                                            )
-                                        })
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .debug_selector(|| {
-                                                    "strip-title".to_owned()
-                                                })
-                                                .child(strip_title),
-                                        ),
-                                ),
-                        )
-                    }),
+                                                    .child(strip_title),
+                                            ),
+                                    ),
+                            )
+                        },
+                    ),
             );
         }
         root = root.children(self.pane_elements(
@@ -15058,8 +15749,92 @@ impl Render for WorkspaceView {
                     );
                 }
             }
+            // C1: the dropdown leads the strip, with a divider before the
+            // first tab, or a rule under it above a column's rows.
+            if let Some(slot) = layout.dropdown()
+                && let Some(trigger) =
+                    self.workspace_dropdown_element(slot.size.width, colors, cx)
+            {
+                self.workspace_trigger_drawn.set(true);
+                chrome = chrome.child(
+                    div()
+                        .absolute()
+                        .left(slot.origin.x - clip.origin.x)
+                        .top(slot.origin.y - clip.origin.y)
+                        .w(slot.size.width)
+                        .h(slot.size.height)
+                        .flex()
+                        .items_center()
+                        .child(trigger),
+                );
+                let divider = if vertical {
+                    Bounds::new(
+                        point(
+                            layout.tabs.origin.x
+                                + tab_bar::VERTICAL_ROW_MARGIN_X,
+                            strip.bounds.origin.y - px(1.0),
+                        ),
+                        size(
+                            (layout.tabs.size.width
+                                - tab_bar::VERTICAL_ROW_MARGIN_X * 2.0)
+                                .max(px(0.0)),
+                            px(1.0),
+                        ),
+                    )
+                } else {
+                    let x = slot.right()
+                        + (workspace_chrome::DROPDOWN_DIVIDER - px(1.0)) / 2.0;
+                    Bounds::new(
+                        point(x, slot.center().y - px(8.0)),
+                        size(px(1.0), px(16.0)),
+                    )
+                };
+                chrome = chrome.child(
+                    div()
+                        .absolute()
+                        .left(divider.origin.x - clip.origin.x)
+                        .top(divider.origin.y - clip.origin.y)
+                        .w(divider.size.width)
+                        .h(divider.size.height)
+                        .bg(colors.border),
+                );
+            }
             root = root.child(chrome);
         }
+        // The workspace panel or bar paints over the title row and tab bar
+        // edges it meets, and holds its corner of the title row.
+        let band_session = self.sidebar_session_element(&layout, colors, cx);
+        if let Some(panel) = self.workspace_panel_element(
+            &layout,
+            colors,
+            band_session,
+            window,
+            cx,
+        ) {
+            root = root.child(panel);
+        } else if !top_bar_row {
+            let band_session =
+                self.sidebar_session_element(&layout, colors, cx);
+            if let Some(bar) = self.workspace_bar_element(
+                &layout,
+                colors,
+                band_session,
+                window,
+                cx,
+            ) {
+                root = root.child(bar);
+            }
+        }
+        root = root.children(self.panel_corner_controls(
+            &layout,
+            lead_held,
+            trail_held,
+            session_placement,
+            menu_placement,
+            colors,
+            window,
+            cx,
+        ));
         if pane_top_border {
             let edge = layout.top_chrome_border(
                 bar_drawn
@@ -15300,6 +16075,12 @@ impl Render for WorkspaceView {
         if !self.session_control_drawn.get() {
             self.session_button_bounds.set(None);
         }
+        if !self.session_sidebar_drawn.get() {
+            self.session_sidebar_bounds.set(None);
+        }
+        if !self.workspace_trigger_drawn.get() {
+            self.workspace_trigger_bounds.set(None);
+        }
         root
     }
 }
@@ -15395,6 +16176,7 @@ fn is_menu_command(command: huterm_protocol::CommandId) -> bool {
         command,
         ids::OPEN_MENU
             | ids::OPEN_SESSION_MENU
+            | ids::OPEN_WORKSPACE_MENU
             | ids::MENU_SELECT_NEXT
             | ids::MENU_SELECT_PREVIOUS
             | ids::MENU_SELECT_FIRST
@@ -15895,6 +16677,10 @@ impl WorkspaceView {
                 Self::field_menu_spec(kind, &menu.contexts, cx)
             }
             MenuKind::Session => Some(self.session_menu_spec(cx)),
+            MenuKind::Workspace => Some(self.workspace_menu_spec(None, cx)),
+            MenuKind::WorkspaceRow(workspace) => {
+                self.workspace_row_menu_spec(*workspace, cx)
+            }
         };
         spec.map(|spec| spec.to_listbox(Platform::current()))
     }
@@ -15932,6 +16718,7 @@ impl WorkspaceView {
             MenuKind::Pane { .. } => "Pane",
             MenuKind::Field(_) => "Edit",
             MenuKind::Session => "Sessions",
+            MenuKind::Workspace | MenuKind::WorkspaceRow(_) => "Workspaces",
         };
         let view = cx.new(|cx| {
             clock.observe(cx);
@@ -15966,10 +16753,16 @@ impl WorkspaceView {
         });
         menu_focus.focus(window, cx);
         // The button's anchor follows its painted bounds at every render.
-        let trigger = if kind == MenuKind::Session {
-            &self.session_button_bounds
-        } else {
-            &self.menu_button_bounds
+        let trigger = match kind {
+            MenuKind::Session => self.session_anchor_cell(),
+            MenuKind::Workspace
+                if self.workspace_menu_from
+                    == workspace_panel::WorkspaceMenuAnchor::Trigger
+                    && self.workspace_trigger_drawn.get() =>
+            {
+                &self.workspace_trigger_bounds
+            }
+            _ => &self.menu_button_bounds,
         };
         self.popover.open(
             pointer.map_or_else(
@@ -16054,10 +16847,9 @@ impl WorkspaceView {
         };
         // The session menu keeps the keyboard's place when another window
         // closes the selected session.
-        let keep_place = self
-            .menu
-            .as_ref()
-            .is_some_and(|menu| menu.kind == MenuKind::Session);
+        let keep_place = self.menu.as_ref().is_some_and(|menu| {
+            matches!(menu.kind, MenuKind::Session | MenuKind::Workspace)
+        });
         match self.current_menu_model(cx) {
             Some(model) => {
                 menu.update(cx, |menu, cx| {
@@ -16170,6 +16962,7 @@ impl WorkspaceView {
     }
 
     /// Runs the item `id` picked from a menu of `kind`.
+    #[expect(clippy::too_many_lines, reason = "one dispatch per menu kind")]
     fn run_menu_pick(
         &mut self,
         kind: &MenuKind,
@@ -16179,6 +16972,10 @@ impl WorkspaceView {
     ) {
         if *kind == MenuKind::Session {
             self.run_session_pick(id, window, cx);
+            return;
+        }
+        if matches!(kind, MenuKind::Workspace | MenuKind::WorkspaceRow(_)) {
+            self.run_workspace_pick(id, window, cx);
             return;
         }
         // A field menu's picks edit its field, not the window.
@@ -16646,7 +17443,7 @@ impl WorkspaceView {
         };
         let native = self.native_menu_kind().map_or("none", |kind| kind.name());
         format!(
-            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={} {}",
+            "{menu} {prefix}native_menu={native} {prefix}menu_button_open={} {prefix}menu_rect={} {} {}",
             self.menu_button_open(),
             self.popover.content_bounds().map_or_else(
                 || "none".to_owned(),
@@ -16659,6 +17456,7 @@ impl WorkspaceView {
                 )
             ),
             self.session_control_smoke_state(prefix, window, cx),
+            self.workspace_smoke_state(prefix, window, cx),
         )
     }
 
@@ -16922,7 +17720,9 @@ impl WorkspaceView {
                 | MenuKind::Terminal { .. }
                 | MenuKind::Pane { .. }
                 | MenuKind::Field(_)
-                | MenuKind::Session => None,
+                | MenuKind::Session
+                | MenuKind::Workspace
+                | MenuKind::WorkspaceRow(_) => None,
             })
             .and_then(|tab| {
                 self.tabs.iter().position(|record| record.id == tab)

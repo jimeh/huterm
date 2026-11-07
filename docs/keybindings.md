@@ -170,6 +170,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `confirming` | A close confirmation, the About panel, or a Settings dialog such as Delete profile's is open. |
 | `menu` | The window menu has keyboard focus. |
 | `Panel` | A control in the Window Transparency panel, or a button of a window's empty state, has focus. |
+| `WorkspacePanel` | A workspace row of the workspace panel, or a chip of the workspace bar, has focus. |
 | `notices` | A notice has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
@@ -302,7 +303,10 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `minimize` | Window | |
 | `zoom` | Window | |
 | `open_menu` | Window | |
-| `open_session_menu` | Window | Opens the session menu at the title bar's session control, or at the window menu's place while the control is hidden, with the first session selected. No default binding. |
+| `open_session_menu` | Window | Opens the session menu at the session control, the title bar's when both hosts show, or at the window menu's place while the control is hidden, with the first session selected. No default binding. |
+| `open_workspace_menu` | Window | Opens the workspace menu at the workspace dropdown, else at the empty state's Switch Workspace… button, else at the window menu's place, with the first workspace selected. It lists the session's workspaces with their tab counts, then New Workspace, Rename Workspace…, Clear Name, Close Workspace…, and the panel toggle. No default binding. |
+| `toggle_workspace_panel` | Window | Collapses this window's workspace panel or bar to the dropdown in the tab bar, or shows it again; saved with the window. Unavailable while the window shows no workspace UI or `[workspaces] show = "never"`. No default binding. |
+| `focus_workspace_panel` | Window | Moves keyboard focus to the shown workspace's row in the workspace panel or bar. Unavailable while the panel is collapsed or hidden. No default binding. |
 | `open_context_menu` | Window | Opens the active terminal's context menu at its cursor. |
 | `focus_notices` | Window | Focuses the newest notice; unavailable without notices. |
 | `dismiss_all_notices` | Window | Dismisses every notice; unavailable without notices. |
@@ -351,6 +355,14 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `panel_last` | Window | Bound only while `Panel`. Moves the focused slider to its maximum. |
 | `panel_press` | Window | Bound only while `Panel`. Presses the focused button. |
 | `panel_reset` | Window | Bound only while `Panel`. Clears the focused slider's override, so the window uses the default or its Quake profile's value again. |
+| `workspace_panel_next` | Window | Bound only while `WorkspacePanel`. Moves focus to the next workspace, wrapping. |
+| `workspace_panel_previous` | Window | Bound only while `WorkspacePanel`. Moves focus to the previous workspace, wrapping. |
+| `workspace_panel_first` | Window | Bound only while `WorkspacePanel`. |
+| `workspace_panel_last` | Window | Bound only while `WorkspacePanel`. |
+| `workspace_panel_show` | Window | Bound only while `WorkspacePanel`. Shows the focused workspace in the window. |
+| `workspace_panel_rename` | Window | Bound only while `WorkspacePanel`. Renames the focused workspace through the palette prompt. |
+| `workspace_panel_menu` | Window | Bound only while `WorkspacePanel`. Opens the focused workspace's context menu. |
+| `workspace_panel_exit` | Window | Bound only while `WorkspacePanel`. Returns focus to the terminal. |
 | `notice_next` | Window | Bound only while `notices`. Scrolls a notice taller than the stack down first, then moves to the next notice. |
 | `notice_previous` | Window | Bound only while `notices`. Scrolls a notice taller than the stack up first, then moves to the previous notice. |
 | `notice_run_action` | Window | Bound only while `notices`. Presses the button `notice_focus_next` moved to, or runs the first action. |
@@ -648,6 +660,25 @@ or a click outside the panel closes it and returns focus to the terminal.
 | `panel_last` | `end` | `end` |
 | `panel_press` | `enter`, `space` | `enter`, `space` |
 | `panel_reset` | `cmd-backspace` | `ctrl-backspace` |
+
+### Workspace panel
+
+These bind only while a workspace row or chip has focus (`WorkspacePanel`),
+which `focus_workspace_panel` gives to the shown workspace. Both arrow
+pairs move, so the same keys walk a vertical panel and a horizontal bar. A
+click on a row shows its workspace, a double-click renames it, and a right
+press opens its context menu, which acts on that row's workspace.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `workspace_panel_next` | `down`, `right` | `down`, `right` |
+| `workspace_panel_previous` | `up`, `left` | `up`, `left` |
+| `workspace_panel_first` | `home` | `home` |
+| `workspace_panel_last` | `end` | `end` |
+| `workspace_panel_show` | `enter`, `space` | `enter`, `space` |
+| `workspace_panel_rename` | `f2` | `f2` |
+| `workspace_panel_menu` | `shift-f10`, `menu` | `shift-f10`, `menu` |
+| `workspace_panel_exit` | `escape` | `escape` |
 
 ### Notices
 

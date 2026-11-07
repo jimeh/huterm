@@ -862,6 +862,16 @@ pub mod ids {
     /// Opens the window's session menu.
     pub const OPEN_SESSION_MENU: CommandId =
         CommandId::new("open_session_menu");
+    /// Opens the window's workspace menu.
+    pub const OPEN_WORKSPACE_MENU: CommandId =
+        CommandId::new("open_workspace_menu");
+    /// Collapses the window's workspace panel or bar to the dropdown, or
+    /// shows it again.
+    pub const TOGGLE_WORKSPACE_PANEL: CommandId =
+        CommandId::new("toggle_workspace_panel");
+    /// Moves keyboard focus to the shown workspace's row.
+    pub const FOCUS_WORKSPACE_PANEL: CommandId =
+        CommandId::new("focus_workspace_panel");
     /// Focuses the window's notice list.
     pub const FOCUS_NOTICES: CommandId = CommandId::new("focus_notices");
     /// Dismisses every notice in the window.
@@ -934,6 +944,30 @@ pub mod ids {
     pub const PANEL_PRESS: CommandId = CommandId::new("panel_press");
     /// Resets the focused panel slider's value.
     pub const PANEL_RESET: CommandId = CommandId::new("panel_reset");
+    /// Moves workspace panel focus to the next row.
+    pub const WORKSPACE_PANEL_NEXT: CommandId =
+        CommandId::new("workspace_panel_next");
+    /// Moves workspace panel focus to the previous row.
+    pub const WORKSPACE_PANEL_PREVIOUS: CommandId =
+        CommandId::new("workspace_panel_previous");
+    /// Moves workspace panel focus to the first row.
+    pub const WORKSPACE_PANEL_FIRST: CommandId =
+        CommandId::new("workspace_panel_first");
+    /// Moves workspace panel focus to the last row.
+    pub const WORKSPACE_PANEL_LAST: CommandId =
+        CommandId::new("workspace_panel_last");
+    /// Shows the focused row's workspace.
+    pub const WORKSPACE_PANEL_SHOW: CommandId =
+        CommandId::new("workspace_panel_show");
+    /// Renames the focused row's workspace.
+    pub const WORKSPACE_PANEL_RENAME: CommandId =
+        CommandId::new("workspace_panel_rename");
+    /// Opens the focused row's context menu.
+    pub const WORKSPACE_PANEL_MENU: CommandId =
+        CommandId::new("workspace_panel_menu");
+    /// Returns focus from the workspace panel to the terminal.
+    pub const WORKSPACE_PANEL_EXIT: CommandId =
+        CommandId::new("workspace_panel_exit");
     /// Moves the notice selection down.
     pub const NOTICE_NEXT: CommandId = CommandId::new("notice_next");
     /// Moves the notice selection up.
@@ -1933,6 +1967,30 @@ const CATALOG: &[CommandSpec] = &[
         &[],
     ),
     spec(
+        ids::OPEN_WORKSPACE_MENU,
+        CommandScope::Window,
+        "Open Workspace Menu",
+        "Open this window's workspace menu to switch, create, or rename \
+         workspaces.",
+        &[],
+    ),
+    spec(
+        ids::TOGGLE_WORKSPACE_PANEL,
+        CommandScope::Window,
+        "Toggle Workspace Panel",
+        "Collapse this window's workspace panel or bar to the dropdown in \
+         the tab bar, or show it again.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_WORKSPACE_PANEL,
+        CommandScope::Window,
+        "Focus Workspace Panel",
+        "Move keyboard focus to the shown workspace in this window's \
+         workspace panel or bar.",
+        &[],
+    ),
+    spec(
         ids::FOCUS_NOTICES,
         CommandScope::Window,
         "Focus Notices",
@@ -2176,6 +2234,70 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Panel: Reset",
         "Reset the focused slider's value to the one beneath it.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_NEXT,
+        CommandScope::Window,
+        "Workspace Panel: Next",
+        "Move focus to the next workspace.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_PREVIOUS,
+        CommandScope::Window,
+        "Workspace Panel: Previous",
+        "Move focus to the previous workspace.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_FIRST,
+        CommandScope::Window,
+        "Workspace Panel: First",
+        "Move focus to the first workspace.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_LAST,
+        CommandScope::Window,
+        "Workspace Panel: Last",
+        "Move focus to the last workspace.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_SHOW,
+        CommandScope::Window,
+        "Workspace Panel: Show Workspace",
+        "Show the focused workspace in this window.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_RENAME,
+        CommandScope::Window,
+        "Workspace Panel: Rename",
+        "Rename the focused workspace.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_MENU,
+        CommandScope::Window,
+        "Workspace Panel: Open Menu",
+        "Open the focused workspace's context menu.",
+        &[],
+    ),
+    spec_in(
+        "WorkspacePanel",
+        ids::WORKSPACE_PANEL_EXIT,
+        CommandScope::Window,
+        "Workspace Panel: Return to Terminal",
+        "Return keyboard focus to the terminal.",
         &[],
     ),
     spec_in(

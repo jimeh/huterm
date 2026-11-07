@@ -97,7 +97,17 @@ fn touched_layouts(
         tabs: tabs.iter().copied().map(tab_id).collect(),
         layouts: layouts.iter().copied().map(tab_id).collect(),
         attachments: HashSet::new(),
+        chrome: HashSet::new(),
     })
+}
+
+/// `outcome` with `sessions` as the sessions whose chrome changed.
+fn with_chrome(outcome: ApplyOutcome, sessions: &[u64]) -> ApplyOutcome {
+    let ApplyOutcome::Applied(mut touched) = outcome else {
+        return outcome;
+    };
+    touched.chrome = sessions.iter().copied().map(session_id).collect();
+    ApplyOutcome::Applied(touched)
 }
 
 fn next(state: &HierarchyState, event: HierarchyEvent) -> HierarchyEnvelope {
@@ -151,7 +161,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                     index,
                 },
             ),
-            touched(true, &[value], &[])
+            with_chrome(touched(true, &[value], &[]), &[1])
         );
     }
     assert_eq!(
@@ -168,7 +178,10 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                     index,
                 },
             ),
-            touched_layouts(false, &[10], &[value], &[value])
+            with_chrome(
+                touched_layouts(false, &[10], &[value], &[value]),
+                &[1]
+            )
         );
     }
     assert_eq!(
@@ -217,7 +230,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                 custom_name: Some("work".into()),
             },
         ),
-        touched(true, &[], &[])
+        with_chrome(touched(true, &[], &[]), &[1])
     );
     assert_eq!(
         state.workspace(workspace_id(10)).unwrap().display_name(),
@@ -259,7 +272,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                 index: 2,
             },
         ),
-        touched(false, &[10], &[20])
+        with_chrome(touched(false, &[10], &[20]), &[1])
     );
     assert_eq!(
         state.workspace_tabs(workspace_id(10)).unwrap(),
@@ -274,7 +287,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                 index: 0,
             },
         ),
-        touched(false, &[10, 11], &[21])
+        with_chrome(touched(false, &[10, 11], &[21]), &[1])
     );
     assert_eq!(state.tab_workspace(tab_id(21)), Some(workspace_id(11)));
     assert_eq!(
@@ -286,7 +299,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                 index: 0,
             },
         ),
-        touched(true, &[11], &[])
+        with_chrome(touched(true, &[11], &[]), &[1, 2])
     );
     assert_eq!(
         state.workspace_session(workspace_id(11)),
@@ -298,7 +311,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
     );
     assert_eq!(
         apply(&mut state, HierarchyEvent::TabClosed { tab: tab_id(22) },),
-        touched(false, &[10], &[22])
+        with_chrome(touched(false, &[10], &[22]), &[1])
     );
     assert!(state.tab(tab_id(22)).is_none());
     assert_eq!(
@@ -314,7 +327,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                 workspace: workspace_id(11),
             },
         ),
-        touched(true, &[11], &[21])
+        with_chrome(touched(true, &[11], &[21]), &[2])
     );
     assert!(state.workspace(workspace_id(11)).is_none());
     assert!(state.tab(tab_id(21)).is_none());
@@ -328,7 +341,7 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
                 session: session_id(1),
             },
         ),
-        touched(true, &[10], &[20])
+        with_chrome(touched(true, &[10], &[20]), &[1])
     );
     assert_eq!(state.sessions(), [session_id(2)]);
     assert!(state.workspace(workspace_id(10)).is_none());
@@ -611,7 +624,7 @@ fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
     assert_eq!(state.tab(tab_id(20)).unwrap().fallback_name(), "sh");
     assert_eq!(
         apply(&mut state, HierarchyEvent::TabClosed { tab: tab_id(20) }),
-        touched(false, &[10], &[20])
+        with_chrome(touched(false, &[10], &[20]), &[1])
     );
     assert_eq!(state.pane_tab(pane_id(130)), None);
     assert_eq!(
@@ -621,7 +634,7 @@ fn layout_and_zoom_events_replace_a_tab_layout_and_its_pane_indexes() {
                 workspace: workspace_id(11)
             }
         ),
-        touched(true, &[11], &[22])
+        with_chrome(touched(true, &[11], &[22]), &[1])
     );
     assert_eq!(state.pane_tab(pane_id(122)), None);
 }
@@ -1055,7 +1068,7 @@ fn attachment_events_apply_and_name_the_sessions_they_touched() {
                 session: session_id(2),
             },
         ),
-        touched_attachments(true, &[2])
+        with_chrome(touched_attachments(true, &[2]), &[2])
     );
     assert_eq!(state.attachment_session(attachment_id(41)), None);
     assert_eq!(state.attachment_session(attachment_id(42)), None);
@@ -1068,7 +1081,7 @@ fn attachment_events_apply_and_name_the_sessions_they_touched() {
                 session: session_id(2),
             },
         ),
-        touched_attachments(true, &[])
+        with_chrome(touched_attachments(true, &[]), &[2])
     );
     // Reset removes every attachment.
     apply(&mut state, created(43, 1));
@@ -1225,7 +1238,10 @@ fn rearrangements_move_panes_between_tabs_atomically() {
                 layout_change(21, PaneLayout::single(pane(121))),
             ]),
         ),
-        touched_layouts(false, &[10, 11], &[21, 23], &[21, 23])
+        with_chrome(
+            touched_layouts(false, &[10, 11], &[21, 23], &[21, 23]),
+            &[1]
+        )
     );
     assert_eq!(
         state.workspace_tabs(workspace_id(11)).unwrap(),
@@ -1242,7 +1258,7 @@ fn rearrangements_move_panes_between_tabs_atomically() {
                 index: 1,
             }]),
         ),
-        touched_layouts(false, &[10, 11], &[23], &[23])
+        with_chrome(touched_layouts(false, &[10, 11], &[23], &[23]), &[1])
     );
     assert_eq!(
         state.workspace_tabs(workspace_id(10)).unwrap(),
@@ -1262,7 +1278,7 @@ fn rearrangements_move_panes_between_tabs_atomically() {
                 layout_change(20, two_panes(SplitAxis::Rows, [120, 130], HALF)),
             ]),
         ),
-        touched_layouts(false, &[10], &[20, 23], &[20, 23])
+        with_chrome(touched_layouts(false, &[10], &[20, 23], &[20, 23]), &[1])
     );
     assert!(state.tab(tab_id(23)).is_none());
     assert_eq!(
@@ -1286,7 +1302,7 @@ fn rearrangements_move_panes_between_tabs_atomically() {
                 layout_change(20, PaneLayout::single(pane(120))),
             ]),
         ),
-        touched_layouts(false, &[10], &[20, 23], &[20, 23])
+        with_chrome(touched_layouts(false, &[10], &[20, 23], &[20, 23]), &[1])
     );
     assert_eq!(
         state.workspace_tabs(workspace_id(10)).unwrap(),

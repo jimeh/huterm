@@ -6,9 +6,9 @@
 //! It draws the workspace icon, "No tabs in `name`", a primary New Tab
 //! button with its shortcut, Switch Workspace… while the session has other
 //! workspaces, and Close Workspace while the workspace is not the session's
-//! only one. Switch Workspace… opens the `select_workspace` palette prompt,
-//! so windows without a title row to host a workspace control are never
-//! stuck. The tab bar hides as it does for any window without tabs.
+//! only one. Switch Workspace… opens the workspace menu anchored to itself,
+//! so windows without a title row or a workspace panel to switch from are
+//! never stuck. The tab bar hides as it does for any window without tabs.
 //!
 //! Keyboard: New Tab takes focus when the state appears; the buttons take
 //! the `Panel` key context, so Tab and Shift-Tab cycle them and Enter and
@@ -16,12 +16,13 @@
 //! that closes returns focus to the button that opened it, else New Tab.
 
 use std::cell::Cell;
+use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, FocusHandle, IntoElement, ParentElement,
-    Pixels, Styled, Window, div, prelude::*, px,
+    AnyElement, App, Bounds, Context, FocusHandle, FontWeight, IntoElement,
+    ParentElement, Pixels, Styled, Window, canvas, div, prelude::*, px,
 };
-use huterm_protocol::{CommandId, CommandInvocation, ids};
+use huterm_protocol::{CommandId, ids};
 use huterm_ui::components::button::{Button, Variant};
 use huterm_ui::components::empty::Empty;
 
@@ -52,6 +53,10 @@ pub(super) struct EmptyState {
     /// The button whose press opened the overlay showing now, which takes
     /// focus back when that overlay closes.
     opener: Cell<Option<Control>>,
+    /// Switch Workspace…'s painted bounds, the workspace menu's anchor.
+    switch_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Whether this frame drew Switch Workspace….
+    switch_drawn: Cell<bool>,
 }
 
 impl EmptyState {
@@ -61,6 +66,8 @@ impl EmptyState {
             switch: cx.focus_handle().tab_stop(true),
             close: cx.focus_handle().tab_stop(true),
             opener: Cell::new(None),
+            switch_bounds: Rc::new(Cell::new(None)),
+            switch_drawn: Cell::new(false),
         }
     }
 
@@ -227,6 +234,14 @@ impl WorkspaceView {
         )
     }
 
+    /// Switch Workspace…'s painted bounds while this frame drew it.
+    pub(super) fn empty_state_switch_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.empty_state
+            .switch_bounds
+            .get()
+            .filter(|_| self.empty_state.switch_drawn.get())
+    }
+
     /// Whether a `panel_*` command reaches the empty state.
     pub(super) fn empty_state_focused(&self, window: &Window) -> bool {
         self.empty_state.focused(window).is_some()
@@ -241,8 +256,9 @@ impl WorkspaceView {
     ) {
         let result = match control {
             Control::NewTab => self.new_tab(window, cx),
-            Control::SwitchWorkspace => self.invoke_interactive(
-                &CommandInvocation::new(ids::SELECT_WORKSPACE, Vec::new()),
+            Control::SwitchWorkspace => self.open_workspace_menu(
+                true,
+                super::workspace_panel::WorkspaceMenuAnchor::EmptyState,
                 window,
                 cx,
             ),
@@ -260,7 +276,7 @@ impl WorkspaceView {
                 }
             }
         };
-        if control == Control::SwitchWorkspace && self.palette.is_some() {
+        if control == Control::SwitchWorkspace && self.menu.is_some() {
             self.empty_state.opener.set(Some(control));
         }
         if let Err(error) = result {
@@ -282,6 +298,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<AnyElement> {
+        self.empty_state.switch_drawn.set(false);
         let model = self.empty_state_model(cx)?;
         let keymap = &cx.global::<Desktop>().keymap;
         let hint =
@@ -306,28 +323,55 @@ impl WorkspaceView {
                 },
             ))
         };
+        let title = div()
+            .child("No tabs in ")
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(model.name.clone()),
+            )
+            .flex()
+            .items_baseline();
         let mut empty = Empty::new("empty-state", model.title(), swatch)
+            .styled_title(title)
             .media(icon_element(Icon::LayoutGrid, swatch.muted).size(px(24.0)))
             .child(
                 button(Control::NewTab, "New Tab", cx)
                     .variant(Variant::Primary)
+                    .icon(
+                        icon_element(Icon::Plus, swatch.on_accent())
+                            .size(px(14.0)),
+                    )
                     .when_some(hint, |button, hint| {
                         button.shortcut(hint.glyphs())
                     }),
             );
         if model.switch {
-            empty = empty.child(button(
-                Control::SwitchWorkspace,
-                "Switch Workspace\u{2026}",
-                cx,
-            ));
+            self.empty_state.switch_drawn.set(true);
+            let bounds = Rc::clone(&self.empty_state.switch_bounds);
+            empty = empty.child(
+                button(
+                    Control::SwitchWorkspace,
+                    "Switch Workspace\u{2026}",
+                    cx,
+                )
+                .icon(icon_element(Icon::LayoutGrid, swatch.fg).size(px(14.0)))
+                .expanded(self.workspace_menu_open())
+                .child(
+                    canvas(
+                        |_, _, _| (),
+                        move |painted, (), _, _| bounds.set(Some(painted)),
+                    )
+                    .absolute()
+                    .inset_0(),
+                ),
+            );
         }
         if model.close {
-            empty = empty.child(button(
-                Control::CloseWorkspace,
-                "Close Workspace",
-                cx,
-            ));
+            empty = empty.child(
+                button(Control::CloseWorkspace, "Close Workspace", cx)
+                    .icon(icon_element(Icon::Trash, swatch.fg).size(px(14.0))),
+            );
         }
         Some(
             div()

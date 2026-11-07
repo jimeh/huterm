@@ -132,6 +132,10 @@ menu_button = true
 # Show the session control, which names the window's session and opens the
 # session menu, beside the window menu button.
 session_button = true
+# Where the session control sits: title_bar, sidebar (the top of the
+# workspace panel or the start of the workspace bar, else the title bar), or
+# both.
+session_button_placement = "title_bar"
 # Show key hints on the scroll pill and on dialog and panel buttons.
 shortcut_hints = false
 # Open the window, tab, pane, terminal, and session menus as native macOS
@@ -171,6 +175,16 @@ width = "fit"
 # Width bounds in logical points for fit mode.
 min_width = 96.0
 max_width = 240.0
+
+[workspaces]
+# Show the workspace panel, bar, or dropdown: auto (while the window's
+# session has two or more workspaces), always, or never.
+show = "auto"
+# The window edge for workspaces: left, top, right, or bottom.
+position = "left"
+# New windows show the workspace dropdown in the tab bar instead of the
+# panel.
+collapsed = false
 
 [panes]
 # Whether a split tab's panes show title bars: visible, hover, or hidden.
@@ -239,6 +253,7 @@ pub(super) struct Config {
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
     pub(super) tabs: TabsConfig,
+    pub(super) workspaces: huterm_config::WorkspacesConfig,
     pub(super) updates: UpdateConfig,
     pub(super) palette: huterm_config::PaletteConfig,
     pub(super) panes: huterm_config::PanesConfig,
@@ -355,6 +370,7 @@ impl Default for Config {
             themes: ThemePair::default_pair(),
             window: WindowConfig::default(),
             tabs: TabsConfig::default(),
+            workspaces: huterm_config::WorkspacesConfig::default(),
             updates: UpdateConfig::default(),
             palette: huterm_config::PaletteConfig::default(),
             panes: huterm_config::PanesConfig::default(),
@@ -681,6 +697,7 @@ fn parse_consumed(
         general: raw.general,
         window: raw.window,
         tabs: raw.tabs,
+        workspaces: raw.workspaces,
         updates: raw.updates,
         palette: raw.palette,
         panes: raw.panes,

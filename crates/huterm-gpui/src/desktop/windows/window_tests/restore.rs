@@ -170,6 +170,8 @@ fn layout() -> huterm_state::DesktopLayout {
             },
             mode: huterm_state::WindowMode::Windowed,
             sidebar_width: 210.0,
+            workspace_panel_collapsed: true,
+            workspace_panel_width: 230.0,
             display: None,
             quake_profile: None,
             appearance: None,

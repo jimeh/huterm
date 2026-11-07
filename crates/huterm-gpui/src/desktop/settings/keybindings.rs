@@ -102,6 +102,9 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
         "Sessions",
         &[
             ids::OPEN_SESSION_MENU,
+            ids::OPEN_WORKSPACE_MENU,
+            ids::TOGGLE_WORKSPACE_PANEL,
+            ids::FOCUS_WORKSPACE_PANEL,
             ids::NEW_SESSION,
             ids::SELECT_SESSION,
             ids::OPEN_SESSION_IN_NEW_WINDOW,
@@ -181,6 +184,10 @@ pub(crate) const CONTEXTS: &[Context] = &[
     context(
         "Panel",
         "A control in the Window Transparency panel has focus.",
+    ),
+    context(
+        "WorkspacePanel",
+        "A workspace in the workspace panel or bar has focus.",
     ),
     context("notices", "A notice has keyboard focus."),
     context("reordering", "A tab drag is in progress."),

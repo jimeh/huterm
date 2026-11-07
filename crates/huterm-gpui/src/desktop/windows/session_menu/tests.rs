@@ -30,6 +30,7 @@ fn input(rows: Vec<SessionRow>, current: u64) -> SessionMenuInput {
         rows,
         current: Some(SessionId::new(current)),
         alternate: Some("cmd-enter".to_owned()),
+        workspaces: true,
     }
 }
 
@@ -283,4 +284,24 @@ fn the_native_menu_keeps_check_and_name_with_the_detail_as_a_subtitle() {
         NativeItem::Item { title, enabled: false, .. } if title == "No other sessions"
     ));
     assert_eq!(lone.id_at(2), None);
+}
+
+#[test]
+fn hidden_workspaces_drop_the_new_workspace_row() {
+    let spec = session_menu(&SessionMenuInput {
+        workspaces: false,
+        ..input(four(), 1)
+    });
+    assert!(
+        !drawn(&spec)
+            .iter()
+            .any(|row| row.starts_with("new_workspace")),
+        "{:?}",
+        drawn(&spec)
+    );
+    assert!(
+        drawn(&session_menu(&input(four(), 1)))
+            .iter()
+            .any(|row| row.starts_with("new_workspace"))
+    );
 }

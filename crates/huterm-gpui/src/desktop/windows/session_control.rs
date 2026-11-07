@@ -20,17 +20,28 @@ use super::session_menu::{
     session_menu, session_rows,
 };
 use super::window_menu::{
-    SessionControlHost, SessionControlPlacement, session_control_host,
-    shortcut_key,
+    SESSION_CONTROL_MAX, SessionControlHost, SessionControlPlacement,
+    session_control_host, shortcut_key,
 };
 use super::*;
+use huterm_config::SessionButtonPlacement;
+
+/// Which of the control's hosts a control is drawn in.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum SessionHostSlot {
+    /// The title row, tab bar end, or new-tab row.
+    #[default]
+    Title,
+    /// The workspace panel's first row or the bar's leading slot.
+    Sidebar,
+}
 
 /// The session name the control last measured, and its width at the
 /// control's text size.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct SessionLabel {
-    text: String,
-    width: Pixels,
+    pub(super) text: String,
+    pub(super) width: Pixels,
 }
 
 /// Where the window's top-right controls start: the menu button's slot
@@ -106,14 +117,82 @@ impl WorkspaceView {
         };
     }
 
-    /// The control's host for this window, with the bar shown or not.
-    fn session_host(&self, bar_shown: bool) -> SessionControlHost {
+    /// The control's title-bar host for this window, with the bar shown or
+    /// not. `sidebar` placement uses it only while the window shows no
+    /// workspace panel or bar (F1).
+    fn session_host(
+        &self,
+        layout: &ChromeLayout,
+        bar_shown: bool,
+    ) -> SessionControlHost {
+        let title = match self.config.window.session_button_placement {
+            SessionButtonPlacement::TitleBar | SessionButtonPlacement::Both => {
+                true
+            }
+            SessionButtonPlacement::Sidebar => {
+                layout.workspace_chrome.edge().is_none()
+            }
+        };
         session_control_host(
-            self.config.window.session_button,
+            self.config.window.session_button && title,
             self.title_row() > px(0.0),
             self.layout_tabs().position,
             bar_shown,
         )
+    }
+
+    /// Whether the workspace panel or bar hosts the control: `sidebar` or
+    /// `both` placement while one shows.
+    pub(super) fn session_in_sidebar(&self, layout: &ChromeLayout) -> bool {
+        self.config.window.session_button
+            && self.config.window.session_button_placement
+                != SessionButtonPlacement::TitleBar
+            && layout.workspace_chrome.edge().is_some()
+    }
+
+    /// The control in the workspace panel's first row or the bar's leading
+    /// slot, or `None` while the window shows neither or the placement
+    /// keeps it in the title bar.
+    pub(super) fn sidebar_session_element(
+        &self,
+        layout: &ChromeLayout,
+        colors: TabColors,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        if !self.session_in_sidebar(layout) {
+            return None;
+        }
+        let edge = layout.workspace_chrome.edge()?;
+        let band = layout.workspace?;
+        let width = if edge.vertical() {
+            band.size.width - CONTROL_INSET * 4.0
+        } else {
+            (band.size.width * 0.25).min(SESSION_CONTROL_MAX)
+        };
+        let placement = SessionControlPlacement::resolve(
+            SessionControlHost::TitleStrip,
+            width,
+            self.session_label.width,
+            true,
+        );
+        let control = self.session_trigger(
+            placement,
+            SessionHostSlot::Sidebar,
+            colors,
+            cx,
+        )?;
+        Some(if edge.vertical() {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(CONTROL_SLOT)
+                .px(CONTROL_INSET * 2.0)
+                .child(control)
+                .into_any_element()
+        } else {
+            control.into_any_element()
+        })
     }
 
     /// The control in its host as the tab bar's geometry sees it: the bar
@@ -123,7 +202,7 @@ impl WorkspaceView {
         &self,
         layout: &ChromeLayout,
     ) -> SessionControlPlacement {
-        self.resolve_session_placement(layout, self.session_host(true))
+        self.resolve_session_placement(layout, self.session_host(layout, true))
     }
 
     /// The control as this frame draws it.
@@ -135,7 +214,10 @@ impl WorkspaceView {
         let bar_shown = presentation == Presentation::Reserved
             || presentation == Presentation::Overlay
                 && self.reveal.progress > 0.0;
-        self.resolve_session_placement(layout, self.session_host(bar_shown))
+        self.resolve_session_placement(
+            layout,
+            self.session_host(layout, bar_shown),
+        )
     }
 
     /// Sizes the control for `host` from the room the host leaves it.
@@ -159,6 +241,13 @@ impl WorkspaceView {
             SessionControlHost::BarEnd => (
                 layout.strip_bounds(tabs).size.width - CONTROL_SLOT - menu,
                 false,
+            ),
+            // A right workspace panel's top strip, beside the menu button.
+            SessionControlHost::TitleStrip if self.panel_corners(layout).1 => (
+                layout.workspace.map_or(px(0.0), |band| band.size.width)
+                    - menu
+                    - CONTROL_INSET,
+                true,
             ),
             // A right column's top strip, beside the menu button: the
             // control truncates to the column.
@@ -204,18 +293,41 @@ impl WorkspaceView {
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> Option<MenuTrigger> {
+        self.session_trigger(placement, SessionHostSlot::Title, colors, cx)
+    }
+
+    /// The session control for one of its hosts, which records its own
+    /// painted bounds and names itself when it opens the menu.
+    fn session_trigger(
+        &self,
+        placement: SessionControlPlacement,
+        slot: SessionHostSlot,
+        colors: TabColors,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<MenuTrigger> {
         if placement.host == SessionControlHost::Hidden {
             return None;
         }
         let state = self.session_control_state(cx)?;
-        self.session_control_drawn.set(true);
-        let bounds_cell = Rc::clone(&self.session_button_bounds);
+        let bounds_cell = match slot {
+            SessionHostSlot::Title => {
+                self.session_control_drawn.set(true);
+                Rc::clone(&self.session_button_bounds)
+            }
+            SessionHostSlot::Sidebar => {
+                self.session_sidebar_drawn.set(true);
+                Rc::clone(&self.session_sidebar_bounds)
+            }
+        };
         let swatch = tokens(&self.config.theme);
         let accessible = state.accessible_name();
         let tooltip = placement.truncated.then(|| state.name.clone().into());
-        let open = state.open;
+        let open = state.open && self.session_menu_from == slot;
         let trigger = MenuTrigger::new(
-            "session-control",
+            match slot {
+                SessionHostSlot::Title => "session-control",
+                SessionHostSlot::Sidebar => "session-control-sidebar",
+            },
             accessible,
             state.name,
             Icon::Layers.asset_path(),
@@ -234,8 +346,12 @@ impl WorkspaceView {
         .tooltip(tooltip)
         .occlude()
         .stop_presses()
-        .debug_selector(|| "session-control".to_owned())
-        .on_click(Self::button_action(cx, |view, window, cx| {
+        .debug_selector(move || match slot {
+            SessionHostSlot::Title => "session-control".to_owned(),
+            SessionHostSlot::Sidebar => "session-control-sidebar".to_owned(),
+        })
+        .on_click(Self::button_action(cx, move |view, window, cx| {
+            view.session_menu_from = slot;
             view.toggle_session_menu(window, cx);
             cx.stop_propagation();
         }))
@@ -273,9 +389,28 @@ impl WorkspaceView {
         &self,
         layout: &ChromeLayout,
     ) -> Bounds<Pixels> {
-        self.session_button_bounds
+        self.session_anchor_cell()
             .get()
             .unwrap_or_else(|| self.menu_anchor(layout))
+    }
+
+    /// The bounds cell of the host that opens the session menu: the one
+    /// clicked, else the first host drawn, title bar first.
+    pub(super) fn session_anchor_cell(
+        &self,
+    ) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
+        let sidebar = self.session_sidebar_drawn.get();
+        let use_sidebar = match self.session_menu_from {
+            SessionHostSlot::Sidebar => sidebar,
+            SessionHostSlot::Title => {
+                sidebar && !self.session_control_drawn.get()
+            }
+        };
+        if use_sidebar {
+            &self.session_sidebar_bounds
+        } else {
+            &self.session_button_bounds
+        }
     }
 
     /// Whether `open_session_menu` can run.
@@ -455,6 +590,8 @@ impl WorkspaceView {
                 &contexts,
                 ids::MENU_CONFIRM_ALTERNATE,
             ),
+            workspaces: self.config.workspaces.show
+                != huterm_config::WorkspaceShow::Never,
         })
     }
 

@@ -238,6 +238,10 @@ fn two_windows_on_one_session_switch_workspaces_independently(
     let right = harness.split(split, left, SplitDirection::Right, ECHO);
     let one = harness.attach_showing(&[first, split]);
     let two = harness.attach_showing(&[first, split]);
+    // The second workspace comes first: the panel it shows in every window
+    // on the session resizes their terminals, and a grid change clears a
+    // selection (#373).
+    let (second, others) = harness.add_workspace(1);
     harness.activate(one, first);
     // Window two selects text in its view of `first` once the terminal
     // took the views' size, which a later resize would clear, then moves
@@ -255,7 +259,6 @@ fn two_windows_on_one_session_switch_workspaces_independently(
         .cx
         .update(|cx| selection.update(cx, TerminalView::select_all));
     harness.focus(two, split, right);
-    let (second, others) = harness.add_workspace(1);
     let untouched = |harness: &mut DesktopHarness| {
         harness.cx.update(|cx| {
             assert_eq!(shown_workspace(cx, two), Some(harness.workspace));
@@ -1769,6 +1772,21 @@ fn empty_state_focus(
     })
 }
 
+/// Whether `window` shows the workspace menu, opened from its empty
+/// state's Switch Workspace… button and anchored there.
+fn workspace_menu_shown(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> bool {
+    harness.update_view(window, |view, _, _| {
+        view.menu
+            .as_ref()
+            .is_some_and(|menu| menu.kind == MenuKind::Workspace)
+            && view.workspace_menu_from
+                == super::super::workspace_panel::WorkspaceMenuAnchor::EmptyState
+    })
+}
+
 #[gpui::test]
 fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
@@ -1782,18 +1800,12 @@ fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
         empty_state_focus(&mut harness, window),
         Some("empty-switch-workspace")
     );
-    // Escape from the picker Switch Workspace… opened returns focus to it,
-    // where Tab still moves through the buttons.
+    // Escape from the workspace menu Switch Workspace… opened returns focus
+    // to it, where Tab still moves through the buttons.
     harness.press(window, "enter");
-    harness.wait_for("the workspace prompt", |cx| {
-        palette_state(cx, window).is_some_and(|state| {
-            state.contains("slots command=select_workspace")
-        })
-    });
+    assert!(workspace_menu_shown(&mut harness, window));
     harness.press(window, "escape");
-    harness.wait_for("the palette to close", |cx| {
-        palette_state(cx, window).is_none()
-    });
+    assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
     assert_eq!(
         empty_state_focus(&mut harness, window),
         Some("empty-switch-workspace")
@@ -1870,18 +1882,12 @@ fn the_empty_state_cycles_its_buttons_and_opens_a_tab(cx: &mut TestAppContext) {
     assert_eq!(focused(&mut harness), Some("empty-new-tab"));
     run(&mut harness, ids::PANEL_FOCUS_PREVIOUS);
     assert_eq!(focused(&mut harness), Some("empty-close-workspace"));
-    // Switch Workspace… asks which workspace in the palette.
+    // Switch Workspace… opens the workspace menu at itself.
     run(&mut harness, ids::PANEL_FOCUS_PREVIOUS);
     run(&mut harness, ids::PANEL_PRESS);
-    harness.wait_for("the workspace prompt", |cx| {
-        palette_state(cx, window).is_some_and(|state| {
-            state.contains("slots command=select_workspace")
-        })
-    });
+    assert!(workspace_menu_shown(&mut harness, window));
     harness.press(window, "escape");
-    harness.wait_for("the palette to close", |cx| {
-        palette_state(cx, window).is_none()
-    });
+    assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
     // Focus returned to Switch Workspace…; New Tab opens a shell in the
     // empty workspace.
     assert_eq!(focused(&mut harness), Some("empty-switch-workspace"));

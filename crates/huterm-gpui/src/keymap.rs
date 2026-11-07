@@ -993,6 +993,10 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
 }
 
 /// The shipped per-platform bindings, in precedence order.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one entry per default binding group"
+)]
 pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     let mut entries = vec![
         default("shift-pageup", ids::SCROLL_PAGE_UP, "Scroll up one page"),
@@ -1092,6 +1096,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     entries.extend(dialog_defaults());
     entries.extend(menu_defaults(platform));
     entries.extend(panel_defaults(platform));
+    entries.extend(workspace_panel_defaults());
     entries.extend(notice_defaults());
     entries.extend(settings_defaults(platform));
     entries.extend(text_field_defaults(platform));
@@ -1174,6 +1179,27 @@ fn panel_defaults(platform: Platform) -> Vec<BindingEntry> {
         on_slider(reset, ids::PANEL_RESET, "Reset"),
         on_button("enter", ids::PANEL_PRESS, "Press Button"),
         on_button("space", ids::PANEL_PRESS, "Press Button"),
+    ]
+}
+
+/// Workspace panel and bar bindings, identical on both platforms. Their
+/// commands carry the `WorkspacePanel` context, so they match only while a
+/// workspace row or chip has focus. Both arrow pairs move, so the same keys
+/// walk a vertical panel and a horizontal bar.
+fn workspace_panel_defaults() -> Vec<BindingEntry> {
+    vec![
+        default("down", ids::WORKSPACE_PANEL_NEXT, "Next Workspace"),
+        default("right", ids::WORKSPACE_PANEL_NEXT, "Next Workspace"),
+        default("up", ids::WORKSPACE_PANEL_PREVIOUS, "Previous Workspace"),
+        default("left", ids::WORKSPACE_PANEL_PREVIOUS, "Previous Workspace"),
+        default("home", ids::WORKSPACE_PANEL_FIRST, "First Workspace"),
+        default("end", ids::WORKSPACE_PANEL_LAST, "Last Workspace"),
+        default("enter", ids::WORKSPACE_PANEL_SHOW, "Show Workspace"),
+        default("space", ids::WORKSPACE_PANEL_SHOW, "Show Workspace"),
+        default("f2", ids::WORKSPACE_PANEL_RENAME, "Rename"),
+        default("shift-f10", ids::WORKSPACE_PANEL_MENU, "Open Menu"),
+        default("menu", ids::WORKSPACE_PANEL_MENU, "Open Menu"),
+        default("escape", ids::WORKSPACE_PANEL_EXIT, "Return to Terminal"),
     ]
 }
 

@@ -39,6 +39,11 @@ pub struct WindowLayout {
     pub mode: WindowMode,
     /// The tab sidebar's width.
     pub sidebar_width: f32,
+    /// The window shows the workspace dropdown instead of its panel or bar.
+    pub workspace_panel_collapsed: bool,
+    /// The side workspace panel's width; zero when never saved, which a
+    /// restore reads as the default width.
+    pub workspace_panel_width: f32,
     /// The Quake profile the window belongs to, if any.
     pub quake_profile: Option<String>,
     /// Per-window appearance overrides, if any.
@@ -167,12 +172,20 @@ impl WindowLayout {
             width,
             height,
         } = self.bounds;
-        if ![x, y, width, height, self.sidebar_width]
-            .iter()
-            .all(|value| value.is_finite())
+        if ![
+            x,
+            y,
+            width,
+            height,
+            self.sidebar_width,
+            self.workspace_panel_width,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
             || width <= 0.0
             || height <= 0.0
             || self.sidebar_width < 0.0
+            || self.workspace_panel_width < 0.0
         {
             return Err(InvalidState::new("a window's geometry is invalid"));
         }

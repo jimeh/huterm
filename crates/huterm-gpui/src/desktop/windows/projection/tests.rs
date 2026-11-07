@@ -267,6 +267,8 @@ fn layout() -> WindowLayout {
         }),
         display: None,
         sidebar_width: px(180.0),
+        workspace_collapsed: false,
+        workspace_width: px(180.0),
         fullscreen: false,
     }
 }

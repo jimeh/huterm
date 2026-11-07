@@ -265,10 +265,10 @@
           "description": "Reopen the windows, tabs, and split panes that were open at Quit,\neach pane with a fresh shell in its last folder, and save them while\nHuterm runs. Turning this off deletes the saved windows.",
           "type": "boolean",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Sessions",
+          "x-huterm-group": "Restore and names",
           "x-huterm-label": "Restore windows and sessions at launch",
-          "x-huterm-order": 15,
-          "x-huterm-section": "general"
+          "x-huterm-order": 40,
+          "x-huterm-section": "sessions"
         },
         "session_numbering": {
           "allOf": [
@@ -279,10 +279,10 @@
           "default": "lowest_unused",
           "description": "How a new session picks the number in its automatic name, such as\n\"Session 2\": the lowest number no session uses, or one more than\nthe highest so far. Workspaces number the same way.",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Sessions",
+          "x-huterm-group": "Restore and names",
           "x-huterm-label": "Number new sessions",
-          "x-huterm-order": 16,
-          "x-huterm-section": "general"
+          "x-huterm-order": 41,
+          "x-huterm-section": "sessions"
         },
         "watch_config": {
           "default": true,
@@ -11001,6 +11001,29 @@
       },
       "type": "object"
     },
+    "SessionButtonPlacement": {
+      "description": "Where the session control sits.",
+      "oneOf": [
+        {
+          "const": "title_bar",
+          "description": "The title bar, or the tab bar without one.",
+          "type": "string",
+          "x-huterm-label": "Title bar"
+        },
+        {
+          "const": "sidebar",
+          "description": "The top of the workspace panel, or the start of the workspace bar.",
+          "type": "string",
+          "x-huterm-label": "Sidebar"
+        },
+        {
+          "const": "both",
+          "description": "The title bar and the workspace panel or bar.",
+          "type": "string",
+          "x-huterm-label": "Both"
+        }
+      ]
+    },
     "SessionNumbering": {
       "description": "How new sessions and workspaces number their automatic names. A session\nwith a custom name keeps its number for Clear Name, so it counts as\nused.",
       "oneOf": [
@@ -11948,10 +11971,28 @@
           "description": "Show the session control, which names the window's session and opens\nthe session menu, beside the window menu button.",
           "type": "boolean",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Window",
-          "x-huterm-label": "Session button",
-          "x-huterm-order": 15,
-          "x-huterm-section": "windows"
+          "x-huterm-group": "Session control",
+          "x-huterm-label": "Show session control",
+          "x-huterm-order": 10,
+          "x-huterm-section": "sessions"
+        },
+        "session_button_placement": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionButtonPlacement"
+            }
+          ],
+          "default": "title_bar",
+          "description": "Where the session control sits: the title bar, the top of the\nworkspace panel or the start of the workspace bar, or both. The\nsidebar placement uses the title bar while the window shows no\nworkspace panel or bar.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Session control",
+          "x-huterm-label": "Placement",
+          "x-huterm-order": 11,
+          "x-huterm-section": "sessions",
+          "x-huterm-visible-when": {
+            "equals": true,
+            "setting": "window.session_button"
+          }
         },
         "shortcut_hints": {
           "default": false,
@@ -12001,6 +12042,119 @@
               "setting": "window.size_indicator"
             }
           ]
+        }
+      },
+      "type": "object"
+    },
+    "WorkspacePosition": {
+      "description": "The window edge the workspace panel or bar sits on.",
+      "oneOf": [
+        {
+          "const": "left",
+          "type": "string",
+          "x-huterm-label": "Left"
+        },
+        {
+          "const": "top",
+          "type": "string",
+          "x-huterm-label": "Top"
+        },
+        {
+          "const": "right",
+          "type": "string",
+          "x-huterm-label": "Right"
+        },
+        {
+          "const": "bottom",
+          "type": "string",
+          "x-huterm-label": "Bottom"
+        }
+      ]
+    },
+    "WorkspaceShow": {
+      "description": "When windows show workspace navigation.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "While the window's session has two or more workspaces.",
+          "type": "string",
+          "x-huterm-label": "Automatically"
+        },
+        {
+          "const": "always",
+          "description": "Always, even with one workspace.",
+          "type": "string",
+          "x-huterm-label": "Always"
+        },
+        {
+          "const": "never",
+          "description": "Never; the command palette still reaches workspaces.",
+          "type": "string",
+          "x-huterm-label": "Never"
+        }
+      ]
+    },
+    "WorkspacesConfig": {
+      "additionalProperties": false,
+      "description": "The workspace panel, bar, and dropdown.",
+      "properties": {
+        "collapsed": {
+          "default": false,
+          "description": "New windows show the workspace dropdown in the tab bar instead of\nthe panel. Each window keeps its own choice.",
+          "type": "boolean",
+          "x-huterm-apply": "new_windows",
+          "x-huterm-group": "Workspaces",
+          "x-huterm-label": "Start collapsed",
+          "x-huterm-order": 22,
+          "x-huterm-section": "sessions",
+          "x-huterm-visible-when": [
+            {
+              "equals": "auto",
+              "setting": "workspaces.show"
+            },
+            {
+              "equals": "always",
+              "setting": "workspaces.show"
+            }
+          ]
+        },
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkspacePosition"
+            }
+          ],
+          "default": "left",
+          "description": "The window edge the workspace panel or bar sits on: a list on the\nleft or right, a row of chips on the top or bottom.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Workspaces",
+          "x-huterm-label": "Position",
+          "x-huterm-order": 21,
+          "x-huterm-section": "sessions",
+          "x-huterm-visible-when": [
+            {
+              "equals": "auto",
+              "setting": "workspaces.show"
+            },
+            {
+              "equals": "always",
+              "setting": "workspaces.show"
+            }
+          ]
+        },
+        "show": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkspaceShow"
+            }
+          ],
+          "default": "auto",
+          "description": "When windows show their session's workspaces: `auto` only while the\nsession has two or more, `always`, or `never`. The workspace\ncommands stay in the command palette either way.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Workspaces",
+          "x-huterm-label": "Show workspaces",
+          "x-huterm-order": 20,
+          "x-huterm-section": "sessions"
         }
       },
       "type": "object"
@@ -12281,6 +12435,13 @@
       "allOf": [
         {
           "$ref": "#/definitions/WindowConfig"
+        }
+      ]
+    },
+    "workspaces": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/WorkspacesConfig"
         }
       ]
     }

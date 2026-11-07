@@ -234,6 +234,42 @@
     "theme": false
   },
   {
+    "name": "session button placement sidebar",
+    "toml": "[window]\nsession_button_placement = \"sidebar\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "session button placement unknown",
+    "toml": "[window]\nsession_button_placement = \"panel\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "workspaces every option",
+    "toml": "[workspaces]\nshow = \"always\"\nposition = \"bottom\"\ncollapsed = true",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "workspaces show unknown",
+    "toml": "[workspaces]\nshow = \"sometimes\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "workspaces position titlebar",
+    "toml": "[workspaces]\nposition = \"titlebar\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "workspaces unknown key",
+    "toml": "[workspaces]\nwidth = 200",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "window session button string",
     "toml": "[window]\nsession_button = \"yes\"",
     "valid": false,

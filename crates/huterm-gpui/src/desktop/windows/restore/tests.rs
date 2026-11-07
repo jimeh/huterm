@@ -108,6 +108,8 @@ fn layout(capture: &RuntimeCapture) -> DesktopLayout {
             },
             mode: WindowMode::Windowed,
             sidebar_width: 180.0,
+            workspace_panel_collapsed: false,
+            workspace_panel_width: 0.0,
             display: None,
             quake_profile: None,
             appearance: None,

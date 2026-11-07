@@ -220,7 +220,11 @@ impl WorkspaceView {
         cx: &gpui::App,
     ) -> bool {
         match kind {
-            MenuKind::Window | MenuKind::Session => true,
+            MenuKind::Window | MenuKind::Session | MenuKind::Workspace => true,
+            MenuKind::WorkspaceRow(workspace) => self
+                .workspace_rows(cx)
+                .iter()
+                .any(|row| row.workspace == *workspace),
             MenuKind::Tab(tab) => {
                 self.tabs.iter().any(|record| record.id == *tab)
             }

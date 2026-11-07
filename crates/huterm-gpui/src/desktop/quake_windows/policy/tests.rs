@@ -349,6 +349,8 @@ fn published(policy: &Model) -> crate::desktop::windows::model::WindowModel {
             bounds: gpui::WindowBounds::Windowed(gpui::Bounds::default()),
             display: None,
             sidebar_width: gpui::px(180.0),
+            workspace_collapsed: false,
+            workspace_width: gpui::px(180.0),
             fullscreen: false,
         },
     );
