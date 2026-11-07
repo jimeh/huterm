@@ -306,3 +306,71 @@ fn a_split_that_would_nest_past_the_depth_limit_changes_nothing() {
     assert_eq!(mux.terminal_count(), terminals);
     mux.shutdown().unwrap();
 }
+
+#[test]
+fn a_capture_past_the_name_or_item_limits_is_refused_before_anything_spawns() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    mux.open_test_tab(workspace, &command("read value"))
+        .unwrap();
+    let capture = mux.capture_runtime();
+    mux.shutdown().unwrap();
+    let mut long = capture.clone();
+    long.sessions[0].workspaces[0].tabs[0].custom_name =
+        Some(name(MAX_NAME_BYTES + 1));
+    // A session, a workspace, a tab, and a pane, then empty sessions up to
+    // one item past the limit.
+    let mut large = capture.clone();
+    for _ in 4..=MAX_HIERARCHY_ITEMS {
+        large.next_id += 1;
+        large.sessions.push(huterm_protocol::SessionCapture {
+            info: huterm_protocol::SessionInfo {
+                id: SessionId::new(large.next_id),
+                custom_name: None,
+                automatic_name: "Session".into(),
+            },
+            workspaces: Vec::new(),
+        });
+    }
+    let script = command("read value");
+    for (refused, expected) in
+        [(&long, "InvalidName"), (&large, "LimitExceeded")]
+    {
+        let mut asked = 0;
+        let mut restored = Mux::default();
+        let result = SpawnedTerminals::spawn(
+            restored.runtime_id(),
+            refused,
+            |_| {
+                asked += 1;
+                script.clone()
+            },
+            || false,
+        );
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| format!("{error:?}") == expected),
+            "{result:?}"
+        );
+        assert_eq!(asked, 0);
+        // A restore checks again, before it touches the structure.
+        let spawned = SpawnedTerminals::spawn(
+            restored.runtime_id(),
+            &capture,
+            |_| script.clone(),
+            || false,
+        )
+        .unwrap();
+        let result = restored.restore(refused, spawned);
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| format!("{error:?}") == expected),
+            "{result:?}"
+        );
+        assert_eq!(restored.sessions(), []);
+        assert_eq!(restored.terminal_count(), 0);
+    }
+}

@@ -358,7 +358,9 @@ panes, splits, and attachments together, and layouts at most
 `MAX_LAYOUT_DEPTH` (64) nodes deep, which `PaneLayout::new` enforces. A
 structural operation checks the item count through `Mux::admit_items` before
 it allocates, so a refusal leaves the revision and close tickets alone; a new
-operation that adds items must call it too.
+operation that adds items must call it too. A restore checks names and items
+in `within_limits` before it spawns anything, not in `RuntimeCapture::validate`,
+whose looser bounds `huterm-state` shares.
 A session or workspace takes its automatic name's number when it is created
 and keeps it, never from its membership position. `Mux::set_automatic_numbering`
 picks the number: the lowest one no live record of the kind holds (the default,
