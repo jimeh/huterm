@@ -2,7 +2,7 @@
 //! shows another workspace of its session and returns to its own
 //! navigation there, New Workspace and Close Workspace, the window that
 //! leaves a workspace that empties or goes (L1), the empty state, and the
-//! Quit, close, and switch interleavings W1 to W31 and W34 to W37 of
+//! Quit, close, and switch interleavings W1 to W31 and W34 to W38 of
 //! `docs/plans/workspace-panels.md`. Ordering comes from worker hooks and
 //! sequence waits, never sleeps.
 
