@@ -240,6 +240,7 @@ const ICON_WIDE: usize = 12;
 
 fn check(panel: &mut Panel, window: &mut Window) {
     check_icons(panel, window);
+    check_icons_off(panel, window);
     let renderer = &mut panel.renderer;
     assert_eq!(
         renderer.graphics.len(),
@@ -395,6 +396,36 @@ fn check_icons(panel: &Panel, window: &Window) {
         ink.height
     );
     assert!(matches!(&glyphs[7].content, GlyphContent::Font(_)));
+}
+
+/// With `[font] nerd_font_symbols` off, icons stay on the terminal font
+/// path, and turning it back on routes them to the symbols font again.
+fn check_icons_off(panel: &mut Panel, window: &mut Window) {
+    let renderer = &mut panel.renderer;
+    let on = renderer.terminal_font.clone();
+    let theme = renderer.theme.clone();
+    let metrics = renderer.metrics;
+    renderer.reconfigure(
+        crate::terminal_font::TerminalFont {
+            nerd_font_symbols: false,
+            ..on.clone()
+        },
+        theme.clone(),
+        metrics,
+    );
+    renderer.prepare(Some(&panel.snapshot), window);
+    assert!(
+        renderer.rows[ICON_ROW].glyphs[..7]
+            .iter()
+            .all(|glyph| matches!(&glyph.content, GlyphContent::Font(_))),
+        "icons must use the terminal font with the setting off"
+    );
+    renderer.reconfigure(on, theme, metrics);
+    renderer.prepare(Some(&panel.snapshot), window);
+    assert!(matches!(
+        &renderer.rows[ICON_ROW].glyphs[0].content,
+        GlyphContent::Symbol(_)
+    ));
 }
 
 fn snapshot(font_size: f32) -> TerminalSnapshot {

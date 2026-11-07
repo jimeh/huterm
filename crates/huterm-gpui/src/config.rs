@@ -107,6 +107,8 @@ weight = "regular"
 # uses the system font; the size runs from 10 to 16 points.
 # ui_family = ""
 # ui_size = 13.0
+# Draw Nerd Font icons the terminal font lacks from the bundled symbols font.
+nerd_font_symbols = true
 
 [window]
 # Live whole-window, default-background, and text opacity. Overall multiplies both.
@@ -706,6 +708,7 @@ fn parse_consumed(
             ui_family: Some(raw.font.ui_family.trim().to_owned())
                 .filter(|family| !family.is_empty()),
             ui_size: raw.font.ui_size,
+            nerd_font_symbols: raw.font.nerd_font_symbols,
         },
         // Until the caller follows the system appearance.
         theme: themes.dark.clone(),

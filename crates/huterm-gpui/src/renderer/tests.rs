@@ -153,7 +153,21 @@ fn font_changes_evict_layouts_while_palette_changes_reuse_them() {
             ))
             .1
     );
-    renderer.reconfigure("Monaco".into(), theme, metrics);
+    renderer.reconfigure("Monaco".into(), theme.clone(), metrics);
+    assert!(
+        !renderer
+            .layouts
+            .get_or_insert_with(GlyphText::Scalar('A'), variant, || {
+                GlyphContent::Font(Arc::new(LineLayout::default()))
+            })
+            .1
+    );
+    // Turning the bundled Nerd Font icons off re-lays icons in the family.
+    let without_symbols = TerminalFont {
+        nerd_font_symbols: false,
+        ..TerminalFont::from("Monaco")
+    };
+    renderer.reconfigure(without_symbols, theme, metrics);
     assert!(
         !renderer
             .layouts

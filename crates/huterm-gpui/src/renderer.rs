@@ -861,6 +861,7 @@ fn prepare_row(
                 window.text_system(),
                 cell.text.as_str(),
                 cell_font(variant, terminal_font),
+                terminal_font.nerd_font_symbols,
                 metrics,
             )
         });
@@ -888,9 +889,11 @@ fn layout_cell(
     text_system: &WindowTextSystem,
     text: &str,
     configured: Font,
+    nerd_font_symbols: bool,
     metrics: GridMetrics,
 ) -> GlyphContent {
-    if let Some(ch) = text.parse::<char>().ok()
+    if nerd_font_symbols
+        && let Some(ch) = text.parse::<char>().ok()
         && let Some((symbols, _)) =
             symbols::face_for(text_system, &configured, ch, metrics.font_size)
     {

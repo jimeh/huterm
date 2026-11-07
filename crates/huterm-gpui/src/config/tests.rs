@@ -372,6 +372,24 @@ fn clipboard_write_policy_reload_rejects_invalid_values_without_fallback() {
 }
 
 #[test]
+fn nerd_font_symbols_default_on_and_require_a_boolean() {
+    assert!(Config::default().font.nerd_font_symbols);
+    assert!(parse("").unwrap().font.nerd_font_symbols);
+    assert!(parse(DEFAULT_CONFIG).unwrap().font.nerd_font_symbols);
+    assert!(
+        !parse("[font]\nnerd_font_symbols = false")
+            .unwrap()
+            .font
+            .nerd_font_symbols
+    );
+    for value in ["0", "\"off\"", "[]"] {
+        assert!(
+            parse(&format!("[font]\nnerd_font_symbols = {value}")).is_err()
+        );
+    }
+}
+
+#[test]
 fn terminal_close_on_exit_defaults_true_and_requires_a_boolean() {
     assert!(Config::default().terminal.close_on_exit);
     assert!(parse("").unwrap().terminal.close_on_exit);

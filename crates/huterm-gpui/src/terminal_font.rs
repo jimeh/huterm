@@ -191,6 +191,9 @@ pub(crate) struct TerminalFont {
     pub(crate) family: String,
     pub(crate) weight: FontWeight,
     pub(crate) bold_weight: FontWeight,
+    /// Whether icons the family lacks draw from the bundled symbols font.
+    /// It shapes glyph layouts, so a change re-lays them like a family change.
+    pub(crate) nerd_font_symbols: bool,
 }
 
 impl TerminalFont {
@@ -199,6 +202,7 @@ impl TerminalFont {
             family,
             weight,
             bold_weight: weight.bold(),
+            nerd_font_symbols: true,
         }
     }
 

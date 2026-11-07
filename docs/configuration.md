@@ -1312,6 +1312,7 @@ size = 14.0      # 6 through 96
 weight = "regular"
 ui_family = ""   # empty uses the system interface font
 ui_size = 13.0   # 10 through 16
+nerd_font_symbols = true # draw Nerd Font icons from the bundled font
 ```
 
 `family` and `size` set the terminal grid. `ui_family` and `ui_size` set
@@ -1350,7 +1351,10 @@ icon fills one cell, or both columns of a wide cell, and tall icons such as
 the Git branch can use the full line height. A few separators may overlap
 the next cell slightly by design. Box drawing, block elements, and the
 Powerline separators that Huterm draws itself are unchanged. The icon font is
-not offered as a terminal or interface family.
+not offered as a terminal or interface family. Set `nerd_font_symbols = false`,
+or turn off **Built-in Nerd Font icons** in Settings, to leave those code
+points to the terminal font and the system's font fallback; the change applies
+to open terminals immediately.
 
 On macOS the bundled DejaVu faces draw even when the system has that family
 installed. On Linux an installed DejaVu face with matching properties takes

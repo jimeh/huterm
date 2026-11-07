@@ -2426,6 +2426,9 @@ pub struct FontConfig {
     /// The interface's family; `None` uses the system interface font.
     pub ui_family: Option<String>,
     pub ui_size: f32,
+    /// Draw Nerd Font icons the terminal family lacks from the bundled
+    /// Symbols Nerd Font.
+    pub nerd_font_symbols: bool,
 }
 
 impl FontConfig {
@@ -3141,6 +3144,17 @@ pub struct RawFont {
         "x-huterm-step" = 0.5,
     )))]
     pub ui_size: f32,
+    /// Draw Nerd Font icons, such as prompt and file-listing icons, from
+    /// Huterm's bundled Symbols Nerd Font when the terminal font has no glyph
+    /// of its own. Off leaves them to the terminal font and the system.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "appearance",
+        "x-huterm-group" = "Font",
+        "x-huterm-label" = "Built-in Nerd Font icons",
+        "x-huterm-order" = 25,
+        "x-huterm-apply" = "live",
+    )))]
+    pub nerd_font_symbols: bool,
 }
 
 impl Default for RawFont {
@@ -3152,6 +3166,7 @@ impl Default for RawFont {
             size: font.size,
             ui_family: String::new(),
             ui_size: font.ui_size,
+            nerd_font_symbols: font.nerd_font_symbols,
         }
     }
 }
@@ -3205,6 +3220,7 @@ impl Default for FontConfig {
             size: 14.0,
             ui_family: None,
             ui_size: UI_FONT_SIZE,
+            nerd_font_symbols: true,
         }
     }
 }

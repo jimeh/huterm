@@ -279,8 +279,10 @@ fn resolve_metrics(
     if let Some(warning) = resolved.warning() {
         eprintln!("{warning}");
     }
-    let terminal_font =
-        TerminalFont::new(resolved.family.clone(), config.font.weight);
+    let terminal_font = TerminalFont {
+        nerd_font_symbols: config.font.nerd_font_symbols,
+        ..TerminalFont::new(resolved.family.clone(), config.font.weight)
+    };
     let font_size = px(config.font.size);
     let metrics = GridMetrics::resolve(text_system, &terminal_font, font_size)?;
     Ok((terminal_font, metrics, resolved))
