@@ -769,15 +769,20 @@ const _: () = assert!(std::mem::size_of::<PreparedGlyph>() <= 40);
 enum GlyphContent {
     Font(Arc<LineLayout>),
     Symbol(Arc<SymbolGlyph>),
+    /// The same layout centred across a wide cell's two columns.
+    WideSymbol(Arc<SymbolGlyph>),
     Builtin(Arc<builtin::Geometry>),
 }
 
-/// A layout in the bundled symbols font and its glyph origin relative to the
-/// cell origin, since its size and baseline differ from the grid's. Shared
-/// behind one pointer so every prepared glyph stays as small as before.
+/// A layout in the bundled symbols font and its glyph origins relative to
+/// the cell origin, since its size and baseline differ from the grid's.
+/// Shared behind one pointer so every prepared glyph stays as small as before.
 struct SymbolGlyph {
     layout: Arc<LineLayout>,
     origin: Point<Pixels>,
+    /// The horizontal origin across two columns, aligned on its own so a
+    /// wide cell never centres on a half device pixel.
+    wide_x: Pixels,
 }
 
 #[derive(Clone)]
@@ -853,18 +858,11 @@ fn prepare_row(
                 )
             });
         cache_activity.record(hit);
-        // Cached symbol origins centre in one column; a wide cell spans two.
         if let GlyphContent::Symbol(symbol) = &content
             && cell.style.wide
             && column + 1 < cells.len()
         {
-            content = GlyphContent::Symbol(Arc::new(SymbolGlyph {
-                layout: Arc::clone(&symbol.layout),
-                origin: point(
-                    symbol.origin.x + metrics.cell_width / 2.0,
-                    symbol.origin.y,
-                ),
-            }));
+            content = GlyphContent::WideSymbol(Arc::clone(symbol));
         }
         row.glyphs.push(PreparedGlyph {
             column: u16::try_from(column).unwrap_or(u16::MAX),
@@ -893,13 +891,17 @@ fn layout_cell(
         let size = symbols::font_size(metrics);
         let runs = [text_run(text, symbols)];
         let layout = text_system.layout_line(text, size, &runs, None);
-        let origin = symbols::origin(
-            metrics,
-            layout.width,
-            text_system.ascent(id, size),
-            text_system.descent(id, size),
-        );
-        return GlyphContent::Symbol(Arc::new(SymbolGlyph { layout, origin }));
+        let (ascent, descent) =
+            (text_system.ascent(id, size), text_system.descent(id, size));
+        let origin = |columns| {
+            symbols::origin(metrics, columns, layout.width, ascent, descent)
+        };
+        let (origin, wide_x) = (origin(1), origin(2).x);
+        return GlyphContent::Symbol(Arc::new(SymbolGlyph {
+            layout,
+            origin,
+            wide_x,
+        }));
     }
     let runs = [text_run(text, configured)];
     GlyphContent::Font(text_system.layout_line(
@@ -1003,6 +1005,9 @@ fn paint_row(
                 (layout, point(metrics.glyph_offset_x, metrics.baseline))
             }
             GlyphContent::Symbol(symbol) => (&symbol.layout, symbol.origin),
+            GlyphContent::WideSymbol(symbol) => {
+                (&symbol.layout, point(symbol.wide_x, symbol.origin.y))
+            }
         };
         for run in &layout.runs {
             for shaped in &run.glyphs {
