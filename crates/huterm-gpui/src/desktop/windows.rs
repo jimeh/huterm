@@ -378,6 +378,10 @@ struct DesktopRuntime {
     mux: Mutex<Mux>,
     host_effects: DesktopHostEffectClient,
     terminating: AtomicBool,
+    /// `[general] session_numbering` as last loaded, true for increasing.
+    /// Every lock applies it, so a reload orders with later creations
+    /// without the UI thread taking the lock.
+    increasing_numbers: AtomicBool,
     /// Orders every write of the scope's saved state; the Quit write runs
     /// inside the commit callback on a worker.
     persistence: persistence::Persistence,
@@ -388,33 +392,6 @@ struct DesktopRuntime {
     transfers: std::sync::atomic::AtomicU64,
     #[cfg(all(test, feature = "test-support"))]
     worker_hooks: worker_hooks::WorkerHooks,
-}
-
-fn automatic_numbering(
-    numbering: huterm_config::SessionNumbering,
-) -> huterm_core::AutomaticNumbering {
-    match numbering {
-        huterm_config::SessionNumbering::LowestUnused => {
-            huterm_core::AutomaticNumbering::LowestUnused
-        }
-        huterm_config::SessionNumbering::Increasing => {
-            huterm_core::AutomaticNumbering::Increasing
-        }
-    }
-}
-
-/// Applies `[general] session_numbering` after a reload, on a worker since
-/// the UI thread never takes the Mux lock after startup.
-fn apply_session_numbering(
-    cx: &mut App,
-    numbering: huterm_config::SessionNumbering,
-) {
-    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
-    let numbering = automatic_numbering(numbering);
-    cx.background_spawn(async move {
-        runtime.lock().set_automatic_numbering(numbering);
-    })
-    .detach();
 }
 
 /// A structural result with the hierarchy sequence read under the same
@@ -436,9 +413,29 @@ type Spawned = (
 
 impl DesktopRuntime {
     fn lock(&self) -> std::sync::MutexGuard<'_, Mux> {
-        self.mux
+        let mut mux = self
+            .mux
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mux.set_automatic_numbering(
+            if self.increasing_numbers.load(Ordering::Acquire) {
+                huterm_core::AutomaticNumbering::Increasing
+            } else {
+                huterm_core::AutomaticNumbering::LowestUnused
+            },
+        );
+        mux
+    }
+
+    /// Records `[general] session_numbering` for every later lock.
+    fn set_session_numbering(
+        &self,
+        numbering: huterm_config::SessionNumbering,
+    ) {
+        self.increasing_numbers.store(
+            numbering == huterm_config::SessionNumbering::Increasing,
+            Ordering::Release,
+        );
     }
 
     /// Captures the hierarchy and subscribes to every later event.
@@ -1677,15 +1674,11 @@ pub(super) fn run_with_startup(
         huterm_core::DEFAULT_SOCKET_NAME,
         loaded.config.general.restore_sessions,
     );
-    let mut mux = Mux::default();
-    mux.set_automatic_numbering(automatic_numbering(
-        loaded.config.general.session_numbering,
-    ));
     let runtime = Arc::new(DesktopRuntime {
-        mux: Mutex::new(mux),
         persistence,
         ..DesktopRuntime::default()
     });
+    runtime.set_session_numbering(loaded.config.general.session_numbering);
     // Subscribe before any window or worker exists, so this is the only
     // time the UI thread takes the Mux lock for structure.
     let (hierarchy, subscription) = runtime.subscribe_hierarchy();
@@ -12529,8 +12522,10 @@ fn finish_reload(
             desktop.transparency_support = crate::transparency::support();
             warn_transparency(&config, desktop.transparency_support);
             desktop.config = config.clone();
+            desktop
+                .runtime
+                .set_session_numbering(config.general.session_numbering);
             restore::apply_setting(cx, config.general.restore_sessions);
-            apply_session_numbering(cx, config.general.session_numbering);
             let desktop = cx.global_mut::<Desktop>();
             desktop.config_report = ConfigReport::reloaded(
                 &config,

@@ -327,9 +327,10 @@ and keeps it, never from its membership position. `Mux::set_automatic_numbering`
 picks the number: the lowest one no live record of the kind holds (the default,
 so a closed record's number is reused), or one above the highest handed out.
 Custom-named records keep their automatic name, so their numbers stay taken and
-Clear Name never repeats a live name. The client sets it from
-`[general] session_numbering` before wrapping the Mux and, after a reload, from
-a worker. `None` clears an override; blank custom names are invalid. Names
+Clear Name never repeats a live name. The client stores
+`[general] session_numbering` in an atomic that every `DesktopRuntime::lock`
+applies, so a reload orders with later creations without the UI thread taking
+the lock. `None` clears an override; blank custom names are invalid. Names
 come from `Desktop.hierarchy`, the client's projection of
 core's sequenced hierarchy events. The UI thread takes the Mux lock for
 structure only once, at startup before any window exists, to subscribe.

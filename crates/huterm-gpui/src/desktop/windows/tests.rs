@@ -1150,6 +1150,31 @@ fn orphaned_publication_spares_a_pane_moved_into_its_tab() {
     runtime.terminate().unwrap();
 }
 
+#[test]
+fn every_runtime_lock_applies_the_session_numbering_last_set() {
+    use huterm_config::SessionNumbering;
+    let runtime = DesktopRuntime::default();
+    // Creates and closes one session, returning its automatic name.
+    let next = |runtime: &DesktopRuntime| {
+        let mut mux = runtime.lock();
+        let session = mux.create_session(None).unwrap();
+        let name = mux.session(session).unwrap().display_name().to_owned();
+        mux.close_session(session).unwrap();
+        name
+    };
+    runtime.lock().create_session(None).unwrap();
+    assert_eq!(next(&runtime), "Session 2");
+    assert_eq!(next(&runtime), "Session 2", "the default reuses 2");
+    // Reloads apply in the order the UI thread made them.
+    runtime.set_session_numbering(SessionNumbering::Increasing);
+    runtime.set_session_numbering(SessionNumbering::LowestUnused);
+    runtime.set_session_numbering(SessionNumbering::Increasing);
+    assert_eq!(next(&runtime), "Session 3");
+    runtime.set_session_numbering(SessionNumbering::LowestUnused);
+    assert_eq!(next(&runtime), "Session 2");
+    runtime.terminate().unwrap();
+}
+
 /// A runtime whose saves land in memory, with checkpoints running.
 fn recording_runtime() -> (DesktopRuntime, persistence::Recorder) {
     let recorder = persistence::Recorder::default();
