@@ -154,9 +154,18 @@ severities announce assertively.
 - GPUI tests: the routing table, notice content, tags, Linux escaping, and
   window tests through a real terminal for progress in the tab and pane,
   each notification route, Show Tab, the deny setting, and bell attention.
-- Native checks on a scratch macOS bundle: a notification in front, behind,
-  and with permission denied, and the Dock bounce. Linux GNOME VM: the
-  daemon path and the X11 urgency hint.
+- Native macOS checks on scratch bundles with their own bundle IDs, through
+  computer use, on 2026-11-07:
+  - The ring on active and inactive tabs and the pane bar, determinate,
+    paused, error, and indeterminate (moving), then cleared.
+  - Background notices from OSC 9 and OSC 777, hostile text shown plainly,
+    and the bell mark with Show Tab revealing its tab.
+  - An in-front notice with no Show Tab.
+  Computer use may not operate the macOS permission prompt or the Dock, so
+  system banners, the permission choice, clicking a banner, and the Dock
+  bounce need a manual check.
+- Linux: `mise run lint` and the focused GPUI tests in the Docker container,
+  including markup escaping.
 
 ## Unresolved questions
 
