@@ -4,24 +4,57 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
-    AttachmentId, PaneId, PaneLayout, PaneNode, RuntimeId, SessionId,
-    SplitAxis, TabId, TerminalId, WorkspaceId,
+    AttachmentId, PaneId, PaneLayout, PaneNode, RuntimeId, ServerIncarnation,
+    SessionId, SplitAxis, TabId, TerminalId, WorkspaceId,
 };
+
+/// The longest custom or fallback name, in UTF-8 bytes, that a session,
+/// workspace, tab, or pane holds.
+///
+/// Core rejects a longer custom name and truncates a longer fallback name at
+/// a character boundary, so every hierarchy state stays encodable.
+pub const MAX_NAME_BYTES: usize = 256;
+
+/// The most sessions, workspaces, tabs, panes, splits, and attachments one
+/// runtime holds together.
+///
+/// Core refuses a structural operation that would exceed it before changing
+/// anything, so every hierarchy snapshot stays bounded.
+pub const MAX_HIERARCHY_ITEMS: usize = 16_384;
 
 /// Identifies one ordered hierarchy stream.
 ///
-/// Today a stream is one runtime incarnation within this process. A server
-/// incarnation can extend it later without changing any event.
+/// An embedded stream is one runtime incarnation within this process. A
+/// stream read from a server also names the server incarnation, so a stream
+/// from a restarted server is a different stream even when the client maps
+/// it onto the same runtime.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct StreamId {
     runtime: RuntimeId,
+    incarnation: Option<ServerIncarnation>,
 }
 
 impl StreamId {
-    /// Creates the stream published by a runtime incarnation.
+    /// Creates the stream published by an in-process runtime incarnation.
     #[must_use]
     pub const fn new(runtime: RuntimeId) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            incarnation: None,
+        }
+    }
+
+    /// Creates the stream of a server incarnation, read through the
+    /// client-local runtime its identities are scoped to.
+    #[must_use]
+    pub const fn remote(
+        runtime: RuntimeId,
+        incarnation: ServerIncarnation,
+    ) -> Self {
+        Self {
+            runtime,
+            incarnation: Some(incarnation),
+        }
     }
 
     /// Returns the runtime incarnation whose structure the stream describes.
@@ -29,6 +62,26 @@ impl StreamId {
     pub const fn runtime(self) -> RuntimeId {
         self.runtime
     }
+
+    /// Returns the server incarnation of a remote stream; `None` for an
+    /// in-process one.
+    #[must_use]
+    pub const fn incarnation(self) -> Option<ServerIncarnation> {
+        self.incarnation
+    }
+}
+
+/// The set of fields a hierarchy digest covers.
+///
+/// A later version that adds digested state adds a profile, so peers that do
+/// not hold that state keep computing the digest without it.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum DigestProfile {
+    /// Structure, names, and attachments, as [`HierarchyState::digest`]
+    /// documents them.
+    #[default]
+    Base,
 }
 
 /// Resolves a tab label: the custom name, then a non-blank terminal title,
@@ -403,6 +456,9 @@ pub enum HierarchyEvent {
     },
     /// Application shutdown removed every session and attachment.
     Reset,
+    /// Advances the sequence and changes nothing: what a peer on an older
+    /// version receives for a newer event that changes no state it holds.
+    Skipped,
 }
 
 /// A hierarchy event with its stream and contiguous sequence number.
@@ -803,6 +859,14 @@ impl HierarchyState {
     /// proportional to the hierarchy, so do not compute it per event.
     #[must_use]
     pub fn digest(&self) -> u64 {
+        self.digest_for(DigestProfile::Base)
+    }
+
+    /// Returns the digest of the fields `profile` covers; the base profile
+    /// is [`Self::digest`]'s encoding.
+    #[must_use]
+    pub fn digest_for(&self, profile: DigestProfile) -> u64 {
+        let DigestProfile::Base = profile;
         let mut hash = Fnv1a(FNV_OFFSET);
         for session_id in &self.session_order {
             let session = &self.sessions[session_id];
@@ -1003,6 +1067,7 @@ impl HierarchyState {
                 self.attachments.clear();
                 touched = Touched::everything();
             }
+            HierarchyEvent::Skipped => {}
         }
         Some(touched)
     }
@@ -1162,6 +1227,7 @@ impl HierarchyState {
                 .all(|split| self.owns(split.runtime()))
             && layout.panes().into_iter().all(|pane| {
                 self.owns(pane.id.runtime())
+                    && self.owns(pane.terminal_id.runtime())
                     && self.panes.get(&pane.id).is_none_or(|t| *t == tab)
                     && self
                         .terminals

@@ -13,7 +13,7 @@ use huterm_protocol::{
     WorkspaceId,
 };
 
-use super::{Mux, MuxError};
+use super::{Mux, MuxError, layout_items};
 
 impl Mux {
     /// Rearranges a tab's panes into `arrangement`, which must hold exactly
@@ -59,6 +59,7 @@ impl Mux {
         if layout == *current {
             return Ok(LayoutChange::default());
         }
+        self.admit_items(layout_items(current), layout_items(&layout))?;
         let before = vec![self.snapshot(tab)];
         self.reserve_ids(count)?;
         let record = self.tab_record_mut(workspace, tab)?;

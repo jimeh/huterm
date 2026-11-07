@@ -22,6 +22,11 @@ pub const SPLIT_TOTAL: u32 = 1_000_000;
 /// leaves.
 pub const MAX_SPLIT_CHILDREN: usize = 256;
 
+/// The most nodes on any path from a layout's root to a pane: 1 for a
+/// single pane. It bounds the recursion of every layout traversal, so a
+/// layout read from a peer cannot exhaust a thread's stack.
+pub const MAX_LAYOUT_DEPTH: usize = 64;
+
 /// The extent of the root on each axis in normalized geometry.
 pub const NORMALIZED_EXTENT: u128 = 1 << 96;
 
@@ -166,6 +171,9 @@ pub enum LayoutError {
     MissingPane,
     /// A layout template without `*` has fewer pane slots than panes.
     TooManyPanes,
+    /// A path from the root to a pane holds more than
+    /// [`MAX_LAYOUT_DEPTH`] nodes.
+    TooDeep,
 }
 
 impl fmt::Display for LayoutError {
@@ -184,6 +192,7 @@ impl fmt::Display for LayoutError {
             Self::SelfTarget => "target is inside the moved layout",
             Self::MissingPane => "a pane of the layout is missing",
             Self::TooManyPanes => "the layout has fewer pane slots than panes",
+            Self::TooDeep => "splits nest too deeply",
         })
     }
 }
@@ -310,11 +319,12 @@ impl PaneLayout {
     ///
     /// # Errors
     /// Rejects a split with too few or too many children, invalid weights,
-    /// a child split on its parent's axis below the child limit, or a
-    /// repeated pane, split, or terminal identity.
+    /// a child split on its parent's axis below the child limit, a repeated
+    /// pane, split, or terminal identity, or nesting deeper than
+    /// [`MAX_LAYOUT_DEPTH`].
     pub fn new(root: PaneNode) -> Result<Self, LayoutError> {
         let mut ids = Ids::default();
-        validate(&root, None, &mut ids)?;
+        validate(&root, None, 1, &mut ids)?;
         Ok(Self { root })
     }
 
@@ -381,8 +391,9 @@ impl PaneLayout {
     /// identities so a caller can refuse before allocating any.
     ///
     /// # Errors
-    /// Rejects an unknown target, a target whose weight is 1, and a parent
-    /// already at [`MAX_SPLIT_CHILDREN`].
+    /// Rejects an unknown target, a target whose weight is 1, a parent
+    /// already at [`MAX_SPLIT_CHILDREN`], and a new split that would nest
+    /// deeper than [`MAX_LAYOUT_DEPTH`].
     pub fn check_split(
         &self,
         target: PaneId,
@@ -392,7 +403,16 @@ impl PaneLayout {
             PaneNode::Pane(leaf) if leaf.id == target => Ok(()),
             PaneNode::Pane(_) => Err(LayoutError::UnknownPane),
             PaneNode::Split(node) => check_within(node, target, direction),
+        }?;
+        // A new split replaces the target, so its panes sit one level
+        // deeper than the target does.
+        if self.forms_split(target, direction)?
+            && pane_depth(&self.root, target, 1)
+                .is_some_and(|depth| depth >= MAX_LAYOUT_DEPTH)
+        {
+            return Err(LayoutError::TooDeep);
         }
+        Ok(())
     }
 
     /// Whether inserting beside `target` toward `direction` forms a new
@@ -501,8 +521,8 @@ impl PaneLayout {
         same_shape(&self.root, &other.root, false)
     }
 
-    /// The same layout with every pane and split identity moved into
-    /// `runtime`'s scope. Numeric identities, weights, and names stay, so
+    /// The same layout with every pane, split, and terminal identity moved
+    /// into `runtime`'s scope. Numeric identities, weights, and names stay, so
     /// every invariant still holds.
     #[must_use]
     pub fn in_runtime(&self, runtime: RuntimeId) -> Self {
@@ -932,8 +952,12 @@ struct Ids {
 fn validate(
     node: &PaneNode,
     parent: Option<(SplitAxis, usize)>,
+    depth: usize,
     ids: &mut Ids,
 ) -> Result<(), LayoutError> {
+    if depth > MAX_LAYOUT_DEPTH {
+        return Err(LayoutError::TooDeep);
+    }
     match node {
         PaneNode::Pane(pane) => {
             if !ids.panes.insert(pane.id)
@@ -967,7 +991,12 @@ fn validate(
                 return Err(LayoutError::InvalidWeights);
             }
             for child in &split.children {
-                validate(&child.node, Some((split.axis, count)), ids)?;
+                validate(
+                    &child.node,
+                    Some((split.axis, count)),
+                    depth + 1,
+                    ids,
+                )?;
             }
         }
     }
@@ -1174,6 +1203,17 @@ fn check_within(
     Err(LayoutError::UnknownPane)
 }
 
+/// The nodes on the path from `node`, at `depth`, to the pane `target`.
+fn pane_depth(node: &PaneNode, target: PaneId, depth: usize) -> Option<usize> {
+    match node {
+        PaneNode::Pane(pane) => (pane.id == target).then_some(depth),
+        PaneNode::Split(split) => split
+            .children
+            .iter()
+            .find_map(|child| pane_depth(&child.node, target, depth + 1)),
+    }
+}
+
 /// The axis of the split that directly holds `target` under `node`.
 fn parent_axis(node: &SplitNode, target: PaneId) -> Option<SplitAxis> {
     node.children.iter().find_map(|child| match &child.node {
@@ -1196,6 +1236,8 @@ fn rescope(node: &mut PaneNode, runtime: RuntimeId) {
     match node {
         PaneNode::Pane(pane) => {
             pane.id = PaneId::in_runtime(runtime, pane.id.get());
+            pane.terminal_id =
+                TerminalId::in_runtime(runtime, pane.terminal_id.get());
         }
         PaneNode::Split(split) => {
             split.id = SplitId::in_runtime(runtime, split.id.get());

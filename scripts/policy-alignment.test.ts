@@ -30,11 +30,11 @@ test("every dependency cooldown uses the same release age in days", () => {
 });
 
 test("Mise pins the same Rust toolchain as rust-toolchain.toml", () => {
-  const toolchain = toml("rust-toolchain.toml").toolchain as { channel: string; components: string[]; profile: string };
-  const rust = toml("mise.toml").tools.rust as { version: string; components: string[]; profile: string };
+  const toolchain = toml("rust-toolchain.toml").toolchain as { channel: string; components: string[]; profile: string; targets: string[] };
+  const rust = toml("mise.toml").tools.rust as { version: string; components: string[]; profile: string; targets: string[] };
   const locked = (toml("mise.lock").tools.rust as { version: string }[]).map(({ version }) => version);
-  expect({ version: rust.version, components: [...rust.components].sort(), profile: rust.profile })
-    .toEqual({ version: toolchain.channel, components: [...toolchain.components].sort(), profile: toolchain.profile });
+  expect({ version: rust.version, components: [...rust.components].sort(), profile: rust.profile, targets: [...rust.targets].sort() })
+    .toEqual({ version: toolchain.channel, components: [...toolchain.components].sort(), profile: toolchain.profile, targets: [...toolchain.targets].sort() });
   expect(locked).toEqual([toolchain.channel]);
 });
 

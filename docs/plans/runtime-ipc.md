@@ -1,6 +1,7 @@
 # Local runtime IPC
 
-Status: approved for [issue #44][issue-44].
+Status: in progress for [issue #44][issue-44]. Slice 1 is implemented, with
+the revisions recorded under it; slices 2 to 5 remain.
 
 Named server mode moves the runtime out of the desktop process. This plan
 defines the contract that carries runtime requests, results, the hierarchy
@@ -987,7 +988,8 @@ A disconnect never closes a terminal, workspace, or session.
 | `MAX_CELL_TEXT_BYTES`, a core invariant | 1 KiB | Core truncates at row extraction |
 | Update message cap | From the grid an update's header declares: per cell, the cell-text limit plus its length prefix, run header, and style-table entry; per row and per update, their headers | Protocol violation |
 | `MAX_NAME_BYTES`, a core invariant | 256 bytes | Custom names: `InvalidName`; fallback names: truncated |
-| `MAX_HIERARCHY_ITEMS`, a core invariant | 16,384 sessions, workspaces, tabs, panes, and splits together | `LimitExceeded` from the structural operation |
+| `MAX_HIERARCHY_ITEMS`, a core invariant | 16,384 sessions, workspaces, tabs, panes, splits, and attachments together | `LimitExceeded` from the structural operation |
+| `MAX_LAYOUT_DEPTH`, a protocol invariant | 64 nodes from a layout's root to any pane | `PaneLayout::new` refuses; core refuses the split, move, or arrange |
 | Hierarchy message cap | Computed from the two invariants above and the encoding overhead per item | Protocol violation |
 | `MAX_STATUS_TEXT_BYTES`, a core invariant | 4 KiB per title, metadata string, and failure message | Core truncates when it publishes status |
 | Status message cap | Computed from `MAX_STATUS_TEXT_BYTES` for each text field and the failure log's 8 entries | Protocol violation |
@@ -1045,7 +1047,10 @@ well, so in-process and IPC clients see the same state:
   are truncated at a character boundary. Today `validate_name` checks only
   for blank names.
 - A structural operation that would exceed `MAX_HIERARCHY_ITEMS` fails with
-  `LimitExceeded` before it changes anything.
+  `LimitExceeded` before it changes anything. Attachments count as items.
+- A layout deeper than `MAX_LAYOUT_DEPTH` cannot be built: `PaneLayout::new`
+  refuses it, so a split, move, or arrange that would pass it fails before
+  it allocates an identity.
 - Titles, metadata strings, and failure messages longer than
   `MAX_STATUS_TEXT_BYTES` are truncated at a character boundary when status
   is published.
@@ -1410,10 +1415,10 @@ The simulation changed the design in six places, all reflected above:
   scenario reconnects only the clients whose links carried damaged bytes,
   and checks that recovery restores convergence.
 
-Coverage-guided fuzzing of the schedule, a cargo-fuzz target that drives
-the simulation's random choices from the fuzzer's input so it steers toward
-interleavings that seeds rarely reach, waits for slice 1's pinned nightly
-and fuzz setup.
+Coverage-guided fuzzing of the schedule arrived with slice 1: the
+`sim_schedule` cargo-fuzz target drives the simulation's random choices
+from the fuzzer's input through `run_scheduled`, so it steers toward
+interleavings that seeds rarely reach.
 
 It does not model scrolling, mouse and focus arbitration, close tickets,
 undo tokens, effects that need a response, pane layouts, the real codec's
@@ -1476,6 +1481,66 @@ and round-trips at 64 KiB frames; a client of another major version reads
 `Reject { IncompatibleMajor }`; an ID from another `RuntimeId` refuses to
 encode; the wasm check passes; the gate fails when a dependency is added to
 `huterm-wire`.
+
+#### Revisions during slice 1
+
+The maintainer approved the first two through the coordinating thread on
+2026-11-07, because they change the contract. The rest are implementation
+choices within it.
+
+- **Layout depth.** `PaneLayout` had no depth limit: alternating-axis splits
+  nest without bound, because each new split has its own `SPLIT_TOTAL`. Its
+  validation, the digest, and any decoder recurse per level, so a peer could
+  send a cheap deeply nested layout that exhausts a thread's stack.
+  `huterm-protocol` gains `MAX_LAYOUT_DEPTH` (64). `PaneLayout::new` refuses
+  a deeper layout with `LayoutError::TooDeep`, and `check_split` refuses a
+  split past it before core allocates, so core's splits, moves, and
+  arrangements all hold it. The decoder checks the depth before it
+  recurses.
+- **Attachments are hierarchy items.** Snapshots carry every attachment, so
+  the hierarchy cap needs them bounded. `MAX_HIERARCHY_ITEMS` counts them,
+  and `attach_session` answers `LimitExceeded` at the limit.
+- **Restores hold the invariants too.** Core refuses a capture with a name
+  longer than `MAX_NAME_BYTES` (`InvalidName`) or more than
+  `MAX_HIERARCHY_ITEMS` items (`LimitExceeded`), in `SpawnedTerminals::spawn`
+  before anything starts and again in `Mux::restore`. The check stays out of
+  `RuntimeCapture::validate`, because `huterm-state` shares that validator and
+  keeps its own file bounds, such as 16,384 panes. `restore_tabs` refuses a
+  recorded `LayoutChange` that holds a longer name with `InvalidRestore`.
+- **Encodings.** `MAJOR` starts at 1. An enum whose variants carry data
+  travels as a tag and a record, as the primitives table says; a field-less
+  enum (split axis, client kind, retry class, error code, outcome) travels
+  as a bare tag. Digests travel as 8 little-endian bytes, because a varint
+  of a uniform 64-bit value usually takes 10. Message kinds are numbered
+  `Hello` 0, `Welcome` 1, `Reject` 2, `HierarchySnapshot` 3,
+  `HierarchyEvent` 4, `HierarchyResync` 5, `Paste` 6, and `HostEffect` 7,
+  and the handshake kinds' cap is `HANDSHAKE_FRAME_LIMIT`. That cap is frozen
+  for `Hello` in every major version, with its kind and leading fields, so a
+  server of any major version reads a newer client's `Hello` and answers
+  `Reject` instead of closing on an over-cap message.
+- **Payload records ahead of their slices.** The acceptance criteria need a
+  paste and a clipboard write at their limits, so slice 1 defines the
+  `Paste` and `HostEffect` records. A paste is its own kind, so only it
+  carries the paste cap. A host effect's `permission_generation` counts the
+  generation of its payload's effect kind, since #81 makes permission per
+  kind. Minor version 0 is unreleased until #45 ships a server, so slices 3b
+  and 4 may still change these records, as later slices add kinds and error
+  codes.
+- **The test-only minor version** is `MINOR + 1`, behind the `test-minor`
+  feature. It appends a tab's pinned flag and adds `TabPinned` (sent to
+  minor 0 as `Skipped`), `TabRetitled` (as `TabRenamed`), and
+  `TabsExchanged` (as a projected `HierarchyResync`). Slice 1 proves the
+  downgrade at the codec; slice 3a reuses the same events on a live stream.
+  The cell style flag arrives with slice 2's update encoder.
+- **New protocol variants need a wire form.** `HierarchyEvent` is
+  `non_exhaustive`, so a variant added to `huterm-protocol` compiles in
+  `huterm-wire` but encodes as `Unsupported` until it gets a tag, an
+  encoding, and a golden vector. The vector test counts every variant.
+- **Fuzzing.** `fuzz/rust-toolchain.toml` pins `nightly-2026-11-03`, and
+  `fuzz:wire` installs `cargo-fuzz` 0.13.2 as a task tool. The `Fuzz`
+  workflow runs daily and on dispatch, and no ruleset requires it. The
+  schedule target drives `huterm-ipc-sim` through `run_scheduled`, which
+  draws the scheduler's choices from the fuzzer's bytes before its seed.
 
 ### Slice 2: terminal updates and status
 

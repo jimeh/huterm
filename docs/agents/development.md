@@ -835,4 +835,6 @@ product code (see
 normal suite runs every scenario over 12 seeds; before changing the IPC
 design, change the simulation first and run `mise run sim:ipc -- 2000`.
 `mise run sim:ipc -- <scenario> <seed>` replays one failing seed exactly.
-It has no normal or build dependencies, and no crate may depend on it.
+It has no normal or build dependencies, and no workspace crate may depend on
+it; the `sim_schedule` fuzz target in `fuzz/` drives it through
+`run_scheduled`, which draws the scheduler's choices from the fuzzer's bytes.

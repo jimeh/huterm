@@ -9,11 +9,12 @@
 use std::collections::{HashMap, HashSet};
 
 use huterm_protocol::{
-    HierarchyEvent, LayoutChange, PaneId, PaneLayout, RuntimeId, SessionId,
-    TabChange, TabId, TabRecord, TabSnapshot, TerminalId, WorkspaceId,
+    HierarchyEvent, LayoutChange, MAX_NAME_BYTES, PaneId, PaneLayout,
+    RuntimeId, SessionId, TabChange, TabId, TabRecord, TabSnapshot, TerminalId,
+    WorkspaceId,
 };
 
-use super::{Mux, MuxError, Tab, position};
+use super::{Mux, MuxError, Tab, layout_items, position};
 
 /// Which side of a recorded [`LayoutChange`] a restore returns to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,6 +129,10 @@ impl Mux {
         if sorted_panes(&current) != sorted_panes(to) {
             return Err(MuxError::InvalidRestore);
         }
+        if to.iter().any(names_too_long) {
+            return Err(MuxError::InvalidRestore);
+        }
+        self.admit_items(snapshot_items(&current), snapshot_items(to))?;
         self.check_restored_splits(&tabs, to)?;
         let was = pane_homes(&current);
         let names = RestoredNames::new(from, &current, to);
@@ -392,6 +397,16 @@ impl Mux {
     }
 }
 
+/// The tabs, panes, and splits the present records hold, each one hierarchy
+/// item.
+fn snapshot_items(snapshots: &[TabSnapshot]) -> usize {
+    snapshots
+        .iter()
+        .filter_map(|snapshot| snapshot.record.as_ref())
+        .map(|record| 1 + layout_items(&record.layout))
+        .sum()
+}
+
 /// Every pane the snapshots hold, in identity order.
 fn sorted_panes(snapshots: &[TabSnapshot]) -> Vec<(PaneId, TerminalId)> {
     let mut panes: Vec<(PaneId, TerminalId)> = snapshots
@@ -516,6 +531,19 @@ impl RestoredNames {
             .get(&tab)
             .map_or_else(|| recorded.map(str::to_owned), Clone::clone)
     }
+}
+
+/// Whether a record holds a tab or pane name longer than
+/// [`MAX_NAME_BYTES`], which no record this runtime produced can.
+fn names_too_long(snapshot: &TabSnapshot) -> bool {
+    snapshot.record.as_ref().is_some_and(|record| {
+        let long = |name: &str| name.len() > MAX_NAME_BYTES;
+        record.custom_name.as_deref().is_some_and(long)
+            || record.layout.panes().into_iter().any(|pane| {
+                long(&pane.fallback_name)
+                    || pane.custom_name.as_deref().is_some_and(long)
+            })
+    })
 }
 
 /// Every pane's custom name across `snapshots`.

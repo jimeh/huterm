@@ -11,15 +11,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use huterm_protocol::{
-    HierarchyEvent, PaneId, PaneInfo, PaneLayout, PaneNode, RuntimeCapture,
-    RuntimeId, SessionCapture, SessionId, SessionInfo, TabId, TabInfo,
-    TerminalCapture, TerminalCommand, TerminalId, TerminalLaunch,
-    WorkspaceCapture, WorkspaceId, WorkspaceInfo,
+    HierarchyEvent, MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, PaneId, PaneInfo,
+    PaneLayout, PaneNode, RuntimeCapture, RuntimeId, SessionCapture, SessionId,
+    SessionInfo, TabId, TabInfo, TerminalCapture, TerminalCommand, TerminalId,
+    TerminalLaunch, WorkspaceCapture, WorkspaceId, WorkspaceInfo,
 };
 
 use super::{
     Mux, MuxError, SESSION_NAME, Session, Tab, WORKSPACE_NAME, Workspace,
-    automatic_ordinal, fallback_name, position,
+    automatic_ordinal, fallback_name, layout_items, position,
 };
 use crate::{RuntimeError, TerminalRuntime};
 
@@ -97,6 +97,7 @@ impl SpawnedTerminals {
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<Self, MuxError> {
         capture.validate().map_err(MuxError::InvalidCapture)?;
+        within_limits(capture)?;
         let mut spawned = Self {
             runtime,
             terminals: BTreeMap::new(),
@@ -108,7 +109,7 @@ impl SpawnedTerminals {
                 spawned.shutdown()?;
                 return Err(MuxError::RestoreCancelled);
             }
-            let id = record.id;
+            let id = TerminalId::in_runtime(runtime, record.id.get());
             let command = command(record);
             match TerminalRuntime::spawn_in(runtime, id, &command) {
                 Ok(started) => {
@@ -174,7 +175,12 @@ impl SpawnedTerminals {
             .keys()
             .chain(self.failures.iter().map(|failure| &failure.terminal))
             .all(|id| seen.insert(*id));
-        accounted && seen == pane_terminals(capture).into_iter().collect()
+        accounted
+            && seen
+                == pane_terminals(capture)
+                    .into_iter()
+                    .map(|id| TerminalId::in_runtime(self.runtime, id.get()))
+                    .collect()
     }
 }
 
@@ -182,6 +188,48 @@ impl Drop for SpawnedTerminals {
     fn drop(&mut self) {
         let _ = self.shutdown();
     }
+}
+
+/// Refuses a capture that holds a name longer than [`MAX_NAME_BYTES`] or
+/// more than [`MAX_HIERARCHY_ITEMS`] items, which a restore could not
+/// recreate without breaking the invariants every other path holds. Saved
+/// state keeps its own, looser bounds, so the check lives here.
+fn within_limits(capture: &RuntimeCapture) -> Result<(), MuxError> {
+    let long = |name: &str| name.len() > MAX_NAME_BYTES;
+    let mut items = 0;
+    for session in &capture.sessions {
+        items += 1;
+        let info = &session.info;
+        let mut names = vec![
+            Some(info.automatic_name.as_str()),
+            info.custom_name.as_deref(),
+        ];
+        for workspace in &session.workspaces {
+            items += 1;
+            let info = &workspace.info;
+            names.extend([
+                Some(info.automatic_name.as_str()),
+                info.custom_name.as_deref(),
+            ]);
+            for tab in &workspace.tabs {
+                items += 1 + layout_items(&tab.layout);
+                names.push(tab.custom_name.as_deref());
+                names.extend(
+                    tab.layout
+                        .panes()
+                        .into_iter()
+                        .map(|pane| pane.custom_name.as_deref()),
+                );
+            }
+        }
+        if names.into_iter().flatten().any(long) {
+            return Err(MuxError::InvalidName);
+        }
+    }
+    if items > MAX_HIERARCHY_ITEMS {
+        return Err(MuxError::LimitExceeded);
+    }
+    Ok(())
 }
 
 /// Every terminal the capture's panes show, in pane traversal order.
@@ -286,7 +334,7 @@ impl Mux {
             }
         }
         TerminalCapture {
-            id,
+            id: TerminalId::new(id.get()),
             directories,
             launch: TerminalLaunch::DefaultShell,
         }
@@ -332,6 +380,8 @@ impl Mux {
             Some(MuxError::ForeignRuntime(spawned.runtime))
         } else if let Err(error) = capture.validate() {
             Some(MuxError::InvalidCapture(error))
+        } else if let Err(error) = within_limits(capture) {
+            Some(error)
         } else if !spawned.covers(capture) {
             Some(MuxError::RestoreMismatch)
         } else {
