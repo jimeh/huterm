@@ -150,6 +150,15 @@ because a retried pass leaves no failed job to inspect. Setting either
 variable does not affect rust-cache keys, which hash only `CARGO*`, `RUST*`,
 `CC*`, `CXX*`, and `CMAKE*` variables.
 
+## Fuzzing
+
+The `Fuzz` workflow runs `mise run fuzz:wire` daily and on dispatch, with
+`HUTERM_FUZZ_SECONDS` per target, and uploads `fuzz/artifacts/` when a
+target crashes. It is evidence, not a gate: keep it out of `ci.yml` and the
+`Verify` gates, so a broken nightly never blocks a pull request. Its Mise step
+installs no tools; Rust comes from `ci:toolchain` and cargo-fuzz from a
+locked install after it, as `scripts/ci-toolchain.test.ts` checks.
+
 ## Workflow policy
 
 Keep workflow scanning scoped to the root `.github` directory. Published vendor

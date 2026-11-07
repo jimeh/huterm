@@ -6,8 +6,9 @@ crate. The release-age policy and license rules are in
 
 ## Toolchain and platform requirements
 
-Keep the Rust version, minimal profile, and `clippy`/`rustfmt` components in
-`mise.toml` aligned with `rust-toolchain.toml`; CI installs only the named Mise
+Keep the Rust version, minimal profile, `clippy`/`rustfmt` components, and the
+`wasm32-unknown-unknown` target in `mise.toml` aligned with
+`rust-toolchain.toml`; CI installs only the named Mise
 tools for each job. `mise.lock` also records the Rust version, so run
 `mise install` and commit the lock after any toolchain bump; otherwise CI
 fails to resolve the tool. `scripts/policy-alignment.test.ts` checks that the
@@ -38,6 +39,22 @@ On macOS, GPUI shader compilation needs Xcode's optional Metal Toolchain;
 On Ubuntu, GPUI's X11 backend needs both XKB development packages at link time
 and a Vulkan device at runtime; CI uses Mesa's software Vulkan driver under
 Xvfb.
+
+## Fuzzing toolchain
+
+`fuzz/` is a separate Cargo workspace with its own `Cargo.lock`, built by a
+dated nightly that `fuzz/rust-toolchain.toml` pins. `scripts/fuzz-wire.sh`
+reads that channel, overrides the stable `RUSTUP_TOOLCHAIN` Mise exports,
+installs the nightly with rustup, and passes the host triple to cargo-fuzz,
+whose prebuilt binary may target another one. cargo-fuzz is a task tool of
+`fuzz:wire`, locked in `mise.lock`; CI installs it with
+`mise install --locked cargo:cargo-fuzz`.
+
+To bump the nightly, pick a date at least three days old, change the
+channel, and run `mise run fuzz:wire` with a short `HUTERM_FUZZ_SECONDS`.
+Check new crates in `fuzz/Cargo.lock` against the release-age cutoff below,
+and prefer the versions the root `Cargo.lock` already holds. A broken nightly
+fails only the scheduled `Fuzz` workflow, never a pull request.
 
 ## Cargo release age
 
