@@ -891,16 +891,69 @@ fn widening_a_window_with_its_sheet_open_docks_one_sidebar(
         assert_eq!(view.switcher_mode, Some(SwitcherMode::Sheet));
         assert!(view.focused_workspace_row(window).is_some());
     });
+    // A row's menu opened in the sheet holds focus.
+    harness.press(window, "shift-f10");
+    assert_eq!(
+        harness.cx.update(|cx| open_kind(cx, window)),
+        Some("workspace_row")
+    );
     // Widening docks it: the sheet closes before the docked sidebar draws,
-    // so no row or focus handle draws twice in a frame.
+    // so no row or focus handle draws twice in a frame, and the menu goes
+    // with it, handing focus back to the terminal.
     VisualTestContext::from_window(window, &harness.cx)
         .simulate_resize(gpui::size(px(1000.0), height));
     harness.wait_chrome(window, "docked", WorkspaceChrome::docked);
     harness.cx.run_until_parked();
-    harness.update_view(window, |view, _, _| {
+    harness.update_view(window, |view, window, cx| {
         assert_eq!(view.switcher_mode, None);
         assert!(view.workspace_visible);
+        assert!(view.menu.is_none(), "the sheet's menu stayed");
+        let terminal = view.active_view(cx).unwrap();
+        assert!(terminal.read(cx).focus.is_focused(window), "focus went");
     });
+}
+
+#[gpui::test]
+fn each_opener_toggles_only_its_own_popover(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let (empty, _) = harness.add_workspace(0);
+    harness.activate_window(window);
+    harness.show_workspace(window, empty, &[]);
+    let switcher = harness.switcher_bounds(window);
+    let switch = harness.painted(window, "Switch Workspace…", |view| {
+        view.empty_state_switch_bounds()
+    });
+    let mode = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, _| view.switcher_mode)
+    };
+    // The empty state's button opens the popover at itself and closes it
+    // on a second click; the switcher does not show it open meanwhile.
+    harness.click_at(window, switch.center());
+    assert_eq!(
+        mode(&mut harness),
+        Some(SwitcherMode::Popover(SwitcherAnchor::EmptyState))
+    );
+    harness.cx.update(|cx| {
+        let aria = &a11y_node(cx, window, "workspace-switcher")["aria"];
+        assert_eq!(aria["expanded"], false);
+    });
+    harness.click_at(window, switch.center());
+    harness.cx.run_until_parked();
+    assert_eq!(mode(&mut harness), None, "the button reopened its popover");
+    // A click on the switcher while the empty state's popover is open
+    // moves it to the switcher in one press.
+    harness.click_at(window, switch.center());
+    harness.click_at(window, switcher.center());
+    harness.cx.run_until_parked();
+    assert_eq!(
+        mode(&mut harness),
+        Some(SwitcherMode::Popover(SwitcherAnchor::Switcher))
+    );
+    harness.click_at(window, switcher.center());
+    harness.cx.run_until_parked();
+    assert_eq!(mode(&mut harness), None, "the switcher reopened it");
 }
 
 #[gpui::test]
@@ -962,16 +1015,18 @@ fn the_switcher_closes_for_commands_the_palette_reload_and_deactivation(
 fn right_corner_controls_sit_just_inside_the_menu_button(
     cx: &mut TestAppContext,
 ) {
-    for (tabs, width) in [
-        (TabPosition::Titlebar, 1000.0),
-        (TabPosition::Titlebar, 480.0),
-        (TabPosition::Top, 1000.0),
-        (TabPosition::Right, 1000.0),
+    for (tabs, width, session_button) in [
+        (TabPosition::Titlebar, 1000.0, false),
+        (TabPosition::Titlebar, 480.0, false),
+        (TabPosition::Top, 1000.0, false),
+        (TabPosition::Right, 1000.0, false),
+        (TabPosition::Right, 1000.0, true),
     ] {
         let mut harness = DesktopHarness::with_config(cx, |config| {
             config.sidebar.position = SidebarPosition::Right;
             config.tabs.position = tabs;
             config.tabs.always_show = true;
+            config.window.session_button = session_button;
         });
         let (window, _) = harness.workspace_window();
         let height = harness
@@ -980,7 +1035,17 @@ fn right_corner_controls_sit_just_inside_the_menu_button(
             .simulate_resize(gpui::size(px(width), height));
         harness.add_workspace(1);
         let switcher = harness.switcher_bounds(window);
-        let label = format!("{tabs:?} {width}");
+        if session_button {
+            harness
+                .runtime
+                .lock()
+                .rename_session(
+                    harness.session,
+                    Some("a session with a long name"),
+                )
+                .unwrap();
+        }
+        let label = format!("{tabs:?} {width} {session_button}");
         harness.cx.run_until_parked();
         harness.update_view(window, |view, window, _| {
             let button = view.sidebar_button_bounds.get().unwrap();
@@ -998,6 +1063,15 @@ fn right_corner_controls_sit_just_inside_the_menu_button(
                 // takes the row above its tabs, inside the column.
                 assert!(layout.tabs.contains(&switcher.center()), "{label}");
                 assert!(button.left() >= layout.tabs.left(), "{label}");
+                // The opt-in session control fits the strip beside them.
+                if let Some(control) = view.session_button_bounds.get() {
+                    assert!(
+                        control.left() >= layout.tabs.left()
+                            && control.right() <= button.left(),
+                        "{label}: {control:?} {button:?} {:?}",
+                        layout.tabs
+                    );
+                }
             } else {
                 assert!(switcher.right() <= button.left(), "{label}");
                 assert!(

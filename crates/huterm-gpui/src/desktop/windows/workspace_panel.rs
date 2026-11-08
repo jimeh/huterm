@@ -921,12 +921,14 @@ impl WorkspaceView {
             return false;
         }
         self.workspace_drag = None;
+        // A menu opened from its rows goes with them, and hands focus back
+        // to the terminal, since nothing it opened from is left to take it.
         if self.menu.as_ref().is_some_and(|menu| {
             matches!(menu.kind, MenuKind::WorkspaceRow(_))
                 || menu.kind == MenuKind::Session
                     && self.session_menu_from != SessionHostSlot::Title
         }) {
-            self.close_menu(MenuFocusReturn::Keep, window, cx);
+            self.close_menu(MenuFocusReturn::Terminal, window, cx);
         }
         cx.notify();
         true
@@ -1312,7 +1314,10 @@ impl WorkspaceView {
         let info = state.workspace(self.workspace_id(cx)?)?;
         let name = info.display_name().to_owned();
         let automatic = info.custom_name.is_none();
-        let open = matches!(self.switcher_mode, Some(SwitcherMode::Popover(_)));
+        // Only a popover opened from the switcher shows it open and takes
+        // it as the trigger; another opener keeps that for itself.
+        let open = self.switcher_mode
+            == Some(SwitcherMode::Popover(SwitcherAnchor::Switcher));
         let bounds_cell = Rc::clone(&self.workspace_trigger_bounds);
         self.workspace_trigger_drawn.set(true);
         let label_width = (width - menu_trigger::width_for_label(px(0.0)))

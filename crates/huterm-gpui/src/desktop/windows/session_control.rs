@@ -183,12 +183,21 @@ impl WorkspaceView {
                     - CONTROL_INSET,
                 true,
             ),
-            // A right column's top strip, beside the menu button: the
-            // control truncates to the column.
+            // A right column's top strip, beside the menu button and a
+            // hidden right sidebar's button: the control truncates to the
+            // column.
             SessionControlHost::TitleStrip
                 if tabs.position == TabPosition::Right && self.bar_drawn() =>
             {
-                (layout.tabs.size.width - menu - CONTROL_INSET, true)
+                let chrome = layout.workspace_chrome;
+                let button = if chrome.edge() == workspace_chrome::Edge::Right
+                    && !chrome.docked()
+                {
+                    CONTROL_SLOT
+                } else {
+                    px(0.0)
+                };
+                (layout.tabs.size.width - menu - button - CONTROL_INSET, true)
             }
             // The title row less what starts and ends it.
             SessionControlHost::TitleStrip => {

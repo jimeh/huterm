@@ -10934,10 +10934,11 @@ impl WorkspaceView {
             self.close_panel(window, cx);
         }
         // And the workspace switcher, except for its own keys, the commands
-        // that open or move focus into it, and a menu opened from it.
-        if !is_menu_command(invocation.id)
-            && !workspace_panel::keeps_switcher(invocation.id)
-        {
+        // that open or move focus into it, and the keys of a menu opened
+        // from it; the window menu replaces it.
+        let switcher_menu =
+            is_menu_command(invocation.id) && invocation.id != ids::OPEN_MENU;
+        if !switcher_menu && !workspace_panel::keeps_switcher(invocation.id) {
             self.close_workspace_switcher(window, cx);
         }
         match invocation.id {
