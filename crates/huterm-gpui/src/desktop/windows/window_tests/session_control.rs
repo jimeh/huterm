@@ -94,14 +94,15 @@ fn release_at(
     );
 }
 
-/// A harness whose one-tab windows draw the session control on both
-/// platforms. Without client decorations a Linux window has no title row,
-/// and a one-tab window hides its bar, which would leave the control no
-/// host; an always-shown bar hosts it there, while macOS keeps it in the
-/// title strip.
+/// A harness whose one-tab windows draw the title-bar session control,
+/// which is opt-in, on both platforms. Without client decorations a Linux
+/// window has no title row, and a one-tab window hides its bar, which
+/// would leave the control no host; an always-shown bar hosts it there,
+/// while macOS keeps it in the title strip.
 fn control_harness(cx: &mut TestAppContext) -> DesktopHarness {
     DesktopHarness::with_config(cx, |config| {
         config.tabs.always_show = true;
+        config.window.session_button = true;
     })
 }
 
@@ -388,6 +389,7 @@ fn the_title_row_keeps_its_gestures_and_drop_region_beside_the_control(
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.tabs.position = crate::config::TabPosition::Titlebar;
+        config.window.session_button = true;
     });
     let (window, _) = client_frame_window(&mut harness);
     harness.wait_for("the title row's window buttons", |cx| {
@@ -485,6 +487,7 @@ fn a_click_on_the_control_at_the_end_of_a_tab_bar_opens_its_menu(
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.tabs.always_show = true;
         config.tabs.position = crate::config::TabPosition::Top;
+        config.window.session_button = true;
     });
     let (window, _) = harness.named_window("main");
     // Fullscreen has no title row, so the control ends the top bar. The

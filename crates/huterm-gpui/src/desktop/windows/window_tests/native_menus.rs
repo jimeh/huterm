@@ -325,6 +325,7 @@ fn the_native_session_menu_switches_or_opens_a_window_from_its_picks(
     // that the menu opens below on both platforms.
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.tabs.always_show = true;
+        config.window.session_button = true;
     });
     let (window, _, presenter) = harness.native_window();
     let other = harness.other_session("other", 1);

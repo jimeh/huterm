@@ -74,9 +74,9 @@ pub(super) struct WindowLayout {
     /// (`restore::display_uuid`).
     pub(super) display: Option<String>,
     pub(super) sidebar_width: Pixels,
-    /// The window shows the workspace dropdown instead of its panel or bar.
-    pub(super) workspace_collapsed: bool,
-    /// The side workspace panel's preferred width.
+    /// The window shows its sidebar.
+    pub(super) workspace_visible: bool,
+    /// The sidebar's preferred width.
     pub(super) workspace_width: Pixels,
     /// Whether the window is in, or entering, fullscreen.
     pub(super) fullscreen: bool,
@@ -416,21 +416,6 @@ impl WindowModel {
                 record.id != except
                     && record.attachment.is_some()
                     && record.session == Some(session)
-            })
-            .count()
-    }
-
-    /// How many open windows other than `except` show `workspace`.
-    pub(super) fn other_windows_showing_workspace(
-        &self,
-        workspace: WorkspaceId,
-        except: WindowId,
-    ) -> usize {
-        self.open_records()
-            .filter(|record| {
-                record.id != except
-                    && record.attachment.is_some()
-                    && record.workspace == Some(workspace)
             })
             .count()
     }
@@ -836,15 +821,15 @@ impl WindowModel {
         }
     }
 
-    pub(super) fn set_workspace_collapsed(
+    pub(super) fn set_workspace_visible(
         &mut self,
         id: WindowId,
-        collapsed: bool,
+        visible: bool,
     ) {
         if let Some(record) = self.record_mut(id)
-            && record.layout.workspace_collapsed != collapsed
+            && record.layout.workspace_visible != visible
         {
-            record.layout.workspace_collapsed = collapsed;
+            record.layout.workspace_visible = visible;
             self.revision += 1;
         }
     }
@@ -1124,7 +1109,7 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
         display: record.layout.display.clone(),
         mode,
         sidebar_width: f32::from(record.layout.sidebar_width),
-        workspace_panel_collapsed: record.layout.workspace_collapsed,
+        workspace_panel_visible: Some(record.layout.workspace_visible),
         workspace_panel_width: f32::from(record.layout.workspace_width),
         quake_profile: record.quake.as_ref().map(|quake| quake.profile.clone()),
         appearance: (!transparency.is_empty()).then(|| {

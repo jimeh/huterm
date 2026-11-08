@@ -263,8 +263,8 @@ struct WindowRecord {
     display: Option<String>,
     mode: ModeRecord,
     sidebar_width: f32,
-    #[serde(default, skip_serializing_if = "is_false")]
-    workspace_panel_collapsed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_panel_visible: Option<bool>,
     #[serde(default, skip_serializing_if = "is_zero")]
     workspace_panel_width: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -770,7 +770,7 @@ fn window_record(window: &WindowLayout) -> WindowRecord {
             WindowMode::Fullscreen => ModeRecord::Fullscreen,
         },
         sidebar_width: window.sidebar_width,
-        workspace_panel_collapsed: window.workspace_panel_collapsed,
+        workspace_panel_visible: window.workspace_panel_visible,
         workspace_panel_width: window.workspace_panel_width,
         quake_profile: window.quake_profile.clone(),
         appearance: window.appearance.map(|appearance| AppearanceRecord {
@@ -793,14 +793,6 @@ fn window_record(window: &WindowLayout) -> WindowRecord {
                 .collect(),
         ),
     }
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde passes a reference"
-)]
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[expect(
@@ -847,7 +839,7 @@ fn window_layout(window: WindowRecord) -> WindowLayout {
             ModeRecord::Fullscreen => WindowMode::Fullscreen,
         },
         sidebar_width: window.sidebar_width,
-        workspace_panel_collapsed: window.workspace_panel_collapsed,
+        workspace_panel_visible: window.workspace_panel_visible,
         workspace_panel_width: window.workspace_panel_width,
         quake_profile: window.quake_profile,
         appearance: window.appearance.map(|appearance| WindowAppearance {

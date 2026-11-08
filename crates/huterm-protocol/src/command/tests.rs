@@ -29,7 +29,7 @@ fn catalog_entries_are_unique_and_described() {
                         | "confirming"
                         | "menu"
                         | "Panel"
-                        | "WorkspacePanel"
+                        | "Sidebar"
                         | "notices"
                 )
             ),

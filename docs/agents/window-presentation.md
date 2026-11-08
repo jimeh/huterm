@@ -437,23 +437,19 @@ title strip both controls paint above the occluding full-height bar at the
 window's top-right corner. Like the menu button it occludes and stops
 presses, so the row's move and double-click gestures never start on it.
 
-A workspace panel or bar (`windows/workspace_chrome.rs`) never changes who
-owns the title row. `window_frame`, the Linux frame inset, drawn buttons,
-and decoration requests read `host_tabs`, the position resolved for the
-platform and title row; only `layout_tabs` remaps `Titlebar` to `Top` under
-a top workspace bar, which takes the title row and draws its chips there
-(`top_bar_row` in render). So `show = "auto"` showing or hiding the bar
-never flips decorations. A side panel holds its corner of the title row
-(`panel_corners`): the traffic lights or leading window buttons on the
-left, and the trailing buttons, the menu button, and a title-bar session
-control on the right, drawn by `panel_corner_controls` over the panel's
-top strip, which keeps the row's move and double-click gestures. The title
-row then spans only `ChromeLayout::area`, and `title_row_layout` drops the
-held corner's exclusions. With `session_button_placement = "sidebar"` or
-`"both"`, `sidebar_session_element` draws a second control in the panel's
-first row or the bar's leading slot; each host records its own bounds, the
-click names its host (`session_menu_from`), and the menu anchors to the
-host that opened it, falling back to the other while it is not drawn.
+A docked sidebar (`windows/workspace_chrome.rs`) never changes who owns the
+title row: `window_frame`, the Linux frame inset, drawn buttons, and
+decoration requests read the tab position resolved for the platform. It
+holds its corner of the title row (`panel_corners`): the traffic lights or
+leading window buttons and the sidebar button on the left, and the trailing
+buttons, the menu button, the sidebar button, and a title-bar session
+control on the right, drawn by `panel_corner_controls` over its top strip,
+which keeps the row's move and double-click gestures. The title row then
+spans only `ChromeLayout::area`, and `title_row_layout` drops the held
+corner's exclusions. Without a title row the sidebar keeps a 32-point strip
+of its own for the button. A hidden sidebar's button and switcher add their
+width to the title row's corner exclusions (`corner_leading`,
+`corner_trailing`).
 
 The macOS Settings window hides AppKit's title bar the same way: a
 transparent title bar with `app_owns_titlebar_drag`, the title still

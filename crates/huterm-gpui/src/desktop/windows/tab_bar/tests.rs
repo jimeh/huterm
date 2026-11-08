@@ -276,7 +276,8 @@ fn pill_bars_grow_around_the_pill_while_others_keep_the_row_height() {
         gpui::Edges::default(),
         None,
         WindowFrame::default(),
-        crate::desktop::windows::WorkspaceChrome::None,
+        crate::desktop::windows::WorkspaceChrome::NONE,
+        None,
     );
     assert_eq!(layout.tabs.size.height, px(34.0));
     assert_eq!(layout.terminal.origin.y, px(28.0 + 34.0));
@@ -303,7 +304,8 @@ fn a_notch_shelf_holds_a_top_bar_beside_the_notch_at_full_height() {
         safe_area,
         Some(shelf),
         WindowFrame::default(),
-        crate::desktop::windows::WorkspaceChrome::None,
+        crate::desktop::windows::WorkspaceChrome::NONE,
+        None,
     );
     // Bottom-aligned in the shelf at the Pill bar's own height.
     assert_eq!(layout.tabs.size, size(px(790.0), px(34.0)));
@@ -326,7 +328,8 @@ fn a_notch_shelf_holds_a_top_bar_beside_the_notch_at_full_height() {
             size(px(790.0), px(30.0)),
         )),
         WindowFrame::default(),
-        crate::desktop::windows::WorkspaceChrome::None,
+        crate::desktop::windows::WorkspaceChrome::NONE,
+        None,
     );
     assert_eq!(short.tabs.size.height, px(34.0));
     assert_eq!(short.tabs.origin.y, px(38.0));
@@ -348,7 +351,8 @@ fn a_notch_shelf_holds_a_top_bar_beside_the_notch_at_full_height() {
         safe_area,
         Some(shelf),
         WindowFrame::default(),
-        crate::desktop::windows::WorkspaceChrome::None,
+        crate::desktop::windows::WorkspaceChrome::NONE,
+        None,
     );
     assert_eq!(column.tabs.origin.y, px(0.0));
     assert!(column.tabs.size.height > px(1000.0));
@@ -449,7 +453,8 @@ fn vertical_columns_overlay_beside_a_safe_area_without_moving_rows() {
         safe_area,
         None,
         WindowFrame::default(),
-        crate::desktop::windows::WorkspaceChrome::None,
+        crate::desktop::windows::WorkspaceChrome::NONE,
+        None,
     );
     let overlay =
         reserved.present(Presentation::Overlay, TabPosition::Left, 0.5);

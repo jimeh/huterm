@@ -393,7 +393,7 @@ over.
 
 ### What a window shows
 
-`SidebarChrome::resolve` is one pure function read by layout, rendering,
+`WorkspaceChrome::resolve` is one pure function read by layout, rendering,
 hit testing, popovers, and smoke state. Inputs: the window's visible
 state, `position`, the session's workspace count, and the terminal width
 a docked sidebar would leave after the tab column, frame, and safe area.
@@ -516,9 +516,10 @@ windows on its session.
 
 ### Persistence
 
-`WindowLayout` gains `sidebar_visible: Option<bool>` and `sidebar_width:
-f32` (serde default, skipped when default, width validated finite and
-non-negative). A window saved without a visible state, and a new window,
+`WindowLayout` gains `workspace_panel_visible: Option<bool>` and
+`workspace_panel_width: f32` (serde default, skipped when default, width
+validated finite and non-negative); `sidebar_width` already names the tab
+column's width. A window saved without a visible state, and a new window,
 take `[sidebar] visible`; width defaults to 180 points.
 
 ## PR C: status dot
@@ -650,7 +651,7 @@ follow-up settles; an emptied close converts to Quit only after a fresh
 | One view's workspace change leaves another view's workspace, tab, pane, and selection alone (acceptance 3)                                                                                              | Tier 2 two-window test asserting each explicitly, plus a `check-viewers.ts` step through `invoke-in select_workspace` on macOS and Linux                                                                                                                                                      |
 | Interleavings W1 to W38                                                                                                                                                                                 | One test per row, ordered by worker hooks and sequence waits, never sleeps                                                                                                                                                                                                                    |
 | Navigation memory save, strict restore, cap, older files                                                                                                                                                | `huterm-state` schema tests; tier 2 restore tests                                                                                                                                                                                                                                             |
-| Geometry: 2 sides × 5 tab positions, hidden, docked, undocked by width, fullscreen auto-hide, Quake, notch shelf, Linux frame with leading and trailing buttons, small windows, overflow (acceptance 1) | Pure `ChromeLayout` and `SidebarChrome::resolve` tests beside `all_placements_share_nonoverlapping_terminal_and_tab_bounds`; a hidden sidebar equals today's layout but for the corner slot                                                                                                   |
+| Geometry: 2 sides × 5 tab positions, hidden, docked, undocked by width, fullscreen auto-hide, Quake, notch shelf, Linux frame with leading and trailing buttons, small windows, overflow (acceptance 1) | Pure `ChromeLayout` and `WorkspaceChrome::resolve` tests beside `all_placements_share_nonoverlapping_terminal_and_tab_bounds`; a hidden sidebar equals today's layout but for the corner slot                                                                                                 |
 | Mouse mapping and sidebar resize with a panel beside the tab column                                                                                                                                     | Extend `application_mouse_coordinates_follow_all_tab_placements` and the sidebar resize tests                                                                                                                                                                                                 |
 | Sidebar changes and reload keep focus, mouse coordinates, and processes (acceptance 2)                                                                                                                  | W32 tier 2 test; native steps in `smoke:macos-palette` and `smoke:linux-palette`: real key input reaches the same shell (same pid) after a toggle, a PTY mouse report lands on the expected cell after a toggle, sidebar rect, row click switches, switcher opens its popover, keyboard focus |
 | Corner controls on both sides and every tab position; session switcher at either end                                                                                                                    | Pure placement tests; window tests opening each popover from each host                                                                                                                                                                                                                        |
@@ -775,6 +776,36 @@ Recorded while implementing PR A:
   test relaunches from that checkpoint as well.
 
 ### PR B deviations
+
+Recorded while implementing the 2026-11-08 revision:
+
+- The user-facing "sidebar" keeps the internal name workspace panel
+  (`workspace_chrome.rs`, `workspace_panel.rs`, `WorkspaceChrome`, the
+  `workspace_*` view fields, and `workspace_panel_*` in saved state), because
+  `sidebar_width`, `resize_sidebar`, and saved `sidebar_width` already name
+  the vertical tab column. User documentation now calls that column the tab
+  column.
+- The corner controls' order on the right is the title-bar session control,
+  then the switcher, the sidebar button, and the menu button; in a vertical
+  column's new-tab row the button sits just inside the menu button.
+- In a left tab column with a title row the sidebar button sits in the
+  column's top strip after the traffic lights, and the switcher takes a row
+  above the tabs; without a title row both share that row.
+- The switcher's popover is non-modal: a press outside closes it and goes on
+  to what it hit, as a press inside a menu opened from it does not. A press
+  on the switcher closes it.
+- Opening the popover, or the sheet, focuses the shown workspace's row, so
+  the keyboard works at once and Escape (`sidebar_exit`) closes it.
+- The sheet has no pin; the sidebar button, Escape, an outside press, or a
+  workspace pick closes it.
+- The drop target follows the rows' painted midpoints, and a release
+  re-reads it, so a drop whose anchor went lands before the row now under
+  the pointer (W42). A drag also cancels when its rows stop drawing.
+- Rows drop the window badge: the first design's workspace menu marked
+  workspaces other windows showed, and nothing shows that now.
+- `toggle_sidebar` and the `sidebar_*` commands are always available;
+  `focus_sidebar` is unavailable while the sidebar is hidden in a wide
+  window.
 
 Recorded while implementing the first PR B design, stacked on PR A. The
 2026-11-08 revision replaced the panel, bar, dropdown, workspace menu,

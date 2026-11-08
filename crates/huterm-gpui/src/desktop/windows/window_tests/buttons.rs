@@ -872,7 +872,14 @@ fn full_height_sidebars_keep_title_gestures_and_the_window_corner_menu(
                 .unwrap_or(false)
         });
         harness.press(window, "escape");
-        for at in [row.center(), sidebar.center()] {
+        // A left column's strip holds the sidebar button after the traffic
+        // lights, so the press lands in its empty right part.
+        let strip_at = if position == TabPosition::Left {
+            point(sidebar.right() - px(12.0), sidebar.center().y)
+        } else {
+            sidebar.center()
+        };
+        for at in [row.center(), strip_at] {
             press_at(&mut harness, window, at, 1);
             assert_eq!(harness.title_row(window), (true, 0));
             // The test platform does not implement native window moves;

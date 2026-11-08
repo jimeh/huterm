@@ -13,7 +13,7 @@ fn layout(x: f32) -> WindowLayout {
         }),
         display: None,
         sidebar_width: px(180.0),
-        workspace_collapsed: false,
+        workspace_visible: false,
         workspace_width: px(180.0),
         fullscreen: false,
     }
@@ -491,7 +491,7 @@ fn the_saved_layout_takes_open_attached_windows_in_opening_order() {
             },
             mode: huterm_state::WindowMode::Fullscreen,
             sidebar_width: 220.0,
-            workspace_panel_collapsed: false,
+            workspace_panel_visible: Some(false),
             workspace_panel_width: 180.0,
             display: Some(display.into()),
             quake_profile: None,

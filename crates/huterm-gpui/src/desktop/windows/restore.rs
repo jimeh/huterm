@@ -287,7 +287,9 @@ pub(super) struct Placement {
     pub(super) display: Option<String>,
     pub(super) mode: WindowMode,
     pub(super) sidebar_width: Pixels,
-    pub(super) workspace_collapsed: bool,
+    /// The saved sidebar state; `None` from a file saved before it, which
+    /// takes `[sidebar] visible`.
+    pub(super) workspace_visible: Option<bool>,
     pub(super) workspace_width: Pixels,
     pub(super) appearance: crate::transparency::Layer,
 }
@@ -1284,8 +1286,8 @@ fn placement(window: &huterm_state::WindowLayout) -> Placement {
             window.mode
         },
         sidebar_width: px(window.sidebar_width),
-        workspace_collapsed: window.workspace_panel_collapsed,
-        // A window saved before the panel existed takes the default width.
+        workspace_visible: window.workspace_panel_visible,
+        // A window saved before the sidebar existed takes the default width.
         workspace_width: if window.workspace_panel_width > 0.0 {
             px(window.workspace_panel_width)
         } else {

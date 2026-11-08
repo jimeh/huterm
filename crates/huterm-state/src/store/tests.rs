@@ -243,7 +243,7 @@ pub(crate) fn layout_for(capture: &RuntimeCapture) -> DesktopLayout {
                     },
                     mode: WindowMode::Maximized,
                     sidebar_width: 220.0,
-                    workspace_panel_collapsed: false,
+                    workspace_panel_visible: None,
                     workspace_panel_width: 0.0,
                     display: None,
                     quake_profile: None,

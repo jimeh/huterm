@@ -1008,29 +1008,17 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub menu_button: bool,
-    /// Show the session control, which names the window's session and opens
-    /// the session menu, beside the window menu button.
+    /// Also show a session control, which names the window's session and
+    /// opens the session menu, beside the window menu button. The sidebar
+    /// always holds the session switcher.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "sessions",
-        "x-huterm-group" = "Session control",
-        "x-huterm-label" = "Show session control",
-        "x-huterm-order" = 10,
+        "x-huterm-group" = "Session switcher",
+        "x-huterm-label" = "Show session control in the title bar",
+        "x-huterm-order" = 11,
         "x-huterm-apply" = "live",
     )))]
     pub session_button: bool,
-    /// Where the session control sits: the title bar, the top of the
-    /// workspace panel or the start of the workspace bar, or both. The
-    /// sidebar placement uses the title bar while the window shows no
-    /// workspace panel or bar.
-    #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "sessions",
-        "x-huterm-group" = "Session control",
-        "x-huterm-label" = "Placement",
-        "x-huterm-order" = 11,
-        "x-huterm-apply" = "live",
-        "x-huterm-visible-when" = {"setting": "window.session_button", "equals": true},
-    )))]
-    pub session_button_placement: SessionButtonPlacement,
     /// Show key hints on the scroll pill and on dialog and panel buttons.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
@@ -1126,117 +1114,52 @@ pub enum SizeIndicator {
     Off,
 }
 
-/// Where the session control sits.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum SessionButtonPlacement {
-    /// The title bar, or the tab bar without one.
-    #[default]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("x-huterm-label" = "Title bar"))
-    )]
-    TitleBar,
-    /// The top of the workspace panel, or the start of the workspace bar.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("x-huterm-label" = "Sidebar"))
-    )]
-    Sidebar,
-    /// The title bar and the workspace panel or bar.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("x-huterm-label" = "Both"))
-    )]
-    Both,
-}
-
-/// The workspace panel, bar, and dropdown.
+/// The sidebar, which holds the window's workspaces and session switcher.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
-pub struct WorkspacesConfig {
-    /// When windows show their session's workspaces: `auto` only while the
-    /// session has two or more, `always`, or `never`. The workspace
-    /// commands stay in the command palette either way.
+pub struct SidebarConfig {
+    /// The window side the sidebar docks on. Its button sits in the corner
+    /// on that side.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "sessions",
-        "x-huterm-group" = "Workspaces",
-        "x-huterm-label" = "Show workspaces",
+        "x-huterm-section" = "workspaces",
+        "x-huterm-group" = "Sidebar",
+        "x-huterm-label" = "Position",
         "x-huterm-order" = 20,
         "x-huterm-apply" = "live",
     )))]
-    pub show: WorkspaceShow,
-    /// The window edge the workspace panel or bar sits on: a list on the
-    /// left or right, a row of chips on the top or bottom.
+    pub position: SidebarPosition,
+    /// New windows start with the sidebar shown. Each window keeps its own
+    /// choice.
     #[cfg_attr(feature = "schema", schemars(extend(
-        "x-huterm-section" = "sessions",
-        "x-huterm-group" = "Workspaces",
-        "x-huterm-label" = "Position",
+        "x-huterm-section" = "workspaces",
+        "x-huterm-group" = "Sidebar",
+        "x-huterm-label" = "Show the sidebar in new windows",
         "x-huterm-order" = 21,
-        "x-huterm-apply" = "live",
-        "x-huterm-visible-when" = [
-            {"setting": "workspaces.show", "equals": "auto"},
-            {"setting": "workspaces.show", "equals": "always"}
-        ],
+        "x-huterm-apply" = "new_windows",
     )))]
-    pub position: WorkspacePosition,
-    /// New windows show the workspace dropdown in the tab bar instead of
-    /// the panel. Each window keeps its own choice.
+    pub visible: bool,
+    /// Where the session switcher sits in the sidebar and in the workspace
+    /// switcher: at the bottom or the top.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "sessions",
-        "x-huterm-group" = "Workspaces",
-        "x-huterm-label" = "Start collapsed",
-        "x-huterm-order" = 22,
-        "x-huterm-apply" = "new_windows",
-        "x-huterm-visible-when" = [
-            {"setting": "workspaces.show", "equals": "auto"},
-            {"setting": "workspaces.show", "equals": "always"}
-        ],
+        "x-huterm-group" = "Session switcher",
+        "x-huterm-label" = "Position in the sidebar",
+        "x-huterm-order" = 10,
+        "x-huterm-apply" = "live",
     )))]
-    pub collapsed: bool,
+    pub session_switcher: SessionSwitcherPosition,
 }
 
-/// When windows show workspace navigation.
+/// The window side the sidebar docks on.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum WorkspaceShow {
-    /// While the window's session has two or more workspaces.
-    #[default]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("x-huterm-label" = "Automatically"))
-    )]
-    Auto,
-    /// Always, even with one workspace.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("x-huterm-label" = "Always"))
-    )]
-    Always,
-    /// Never; the command palette still reaches workspaces.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("x-huterm-label" = "Never"))
-    )]
-    Never,
-}
-
-/// The window edge the workspace panel or bar sits on.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
-)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspacePosition {
+pub enum SidebarPosition {
     #[default]
     #[cfg_attr(
         feature = "schema",
@@ -1245,27 +1168,29 @@ pub enum WorkspacePosition {
     Left,
     #[cfg_attr(
         feature = "schema",
-        schemars(extend("x-huterm-label" = "Top"))
-    )]
-    Top,
-    #[cfg_attr(
-        feature = "schema",
         schemars(extend("x-huterm-label" = "Right"))
     )]
     Right,
+}
+
+/// Where the session switcher sits in the sidebar.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSwitcherPosition {
+    #[default]
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Bottom"))
     )]
     Bottom,
-}
-
-impl WorkspacePosition {
-    /// A side panel rather than a horizontal bar.
-    #[must_use]
-    pub const fn vertical(self) -> bool {
-        matches!(self, Self::Left | Self::Right)
-    }
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Top"))
+    )]
+    Top,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
@@ -1459,8 +1384,7 @@ impl Default for WindowConfig {
             padding_y: 4.0,
             padding_balance: false,
             menu_button: true,
-            session_button: true,
-            session_button_placement: SessionButtonPlacement::TitleBar,
+            session_button: false,
             shortcut_hints: false,
             macos_native_menus: true,
             macos_drag_preview: true,
@@ -2894,7 +2818,7 @@ pub struct RawConfig {
     #[serde(default)]
     pub tabs: TabsConfig,
     #[serde(default)]
-    pub workspaces: WorkspacesConfig,
+    pub sidebar: SidebarConfig,
     #[serde(default)]
     pub updates: UpdateConfig,
     #[serde(default)]

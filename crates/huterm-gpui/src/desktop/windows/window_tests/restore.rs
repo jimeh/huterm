@@ -170,7 +170,7 @@ fn layout() -> huterm_state::DesktopLayout {
             },
             mode: huterm_state::WindowMode::Windowed,
             sidebar_width: 210.0,
-            workspace_panel_collapsed: true,
+            workspace_panel_visible: Some(true),
             workspace_panel_width: 230.0,
             display: None,
             quake_profile: None,
@@ -277,7 +277,7 @@ fn a_restore_reopens_saved_windows_with_fresh_shells_and_saved_focus(
         assert_eq!(record.active, Some(scoped_tab(3)));
         assert_eq!(record.history, [scoped_tab(3), scoped_tab(9)]);
         assert_eq!(record.layout.sidebar_width, px(210.0));
-        assert!(record.layout.workspace_collapsed);
+        assert!(record.layout.workspace_visible);
         assert_eq!(record.layout.workspace_width, px(230.0));
         let state = desktop.hierarchy.state();
         assert_eq!(

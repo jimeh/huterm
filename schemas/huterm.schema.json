@@ -1504,9 +1504,9 @@
                 "redo",
                 "open_menu",
                 "open_session_menu",
-                "open_workspace_menu",
-                "toggle_workspace_panel",
-                "focus_workspace_panel",
+                "open_workspace_switcher",
+                "toggle_sidebar",
+                "focus_sidebar",
                 "focus_notices",
                 "dismiss_all_notices",
                 "select_all",
@@ -1538,14 +1538,14 @@
                 "panel_last",
                 "panel_press",
                 "panel_reset",
-                "workspace_panel_next",
-                "workspace_panel_previous",
-                "workspace_panel_first",
-                "workspace_panel_last",
-                "workspace_panel_show",
-                "workspace_panel_rename",
-                "workspace_panel_menu",
-                "workspace_panel_exit",
+                "sidebar_next",
+                "sidebar_previous",
+                "sidebar_first",
+                "sidebar_last",
+                "sidebar_show",
+                "sidebar_rename",
+                "sidebar_menu",
+                "sidebar_exit",
                 "notice_next",
                 "notice_previous",
                 "notice_run_action",
@@ -6411,7 +6411,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "open_workspace_menu"
+                "const": "open_workspace_switcher"
               }
             },
             "required": [
@@ -6420,7 +6420,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Open this window's workspace menu to switch, create, or rename workspaces.",
+            "description": "Open this window's workspace switcher to show, create, rename, or reorder workspaces.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -6429,8 +6429,8 @@
                 "type": "object"
               },
               "command": {
-                "const": "open_workspace_menu",
-                "description": "Open this window's workspace menu to switch, create, or rename workspaces.",
+                "const": "open_workspace_switcher",
+                "description": "Open this window's workspace switcher to show, create, rename, or reorder workspaces.",
                 "type": "string"
               },
               "description": {
@@ -6462,7 +6462,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "toggle_workspace_panel"
+                "const": "toggle_sidebar"
               }
             },
             "required": [
@@ -6471,7 +6471,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Collapse this window's workspace panel or bar to the dropdown in the tab bar, or show it again.",
+            "description": "Show or hide this window's sidebar, which holds its workspaces and session switcher.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -6480,8 +6480,8 @@
                 "type": "object"
               },
               "command": {
-                "const": "toggle_workspace_panel",
-                "description": "Collapse this window's workspace panel or bar to the dropdown in the tab bar, or show it again.",
+                "const": "toggle_sidebar",
+                "description": "Show or hide this window's sidebar, which holds its workspaces and session switcher.",
                 "type": "string"
               },
               "description": {
@@ -6513,7 +6513,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "focus_workspace_panel"
+                "const": "focus_sidebar"
               }
             },
             "required": [
@@ -6522,7 +6522,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move keyboard focus to the shown workspace in this window's workspace panel or bar.",
+            "description": "Move keyboard focus to the shown workspace in this window's sidebar.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -6531,8 +6531,8 @@
                 "type": "object"
               },
               "command": {
-                "const": "focus_workspace_panel",
-                "description": "Move keyboard focus to the shown workspace in this window's workspace panel or bar.",
+                "const": "focus_sidebar",
+                "description": "Move keyboard focus to the shown workspace in this window's sidebar.",
                 "type": "string"
               },
               "description": {
@@ -8145,7 +8145,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_next"
+                "const": "sidebar_next"
               }
             },
             "required": [
@@ -8163,7 +8163,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_next",
+                "const": "sidebar_next",
                 "description": "Move focus to the next workspace.",
                 "type": "string"
               },
@@ -8196,7 +8196,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_previous"
+                "const": "sidebar_previous"
               }
             },
             "required": [
@@ -8214,7 +8214,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_previous",
+                "const": "sidebar_previous",
                 "description": "Move focus to the previous workspace.",
                 "type": "string"
               },
@@ -8247,7 +8247,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_first"
+                "const": "sidebar_first"
               }
             },
             "required": [
@@ -8265,7 +8265,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_first",
+                "const": "sidebar_first",
                 "description": "Move focus to the first workspace.",
                 "type": "string"
               },
@@ -8298,7 +8298,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_last"
+                "const": "sidebar_last"
               }
             },
             "required": [
@@ -8316,7 +8316,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_last",
+                "const": "sidebar_last",
                 "description": "Move focus to the last workspace.",
                 "type": "string"
               },
@@ -8349,7 +8349,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_show"
+                "const": "sidebar_show"
               }
             },
             "required": [
@@ -8367,7 +8367,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_show",
+                "const": "sidebar_show",
                 "description": "Show the focused workspace in this window.",
                 "type": "string"
               },
@@ -8400,7 +8400,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_rename"
+                "const": "sidebar_rename"
               }
             },
             "required": [
@@ -8418,7 +8418,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_rename",
+                "const": "sidebar_rename",
                 "description": "Rename the focused workspace.",
                 "type": "string"
               },
@@ -8451,7 +8451,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_menu"
+                "const": "sidebar_menu"
               }
             },
             "required": [
@@ -8469,7 +8469,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_menu",
+                "const": "sidebar_menu",
                 "description": "Open the focused workspace's context menu.",
                 "type": "string"
               },
@@ -8502,7 +8502,7 @@
           "if": {
             "properties": {
               "command": {
-                "const": "workspace_panel_exit"
+                "const": "sidebar_exit"
               }
             },
             "required": [
@@ -8520,7 +8520,7 @@
                 "type": "object"
               },
               "command": {
-                "const": "workspace_panel_exit",
+                "const": "sidebar_exit",
                 "description": "Return keyboard focus to the terminal.",
                 "type": "string"
               },
@@ -11573,29 +11573,6 @@
       },
       "type": "object"
     },
-    "SessionButtonPlacement": {
-      "description": "Where the session control sits.",
-      "oneOf": [
-        {
-          "const": "title_bar",
-          "description": "The title bar, or the tab bar without one.",
-          "type": "string",
-          "x-huterm-label": "Title bar"
-        },
-        {
-          "const": "sidebar",
-          "description": "The top of the workspace panel, or the start of the workspace bar.",
-          "type": "string",
-          "x-huterm-label": "Sidebar"
-        },
-        {
-          "const": "both",
-          "description": "The title bar and the workspace panel or bar.",
-          "type": "string",
-          "x-huterm-label": "Both"
-        }
-      ]
-    },
     "SessionNumbering": {
       "description": "How new sessions and workspaces number their automatic names. A session\nwith a custom name keeps its number for Clear Name, so it counts as\nused.",
       "oneOf": [
@@ -11610,6 +11587,21 @@
           "description": "One more than the highest number used since launch; a restart\ncontinues after the highest restored one.",
           "type": "string",
           "x-huterm-label": "Keep counting up"
+        }
+      ]
+    },
+    "SessionSwitcherPosition": {
+      "description": "Where the session switcher sits in the sidebar.",
+      "oneOf": [
+        {
+          "const": "bottom",
+          "type": "string",
+          "x-huterm-label": "Bottom"
+        },
+        {
+          "const": "top",
+          "type": "string",
+          "x-huterm-label": "Top"
         }
       ]
     },
@@ -11689,6 +11681,66 @@
           "description": "Disable automatic loading.",
           "type": "string",
           "x-huterm-label": "Off"
+        }
+      ]
+    },
+    "SidebarConfig": {
+      "additionalProperties": false,
+      "description": "The sidebar, which holds the window's workspaces and session switcher.",
+      "properties": {
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SidebarPosition"
+            }
+          ],
+          "default": "left",
+          "description": "The window side the sidebar docks on. Its button sits in the corner\non that side.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Position",
+          "x-huterm-order": 20,
+          "x-huterm-section": "workspaces"
+        },
+        "session_switcher": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionSwitcherPosition"
+            }
+          ],
+          "default": "bottom",
+          "description": "Where the session switcher sits in the sidebar and in the workspace\nswitcher: at the bottom or the top.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Session switcher",
+          "x-huterm-label": "Position in the sidebar",
+          "x-huterm-order": 10,
+          "x-huterm-section": "sessions"
+        },
+        "visible": {
+          "default": false,
+          "description": "New windows start with the sidebar shown. Each window keeps its own\nchoice.",
+          "type": "boolean",
+          "x-huterm-apply": "new_windows",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Show the sidebar in new windows",
+          "x-huterm-order": 21,
+          "x-huterm-section": "workspaces"
+        }
+      },
+      "type": "object"
+    },
+    "SidebarPosition": {
+      "description": "The window side the sidebar docks on.",
+      "oneOf": [
+        {
+          "const": "left",
+          "type": "string",
+          "x-huterm-label": "Left"
+        },
+        {
+          "const": "right",
+          "type": "string",
+          "x-huterm-label": "Right"
         }
       ]
     },
@@ -12539,32 +12591,14 @@
           "x-huterm-section": "windows"
         },
         "session_button": {
-          "default": true,
-          "description": "Show the session control, which names the window's session and opens\nthe session menu, beside the window menu button.",
+          "default": false,
+          "description": "Also show a session control, which names the window's session and\nopens the session menu, beside the window menu button. The sidebar\nalways holds the session switcher.",
           "type": "boolean",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Session control",
-          "x-huterm-label": "Show session control",
-          "x-huterm-order": 10,
-          "x-huterm-section": "sessions"
-        },
-        "session_button_placement": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SessionButtonPlacement"
-            }
-          ],
-          "default": "title_bar",
-          "description": "Where the session control sits: the title bar, the top of the\nworkspace panel or the start of the workspace bar, or both. The\nsidebar placement uses the title bar while the window shows no\nworkspace panel or bar.",
-          "x-huterm-apply": "live",
-          "x-huterm-group": "Session control",
-          "x-huterm-label": "Placement",
+          "x-huterm-group": "Session switcher",
+          "x-huterm-label": "Show session control in the title bar",
           "x-huterm-order": 11,
-          "x-huterm-section": "sessions",
-          "x-huterm-visible-when": {
-            "equals": true,
-            "setting": "window.session_button"
-          }
+          "x-huterm-section": "sessions"
         },
         "shortcut_hints": {
           "default": false,
@@ -12614,119 +12648,6 @@
               "setting": "window.size_indicator"
             }
           ]
-        }
-      },
-      "type": "object"
-    },
-    "WorkspacePosition": {
-      "description": "The window edge the workspace panel or bar sits on.",
-      "oneOf": [
-        {
-          "const": "left",
-          "type": "string",
-          "x-huterm-label": "Left"
-        },
-        {
-          "const": "top",
-          "type": "string",
-          "x-huterm-label": "Top"
-        },
-        {
-          "const": "right",
-          "type": "string",
-          "x-huterm-label": "Right"
-        },
-        {
-          "const": "bottom",
-          "type": "string",
-          "x-huterm-label": "Bottom"
-        }
-      ]
-    },
-    "WorkspaceShow": {
-      "description": "When windows show workspace navigation.",
-      "oneOf": [
-        {
-          "const": "auto",
-          "description": "While the window's session has two or more workspaces.",
-          "type": "string",
-          "x-huterm-label": "Automatically"
-        },
-        {
-          "const": "always",
-          "description": "Always, even with one workspace.",
-          "type": "string",
-          "x-huterm-label": "Always"
-        },
-        {
-          "const": "never",
-          "description": "Never; the command palette still reaches workspaces.",
-          "type": "string",
-          "x-huterm-label": "Never"
-        }
-      ]
-    },
-    "WorkspacesConfig": {
-      "additionalProperties": false,
-      "description": "The workspace panel, bar, and dropdown.",
-      "properties": {
-        "collapsed": {
-          "default": false,
-          "description": "New windows show the workspace dropdown in the tab bar instead of\nthe panel. Each window keeps its own choice.",
-          "type": "boolean",
-          "x-huterm-apply": "new_windows",
-          "x-huterm-group": "Workspaces",
-          "x-huterm-label": "Start collapsed",
-          "x-huterm-order": 22,
-          "x-huterm-section": "sessions",
-          "x-huterm-visible-when": [
-            {
-              "equals": "auto",
-              "setting": "workspaces.show"
-            },
-            {
-              "equals": "always",
-              "setting": "workspaces.show"
-            }
-          ]
-        },
-        "position": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/WorkspacePosition"
-            }
-          ],
-          "default": "left",
-          "description": "The window edge the workspace panel or bar sits on: a list on the\nleft or right, a row of chips on the top or bottom.",
-          "x-huterm-apply": "live",
-          "x-huterm-group": "Workspaces",
-          "x-huterm-label": "Position",
-          "x-huterm-order": 21,
-          "x-huterm-section": "sessions",
-          "x-huterm-visible-when": [
-            {
-              "equals": "auto",
-              "setting": "workspaces.show"
-            },
-            {
-              "equals": "always",
-              "setting": "workspaces.show"
-            }
-          ]
-        },
-        "show": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/WorkspaceShow"
-            }
-          ],
-          "default": "auto",
-          "description": "When windows show their session's workspaces: `auto` only while the\nsession has two or more, `always`, or `never`. The workspace\ncommands stay in the command palette either way.",
-          "x-huterm-apply": "live",
-          "x-huterm-group": "Workspaces",
-          "x-huterm-label": "Show workspaces",
-          "x-huterm-order": 20,
-          "x-huterm-section": "sessions"
         }
       },
       "type": "object"
@@ -12954,6 +12875,13 @@
         }
       ]
     },
+    "sidebar": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SidebarConfig"
+        }
+      ]
+    },
     "tabs": {
       "allOf": [
         {
@@ -13007,13 +12935,6 @@
       "allOf": [
         {
           "$ref": "#/definitions/WindowConfig"
-        }
-      ]
-    },
-    "workspaces": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/WorkspacesConfig"
         }
       ]
     }

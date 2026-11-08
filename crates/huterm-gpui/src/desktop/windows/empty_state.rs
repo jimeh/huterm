@@ -256,9 +256,8 @@ impl WorkspaceView {
     ) {
         let result = match control {
             Control::NewTab => self.new_tab(window, cx),
-            Control::SwitchWorkspace => self.open_workspace_menu(
-                true,
-                super::workspace_panel::WorkspaceMenuAnchor::EmptyState,
+            Control::SwitchWorkspace => self.open_workspace_switcher(
+                super::workspace_panel::SwitcherAnchor::EmptyState,
                 window,
                 cx,
             ),
@@ -276,7 +275,9 @@ impl WorkspaceView {
                 }
             }
         };
-        if control == Control::SwitchWorkspace && self.menu.is_some() {
+        // The switcher it opened hands focus back to it when it closes.
+        if control == Control::SwitchWorkspace && self.workspace_switcher_open()
+        {
             self.empty_state.opener.set(Some(control));
         }
         if let Err(error) = result {
@@ -356,7 +357,7 @@ impl WorkspaceView {
                     cx,
                 )
                 .icon(icon_element(Icon::LayoutGrid, swatch.fg).size(px(14.0)))
-                .expanded(self.workspace_menu_open())
+                .expanded(self.workspace_switcher_open())
                 .child(
                     canvas(
                         |_, _, _| (),

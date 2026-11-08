@@ -1220,7 +1220,7 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
             },
             mode: huterm_state::WindowMode::Windowed,
             sidebar_width: 220.0,
-            workspace_panel_collapsed: false,
+            workspace_panel_visible: None,
             workspace_panel_width: 0.0,
             display: None,
             quake_profile: None,
@@ -3151,79 +3151,21 @@ fn initial_window_grid_adds_padding_and_chrome_then_respects_minimum() {
 }
 
 #[test]
-fn an_always_shown_workspace_panel_widens_a_new_window() {
-    use huterm_config::{WorkspacePosition, WorkspaceShow, WorkspacesConfig};
-    let config = |show, position, collapsed| WorkspacesConfig {
-        show,
-        position,
-        collapsed,
+fn a_new_window_that_starts_with_the_sidebar_shown_widens_by_it() {
+    let metrics = GridMetrics::fixed(8.0, 16.0);
+    let host = TabHost {
+        platform: Platform::current(),
+        fullscreen: false,
+        quake: false,
+        client_decorations: false,
     };
-    let none = size(px(0.0), px(0.0));
-    // `auto` and `never` show nothing in a new window, nor does a
-    // collapsed window.
-    for show in [WorkspaceShow::Auto, WorkspaceShow::Never] {
-        assert_eq!(
-            workspace_reservation(
-                config(show, WorkspacePosition::Left, false),
-                TabsConfig::default(),
-                true
-            ),
-            none
-        );
-    }
-    let always = |position, title_row| {
-        workspace_reservation(
-            config(WorkspaceShow::Always, position, false),
-            TabsConfig {
-                position: TabPosition::Top,
-                ..TabsConfig::default()
-            },
-            title_row,
-        )
-    };
-    assert_eq!(
-        workspace_reservation(
-            config(WorkspaceShow::Always, WorkspacePosition::Left, true),
-            TabsConfig::default(),
-            false
-        ),
-        none
-    );
-    for position in [WorkspacePosition::Left, WorkspacePosition::Right] {
-        assert_eq!(
-            always(position, true),
-            size(workspace_chrome::PANEL_WIDTH, px(0.0))
-        );
-    }
-    // A top bar takes the title row where there is one; shown title-bar
-    // tabs then drop into a bar beneath it.
-    assert_eq!(always(WorkspacePosition::Top, true), none);
-    let titlebar = |always_show| TabsConfig {
-        position: TabPosition::Titlebar,
-        always_show,
-        ..TabsConfig::default()
-    };
-    let top = config(WorkspaceShow::Always, WorkspacePosition::Top, false);
-    assert_eq!(workspace_reservation(top, titlebar(false), true), none);
-    assert_eq!(
-        workspace_reservation(top, titlebar(true), true),
-        size(
-            px(0.0),
-            tab_bar::tab_bar_height(TabsConfig {
-                position: TabPosition::Top,
-                ..titlebar(true)
-            })
-        )
-    );
-    for (position, title_row) in [
-        (WorkspacePosition::Top, false),
-        (WorkspacePosition::Bottom, true),
-    ] {
-        assert_eq!(
-            always(position, title_row),
-            size(px(0.0), workspace_chrome::BAR_HEIGHT)
-        );
-    }
+    let frame = WindowFrame::default();
+    let mut config = Config::default();
+    let hidden = initial_window_size(&config, metrics, host, frame);
+    config.sidebar.visible = true;
+    let shown = initial_window_size(&config, metrics, host, frame);
+    assert_eq!(shown.width - hidden.width, workspace_chrome::PANEL_WIDTH);
+    assert_eq!(shown.height, hidden.height);
 }
 
 #[test]

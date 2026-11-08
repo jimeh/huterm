@@ -87,10 +87,10 @@ fn placement_follows_platform_position_fullscreen_and_config() {
 fn the_split_row_narrows_plus_and_keeps_the_square_control_at_the_end() {
     // Column widths less the 6pt margins on both sides.
     for (sidebar, row) in [(140.0, 128.0), (180.0, 168.0)] {
-        let full = split_new_tab_row(px(row), false, false);
+        let full = split_new_tab_row(px(row), false, false, false);
         assert_eq!(full.plus_width, px(row), "sidebar {sidebar}");
         assert_eq!((full.menu_x, full.session_x), (None, None));
-        let split = split_new_tab_row(px(row), true, false);
+        let split = split_new_tab_row(px(row), true, false, false);
         assert_eq!(split.menu_x, Some(px(row - 26.0)), "sidebar {sidebar}");
         assert_eq!(split.session_x, None);
         assert_eq!(split.plus_width, px(row - 26.0 - 4.0));
@@ -100,20 +100,27 @@ fn the_split_row_narrows_plus_and_keeps_the_square_control_at_the_end() {
             "the row keeps its width"
         );
         // The session control sits between `+` and the menu control.
-        let both = split_new_tab_row(px(row), true, true);
+        let both = split_new_tab_row(px(row), true, false, true);
         assert_eq!(both.menu_x, Some(px(row - 26.0)));
         assert_eq!(both.session_x, Some(px(row - 26.0 - 4.0 - 26.0)));
         assert_eq!(both.plus_width, px(row - 2.0 * (26.0 + 4.0)));
+        // The sidebar button sits just inside the menu control, and the
+        // session control further in.
+        let all = split_new_tab_row(px(row), true, true, true);
+        assert_eq!(all.menu_x, Some(px(row - 26.0)));
+        assert_eq!(all.sidebar_x, Some(px(row - 2.0 * 26.0 - 4.0)));
+        assert_eq!(all.session_x, Some(px(row - 3.0 * 26.0 - 2.0 * 4.0)));
+        assert_eq!(all.plus_width, px(row - 3.0 * (26.0 + 4.0)));
         // Without the menu button the session control takes its square.
-        let session = split_new_tab_row(px(row), false, true);
+        let session = split_new_tab_row(px(row), false, false, true);
         assert_eq!(session.menu_x, None);
         assert_eq!(session.session_x, Some(px(row - 26.0)));
         assert_eq!(session.plus_width, split.plus_width);
     }
-    let tiny = split_new_tab_row(px(20.0), true, false);
+    let tiny = split_new_tab_row(px(20.0), true, false, false);
     assert_eq!(tiny.menu_x, Some(px(0.0)));
     assert_eq!(tiny.plus_width, px(0.0));
-    let tiny = split_new_tab_row(px(20.0), true, true);
+    let tiny = split_new_tab_row(px(20.0), true, false, true);
     assert_eq!(
         (tiny.session_x, tiny.menu_x),
         (Some(px(0.0)), Some(px(0.0)))
@@ -195,7 +202,9 @@ fn the_session_control_follows_the_menu_button_in_every_window_shape() {
         session_control_host(true, true, TabPosition::Titlebar, false),
         TitleStrip
     );
-    assert!(WindowConfig::default().session_button);
+    // The title-bar control is opt-in: the sidebar holds the session
+    // switcher.
+    assert!(!WindowConfig::default().session_button);
 }
 
 #[test]

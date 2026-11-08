@@ -1,15 +1,17 @@
-//! Tier 2 tests for the workspace panel, bar, and dropdown (#27 PR B):
-//! when each shows, panel changes that keep the terminal's process, focus,
-//! and mouse mapping (W32), menus whose host goes (W33), rows and the
-//! workspace menu through real pointer and keyboard events, live counts,
-//! per-window collapse, the session control's sidebar host, and
-//! `show = "never"`.
+//! Tier 2 tests for the sidebar and workspace switcher (#27 PR B): the
+//! sidebar button and switcher in the corner, docking that keeps the
+//! terminal's process, focus, and mouse mapping (W32), popovers whose
+//! anchor goes (W33), rows, drag and drop (W41, W42), and the session
+//! switcher through real pointer and keyboard events, a narrow window's
+//! sheet, and per-window visibility.
 
-use gpui::{Modifiers, MouseButton, MouseDownEvent};
-use huterm_config::{SessionButtonPlacement, WorkspacePosition, WorkspaceShow};
+use gpui::{
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+};
+use huterm_config::{SessionSwitcherPosition, SidebarPosition, TabPosition};
 
+use super::super::workspace_panel::{SwitcherAnchor, SwitcherMode};
 use super::menus::a11y_node;
-use super::sessions::shown_tabs;
 use super::workspaces::shown_workspace;
 use super::*;
 
@@ -66,6 +68,16 @@ fn mapped(
     terminal(cx, window, tab).and_then(|view| view.read(cx).geometry.bounds)
 }
 
+/// The session's workspaces in order.
+fn order(cx: &mut App, session: SessionId) -> Vec<WorkspaceId> {
+    cx.global::<Desktop>()
+        .hierarchy
+        .state()
+        .session_workspaces(session)
+        .unwrap_or_default()
+        .to_vec()
+}
+
 impl DesktopHarness {
     /// A focused window on one echo tab, waiting for its shell.
     fn workspace_window(&mut self) -> (AnyWindowHandle, TabId) {
@@ -76,7 +88,7 @@ impl DesktopHarness {
         (window, tab)
     }
 
-    /// Waits until `window` lays out `expected` chrome, by its kind.
+    /// Waits until `window` lays out chrome that `expected` accepts.
     fn wait_chrome(
         &mut self,
         window: AnyWindowHandle,
@@ -101,7 +113,7 @@ impl DesktopHarness {
         });
     }
 
-    /// The painted bounds of `workspace`'s row or chip.
+    /// The painted bounds of `workspace`'s row.
     fn row_bounds(
         &mut self,
         window: AnyWindowHandle,
@@ -123,43 +135,101 @@ impl DesktopHarness {
             view.workspace_row_bounds.borrow()[&workspace]
         })
     }
+
+    /// The painted bounds `read` returns from the view, once it paints.
+    fn painted(
+        &mut self,
+        window: AnyWindowHandle,
+        what: &str,
+        read: impl Fn(&WorkspaceView) -> Option<Bounds<Pixels>>,
+    ) -> Bounds<Pixels> {
+        self.wait_for(what, |cx| {
+            window
+                .update(cx, |root, _, cx| {
+                    root.downcast::<WorkspaceView>()
+                        .is_ok_and(|view| read(view.read(cx)).is_some())
+                })
+                .unwrap_or(false)
+        });
+        self.update_view(window, |view, _, _| read(view).unwrap())
+    }
+
+    /// The workspace switcher's painted bounds.
+    fn switcher_bounds(&mut self, window: AnyWindowHandle) -> Bounds<Pixels> {
+        self.painted(window, "the switcher to paint", |view| {
+            view.workspace_trigger_bounds
+                .get()
+                .filter(|_| view.workspace_trigger_drawn.get())
+        })
+    }
+
+    /// Presses `from`, moves past the drag threshold to `to`, and holds.
+    fn drag_row(
+        &mut self,
+        window: AnyWindowHandle,
+        from: gpui::Point<Pixels>,
+        to: gpui::Point<Pixels>,
+    ) {
+        let mut visual = VisualTestContext::from_window(window, &self.cx);
+        visual.simulate_event(MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseMoveEvent {
+            position: to,
+            modifiers: Modifiers::none(),
+            pressed_button: Some(MouseButton::Left),
+        });
+    }
+
+    /// Releases a held drag at `at`.
+    fn release(&mut self, window: AnyWindowHandle, at: gpui::Point<Pixels>) {
+        VisualTestContext::from_window(window, &self.cx).simulate_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::none(),
+                click_count: 1,
+            },
+        );
+    }
 }
 
 #[gpui::test]
-fn the_panel_shows_only_with_a_second_workspace_under_auto(
+fn the_sidebar_button_shows_alone_until_a_second_workspace(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let (window, _) = harness.workspace_window();
-    // One workspace: the window is exactly as before the panel existed.
     harness.cx.update(|cx| {
         let layout = chrome(cx, window);
-        assert_eq!(layout.workspace_chrome, WorkspaceChrome::None);
+        assert_eq!(layout.workspace_chrome, WorkspaceChrome::NONE);
         assert_eq!(layout.workspace, None);
+        let button = &a11y_node(cx, window, "sidebar-button")["aria"];
+        assert_eq!(button["role"], "Button");
+        assert_eq!(button["label"], "Show Sidebar");
+    });
+    harness.update_view(window, |view, _, _| {
+        assert!(!view.workspace_trigger_drawn.get(), "no switcher yet");
     });
     let (second, _) = harness.add_workspace(1);
-    harness.wait_chrome(window, "the left panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
+    harness.wait_chrome(window, "the switcher", WorkspaceChrome::switcher);
+    harness.switcher_bounds(window);
     harness.cx.update(|cx| {
-        let layout = chrome(cx, window);
-        let band = layout.workspace.unwrap();
-        assert_eq!(band.left(), layout.content.left());
-        assert_eq!(band.size.width, workspace_chrome::PANEL_WIDTH);
-        assert!(layout.terminal.left() >= band.right());
-        // Rows name their workspace and tab count, the shown one selected.
-        let row = a11y_node(cx, window, "workspace-panel");
-        assert_eq!(row["aria"]["label"], "Workspaces");
+        let switcher = &a11y_node(cx, window, "workspace-switcher")["aria"];
+        assert_eq!(switcher["label"], "Workspace: Workspace 1");
+        assert_eq!(switcher["expanded"], false);
     });
-    // Closing back to one workspace hides it again.
+    // Closing back to one workspace takes the switcher away again.
     harness.runtime.lock().close_workspace(second).unwrap();
-    harness.wait_chrome(window, "no panel", |chrome| {
-        chrome == WorkspaceChrome::None
-    });
+    harness.wait_chrome(window, "no switcher", |chrome| !chrome.switcher());
 }
 
 #[gpui::test]
-fn panel_changes_keep_focus_mouse_mapping_and_processes(
+fn sidebar_changes_keep_focus_mouse_mapping_and_processes(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
@@ -187,45 +257,38 @@ fn panel_changes_keep_focus_mouse_mapping_and_processes(
         harness.wait_text(window, tab, &format!("got:{step}"));
     };
     let before = harness.cx.update(|cx| mapped(cx, window, tab)).unwrap();
-    harness.add_workspace(1);
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
     unchanged(&mut harness, "shown");
-    let panel = harness.cx.update(|cx| mapped(cx, window, tab)).unwrap();
-    assert!(panel.left() > before.left(), "{panel:?} {before:?}");
-    // Collapsing gives the width back to the terminal.
-    harness.invoke(window, ids::TOGGLE_WORKSPACE_PANEL).unwrap();
-    harness.wait_chrome(window, "the dropdown", WorkspaceChrome::is_dropdown);
-    unchanged(&mut harness, "collapsed");
-    harness.invoke(window, ids::TOGGLE_WORKSPACE_PANEL).unwrap();
-    harness.wait_chrome(window, "the panel again", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
+    let docked = harness.cx.update(|cx| mapped(cx, window, tab)).unwrap();
+    assert!(docked.left() > before.left(), "{docked:?} {before:?}");
+    // Hiding gives the width back to the terminal.
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_chrome(window, "no sidebar", |chrome| !chrome.docked());
+    unchanged(&mut harness, "hidden");
+    // A reload that moves a shown sidebar to the right keeps all of it.
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.reload_config(window, |config| {
+        config.sidebar.position = SidebarPosition::Right;
     });
-    unchanged(&mut harness, "expanded");
-    // A reload that moves it to every edge keeps all of it too.
-    for position in [
-        WorkspacePosition::Top,
-        WorkspacePosition::Right,
-        WorkspacePosition::Bottom,
-        WorkspacePosition::Left,
-    ] {
-        harness.reload_config(window, |config| {
-            config.workspaces.position = position;
-        });
-        let expected = match position {
-            WorkspacePosition::Left => workspace_chrome::Edge::Left,
-            WorkspacePosition::Top => workspace_chrome::Edge::Top,
-            WorkspacePosition::Right => workspace_chrome::Edge::Right,
-            WorkspacePosition::Bottom => workspace_chrome::Edge::Bottom,
-        };
-        harness.wait_chrome(window, "the moved chrome", |chrome| {
-            chrome.edge() == Some(expected)
-        });
-        unchanged(&mut harness, &format!("{position:?}").to_lowercase());
-    }
+    harness.wait_chrome(window, "the right sidebar", |chrome| {
+        chrome.docked_on(workspace_chrome::Edge::Right)
+    });
+    unchanged(&mut harness, "right");
+    // A window too narrow to dock it undocks it, and widening docks it
+    // again: the window kept wanting it.
+    let height = harness
+        .update_view(window, |_, window, _| window.viewport_size().height);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(500.0), height));
+    harness.wait_chrome(window, "narrow", WorkspaceChrome::narrow);
+    unchanged(&mut harness, "narrow");
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(1000.0), height));
+    harness.wait_chrome(window, "docked again", WorkspaceChrome::docked);
+    unchanged(&mut harness, "wide");
     // A selection survives a change that leaves the grid alone, such as
-    // moving the session control into the panel (settled decision 9).
+    // moving the session switcher to the top (settled decision 9).
     let grid = harness.cx.update(|cx| {
         terminal(cx, window, tab).unwrap().read(cx).requested_grid
     });
@@ -234,7 +297,7 @@ fn panel_changes_keep_focus_mouse_mapping_and_processes(
         .cx
         .update(|cx| selection.update(cx, TerminalView::select_all));
     harness.reload_config(window, |config| {
-        config.window.session_button_placement = SessionButtonPlacement::Both;
+        config.sidebar.session_switcher = SessionSwitcherPosition::Top;
     });
     harness.cx.run_until_parked();
     harness.cx.update(|cx| {
@@ -247,71 +310,49 @@ fn panel_changes_keep_focus_mouse_mapping_and_processes(
 }
 
 #[gpui::test]
-fn the_dropdown_opens_the_workspace_menu_which_switches_and_shows_the_panel(
+fn the_switcher_opens_a_popover_of_the_sidebars_content_under_native_menus(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.collapsed = true;
-        config.tabs.always_show = true;
+        config.window.macos_native_menus = true;
     });
     let (window, _) = harness.workspace_window();
     let (second, seconds) = harness.add_workspace(1);
-    harness.wait_chrome(window, "the dropdown", WorkspaceChrome::is_dropdown);
-    let trigger = {
-        harness.wait_for("the dropdown to paint", |cx| {
-            window
-                .update(cx, |root, _, cx| {
-                    root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                        let view = view.read(cx);
-                        view.workspace_trigger_drawn.get()
-                            && view.workspace_trigger_bounds.get().is_some()
-                    })
-                })
-                .unwrap_or(false)
-        });
-        harness.update_view(window, |view, _, _| {
-            view.workspace_trigger_bounds.get().unwrap()
-        })
-    };
-    harness.cx.update(|cx| {
-        let aria = &a11y_node(cx, window, "workspace-dropdown")["aria"];
-        assert_eq!(aria["role"], "Button");
-        assert!(
-            aria["label"].as_str().unwrap().starts_with("Workspace: "),
-            "{aria}"
-        );
-        assert_eq!(aria["expanded"], false);
+    let switcher = harness.switcher_bounds(window);
+    harness.click_at(window, switcher.center());
+    harness.wait_for("the switcher to report its popover", |cx| {
+        a11y_node(cx, window, "workspace-switcher")["aria"]["expanded"] == true
     });
-    harness.click_at(window, trigger.center());
-    harness.wait_for("the dropdown to report its menu", |cx| {
-        a11y_node(cx, window, "workspace-dropdown")["aria"]["expanded"] == true
+    let popover = harness.painted(window, "the popover to paint", |view| {
+        view.switcher_popover.content_bounds()
     });
-    harness.cx.update(|cx| {
-        assert_eq!(open_kind(cx, window), Some("workspace"));
+    harness.update_view(window, |view, _, _| {
         assert_eq!(
-            menu_ids(cx, window),
-            [
-                format!("workspace:{}", harness.workspace.get()),
-                format!("workspace:{}", second.get()),
-                "new_workspace".to_owned(),
-                "rename_workspace".to_owned(),
-                "close_workspace".to_owned(),
-                "toggle_workspace_panel".to_owned(),
-            ]
+            view.switcher_mode,
+            Some(SwitcherMode::Popover(SwitcherAnchor::Switcher))
+        );
+        assert!(view.native_menu.is_none(), "a GPUI popover, never native");
+        assert!(popover.top() >= switcher.bottom(), "{popover:?}");
+    });
+    // It holds the rows and the session switcher.
+    let row = harness.row_bounds(window, second);
+    assert!(popover.contains(&row.center()), "{row:?} {popover:?}");
+    let session = harness.painted(window, "the session row to paint", |view| {
+        view.session_popover_bounds.get()
+    });
+    assert!(popover.contains(&session.center()), "{session:?}");
+    // The shown row takes focus; the keyboard picks the second workspace,
+    // which closes the popover and returns focus to its terminal.
+    harness.press(window, "down enter");
+    harness.wait_workspace(window, second, &seconds);
+    harness.cx.update(|cx| {
+        assert!(
+            focused(cx, window, seconds[0]),
+            "focus stayed in the popover"
         );
     });
-    // The keyboard picks the second workspace.
-    harness.press(window, "down down enter");
-    harness.wait_workspace(window, second, &seconds);
-    // Show Workspace Panel from the menu expands this window only.
-    harness.invoke(window, ids::OPEN_WORKSPACE_MENU).unwrap();
-    harness.press(window, "end enter");
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
-    harness.cx.update(|cx| {
-        let record = cx.global::<Desktop>().windows.record(window.window_id());
-        assert!(!record.unwrap().layout.workspace_collapsed);
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.switcher_mode, None);
     });
 }
 
@@ -319,12 +360,12 @@ fn the_dropdown_opens_the_workspace_menu_which_switches_and_shows_the_panel(
 fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
     let (window, _) = harness.workspace_window();
     let (second, seconds) = harness.add_workspace(1);
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
     let row = harness.row_bounds(window, second);
     harness.cx.update(|cx| {
         let id = format!("workspace-row-{}", second.get());
@@ -364,8 +405,7 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
     harness.press(window, "escape");
     assert_eq!(harness.cx.update(|cx| open_kind(cx, window)), None);
     // A double click renames through the palette prompt.
-    VisualTestContext::from_window(window, &harness.cx)
-        .simulate_click(row.center(), Modifiers::none());
+    harness.click_at(window, row.center());
     VisualTestContext::from_window(window, &harness.cx).simulate_event(
         MouseDownEvent {
             button: MouseButton::Left,
@@ -375,14 +415,7 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
             first_mouse: false,
         },
     );
-    VisualTestContext::from_window(window, &harness.cx).simulate_event(
-        gpui::MouseUpEvent {
-            button: MouseButton::Left,
-            position: row.center(),
-            modifiers: Modifiers::none(),
-            click_count: 2,
-        },
-    );
+    harness.release(window, row.center());
     harness.wait_for("the rename prompt", |cx| {
         palette_state(cx, window).is_some_and(|state| {
             state.contains("slots command=rename_workspace")
@@ -391,21 +424,163 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
 }
 
 #[gpui::test]
-fn the_keyboard_walks_the_panel_and_returns_to_the_terminal(
+fn dragging_a_row_reorders_the_sessions_workspaces_in_every_window(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let first = harness.open_tab(ECHO);
+    let (second, _) = harness.add_workspace(1);
+    let (third, _) = harness.add_workspace(1);
+    let one = harness.attach_showing(&[first]);
+    let two = harness.attach_showing(&[first]);
+    harness.wait_chrome(one, "the sidebar", WorkspaceChrome::docked);
+    let session = harness.session;
+    let initial = harness.workspace;
+    let start = harness.cx.update(|cx| order(cx, session));
+    assert_eq!(start, [initial, second, third]);
+    // Escape cancels a drag; nothing moves and nothing is shown.
+    let from = harness.row_bounds(one, harness.workspace);
+    let to = harness.row_bounds(one, third);
+    let below = gpui::point(to.center().x, to.bottom() - px(2.0));
+    harness.drag_row(one, from.center(), below);
+    harness.update_view(one, |view, _, _| {
+        let drag = view.workspace_drag.expect("a drag");
+        assert!(drag.dragging);
+        assert_eq!(drag.before, None, "a drop past the last row ends it");
+    });
+    harness.press(one, "escape");
+    harness.release(one, below);
+    harness.cx.run_until_parked();
+    assert_eq!(harness.cx.update(|cx| order(cx, session)), start);
+    // A drop past the last row moves the first workspace to the end, in
+    // the session, so every window on it shows the new order.
+    harness.drag_row(one, from.center(), below);
+    harness.release(one, below);
+    harness.wait_for("the new order", |cx| {
+        order(cx, session) == [second, third, initial]
+    });
+    harness.cx.update(|cx| {
+        assert_eq!(shown_workspace(cx, one), Some(harness.workspace));
+    });
+    let rows = |harness: &mut DesktopHarness, window| {
+        let mut rows: Vec<(Pixels, WorkspaceId)> =
+            [harness.workspace, second, third]
+                .into_iter()
+                .map(|workspace| {
+                    (harness.row_bounds(window, workspace).top(), workspace)
+                })
+                .collect();
+        rows.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        rows.into_iter()
+            .map(|(_, workspace)| workspace)
+            .collect::<Vec<_>>()
+    };
+    harness.wait_chrome(two, "the other sidebar", WorkspaceChrome::docked);
+    harness.cx.run_until_parked();
+    for window in [one, two] {
+        assert_eq!(
+            rows(&mut harness, window),
+            [second, third, harness.workspace]
+        );
+    }
+}
+
+#[gpui::test]
+fn a_workspace_drag_cancels_when_its_workspace_goes(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    let (third, _) = harness.add_workspace(1);
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let from = harness.row_bounds(window, second);
+    let to = harness.row_bounds(window, third);
+    let below = gpui::point(to.center().x, to.bottom() - px(2.0));
+    harness.drag_row(window, from.center(), below);
+    // Another client closes the dragged workspace (W41).
+    harness.runtime.lock().close_workspace(second).unwrap();
+    harness.wait_for("the drag to end", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .is_ok_and(|view| view.read(cx).workspace_drag.is_none())
+            })
+            .unwrap_or(false)
+    });
+    harness.release(window, below);
+    harness.cx.run_until_parked();
+    let session = harness.session;
+    assert_eq!(
+        harness.cx.update(|cx| order(cx, session)),
+        [harness.workspace, third]
+    );
+    harness.update_view(window, |view, _, _| {
+        assert!(view.notices.is_empty(), "the release reported a failure");
+    });
+}
+
+#[gpui::test]
+fn a_workspace_drop_whose_anchor_went_lands_by_id(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    let (third, _) = harness.add_workspace(1);
+    let (fourth, _) = harness.add_workspace(1);
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let first = harness.workspace;
+    let from = harness.row_bounds(window, first);
+    let anchor = harness.row_bounds(window, third);
+    let above = gpui::point(anchor.center().x, anchor.top() + px(2.0));
+    harness.drag_row(window, from.center(), above);
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.workspace_drag.unwrap().before, Some(third));
+    });
+    // The anchor closes before the drop (W42); the rows below it move up,
+    // and the drop lands before the row now under the pointer, by ID.
+    harness.runtime.lock().close_workspace(third).unwrap();
+    harness.wait_for("the anchor's row to go", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    !view
+                        .read(cx)
+                        .workspace_row_bounds
+                        .borrow()
+                        .contains_key(&third)
+                })
+            })
+            .unwrap_or(false)
+    });
+    harness.row_bounds(window, fourth);
+    harness.release(window, above);
+    let session = harness.session;
+    harness.wait_for("the drop", |cx| {
+        order(cx, session) == [second, first, fourth]
+    });
+}
+
+#[gpui::test]
+fn the_keyboard_walks_the_sidebar_and_returns_to_the_terminal(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
     let (window, tab) = harness.workspace_window();
     let (second, seconds) = harness.add_workspace(1);
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    harness.row_bounds(window, second);
     let focused_row = |harness: &mut DesktopHarness| {
         harness.update_view(window, |view, window, _| {
             view.focused_workspace_row(window)
         })
     };
-    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
     assert_eq!(focused_row(&mut harness), Some(harness.workspace));
     harness.press(window, "down");
     assert_eq!(focused_row(&mut harness), Some(second));
@@ -417,291 +592,150 @@ fn the_keyboard_walks_the_panel_and_returns_to_the_terminal(
     harness.press(window, "enter");
     harness.wait_workspace(window, second, &seconds);
     // Shift-F10 opens the focused row's menu; Escape there and in the
-    // panel returns focus to the terminal.
-    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    // sidebar returns focus to the terminal.
+    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
     harness.press(window, "shift-f10");
     assert_eq!(
         harness.cx.update(|cx| open_kind(cx, window)),
         Some("workspace_row")
     );
     harness.press(window, "escape");
-    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
     harness.press(window, "escape");
     harness.cx.update(|cx| {
-        assert!(focused(cx, window, seconds[0]), "focus left the panel");
+        assert!(focused(cx, window, seconds[0]), "focus left the sidebar");
         assert!(!focused(cx, window, tab));
     });
+    // A hidden sidebar has nothing to focus.
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_chrome(window, "no sidebar", |chrome| !chrome.docked());
+    assert!(matches!(
+        harness.invoke(window, ids::FOCUS_SIDEBAR),
+        Err(CommandError::Unavailable(_))
+    ));
 }
 
 #[gpui::test]
-fn a_menu_whose_host_goes_closes_cleanly(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.collapsed = true;
-        config.tabs.always_show = true;
-        config.window.session_button_placement = SessionButtonPlacement::Both;
-    });
+fn a_popover_whose_anchor_goes_closes_cleanly(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
     let (window, tab) = harness.workspace_window();
-    harness.add_workspace(1);
-    harness.wait_chrome(window, "the dropdown", WorkspaceChrome::is_dropdown);
-    // A reload closes an open workspace menu and returns focus.
-    harness.invoke(window, ids::OPEN_WORKSPACE_MENU).unwrap();
-    assert_eq!(
-        harness.cx.update(|cx| open_kind(cx, window)),
-        Some("workspace")
-    );
-    harness.reload_config(window, |config| {
-        config.workspaces.show = WorkspaceShow::Never;
-    });
-    harness.wait_chrome(window, "no workspace chrome", |chrome| {
-        chrome == WorkspaceChrome::None
-    });
-    harness.cx.update(|cx| {
-        assert_eq!(open_kind(cx, window), None);
-        assert!(focused(cx, window, tab));
-    });
-    // Collapsing takes the panel's host away; the command closes a session
-    // menu opened from it, and the title bar's host shows instead (F1).
-    harness.reload_config(window, |config| {
-        config.workspaces.show = WorkspaceShow::Auto;
-    });
-    harness.invoke(window, ids::TOGGLE_WORKSPACE_PANEL).unwrap();
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
-    harness.wait_for("the sidebar host to paint", |cx| {
-        window
-            .update(cx, |root, _, cx| {
-                root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                    view.read(cx).session_sidebar_bounds.get().is_some()
-                })
-            })
-            .unwrap_or(false)
-    });
-    let sidebar = harness
-        .update_view(window, |view, _, _| view.session_sidebar_bounds.get())
+    let (second, _) = harness.add_workspace(1);
+    harness.switcher_bounds(window);
+    let switcher_open = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, _| view.switcher_mode.is_some())
+    };
+    // The session menu opened from the popover's session row is Huterm's,
+    // even with native menus.
+    harness
+        .invoke(window, ids::OPEN_WORKSPACE_SWITCHER)
         .unwrap();
-    harness.click_at(window, sidebar.center());
+    let session = harness.painted(window, "the session row to paint", |view| {
+        view.session_popover_bounds.get()
+    });
+    harness.click_at(window, session.center());
     assert_eq!(
         harness.cx.update(|cx| open_kind(cx, window)),
         Some("session")
     );
-    harness.update_view(window, |view, _, _| {
-        assert_eq!(view.session_menu_anchor_for_tests(), Some(sidebar));
-    });
-    harness.invoke(window, ids::TOGGLE_WORKSPACE_PANEL).unwrap();
-    harness.wait_chrome(window, "the dropdown", WorkspaceChrome::is_dropdown);
-    harness.wait_for("the sidebar host to go", |cx| {
+    assert!(switcher_open(&mut harness), "the menu closed its popover");
+    // The switcher goes with the last other workspace (W33): the popover
+    // and the menu opened from it close, and focus returns.
+    harness.runtime.lock().close_workspace(second).unwrap();
+    harness.wait_for("the popover to close", |cx| {
         window
             .update(cx, |root, _, cx| {
-                root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                    view.read(cx).session_sidebar_bounds.get().is_none()
-                })
+                root.downcast::<WorkspaceView>()
+                    .is_ok_and(|view| view.read(cx).switcher_mode.is_none())
             })
             .unwrap_or(false)
     });
-    harness.update_view(window, |view, _, _| {
-        let title = view.session_button_bounds.get();
-        assert!(title.is_some(), "the title bar host shows (F1)");
-        assert_eq!(view.session_menu_anchor_for_tests(), title);
-    });
-    // Collapsing ran a command, which closed the menu like any other.
-    assert_eq!(harness.cx.update(|cx| open_kind(cx, window)), None);
-    harness.press(window, "escape");
     harness.cx.update(|cx| {
         assert_eq!(open_kind(cx, window), None);
         assert!(focused(cx, window, tab));
     });
-}
-
-#[gpui::test]
-fn counts_and_badges_follow_other_workspaces_and_windows(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.collapsed = true;
-    });
-    let first = harness.open_tab(ECHO);
-    let (second, seconds) = harness.add_workspace(1);
-    let one = harness.attach_showing(&[first]);
-    let two = harness.attach_showing(&[first]);
-    harness.wait_chrome(two, "the dropdown", WorkspaceChrome::is_dropdown);
-    // Window two's open menu shows the second workspace's count live, and
-    // a badge once window one shows it.
-    harness.invoke(two, ids::OPEN_WORKSPACE_MENU).unwrap();
-    let detail = |harness: &mut DesktopHarness| {
-        harness.update_view(two, |view, _, cx| {
-            let menu = view.menu.as_ref().unwrap().view.read(cx);
-            menu.model()
-                .rows
-                .iter()
-                .find_map(|row| match row {
-                    MenuRow::Item(item)
-                        if item.id.as_ref()
-                            == format!("workspace:{}", second.get()) =>
-                    {
-                        Some((item.detail.clone(), item.tags.len()))
-                    }
-                    _ => None,
-                })
-                .unwrap()
-        })
-    };
-    assert_eq!(detail(&mut harness), (Some("1 tab".to_owned()), 0));
+    // Showing the sidebar while the popover is open closes it too.
+    harness.add_workspace(1);
+    harness.switcher_bounds(window);
     harness
-        .runtime
-        .lock()
-        .open_tab(second, &fixture(ECHO))
+        .invoke(window, ids::OPEN_WORKSPACE_SWITCHER)
         .unwrap();
-    harness.wait_for("the count to follow", |cx| {
-        window_detail(cx, two, second) == Some("2 tabs".to_owned())
-    });
-    assert_eq!(seconds.len(), 1);
-    harness.update_view(one, |view, window, cx| {
-        view.invoke_interactive(
-            &CommandInvocation::new(
-                ids::SELECT_WORKSPACE,
-                vec![CommandArgument::new(
-                    "workspace",
-                    CommandValue::Workspace(second),
-                )],
-            ),
-            window,
-            cx,
-        )
-        .unwrap();
-    });
-    harness.wait_for("window one to show the second workspace", |cx| {
-        shown_workspace(cx, one) == Some(second)
-            && shown_tabs(cx, one).len() == 2
-    });
-    harness.wait_for("the badge in window two", |cx| {
-        window_tags(cx, two, second) == 1
-    });
-}
-
-/// The detail of `workspace`'s row in `window`'s open menu.
-fn window_detail(
-    cx: &mut App,
-    window: AnyWindowHandle,
-    workspace: WorkspaceId,
-) -> Option<String> {
-    menu_item(cx, window, workspace).and_then(|(detail, _)| detail)
-}
-
-/// How many tags `workspace`'s row in `window`'s open menu carries.
-fn window_tags(
-    cx: &mut App,
-    window: AnyWindowHandle,
-    workspace: WorkspaceId,
-) -> usize {
-    menu_item(cx, window, workspace).map_or(0, |(_, tags)| tags)
-}
-
-fn menu_item(
-    cx: &mut App,
-    window: AnyWindowHandle,
-    workspace: WorkspaceId,
-) -> Option<(Option<String>, usize)> {
-    window
-        .update(cx, |root, _, cx| {
-            let view = root.downcast::<WorkspaceView>().ok()?;
-            let view = view.read(cx);
-            let menu = view.menu.as_ref()?.view.read(cx);
-            let id = format!("workspace:{}", workspace.get());
-            menu.model().rows.iter().find_map(|row| match row {
-                MenuRow::Item(item) if item.id.as_ref() == id => {
-                    Some((item.detail.clone(), item.tags.len()))
-                }
-                _ => None,
-            })
-        })
-        .ok()
-        .flatten()
+    assert!(switcher_open(&mut harness));
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    assert!(!switcher_open(&mut harness));
+    harness.cx.update(|cx| assert!(focused(cx, window, tab)));
 }
 
 #[gpui::test]
-fn never_hides_the_workspace_ui_but_keeps_the_commands(
+fn the_session_row_opens_huterms_session_menu_at_either_end(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.show = WorkspaceShow::Never;
+        config.sidebar.visible = true;
+        config.window.macos_native_menus = true;
     });
     let (window, _) = harness.workspace_window();
-    let (second, seconds) = harness.add_workspace(1);
-    harness.wait_projection();
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let read = |view: &WorkspaceView| view.session_sidebar_bounds.get();
+    let bottom = harness.painted(window, "the session row", read);
+    let band = harness
+        .cx
+        .update(|cx| chrome(cx, window).workspace.unwrap());
+    assert!(bottom.bottom() <= band.bottom() && bottom.top() > band.center().y);
     harness.cx.update(|cx| {
-        assert_eq!(chrome(cx, window).workspace_chrome, WorkspaceChrome::None);
+        let aria = &a11y_node(cx, window, "session-switcher")["aria"];
+        assert_eq!(aria["role"], "Button");
+        assert!(aria["label"].as_str().unwrap().starts_with("Session: "));
     });
-    for command in [ids::TOGGLE_WORKSPACE_PANEL, ids::FOCUS_WORKSPACE_PANEL] {
-        let result = harness.invoke(window, command);
-        assert!(
-            matches!(result, Err(CommandError::Unavailable(_))),
-            "{command:?}: {result:?}"
+    harness.click_at(window, bottom.center());
+    harness.update_view(window, |view, _, _| {
+        assert!(view.native_menu.is_none(), "Huterm's popover, never native");
+        assert_eq!(
+            view.session_menu_anchor_for_tests(),
+            Some(bottom),
+            "the menu anchors to the row that opened it"
         );
-    }
-    // The session menu drops New Workspace; the palette's commands work.
-    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
-    assert!(
-        !harness
-            .cx
-            .update(|cx| menu_ids(cx, window))
-            .contains(&"new_workspace".to_owned())
+    });
+    assert_eq!(
+        harness.cx.update(|cx| open_kind(cx, window)),
+        Some("session")
     );
-    harness.press(window, "escape");
-    harness.show_workspace(window, second, &seconds);
-}
-
-#[gpui::test]
-fn always_shows_the_panel_with_one_workspace_and_collapse_is_per_window(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.show = WorkspaceShow::Always;
-    });
-    let first = harness.open_tab(ECHO);
-    let one = harness.attach_showing(&[first]);
-    let two = harness.attach_showing(&[first]);
-    for window in [one, two] {
-        harness.wait_chrome(window, "the panel", |chrome| {
-            matches!(chrome, WorkspaceChrome::Panel { .. })
-        });
-    }
-    harness.invoke(one, ids::TOGGLE_WORKSPACE_PANEL).unwrap();
-    harness.wait_chrome(one, "the dropdown", WorkspaceChrome::is_dropdown);
     harness.cx.update(|cx| {
-        assert!(matches!(
-            chrome(cx, two).workspace_chrome,
-            WorkspaceChrome::Panel { .. }
-        ));
-        let saved = |window: AnyWindowHandle| {
-            cx.global::<Desktop>()
-                .windows
-                .record(window.window_id())
-                .unwrap()
-                .layout
-                .workspace_collapsed
-        };
-        assert!(saved(one));
-        assert!(!saved(two));
+        assert_eq!(
+            a11y_node(cx, window, "session-switcher")["aria"]["expanded"],
+            true
+        );
     });
+    harness.press(window, "escape");
+    // The setting moves it to the top, above the workspace rows.
+    harness.reload_config(window, |config| {
+        config.sidebar.session_switcher = SessionSwitcherPosition::Top;
+    });
+    harness.wait_for("the row to move", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx)
+                        .session_sidebar_bounds
+                        .get()
+                        .is_some_and(|row| row.top() < band.center().y)
+                })
+            })
+            .unwrap_or(false)
+    });
+    let top = harness.painted(window, "the session row", read);
+    let first = harness.row_bounds(window, harness.workspace);
+    assert!(top.bottom() <= first.top(), "{top:?} {first:?}");
 }
 
 #[gpui::test]
-fn every_edge_draws_with_every_tab_position_and_session_placement(
-    cx: &mut TestAppContext,
-) {
-    use huterm_config::TabPosition;
+fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.show = WorkspaceShow::Always;
         config.tabs.always_show = true;
     });
     let (window, tab) = harness.workspace_window();
-    for position in [
-        WorkspacePosition::Left,
-        WorkspacePosition::Top,
-        WorkspacePosition::Right,
-        WorkspacePosition::Bottom,
-    ] {
+    harness.add_workspace(1);
+    for position in [SidebarPosition::Left, SidebarPosition::Right] {
         for tabs in [
             TabPosition::Titlebar,
             TabPosition::Top,
@@ -709,36 +743,155 @@ fn every_edge_draws_with_every_tab_position_and_session_placement(
             TabPosition::Left,
             TabPosition::Right,
         ] {
-            for placement in [
-                SessionButtonPlacement::TitleBar,
-                SessionButtonPlacement::Sidebar,
-                SessionButtonPlacement::Both,
-            ] {
-                harness.reload_config(window, |config| {
-                    config.workspaces.position = position;
-                    config.tabs.position = tabs;
-                    config.window.session_button_placement = placement;
-                });
-                let label = format!("{position:?} {tabs:?} {placement:?}");
-                harness.wait_for("the frame to draw", |cx| {
-                    mapped(cx, window, tab) == Some(chrome(cx, window).terminal)
-                });
-                // Every control is drawn once: a duplicate would also
-                // panic in the accessibility tree.
-                harness.cx.update(|cx| {
-                    let menu = a11y_node(cx, window, "window-menu");
-                    assert_eq!(menu["aria"]["role"], "Button", "{label}");
-                    let layout = chrome(cx, window);
-                    let band = layout.workspace.expect("a band");
-                    assert!(
-                        !band.intersects(&layout.terminal),
-                        "{label}: {band:?} {:?}",
-                        layout.terminal
+            for session_button in [false, true] {
+                for visible in [false, true] {
+                    harness.reload_config(window, |config| {
+                        config.sidebar.position = position;
+                        config.tabs.position = tabs;
+                        config.window.session_button = session_button;
+                    });
+                    harness.update_view(window, |view, window, cx| {
+                        if view.workspace_visible != visible {
+                            view.toggle_sidebar(window, cx);
+                        }
+                    });
+                    let label = format!(
+                        "{position:?} {tabs:?} {session_button} {visible}"
                     );
-                });
+                    harness.wait_for("the frame to draw", |cx| {
+                        mapped(cx, window, tab)
+                            == Some(chrome(cx, window).terminal)
+                    });
+                    harness.cx.run_until_parked();
+                    // Every control is drawn once: a duplicate would also
+                    // panic in the accessibility tree.
+                    harness.cx.update(|cx| {
+                        let menu = a11y_node(cx, window, "window-menu");
+                        assert_eq!(menu["aria"]["role"], "Button", "{label}");
+                        let button = a11y_node(cx, window, "sidebar-button");
+                        assert_eq!(
+                            button["aria"]["label"],
+                            if visible {
+                                "Hide Sidebar"
+                            } else {
+                                "Show Sidebar"
+                            },
+                            "{label}"
+                        );
+                        let layout = chrome(cx, window);
+                        if let Some(band) = layout.workspace {
+                            assert!(
+                                !band.intersects(&layout.terminal),
+                                "{label}: {band:?} {:?}",
+                                layout.terminal
+                            );
+                        }
+                        assert_eq!(layout.workspace.is_some(), visible);
+                    });
+                    harness.update_view(window, |view, window, _| {
+                        let button = view.sidebar_button_bounds.get().unwrap();
+                        let layout = view.chrome_layout(window);
+                        assert!(
+                            !button.intersects(&layout.terminal),
+                            "{label}: {button:?}"
+                        );
+                        assert_eq!(
+                            view.workspace_trigger_drawn.get(),
+                            !visible,
+                            "{label}: the switcher shows while hidden"
+                        );
+                        if let Some(switcher) =
+                            view.workspace_trigger_bounds.get()
+                        {
+                            assert!(
+                                !switcher.intersects(&button),
+                                "{label}: {switcher:?} {button:?}"
+                            );
+                        }
+                    });
+                }
             }
         }
     }
+}
+
+#[gpui::test]
+fn a_narrow_window_opens_the_sidebar_as_a_sheet(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab) = harness.workspace_window();
+    let (second, seconds) = harness.add_workspace(1);
+    let height = harness
+        .update_view(window, |_, window, _| window.viewport_size().height);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(500.0), height));
+    harness.cx.run_until_parked();
+    let before = harness.cx.update(|cx| mapped(cx, window, tab)).unwrap();
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_chrome(window, "narrow", WorkspaceChrome::narrow);
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.switcher_mode, Some(SwitcherMode::Sheet));
+        assert!(view.workspace_visible);
+    });
+    // The sheet covers the terminal rather than resizing it.
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert_eq!(mapped(cx, window, tab), Some(before));
+        let aria = &a11y_node(cx, window, "sidebar-button")["aria"];
+        assert_eq!(aria["label"], "Hide Sidebar");
+    });
+    let row = harness.row_bounds(window, second);
+    harness.click_at(window, row.center());
+    harness.wait_workspace(window, second, &seconds);
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.switcher_mode, None, "showing closes the sheet");
+    });
+    // Widening docks it: the window still wants it.
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(1000.0), height));
+    harness.wait_chrome(window, "docked", WorkspaceChrome::docked);
+}
+
+#[gpui::test]
+fn the_visible_state_is_per_window_and_saved(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let one = harness.attach_showing(&[first]);
+    let two = harness.attach_showing(&[first]);
+    harness.invoke(one, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_chrome(one, "the sidebar", WorkspaceChrome::docked);
+    harness.cx.update(|cx| {
+        assert!(!chrome(cx, two).workspace_chrome.docked());
+        let saved = |window: AnyWindowHandle| {
+            cx.global::<Desktop>()
+                .windows
+                .record(window.window_id())
+                .unwrap()
+                .layout
+                .workspace_visible
+        };
+        assert!(saved(one));
+        assert!(!saved(two));
+    });
+}
+
+#[gpui::test]
+fn counts_follow_other_workspaces(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    harness.row_bounds(window, second);
+    let id = format!("workspace-row-{}", second.get());
+    harness
+        .runtime
+        .lock()
+        .open_tab(second, &fixture(ECHO))
+        .unwrap();
+    harness.wait_for("the count to follow", |cx| {
+        a11y_node(cx, window, &id)["aria"]["label"]
+            == "Workspace: Workspace 2, 2 tabs"
+    });
 }
 
 #[gpui::test]
@@ -746,14 +899,13 @@ fn closing_the_focused_rows_workspace_returns_focus_to_the_terminal(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.position = WorkspacePosition::Top;
+        config.sidebar.visible = true;
     });
     let (window, tab) = harness.workspace_window();
     let (second, _) = harness.add_workspace(1);
-    harness.wait_chrome(window, "the bar", |chrome| {
-        matches!(chrome, WorkspaceChrome::Bar { .. })
-    });
-    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    harness.row_bounds(window, second);
+    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
     harness.press(window, "end");
     harness.press(window, "shift-f10");
     assert_eq!(
@@ -767,12 +919,8 @@ fn closing_the_focused_rows_workspace_returns_focus_to_the_terminal(
         let state = cx.global::<Desktop>().hierarchy.state();
         state.workspace(second).is_none()
     });
-    harness.wait_chrome(window, "no panel", |chrome| {
-        chrome == WorkspaceChrome::None
-    });
-    harness.cx.update(|cx| {
-        assert!(focused(cx, window, tab), "focus did not return");
-    });
+    harness
+        .wait_for("focus back on the terminal", |cx| focused(cx, window, tab));
     harness.type_line(window, "after");
     harness.wait_text(window, tab, "got:after");
 }
@@ -782,16 +930,14 @@ fn a_focused_row_whose_workspace_goes_hands_focus_to_the_terminal(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.workspaces.show = WorkspaceShow::Always;
+        config.sidebar.visible = true;
     });
     let (window, tab) = harness.workspace_window();
     let (second, _) = harness.add_workspace(1);
     let (third, _) = harness.add_workspace(1);
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
     harness.row_bounds(window, third);
-    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
+    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
     harness.press(window, "down");
     assert_eq!(
         harness.update_view(window, |view, window, _| {
@@ -810,21 +956,21 @@ fn a_focused_row_whose_workspace_goes_hands_focus_to_the_terminal(
 
 #[gpui::test]
 fn showing_a_workspace_scrolls_its_row_into_view(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
     let (window, _) = harness.workspace_window();
     let mut last = None;
     for _ in 0..40 {
         last = Some(harness.add_workspace(1));
     }
     let (last, tabs) = last.unwrap();
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
     let band = harness
         .cx
         .update(|cx| chrome(cx, window).workspace.unwrap());
     harness.show_workspace(window, last, &tabs);
-    harness.wait_for("the shown row inside the panel", |cx| {
+    harness.wait_for("the shown row inside the sidebar", |cx| {
         window
             .update(cx, |root, _, cx| {
                 root.downcast::<WorkspaceView>().is_ok_and(|view| {
@@ -843,99 +989,24 @@ fn showing_a_workspace_scrolls_its_row_into_view(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_workspace_menu_keeps_its_panel_row_through_refreshes(
+fn a_tab_column_beside_the_sidebar_resizes_from_its_own_edge(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
-    let (window, _) = harness.workspace_window();
-    harness.add_workspace(1);
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
-    harness.invoke(window, ids::OPEN_WORKSPACE_MENU).unwrap();
-    // Every notify rebuilds an open menu's rows.
-    for _ in 0..3 {
-        harness.update_view(window, |_, _, cx| cx.notify());
-        harness.cx.run_until_parked();
-    }
-    let ids = harness.cx.update(|cx| menu_ids(cx, window));
-    assert_eq!(
-        ids.last().map(String::as_str),
-        Some("toggle_workspace_panel"),
-        "{ids:?}"
-    );
-}
-
-#[gpui::test]
-fn a_focused_chip_holds_an_auto_hidden_fullscreen_bar_open(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.tabs.auto_hide_in_fullscreen = true;
-        config.tabs.position = huterm_config::TabPosition::Top;
-        config.workspaces.position = WorkspacePosition::Top;
-    });
-    let (window, tab) = harness.workspace_window();
-    harness.add_workspace(1);
-    harness.update_view(window, |view, window, cx| {
-        window.toggle_fullscreen();
-        view.refresh_fullscreen(window, cx);
-        assert_eq!(view.presentation(), Presentation::Overlay);
-        assert_eq!(view.reveal.progress, 0.0);
-        cx.notify();
-    });
-    harness.wait_chrome(window, "the joined top bar", |chrome| {
-        chrome
-            == WorkspaceChrome::Bar {
-                edge: workspace_chrome::Edge::Top,
-            }
-    });
-    let held = |harness: &mut DesktopHarness| {
-        harness.update_view(window, |view, window, _| view.reveal_held(window))
-    };
-    assert!(!held(&mut harness), "nothing holds the bar yet");
-    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
-    assert!(held(&mut harness), "a focused chip holds its bar revealed");
-    // Leaving the bar releases it.
-    harness.press(window, "escape");
-    harness.cx.update(|cx| assert!(focused(cx, window, tab)));
-    assert!(!held(&mut harness), "the bar is held without focus");
-    // A workspace panel that never hides holds nothing for the tab bar.
-    harness.reload_config(window, |config| {
-        config.workspaces.position = WorkspacePosition::Left;
-    });
-    harness.wait_chrome(window, "the left panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
-    harness.invoke(window, ids::FOCUS_WORKSPACE_PANEL).unwrap();
-    assert!(harness.update_view(window, |view, window, _| {
-        view.focused_workspace_row(window).is_some()
-    }));
-    assert!(!held(&mut harness), "a side panel's row holds the tab bar");
-}
-
-#[gpui::test]
-fn a_tab_column_beside_a_panel_resizes_from_its_own_edge(
-    cx: &mut TestAppContext,
-) {
-    use huterm_config::TabPosition;
     for (position, tabs) in [
-        (WorkspacePosition::Left, TabPosition::Left),
-        (WorkspacePosition::Right, TabPosition::Right),
+        (SidebarPosition::Left, TabPosition::Left),
+        (SidebarPosition::Right, TabPosition::Right),
     ] {
         let mut harness = DesktopHarness::with_config(cx, |config| {
-            config.workspaces.show = WorkspaceShow::Always;
-            config.workspaces.position = position;
+            config.sidebar.visible = true;
+            config.sidebar.position = position;
             config.tabs.position = tabs;
             config.tabs.always_show = true;
         });
         let (window, _) = harness.workspace_window();
-        harness.wait_chrome(window, "the panel", |chrome| {
-            matches!(chrome, WorkspaceChrome::Panel { .. })
-        });
+        harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
         let column = harness.cx.update(|cx| chrome(cx, window).tabs);
         // The pointer drags the column's inner edge to 220 points from its
-        // outer edge, which the panel moved in from the window's.
+        // outer edge, which the sidebar moved in from the window's.
         let pointer = if tabs == TabPosition::Left {
             gpui::point(column.left() + px(220.0), px(10.0))
         } else {
@@ -951,59 +1022,4 @@ fn a_tab_column_beside_a_panel_resizes_from_its_own_edge(
             assert!(!band.intersects(&layout.tabs), "{tabs:?}");
         });
     }
-}
-
-#[gpui::test]
-fn an_open_session_menu_moves_to_the_title_bar_when_its_panel_goes(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.tabs.always_show = true;
-        config.window.session_button_placement = SessionButtonPlacement::Both;
-    });
-    let (window, _) = harness.workspace_window();
-    harness.add_workspace(1);
-    harness.wait_chrome(window, "the panel", |chrome| {
-        matches!(chrome, WorkspaceChrome::Panel { .. })
-    });
-    harness.wait_for("both hosts to paint", |cx| {
-        window
-            .update(cx, |root, _, cx| {
-                root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                    let view = view.read(cx);
-                    view.session_sidebar_bounds.get().is_some()
-                        && view.session_button_bounds.get().is_some()
-                })
-            })
-            .unwrap_or(false)
-    });
-    let sidebar = harness
-        .update_view(window, |view, _, _| view.session_sidebar_bounds.get())
-        .unwrap();
-    harness.click_at(window, sidebar.center());
-    assert_eq!(
-        harness.cx.update(|cx| open_kind(cx, window)),
-        Some("session")
-    );
-    // A window too narrow for the panel shows the dropdown (SW1), which
-    // takes the sidebar host away while the menu stays open.
-    let height = harness
-        .update_view(window, |_, window, _| window.viewport_size().height);
-    VisualTestContext::from_window(window, &harness.cx)
-        .simulate_resize(gpui::size(px(500.0), height));
-    harness.wait_chrome(window, "the dropdown", WorkspaceChrome::is_dropdown);
-    harness.wait_for("the title host to take the open menu", |cx| {
-        a11y_node(cx, window, "session-control")["aria"]["expanded"] == true
-    });
-    harness.update_view(window, |view, _, _| {
-        assert_eq!(view.session_sidebar_bounds.get(), None);
-        assert_eq!(
-            view.session_menu_anchor_for_tests(),
-            view.session_button_bounds.get()
-        );
-    });
-    assert_eq!(
-        harness.cx.update(|cx| open_kind(cx, window)),
-        Some("session")
-    );
 }

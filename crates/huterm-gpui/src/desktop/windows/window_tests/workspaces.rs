@@ -1775,18 +1775,16 @@ fn empty_state_focus(
     })
 }
 
-/// Whether `window` shows the workspace menu, opened from its empty
-/// state's Switch Workspace… button and anchored there.
-fn workspace_menu_shown(
+/// Whether `window` shows the workspace switcher's popover, opened from its
+/// empty state's Switch Workspace… button and anchored there.
+fn workspace_switcher_shown(
     harness: &mut DesktopHarness,
     window: AnyWindowHandle,
 ) -> bool {
+    use super::super::workspace_panel::{SwitcherAnchor, SwitcherMode};
     harness.update_view(window, |view, _, _| {
-        view.menu
-            .as_ref()
-            .is_some_and(|menu| menu.kind == MenuKind::Workspace)
-            && view.workspace_menu_from
-                == super::super::workspace_panel::WorkspaceMenuAnchor::EmptyState
+        view.switcher_mode
+            == Some(SwitcherMode::Popover(SwitcherAnchor::EmptyState))
     })
 }
 
@@ -1803,12 +1801,14 @@ fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
         empty_state_focus(&mut harness, window),
         Some("empty-switch-workspace")
     );
-    // Escape from the workspace menu Switch Workspace… opened returns focus
-    // to it, where Tab still moves through the buttons.
+    // Escape from the workspace switcher Switch Workspace… opened returns
+    // focus to it, where Tab still moves through the buttons.
     harness.press(window, "enter");
-    assert!(workspace_menu_shown(&mut harness, window));
+    assert!(workspace_switcher_shown(&mut harness, window));
     harness.press(window, "escape");
-    assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
+    assert!(
+        harness.update_view(window, |view, _, _| view.switcher_mode.is_none())
+    );
     assert_eq!(
         empty_state_focus(&mut harness, window),
         Some("empty-switch-workspace")
@@ -1885,12 +1885,14 @@ fn the_empty_state_cycles_its_buttons_and_opens_a_tab(cx: &mut TestAppContext) {
     assert_eq!(focused(&mut harness), Some("empty-new-tab"));
     run(&mut harness, ids::PANEL_FOCUS_PREVIOUS);
     assert_eq!(focused(&mut harness), Some("empty-close-workspace"));
-    // Switch Workspace… opens the workspace menu at itself.
+    // Switch Workspace… opens the workspace switcher at itself.
     run(&mut harness, ids::PANEL_FOCUS_PREVIOUS);
     run(&mut harness, ids::PANEL_PRESS);
-    assert!(workspace_menu_shown(&mut harness, window));
+    assert!(workspace_switcher_shown(&mut harness, window));
     harness.press(window, "escape");
-    assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
+    assert!(
+        harness.update_view(window, |view, _, _| view.switcher_mode.is_none())
+    );
     // Focus returned to Switch Workspace…; New Tab opens a shell in the
     // empty workspace.
     assert_eq!(focused(&mut harness), Some("empty-switch-workspace"));

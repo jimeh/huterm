@@ -1,21 +1,19 @@
 use gpui::{Bounds, point, size};
-use huterm_config::TabPosition;
+use huterm_config::{SidebarPosition, TabPosition};
 
 use super::super::button_layout::ButtonLayout;
 use super::super::{
-    ChromeLayout, LayoutInputs, Presentation, TITLE_ROW_LEAD,
+    ChromeLayout, CornerSlot, LayoutInputs, TITLE_ROW_LEAD,
     TRAFFIC_LIGHT_INSET, WindowFrame, content_inside,
 };
 use super::*;
 
-fn inputs() -> Inputs {
+fn inputs(visible: bool, workspaces: usize) -> Inputs {
     Inputs {
-        show: WorkspaceShow::Auto,
-        workspaces: 2,
-        collapsed: false,
-        position: WorkspacePosition::Left,
+        visible,
+        workspaces,
+        position: SidebarPosition::Left,
         width: PANEL_WIDTH,
-        dropdown_lead: px(90.0),
     }
 }
 
@@ -24,96 +22,65 @@ fn wide(_: WorkspaceChrome) -> Pixels {
 }
 
 #[test]
-fn show_decides_whether_any_workspace_ui_exists() {
-    let cases = [
-        (WorkspaceShow::Auto, 1, false),
-        (WorkspaceShow::Auto, 2, true),
-        (WorkspaceShow::Always, 1, true),
-        (WorkspaceShow::Always, 0, false),
-        (WorkspaceShow::Never, 5, false),
-    ];
-    for (show, workspaces, expected) in cases {
-        assert_eq!(shown(show, workspaces), expected, "{show:?}");
-        let chrome = resolve(
-            Inputs {
-                show,
-                workspaces,
-                ..inputs()
-            },
-            wide,
-        );
+fn a_hidden_sidebar_shows_the_switcher_only_with_another_workspace() {
+    for (workspaces, switcher) in [(0, false), (1, false), (2, true), (5, true)]
+    {
         assert_eq!(
-            chrome != WorkspaceChrome::None,
-            expected,
-            "{show:?} with {workspaces}"
-        );
-    }
-}
-
-#[test]
-fn every_position_resolves_to_its_edge_or_the_dropdown() {
-    for (position, expected) in [
-        (
-            WorkspacePosition::Left,
-            WorkspaceChrome::Panel {
+            resolve(inputs(false, workspaces), wide),
+            WorkspaceChrome::Hidden {
                 edge: Edge::Left,
-                width: PANEL_WIDTH,
+                switcher,
+                narrow: false,
             },
-        ),
-        (
-            WorkspacePosition::Right,
-            WorkspaceChrome::Panel {
-                edge: Edge::Right,
-                width: PANEL_WIDTH,
-            },
-        ),
-        (
-            WorkspacePosition::Top,
-            WorkspaceChrome::Bar { edge: Edge::Top },
-        ),
-        (
-            WorkspacePosition::Bottom,
-            WorkspaceChrome::Bar { edge: Edge::Bottom },
-        ),
-    ] {
-        let open = Inputs {
-            position,
-            ..inputs()
-        };
-        assert_eq!(resolve(open, wide), expected, "{position:?}");
-        let collapsed = Inputs {
-            collapsed: true,
-            ..open
-        };
-        assert_eq!(
-            resolve(collapsed, wide),
-            WorkspaceChrome::Dropdown { lead: px(90.0) },
-            "{position:?} collapsed"
+            "{workspaces}"
         );
     }
 }
 
 #[test]
-fn a_side_panel_that_squeezes_the_terminal_shows_the_dropdown() {
-    let narrow = |chrome: WorkspaceChrome| {
-        assert!(matches!(chrome, WorkspaceChrome::Panel { .. }));
-        MIN_TERMINAL_WIDTH - px(1.0)
-    };
-    assert!(resolve(inputs(), narrow).is_dropdown());
-    let exact = |_| MIN_TERMINAL_WIDTH;
-    assert!(matches!(
-        resolve(inputs(), exact),
-        WorkspaceChrome::Panel { .. }
-    ));
-    // A bar never needs the fallback; its chips scroll.
-    let bar = Inputs {
-        position: WorkspacePosition::Top,
-        ..inputs()
-    };
+fn a_visible_sidebar_docks_on_its_side() {
+    for (position, edge) in [
+        (SidebarPosition::Left, Edge::Left),
+        (SidebarPosition::Right, Edge::Right),
+    ] {
+        // With one workspace too: the sidebar holds the session switcher.
+        for workspaces in [1, 3] {
+            let chrome = resolve(
+                Inputs {
+                    position,
+                    ..inputs(true, workspaces)
+                },
+                wide,
+            );
+            assert_eq!(
+                chrome,
+                WorkspaceChrome::Panel {
+                    edge,
+                    width: PANEL_WIDTH
+                }
+            );
+            assert!(chrome.docked() && chrome.docked_on(edge));
+            assert!(!chrome.switcher() && !chrome.narrow());
+        }
+    }
+}
+
+#[test]
+fn a_sidebar_that_squeezes_the_terminal_stays_hidden_and_narrow() {
+    let squeezed = |_: WorkspaceChrome| MIN_TERMINAL_WIDTH - px(1.0);
+    let chrome = resolve(inputs(true, 2), squeezed);
     assert_eq!(
-        resolve(bar, |_| unreachable!("bars ask no width")),
-        WorkspaceChrome::Bar { edge: Edge::Top }
+        chrome,
+        WorkspaceChrome::Hidden {
+            edge: Edge::Left,
+            switcher: true,
+            narrow: true,
+        }
     );
+    // Exactly the minimum still docks.
+    assert!(resolve(inputs(true, 2), |_| MIN_TERMINAL_WIDTH).docked());
+    // A hidden sidebar never measures the terminal.
+    assert!(!resolve(inputs(false, 2), squeezed).narrow());
 }
 
 #[test]
@@ -125,6 +92,63 @@ fn panel_width_clamps_to_its_limits_and_half_the_window() {
     assert_eq!(panel_width(px(250.0), px(-10.0)), px(0.0));
 }
 
+fn hidden(edge: Edge) -> WorkspaceChrome {
+    WorkspaceChrome::Hidden {
+        edge,
+        switcher: true,
+        narrow: false,
+    }
+}
+
+#[test]
+fn the_corner_controls_take_the_corner_on_the_sidebars_side() {
+    use CornerHost::{Bar, Column, Hidden, Sidebar, TitleRow};
+    use TabPosition::{Bottom, Left, Right, Titlebar, Top};
+    // (edge, title row, tab position, bar shown) -> host
+    let cases = [
+        // Left: after the traffic lights, in whatever holds that corner.
+        (Edge::Left, true, Titlebar, true, Bar),
+        (Edge::Left, true, Titlebar, false, TitleRow),
+        (Edge::Left, true, Top, true, TitleRow),
+        (Edge::Left, true, Bottom, true, TitleRow),
+        (Edge::Left, true, Left, true, Column),
+        (Edge::Left, true, Right, true, TitleRow),
+        (Edge::Left, false, Top, true, Bar),
+        (Edge::Left, false, Bottom, true, Bar),
+        (Edge::Left, false, Left, true, Column),
+        (Edge::Left, false, Right, true, Column),
+        (Edge::Left, false, Top, false, Hidden),
+        // Right: wherever the menu button goes.
+        (Edge::Right, true, Titlebar, true, Bar),
+        (Edge::Right, true, Titlebar, false, TitleRow),
+        (Edge::Right, true, Top, true, TitleRow),
+        (Edge::Right, true, Right, true, TitleRow),
+        (Edge::Right, true, Left, true, TitleRow),
+        (Edge::Right, false, Top, true, Bar),
+        (Edge::Right, false, Bottom, true, Bar),
+        (Edge::Right, false, Left, true, Column),
+        (Edge::Right, false, Right, true, Column),
+        (Edge::Right, false, Bottom, false, Hidden),
+    ];
+    for (edge, title_row, position, bar_shown, expected) in cases {
+        assert_eq!(
+            corner_host(hidden(edge), title_row, position, bar_shown),
+            expected,
+            "{edge:?} {title_row} {position:?} {bar_shown}"
+        );
+    }
+    // A docked sidebar holds them in its own strip, whatever the tabs do.
+    for position in POSITIONS {
+        for edge in [Edge::Left, Edge::Right] {
+            let docked = WorkspaceChrome::Panel {
+                edge,
+                width: PANEL_WIDTH,
+            };
+            assert_eq!(corner_host(docked, false, position, false), Sidebar);
+        }
+    }
+}
+
 const POSITIONS: [TabPosition; 5] = [
     TabPosition::Top,
     TabPosition::Bottom,
@@ -133,10 +157,10 @@ const POSITIONS: [TabPosition; 5] = [
     TabPosition::Titlebar,
 ];
 
-const EDGES: [Edge; 4] = [Edge::Left, Edge::Top, Edge::Right, Edge::Bottom];
+const EDGES: [Edge; 2] = [Edge::Left, Edge::Right];
 
-/// The layout as it was before the workspace band, frozen as the oracle
-/// that `WorkspaceChrome::None` must match.
+/// The layout as it was before the sidebar, frozen as the oracle that a
+/// window without a docked sidebar or corner slot must match.
 #[derive(Debug, PartialEq)]
 struct Legacy {
     terminal: Bounds<Pixels>,
@@ -260,14 +284,10 @@ fn legacy(
     }
 }
 
-fn chrome(edge: Edge) -> WorkspaceChrome {
-    if edge.vertical() {
-        WorkspaceChrome::Panel {
-            edge,
-            width: PANEL_WIDTH,
-        }
-    } else {
-        WorkspaceChrome::Bar { edge }
+fn docked(edge: Edge) -> WorkspaceChrome {
+    WorkspaceChrome::Panel {
+        edge,
+        width: PANEL_WIDTH,
     }
 }
 
@@ -295,6 +315,7 @@ fn layout_inputs(
         notch_shelf: None,
         frame: WindowFrame::default(),
         workspace,
+        corner: None,
     }
 }
 
@@ -315,7 +336,7 @@ fn inside(inner: Bounds<Pixels>, outer: Bounds<Pixels>) -> bool {
 }
 
 #[test]
-fn no_workspace_chrome_reproduces_the_layout_before_it() {
+fn a_hidden_sidebar_without_a_corner_slot_reproduces_the_layout_before_it() {
     let shelf = Bounds::new(point(px(0.0), px(0.0)), size(px(300.0), px(38.0)));
     let frames = [
         WindowFrame::default(),
@@ -340,24 +361,27 @@ fn no_workspace_chrome_reproduces_the_layout_before_it() {
                 for frame in frames {
                     for safe_area in safe_areas {
                         for notch_shelf in [None, Some(shelf)] {
-                            for bar_height in [px(32.0), px(34.0)] {
+                            for workspace in
+                                [WorkspaceChrome::NONE, hidden(Edge::Right)]
+                            {
                                 let layout =
                                     ChromeLayout::build_with(LayoutInputs {
                                         window,
                                         titlebar,
                                         position,
-                                        bar_height,
+                                        bar_height: px(32.0),
                                         sidebar_width: px(220.0),
                                         safe_area,
                                         notch_shelf,
                                         frame,
-                                        workspace: WorkspaceChrome::None,
+                                        workspace,
+                                        corner: None,
                                     });
                                 let expected = legacy(
                                     window,
                                     titlebar,
                                     position,
-                                    bar_height,
+                                    px(32.0),
                                     px(220.0),
                                     safe_area,
                                     notch_shelf,
@@ -377,7 +401,7 @@ fn no_workspace_chrome_reproduces_the_layout_before_it() {
                                 );
                                 assert_eq!(layout.workspace, None);
                                 assert_eq!(layout.area, layout.content);
-                                assert_eq!(layout.dropdown(), None);
+                                assert_eq!(layout.corner(), None);
                             }
                         }
                     }
@@ -388,7 +412,7 @@ fn no_workspace_chrome_reproduces_the_layout_before_it() {
 }
 
 #[test]
-fn every_edge_with_every_tab_position_partitions_the_window() {
+fn every_side_with_every_tab_position_partitions_the_window() {
     let window = size(px(1000.0), px(700.0));
     for edge in EDGES {
         for position in POSITIONS {
@@ -397,7 +421,7 @@ fn every_edge_with_every_tab_position_partitions_the_window() {
                     window,
                     titlebar,
                     position,
-                    chrome(edge),
+                    docked(edge),
                 ));
                 let label = format!("{edge:?} {position:?} {titlebar:?}");
                 let band = layout.workspace.expect("a band");
@@ -413,50 +437,32 @@ fn every_edge_with_every_tab_position_partitions_the_window() {
                 assert!(!overlap(band, layout.tabs), "{label}");
                 assert!(!overlap(layout.tabs, layout.terminal), "{label}");
                 assert!(!overlap(band, layout.area), "{label}");
-                // The band is outermost on its edge.
+                // The sidebar is outermost on its side, full height.
+                assert_eq!(band.size.width, PANEL_WIDTH, "{label}");
+                assert_eq!(band.size.height, content.size.height, "{label}");
                 match edge {
                     Edge::Left => {
                         assert_eq!(band.left(), content.left(), "{label}");
-                        assert_eq!(band.size.width, PANEL_WIDTH, "{label}");
                         assert!(layout.tabs.left() >= band.right(), "{label}");
                         assert!(layout.terminal.left() >= band.right());
                     }
                     Edge::Right => {
                         assert_eq!(band.right(), content.right(), "{label}");
-                        assert_eq!(band.size.width, PANEL_WIDTH, "{label}");
                         assert!(layout.tabs.right() <= band.left(), "{label}");
                         assert!(layout.terminal.right() <= band.left());
                     }
-                    Edge::Top => {
-                        assert_eq!(band.top(), content.top(), "{label}");
-                        assert!(layout.tabs.top() >= band.bottom(), "{label}");
-                        assert!(layout.terminal.top() >= band.bottom());
-                        // A title row becomes the bar.
-                        let height = if titlebar > px(0.0) {
-                            titlebar
-                        } else {
-                            BAR_HEIGHT
-                        };
-                        assert_eq!(band.size.height, height, "{label}");
-                    }
-                    Edge::Bottom => {
-                        assert_eq!(band.bottom(), content.bottom(), "{label}");
-                        assert!(layout.tabs.bottom() <= band.top(), "{label}");
-                        assert!(layout.terminal.bottom() <= band.top());
-                    }
                 }
-                if edge.vertical() {
-                    assert_eq!(band.size.height, content.size.height);
-                    // Rows start below the title row.
-                    assert_eq!(layout.workspace_inset, titlebar, "{label}");
+                // Its content starts below its corner strip: the title row,
+                // or a row of its own for the sidebar button without one.
+                let strip = if titlebar > px(0.0) {
+                    titlebar
                 } else {
-                    assert_eq!(band.size.width, content.size.width);
-                }
+                    CORNER_ROW
+                };
+                assert_eq!(layout.workspace_inset, strip, "{label}");
                 // The band, the title row, the tabs, and the terminal
                 // cover the content exactly.
-                let title = if edge == Edge::Top
-                    || position == TabPosition::Titlebar
-                {
+                let title = if position == TabPosition::Titlebar {
                     0.0
                 } else if position.vertical() {
                     f32::from(layout.terminal.size.width) * f32::from(titlebar)
@@ -473,43 +479,34 @@ fn every_edge_with_every_tab_position_partitions_the_window() {
                         < 0.5,
                     "{label}"
                 );
-                // Titlebar tabs drop below a top bar that took the title row.
-                if edge == Edge::Top && position == TabPosition::Titlebar {
-                    assert_eq!(layout.tabs.top(), band.bottom(), "{label}");
-                    assert!(!layout.outside_terminal, "{label}");
-                    assert_eq!(layout.strip_inset, px(0.0), "{label}");
-                }
             }
         }
     }
 }
 
 #[test]
-fn a_side_panel_owns_its_title_row_corner() {
+fn a_docked_sidebar_owns_its_title_row_corner() {
     let window = size(px(1000.0), px(700.0));
     let left = ChromeLayout::build_with(layout_inputs(
         window,
         px(28.0),
         TabPosition::Titlebar,
-        chrome(Edge::Left),
+        docked(Edge::Left),
     ));
-    // The traffic lights sit in the panel's strip, so the merged row
-    // starts at the panel with a small lead.
+    // The traffic lights and sidebar button sit in the sidebar's strip, so
+    // the merged row starts at the sidebar with a small lead.
     assert_eq!(left.tabs.left(), PANEL_WIDTH);
     assert_eq!(left.strip_inset, TITLE_ROW_LEAD);
     let right = ChromeLayout::build_with(layout_inputs(
         window,
         px(28.0),
         TabPosition::Titlebar,
-        chrome(Edge::Right),
+        docked(Edge::Right),
     ));
     assert_eq!(right.strip_inset, TRAFFIC_LIGHT_INSET);
     assert_eq!(right.tabs.right(), px(1000.0) - PANEL_WIDTH);
-    // On Linux the panel holds the window buttons at its corner.
-    for (edge, inset, trailing) in [
-        (Edge::Left, TITLE_ROW_LEAD, true),
-        (Edge::Right, px(0.0), false),
-    ] {
+    // On Linux the sidebar holds the window buttons at its corner.
+    for edge in EDGES {
         let frame = linux_frame("close:minimize,maximize,close");
         let layout = ChromeLayout::build_with(LayoutInputs {
             frame,
@@ -517,142 +514,79 @@ fn a_side_panel_owns_its_title_row_corner() {
                 window,
                 px(32.0),
                 TabPosition::Titlebar,
-                chrome(edge),
+                docked(edge),
             )
         });
-        if edge == Edge::Left {
-            assert_eq!(layout.strip_inset, inset);
-        } else {
-            assert_eq!(layout.strip_inset, frame.buttons.leading.width());
-        }
-        assert_eq!(
-            layout.strip_trailing,
-            if trailing {
-                frame.buttons.trailing.width()
-            } else {
-                px(0.0)
-            },
-            "{edge:?}"
-        );
+        let (inset, trailing) = match edge {
+            Edge::Left => (TITLE_ROW_LEAD, frame.buttons.trailing.width()),
+            Edge::Right => (frame.buttons.leading.width(), px(0.0)),
+        };
+        assert_eq!(layout.strip_inset, inset, "{edge:?}");
+        assert_eq!(layout.strip_trailing, trailing, "{edge:?}");
     }
 }
 
 #[test]
-fn a_top_bar_in_the_drawn_title_row_avoids_its_window_buttons() {
-    let frame = linux_frame("close:minimize,maximize");
-    let layout = ChromeLayout::build_with(LayoutInputs {
-        frame,
-        ..layout_inputs(
-            size(px(900.0), px(600.0)),
-            px(32.0),
-            TabPosition::Titlebar,
-            chrome(Edge::Top),
-        )
-    });
-    let band = layout.workspace.unwrap();
-    assert_eq!(band.origin, layout.content.origin);
-    assert_eq!(layout.workspace_inset, frame.buttons.leading.width());
-    assert_eq!(layout.workspace_trailing, frame.buttons.trailing.width());
-    // Without leading buttons the chips start after a small lead; on
-    // macOS after the traffic lights.
-    let lead = ChromeLayout::build_with(LayoutInputs {
-        frame: linux_frame(":close"),
-        ..layout_inputs(
-            size(px(900.0), px(600.0)),
-            px(32.0),
-            TabPosition::Top,
-            chrome(Edge::Top),
-        )
-    });
-    assert_eq!(lead.workspace_inset, TITLE_ROW_LEAD);
-    let mac = ChromeLayout::build_with(layout_inputs(
-        size(px(900.0), px(600.0)),
-        px(28.0),
-        TabPosition::Top,
-        chrome(Edge::Top),
-    ));
-    assert_eq!(mac.workspace_inset, TRAFFIC_LIGHT_INSET);
-    assert_eq!(mac.workspace_trailing, px(0.0));
-}
-
-#[test]
-fn a_top_bar_takes_the_notch_shelf_and_the_tabs_never_do() {
-    let shelf = Bounds::new(point(px(0.0), px(0.0)), size(px(300.0), px(38.0)));
-    let safe_area = gpui::Edges {
-        top: px(38.0),
-        ..gpui::Edges::default()
-    };
-    let layout = ChromeLayout::build_with(LayoutInputs {
-        safe_area,
-        notch_shelf: Some(shelf),
-        ..layout_inputs(
-            size(px(1000.0), px(700.0)),
-            px(0.0),
-            TabPosition::Top,
-            chrome(Edge::Top),
-        )
-    });
-    let band = layout.workspace.unwrap();
-    assert_eq!(band.bottom(), shelf.bottom());
-    assert_eq!(band.size.height, BAR_HEIGHT);
-    assert!(
-        !layout.outside_terminal,
-        "the tab bar sits below the safe area"
-    );
-    assert!(layout.tabs.top() > safe_area.top);
-    assert!(layout.terminal.top() >= layout.tabs.bottom());
-    // A shelf too short for the bar leaves it below the safe area.
-    let short = Bounds::new(point(px(0.0), px(0.0)), size(px(300.0), px(20.0)));
-    let below = ChromeLayout::build_with(LayoutInputs {
-        safe_area,
-        notch_shelf: Some(short),
-        ..layout_inputs(
-            size(px(1000.0), px(700.0)),
-            px(0.0),
-            TabPosition::Left,
-            chrome(Edge::Top),
-        )
-    });
-    assert_eq!(below.workspace.unwrap().top(), safe_area.top);
-}
-
-#[test]
-fn the_dropdown_leads_every_strip() {
-    let lead = px(110.0);
+fn the_corner_slot_leads_a_bar_or_takes_a_row_above_a_column() {
     let window = size(px(1000.0), px(700.0));
-    for position in POSITIONS {
+    let lead = px(120.0);
+    for position in
+        [TabPosition::Titlebar, TabPosition::Top, TabPosition::Bottom]
+    {
+        let titlebar = if position == TabPosition::Titlebar {
+            px(28.0)
+        } else {
+            px(0.0)
+        };
+        let plain = ChromeLayout::build_with(layout_inputs(
+            window,
+            titlebar,
+            position,
+            hidden(Edge::Left),
+        ));
+        let slotted = ChromeLayout::build_with(LayoutInputs {
+            corner: Some(CornerSlot::Lead(lead)),
+            ..layout_inputs(window, titlebar, position, hidden(Edge::Left))
+        });
+        // The controls sit after the traffic lights or the bar's start, and
+        // the tabs start after them; nothing else moves.
+        assert_eq!(
+            slotted.strip_inset,
+            plain.strip_inset + lead + CORNER_MARGIN,
+            "{position:?}"
+        );
+        let slot = slotted.corner().expect("a slot");
+        assert_eq!(
+            slot.left(),
+            slotted.tabs.left() + plain.strip_inset + CORNER_MARGIN
+        );
+        assert_eq!(slot.size.width, lead, "{position:?}");
+        assert!(inside(slot, slotted.tabs), "{position:?}");
+        assert_eq!(slotted.terminal, plain.terminal, "{position:?}");
+        assert_eq!(slotted.tabs, plain.tabs, "{position:?}");
+    }
+    for position in [TabPosition::Left, TabPosition::Right] {
         let plain = ChromeLayout::build_with(layout_inputs(
             window,
             px(28.0),
             position,
-            WorkspaceChrome::None,
+            hidden(Edge::Left),
         ));
-        let layout = ChromeLayout::build_with(layout_inputs(
-            window,
-            px(28.0),
-            position,
-            WorkspaceChrome::Dropdown { lead },
-        ));
-        // The terminal and tabs keep their places; only the strip moves.
-        assert_eq!(layout.terminal, plain.terminal, "{position:?}");
-        assert_eq!(layout.tabs, plain.tabs, "{position:?}");
-        assert_eq!(layout.workspace, None);
-        let slot = layout.dropdown().expect("a slot");
-        assert!(inside(slot, layout.tabs), "{position:?} {slot:?}");
-        if position.vertical() {
-            assert_eq!(layout.strip_inset, plain.strip_inset + DROPDOWN_ROW);
-            assert!(slot.bottom() <= layout.tabs.top() + layout.strip_inset);
-        } else {
-            assert_eq!(layout.strip_inset, plain.strip_inset + lead);
-            assert_eq!(
-                slot.left(),
-                layout.tabs.left() + plain.strip_inset + DROPDOWN_MARGIN
-            );
-            assert_eq!(
-                slot.size.width,
-                lead - DROPDOWN_MARGIN - DROPDOWN_DIVIDER
-            );
-        }
+        let slotted = ChromeLayout::build_with(LayoutInputs {
+            corner: Some(CornerSlot::Row),
+            ..layout_inputs(window, px(28.0), position, hidden(Edge::Left))
+        });
+        // A row above the first tab, below the title row.
+        assert_eq!(
+            slotted.strip_inset,
+            plain.strip_inset + CORNER_ROW,
+            "{position:?}"
+        );
+        let slot = slotted.corner().expect("a slot");
+        assert!(slot.top() >= slotted.tabs.top() + plain.strip_inset);
+        assert!(slot.bottom() <= slotted.tabs.top() + slotted.strip_inset);
+        assert!(inside(slot, slotted.tabs), "{position:?}");
+        assert_eq!(slotted.terminal, plain.terminal, "{position:?}");
     }
 }
 
@@ -666,18 +600,22 @@ fn small_windows_keep_every_part_inside_and_nonnegative() {
         for edge in EDGES {
             for position in POSITIONS {
                 for titlebar in [px(0.0), px(28.0)] {
-                    for workspace in [
-                        chrome(edge),
-                        WorkspaceChrome::Dropdown { lead: px(120.0) },
+                    for (workspace, corner) in [
+                        (docked(edge), None),
+                        (hidden(edge), Some(CornerSlot::Lead(px(160.0)))),
+                        (hidden(edge), Some(CornerSlot::Row)),
                     ] {
-                        let layout = ChromeLayout::build_with(layout_inputs(
-                            window, titlebar, position, workspace,
-                        ));
+                        let layout = ChromeLayout::build_with(LayoutInputs {
+                            corner,
+                            ..layout_inputs(
+                                window, titlebar, position, workspace,
+                            )
+                        });
                         let parts = [
                             Some(layout.tabs),
                             Some(layout.terminal),
                             layout.workspace,
-                            layout.dropdown(),
+                            layout.corner(),
                         ];
                         for part in parts.into_iter().flatten() {
                             assert!(
@@ -698,107 +636,29 @@ fn small_windows_keep_every_part_inside_and_nonnegative() {
 }
 
 #[test]
-fn a_side_panel_squeezing_a_small_window_resolves_to_the_dropdown() {
-    // SW1 reads the terminal width the layout leaves beside the panel
-    // and the tab column.
+fn a_sidebar_squeezing_a_small_window_resolves_to_narrow() {
+    // The rule reads the terminal width the layout leaves beside the
+    // sidebar and the tab column.
     let resolve_in = |width: f32, position: TabPosition| {
         let window = size(px(width), px(500.0));
-        resolve(
-            Inputs {
-                show: WorkspaceShow::Auto,
-                workspaces: 2,
-                collapsed: false,
-                position: WorkspacePosition::Left,
-                width: PANEL_WIDTH,
-                dropdown_lead: px(100.0),
-            },
-            |panel| {
-                ChromeLayout::build_with(layout_inputs(
-                    window,
-                    px(28.0),
-                    position,
-                    panel,
-                ))
-                .terminal
-                .size
-                .width
-            },
-        )
+        resolve(inputs(true, 2), |panel| {
+            ChromeLayout::build_with(layout_inputs(
+                window,
+                px(28.0),
+                position,
+                panel,
+            ))
+            .terminal
+            .size
+            .width
+        })
     };
-    assert!(matches!(
-        resolve_in(800.0, TabPosition::Titlebar),
-        WorkspaceChrome::Panel { .. }
-    ));
-    assert!(resolve_in(500.0, TabPosition::Titlebar).is_dropdown());
-    // A tab column beside the panel counts against the terminal.
-    assert!(matches!(
-        resolve_in(700.0, TabPosition::Left),
-        WorkspaceChrome::Dropdown { .. }
-    ));
-    assert!(matches!(
-        resolve_in(700.0, TabPosition::Titlebar),
-        WorkspaceChrome::Panel { .. }
-    ));
-    assert!(matches!(
-        resolve_in(1000.0, TabPosition::Left),
-        WorkspaceChrome::Panel { .. }
-    ));
-}
-
-#[test]
-fn an_auto_hidden_bar_hides_a_workspace_bar_only_on_its_edge() {
-    let window = size(px(1000.0), px(700.0));
-    for (edge, position, joined) in [
-        (Edge::Top, TabPosition::Top, true),
-        (Edge::Bottom, TabPosition::Bottom, true),
-        (Edge::Top, TabPosition::Bottom, false),
-        (Edge::Bottom, TabPosition::Top, false),
-        (Edge::Left, TabPosition::Left, false),
-        (Edge::Left, TabPosition::Top, false),
-    ] {
-        let built = ChromeLayout::build_with(layout_inputs(
-            window,
-            px(0.0),
-            position,
-            chrome(edge),
-        ));
-        let band = built.workspace.unwrap();
-        assert_eq!(built.bar_shares_edge(position), joined, "{edge:?}");
-        let hidden = built.present(Presentation::Overlay, position, 0.0);
-        let shown = built.present(Presentation::Overlay, position, 1.0);
-        let reserved = built.present(Presentation::Reserved, position, 1.0);
-        assert_eq!(reserved.terminal, built.terminal);
-        // The terminal takes the space of whatever hides.
-        let gained = if joined { band.size.height } else { px(0.0) };
-        if position.vertical() {
-            assert_eq!(
-                hidden.terminal.size.width,
-                built.terminal.size.width + built.tabs.size.width
-            );
-        } else {
-            assert_eq!(
-                hidden.terminal.size.height,
-                built.terminal.size.height + built.tabs.size.height + gained,
-                "{edge:?} {position:?}"
-            );
-        }
-        // The terminal keeps one rectangle through the reveal, so mouse
-        // mapping never moves under the pointer.
-        let halfway = built.present(Presentation::Overlay, position, 0.5);
-        assert_eq!(shown.terminal, hidden.terminal, "{edge:?} {position:?}");
-        assert_eq!(halfway.terminal, hidden.terminal, "{edge:?} {position:?}");
-        // Hidden, a joined band slides out with the tabs; revealed, both
-        // sit where the reserved layout puts them.
-        if joined {
-            assert!(!overlap(hidden.workspace.unwrap(), hidden.content));
-            assert_eq!(shown.workspace, Some(band));
-            assert_eq!(shown.tabs, built.tabs);
-            assert_eq!(shown.reveal_region(position), built.tabs.union(&band));
-        } else {
-            assert_eq!(hidden.workspace, Some(band), "{edge:?} {position:?}");
-            assert_eq!(shown.reveal_region(position), built.tabs);
-        }
-    }
+    assert!(resolve_in(800.0, TabPosition::Titlebar).docked());
+    assert!(resolve_in(500.0, TabPosition::Titlebar).narrow());
+    // A tab column beside the sidebar counts against the terminal.
+    assert!(resolve_in(700.0, TabPosition::Left).narrow());
+    assert!(resolve_in(700.0, TabPosition::Titlebar).docked());
+    assert!(resolve_in(1000.0, TabPosition::Left).docked());
 }
 
 #[test]
@@ -811,7 +671,7 @@ fn the_frame_inset_offsets_the_band_with_everything_else() {
                 size(px(900.0), px(600.0)),
                 px(32.0),
                 TabPosition::Titlebar,
-                chrome(edge),
+                docked(edge),
             )
         });
         let content = content_inside(size(px(900.0), px(600.0)), frame);

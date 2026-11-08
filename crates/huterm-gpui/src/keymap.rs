@@ -1096,7 +1096,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     entries.extend(dialog_defaults());
     entries.extend(menu_defaults(platform));
     entries.extend(panel_defaults(platform));
-    entries.extend(workspace_panel_defaults());
+    entries.extend(sidebar_defaults());
     entries.extend(notice_defaults());
     entries.extend(settings_defaults(platform));
     entries.extend(text_field_defaults(platform));
@@ -1182,24 +1182,21 @@ fn panel_defaults(platform: Platform) -> Vec<BindingEntry> {
     ]
 }
 
-/// Workspace panel and bar bindings, identical on both platforms. Their
-/// commands carry the `WorkspacePanel` context, so they match only while a
-/// workspace row or chip has focus. Both arrow pairs move, so the same keys
-/// walk a vertical panel and a horizontal bar.
-fn workspace_panel_defaults() -> Vec<BindingEntry> {
+/// Sidebar bindings, identical on both platforms. Their commands carry the
+/// `Sidebar` context, so they match only while a workspace row has focus,
+/// in the sidebar or the workspace switcher.
+fn sidebar_defaults() -> Vec<BindingEntry> {
     vec![
-        default("down", ids::WORKSPACE_PANEL_NEXT, "Next Workspace"),
-        default("right", ids::WORKSPACE_PANEL_NEXT, "Next Workspace"),
-        default("up", ids::WORKSPACE_PANEL_PREVIOUS, "Previous Workspace"),
-        default("left", ids::WORKSPACE_PANEL_PREVIOUS, "Previous Workspace"),
-        default("home", ids::WORKSPACE_PANEL_FIRST, "First Workspace"),
-        default("end", ids::WORKSPACE_PANEL_LAST, "Last Workspace"),
-        default("enter", ids::WORKSPACE_PANEL_SHOW, "Show Workspace"),
-        default("space", ids::WORKSPACE_PANEL_SHOW, "Show Workspace"),
-        default("f2", ids::WORKSPACE_PANEL_RENAME, "Rename"),
-        default("shift-f10", ids::WORKSPACE_PANEL_MENU, "Open Menu"),
-        default("menu", ids::WORKSPACE_PANEL_MENU, "Open Menu"),
-        default("escape", ids::WORKSPACE_PANEL_EXIT, "Return to Terminal"),
+        default("down", ids::SIDEBAR_NEXT, "Next Workspace"),
+        default("up", ids::SIDEBAR_PREVIOUS, "Previous Workspace"),
+        default("home", ids::SIDEBAR_FIRST, "First Workspace"),
+        default("end", ids::SIDEBAR_LAST, "Last Workspace"),
+        default("enter", ids::SIDEBAR_SHOW, "Show Workspace"),
+        default("space", ids::SIDEBAR_SHOW, "Show Workspace"),
+        default("f2", ids::SIDEBAR_RENAME, "Rename"),
+        default("shift-f10", ids::SIDEBAR_MENU, "Open Menu"),
+        default("menu", ids::SIDEBAR_MENU, "Open Menu"),
+        default("escape", ids::SIDEBAR_EXIT, "Return to Terminal"),
     ]
 }
 

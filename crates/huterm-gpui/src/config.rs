@@ -129,13 +129,10 @@ padding_y = 4.0
 padding_balance = false
 # Show the window menu button in the title bar, or in the tab bar without one.
 menu_button = true
-# Show the session control, which names the window's session and opens the
-# session menu, beside the window menu button.
-session_button = true
-# Where the session control sits: title_bar, sidebar (the top of the
-# workspace panel or the start of the workspace bar, else the title bar), or
-# both.
-session_button_placement = "title_bar"
+# Also show a session control, which names the window's session and opens the
+# session menu, beside the window menu button. The sidebar always holds the
+# session switcher.
+session_button = false
 # Show key hints on the scroll pill and on dialog and panel buttons.
 shortcut_hints = false
 # Open the window, tab, pane, terminal, and session menus as native macOS
@@ -176,15 +173,15 @@ width = "fit"
 min_width = 96.0
 max_width = 240.0
 
-[workspaces]
-# Show the workspace panel, bar, or dropdown: auto (while the window's
-# session has two or more workspaces), always, or never.
-show = "auto"
-# The window edge for workspaces: left, top, right, or bottom.
+[sidebar]
+# The window side the sidebar docks on: left or right. The sidebar holds the
+# window's workspaces and session switcher; its button sits in the corner on
+# that side.
 position = "left"
-# New windows show the workspace dropdown in the tab bar instead of the
-# panel.
-collapsed = false
+# New windows start with the sidebar shown. Each window keeps its own choice.
+visible = false
+# Where the session switcher sits in the sidebar: bottom or top.
+session_switcher = "bottom"
 
 [panes]
 # Whether a split tab's panes show title bars: visible, hover, or hidden.
@@ -253,7 +250,7 @@ pub(super) struct Config {
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
     pub(super) tabs: TabsConfig,
-    pub(super) workspaces: huterm_config::WorkspacesConfig,
+    pub(super) sidebar: huterm_config::SidebarConfig,
     pub(super) updates: UpdateConfig,
     pub(super) palette: huterm_config::PaletteConfig,
     pub(super) panes: huterm_config::PanesConfig,
@@ -370,7 +367,7 @@ impl Default for Config {
             themes: ThemePair::default_pair(),
             window: WindowConfig::default(),
             tabs: TabsConfig::default(),
-            workspaces: huterm_config::WorkspacesConfig::default(),
+            sidebar: huterm_config::SidebarConfig::default(),
             updates: UpdateConfig::default(),
             palette: huterm_config::PaletteConfig::default(),
             panes: huterm_config::PanesConfig::default(),
@@ -697,7 +694,7 @@ fn parse_consumed(
         general: raw.general,
         window: raw.window,
         tabs: raw.tabs,
-        workspaces: raw.workspaces,
+        sidebar: raw.sidebar,
         updates: raw.updates,
         palette: raw.palette,
         panes: raw.panes,

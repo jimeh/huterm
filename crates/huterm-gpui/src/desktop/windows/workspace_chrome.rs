@@ -1,149 +1,204 @@
-//! What a window shows of its session's workspaces: nothing, the dropdown
-//! leading the tab bar, a side panel, or a horizontal bar. One pure
-//! resolution that layout, rendering, hit testing, menus, and smoke state
-//! all read, so they never disagree about which chrome a frame has.
+//! What a window shows of its sidebar, which holds the session's workspaces
+//! and the session switcher: docked on its side, or hidden with its button
+//! and, given two or more workspaces, the workspace switcher in that
+//! corner. One pure resolution that layout, rendering, hit testing,
+//! popovers, and smoke state all read, so they never disagree about which
+//! chrome a frame has.
 
 use gpui::{Pixels, px};
-use huterm_config::{WorkspacePosition, WorkspaceShow};
+use huterm_config::SidebarPosition;
 
-/// A new window's side panel width.
+use super::TabPosition;
+use super::window_menu::{SessionControlHost, session_control_host};
+
+/// A new window's sidebar width.
 pub(super) const PANEL_WIDTH: Pixels = px(180.0);
-/// The side panel's resize limits, as for the tab sidebar.
+/// The sidebar's resize limits, as for the tab column.
 pub(super) const PANEL_MIN: Pixels = px(140.0);
 pub(super) const PANEL_MAX: Pixels = px(400.0);
-/// A top or bottom workspace bar without a title row to take.
-pub(super) const BAR_HEIGHT: Pixels = px(32.0);
-/// SW1: a side panel that would leave the terminal narrower than this
-/// shows as the dropdown instead.
+/// A docked sidebar that would leave the terminal narrower than this
+/// stays hidden, and its button opens it as a sheet instead.
 pub(super) const MIN_TERMINAL_WIDTH: Pixels = px(384.0);
-/// A vertical tab column's dropdown row above its tabs.
-pub(super) const DROPDOWN_ROW: Pixels = px(32.0);
-/// Space before the dropdown along a horizontal strip.
-pub(super) const DROPDOWN_MARGIN: Pixels = px(4.0);
-/// The divider after the dropdown along a horizontal strip, with its gaps.
-pub(super) const DROPDOWN_DIVIDER: Pixels = px(9.0);
+/// The row a tab column gives the corner controls above its tabs, and the
+/// corner strip a docked sidebar keeps without a title row.
+pub(super) const CORNER_ROW: Pixels = px(32.0);
+/// Space before the corner controls along a horizontal strip.
+pub(super) const CORNER_MARGIN: Pixels = px(4.0);
 
-/// Which side a panel or bar sits on.
+/// Which side the sidebar docks on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::desktop) enum Edge {
     Left,
-    Top,
     Right,
-    Bottom,
 }
 
 impl Edge {
-    fn of(position: WorkspacePosition) -> Self {
+    pub(super) fn of(position: SidebarPosition) -> Self {
         match position {
-            WorkspacePosition::Left => Self::Left,
-            WorkspacePosition::Top => Self::Top,
-            WorkspacePosition::Right => Self::Right,
-            WorkspacePosition::Bottom => Self::Bottom,
+            SidebarPosition::Left => Self::Left,
+            SidebarPosition::Right => Self::Right,
         }
-    }
-
-    pub(super) fn vertical(self) -> bool {
-        matches!(self, Self::Left | Self::Right)
     }
 }
 
-/// The workspace chrome a window draws.
+/// The sidebar chrome a window draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::desktop) enum WorkspaceChrome {
-    /// No workspace UI: `never`, or `auto` with one workspace.
-    None,
-    /// The dropdown leads the tab bar; `lead` is the width it and its
-    /// divider take from a horizontal strip.
-    Dropdown { lead: Pixels },
-    /// A side panel `width` wide on the left or right edge.
+    /// The sidebar is hidden. Its button sits in the corner on `edge`, with
+    /// the workspace switcher beside it while `switcher`. `narrow` means
+    /// the window wants it shown but cannot dock it, so the button opens
+    /// it as a sheet.
+    Hidden {
+        edge: Edge,
+        switcher: bool,
+        narrow: bool,
+    },
+    /// The sidebar docks `width` wide on `edge`.
     Panel { edge: Edge, width: Pixels },
-    /// A row of chips on the top or bottom edge.
-    Bar { edge: Edge },
 }
 
 impl WorkspaceChrome {
-    /// The edge a panel or bar occupies.
-    pub(super) fn edge(self) -> Option<Edge> {
+    /// A hidden left sidebar without the switcher, whose layout has no
+    /// sidebar band and no corner slot.
+    pub(super) const NONE: Self = Self::Hidden {
+        edge: Edge::Left,
+        switcher: false,
+        narrow: false,
+    };
+
+    pub(super) fn edge(self) -> Edge {
         match self {
-            Self::Panel { edge, .. } | Self::Bar { edge } => Some(edge),
-            Self::None | Self::Dropdown { .. } => None,
+            Self::Hidden { edge, .. } | Self::Panel { edge, .. } => edge,
         }
     }
 
-    pub(super) fn is_dropdown(self) -> bool {
-        matches!(self, Self::Dropdown { .. })
+    pub(super) fn docked(self) -> bool {
+        matches!(self, Self::Panel { .. })
     }
 
-    /// A top bar takes the title row, so `titlebar` tabs drop below it.
-    pub(super) fn top_bar(self) -> bool {
-        self == Self::Bar { edge: Edge::Top }
+    /// The workspace switcher shows beside the sidebar button.
+    pub(super) fn switcher(self) -> bool {
+        matches!(self, Self::Hidden { switcher: true, .. })
+    }
+
+    /// The window wants the sidebar but is too narrow to dock it.
+    pub(super) fn narrow(self) -> bool {
+        matches!(self, Self::Hidden { narrow: true, .. })
+    }
+
+    /// The docked sidebar on `edge`.
+    pub(super) fn docked_on(self, edge: Edge) -> bool {
+        matches!(self, Self::Panel { edge: docked, .. } if docked == edge)
     }
 }
 
 /// Everything the resolution reads besides the window's geometry.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Inputs {
-    pub(super) show: WorkspaceShow,
+    /// The window's own visible state.
+    pub(super) visible: bool,
     /// Workspaces in the window's session.
     pub(super) workspaces: usize,
-    /// The window's own collapse state.
-    pub(super) collapsed: bool,
-    pub(super) position: WorkspacePosition,
-    /// The window's preferred panel width.
+    pub(super) position: SidebarPosition,
+    /// The window's preferred sidebar width.
     pub(super) width: Pixels,
-    /// The width the dropdown and its divider take along a strip.
-    pub(super) dropdown_lead: Pixels,
-}
-
-/// Whether the window shows any workspace UI for `show` and its session's
-/// workspace count.
-pub(super) fn shown(show: WorkspaceShow, workspaces: usize) -> bool {
-    match show {
-        WorkspaceShow::Never => false,
-        WorkspaceShow::Always => workspaces > 0,
-        WorkspaceShow::Auto => workspaces >= 2,
-    }
 }
 
 /// Resolves the chrome. `terminal_width` lays the window out with a
-/// candidate side panel and returns the terminal width it leaves after
+/// candidate docked sidebar and returns the terminal width it leaves after
 /// the tab column, frame, and safe area; below [`MIN_TERMINAL_WIDTH`] the
-/// panel shows as the dropdown (SW1). The saved collapse state is never
-/// changed by this.
+/// sidebar stays hidden and marked narrow. The saved visible state is
+/// never changed by this.
 pub(super) fn resolve(
     inputs: Inputs,
     terminal_width: impl FnOnce(WorkspaceChrome) -> Pixels,
 ) -> WorkspaceChrome {
-    if !shown(inputs.show, inputs.workspaces) {
-        return WorkspaceChrome::None;
-    }
-    let dropdown = WorkspaceChrome::Dropdown {
-        lead: inputs.dropdown_lead,
-    };
-    if inputs.collapsed {
-        return dropdown;
-    }
     let edge = Edge::of(inputs.position);
-    if !edge.vertical() {
-        return WorkspaceChrome::Bar { edge };
+    let hidden = |narrow| WorkspaceChrome::Hidden {
+        edge,
+        switcher: inputs.workspaces >= 2,
+        narrow,
+    };
+    if !inputs.visible {
+        return hidden(false);
     }
     let panel = WorkspaceChrome::Panel {
         edge,
         width: inputs.width,
     };
     if terminal_width(panel) < MIN_TERMINAL_WIDTH {
-        dropdown
+        hidden(true)
     } else {
         panel
     }
 }
 
-/// The panel width a window of `available` content width draws for a
+/// The sidebar width a window of `available` content width draws for a
 /// preferred `width`: the resize limits, then at most half the content.
 pub(super) fn panel_width(width: Pixels, available: Pixels) -> Pixels {
     width
         .clamp(PANEL_MIN, PANEL_MAX)
         .min((available * 0.5).max(px(0.0)))
+}
+
+/// Which element holds the sidebar button, and the switcher beside it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CornerHost {
+    /// The docked sidebar's own corner strip.
+    Sidebar,
+    /// The title row: after the traffic lights or leading window buttons on
+    /// the left, just inside the session control and menu button on the
+    /// right. On the right this includes a right tab column's top strip,
+    /// which holds the title row's trailing corner.
+    TitleRow,
+    /// A horizontal tab bar: its start on the left, its end on the right,
+    /// including the merged title-bar row.
+    Bar,
+    /// A vertical tab column: its top strip beside the traffic lights, or
+    /// the row above its tabs, on the left; the new-tab row beside the menu
+    /// button on the right. Its switcher takes the row above its tabs.
+    Column,
+    /// Nowhere: no title row and the tab bar is hidden. `toggle_sidebar`
+    /// and `open_workspace_switcher` still work.
+    Hidden,
+}
+
+/// Where the corner controls go. `title_row` is a title row Huterm or macOS
+/// draws; `position` is the tab position the corner controls follow;
+/// `bar_shown` whether the tab bar is shown now. On the right they follow
+/// the menu button's host, as the session control does; on the left they
+/// take the matching leading spot.
+pub(super) fn corner_host(
+    chrome: WorkspaceChrome,
+    title_row: bool,
+    position: TabPosition,
+    bar_shown: bool,
+) -> CornerHost {
+    if chrome.docked() {
+        return CornerHost::Sidebar;
+    }
+    if chrome.edge() == Edge::Right {
+        return match session_control_host(true, title_row, position, bar_shown)
+        {
+            SessionControlHost::Hidden => CornerHost::Hidden,
+            SessionControlHost::TitleStrip => CornerHost::TitleRow,
+            SessionControlHost::BarEnd => CornerHost::Bar,
+            SessionControlHost::SplitRow => CornerHost::Column,
+        };
+    }
+    if bar_shown && position == TabPosition::Titlebar {
+        CornerHost::Bar
+    } else if bar_shown && position == TabPosition::Left {
+        CornerHost::Column
+    } else if title_row {
+        CornerHost::TitleRow
+    } else if !bar_shown {
+        CornerHost::Hidden
+    } else if position.vertical() {
+        CornerHost::Column
+    } else {
+        CornerHost::Bar
+    }
 }
 
 #[cfg(test)]

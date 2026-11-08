@@ -1073,64 +1073,71 @@ command = "open_context_menu"
       nativeMenus = "key-escape-typed-open-cancel-reopen";
     }
 
-    // 15. Workspace panel (#27): a second workspace shows the left panel.
-    // Collapsing it to the dropdown and moving it with a reload keep the
-    // same shell, keyboard focus, and a click on the same cell; a row
-    // click and the panel's keyboard switch workspaces, and the dropdown
-    // opens the workspace menu.
+    // 15. Sidebar (#27): a second workspace shows the workspace switcher
+    // beside the sidebar button, whose popover opens with a click and
+    // closes with Escape. Docking, hiding, and moving the sidebar with a
+    // reload keep the same shell, keyboard focus, and a click on the same
+    // cell; a row click and the sidebar's keyboard switch workspaces.
     const chromeIs = (text: string, chrome: string) => field(text, "workspace_chrome") === chrome;
     await invoke("new_workspace");
-    const panel = await stateWhere((text) => chromeIs(text, "panel_left") && field(text, "workspace_rows").split(";").length === 2
-      && (quoted(text, "w0.text") ?? "").includes("READY"), "the workspace panel and the new workspace's shell");
-    const panelBand = parseRect(field(panel, "workspace_band"));
-    if (parseRect(field(panel, "grid_bounds")).x < panelBand.x + panelBand.w) throw new Error(`${engine}: the terminal overlaps the panel: ${field(panel, "grid_bounds")} ${field(panel, "workspace_band")}`);
-    const workspacePid = await shellPid("panel");
+    const hidden = await stateWhere((text) => chromeIs(text, "hidden_left") && field(text, "workspace_switcher") !== "none"
+      && field(text, "workspace_count") === "2" && (quoted(text, "w0.text") ?? "").includes("READY"),
+      "the workspace switcher and the new workspace's shell");
+    const workspacePid = await shellPid("switcher");
     await clickReported();
     const keeps = async (label: string) => {
       await state("w0.terminal_focused=true");
       if (await shellPid(label) !== workspacePid) throw new Error(`${engine}: the shell changed after ${label}`);
       await clickReported();
     };
-    await invoke("toggle_workspace_panel");
-    const collapsed = await stateWhere((text) => chromeIs(text, "dropdown") && field(text, "workspace_dropdown") !== "none", "the workspace dropdown");
-    await keeps("collapsed");
-    const dropdown = rectCentre(field(collapsed, "workspace_dropdown"));
-    await click(dropdown.x, dropdown.y);
-    await stateWhere((text) => text.includes("w0.menu_kind=workspace") && field(text, "menu_rect") !== "none", "the workspace menu");
+    const switcher = rectCentre(field(hidden, "workspace_switcher"));
+    await click(switcher.x, switcher.y);
+    await stateWhere((text) => field(text, "workspace_switcher_open") === "popover" && field(text, "workspace_rows") !== "none",
+      "the workspace switcher's popover");
     await key("escape");
-    await state("w0.menu=false", "w0.terminal_focused=true");
-    await invoke("toggle_workspace_panel");
-    await stateWhere((text) => chromeIs(text, "panel_left"), "the workspace panel again");
-    await keeps("expanded");
-    await writeFile(config, `${configDocument}\n[workspaces]\nposition = "right"\n`);
-    await command("invoke-reload");
+    await stateWhere((text) => field(text, "workspace_switcher_open") === "none" && text.includes("w0.terminal_focused=true"),
+      "the popover to close");
     // Rows report where they last painted, so wait until they sit in the
-    // moved panel before clicking one.
+    // sidebar before clicking one.
     const rowsInBand = (text: string) => {
-      const band = parseRect(field(text, "workspace_band"));
+      const band = field(text, "workspace_band");
       const rows = field(text, "workspace_rows");
-      return rows !== "none" && rows.split(";").every((value) => {
+      if (band === "none" || rows === "none") return false;
+      const bounds = parseRect(band);
+      return rows.split(";").every((value) => {
         if (value === "none") return false;
         const row = parseRect(value);
-        return row.x >= band.x && row.x + row.w <= band.x + band.w;
+        return row.x >= bounds.x && row.x + row.w <= bounds.x + bounds.w;
       });
     };
-    const right = await stateWhere((text) => chromeIs(text, "panel_right") && rowsInBand(text), "the right workspace panel's rows");
+    await invoke("toggle_sidebar");
+    const docked = await stateWhere((text) => chromeIs(text, "panel_left") && rowsInBand(text), "the docked sidebar");
+    const band = parseRect(field(docked, "workspace_band"));
+    if (parseRect(field(docked, "grid_bounds")).x < band.x + band.w) throw new Error(`${engine}: the terminal overlaps the sidebar: ${field(docked, "grid_bounds")} ${field(docked, "workspace_band")}`);
+    await keeps("docked");
+    await invoke("toggle_sidebar");
+    await stateWhere((text) => chromeIs(text, "hidden_left"), "the hidden sidebar");
+    await keeps("hidden");
+    await invoke("toggle_sidebar");
+    await stateWhere((text) => chromeIs(text, "panel_left") && rowsInBand(text), "the sidebar again");
+    await writeFile(config, `${configDocument}\n[sidebar]\nposition = "right"\n`);
+    await command("invoke-reload");
+    const right = await stateWhere((text) => chromeIs(text, "panel_right") && rowsInBand(text), "the right sidebar's rows");
     await keeps("moved");
     const shown = field(right, "workspace_shown");
     const firstRow = rectCentre(field(right, "workspace_rows").split(";")[0]!);
     await click(firstRow.x, firstRow.y);
     await stateWhere((text) => field(text, "workspace_shown") !== shown && !text.includes("w0.busy=true"), "a row click to switch workspaces");
-    await invoke("focus_workspace_panel");
+    await invoke("focus_sidebar");
     await key("down");
     await key("enter");
-    await stateWhere((text) => field(text, "workspace_shown") === shown && text.includes("w0.terminal_focused=true"), "the panel keyboard to switch back");
+    await stateWhere((text) => field(text, "workspace_shown") === shown && text.includes("w0.terminal_focused=true"), "the sidebar keyboard to switch back");
     if (await shellPid("switchedback") !== workspacePid) throw new Error(`${engine}: switching back changed the shell`);
     await writeFile(config, configDocument);
     await command("invoke-reload");
-    await stateWhere((text) => chromeIs(text, "panel_left"), "the default workspace panel");
+    await stateWhere((text) => chromeIs(text, "panel_left"), "the sidebar back on the left");
 
-    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard${process.platform === "darwin" ? "-escape-typed" : ""} pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop layouts=arrange-sizes-moved-origin-keys-resize native-menus=${nativeMenus} workspaces=panel-collapse-menu-move-row-keyboard`);
+    console.log(`OVERLAY_SMOKE ${engine} native=${process.platform} wheel=${input.wheelUp ? "blocked" : "manual"} dialog=scrim-blocked-tab-cancel-escape-confirm repeated-close=refused multi-tab=close-2-cancel-confirm tabs-after=unavailable title=native quit-dialog=live-rename menu=pointer-keyboard-typeahead-blocked-escape-palette-bar-right-click tab-menu=right-click-close-after about=blocked-escape-enter licenses=tab-enter-filter-select-copy-escape-blocked notices=focus-escape-replaced-enter pill=click terminal-menu=select-all-copy-clear-link-fit-scroll-keyboard${process.platform === "darwin" ? "-escape-typed" : ""} pane-drags=edge-centre-escape-spring-back-drop undo=tab-drop layouts=arrange-sizes-moved-origin-keys-resize native-menus=${nativeMenus} workspaces=switcher-popover-dock-hide-move-row-keyboard`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

@@ -197,15 +197,19 @@ pub(super) struct NewTabRow {
     pub(super) session_x: Option<Pixels>,
     /// Left offset of the square menu control within the row, when present.
     pub(super) menu_x: Option<Pixels>,
+    /// Left offset of the sidebar button within the row, when present.
+    pub(super) sidebar_x: Option<Pixels>,
 }
 
 /// Splits a row of `row_width` (the column width less its margins). Without
 /// controls, `+` keeps the whole row; each control takes a square at the
-/// row's right end, the menu control rightmost, and `+` gives up their
-/// width and a small gap before each.
+/// row's right end, the menu control rightmost, then the sidebar button,
+/// then the session control, and `+` gives up their width and a small gap
+/// before each.
 pub(super) fn split_new_tab_row(
     row_width: Pixels,
     with_menu: bool,
+    with_sidebar: bool,
     with_session: bool,
 ) -> NewTabRow {
     let row_width = row_width.max(px(0.0));
@@ -218,15 +222,20 @@ pub(super) fn split_new_tab_row(
         })
     };
     let menu_x = take(with_menu);
+    let sidebar_x = take(with_sidebar);
     let session_x = take(with_session);
     NewTabRow {
-        plus_width: if menu_x.is_some() || session_x.is_some() {
+        plus_width: if menu_x.is_some()
+            || sidebar_x.is_some()
+            || session_x.is_some()
+        {
             end
         } else {
             row_width
         },
         session_x,
         menu_x,
+        sidebar_x,
     }
 }
 

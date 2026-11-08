@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 46] = [
+const ASSETS: [(&str, &[u8]); 44] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -143,24 +143,16 @@ const ASSETS: [(&str, &[u8]); 46] = [
         include_bytes!("../assets/icons/layout-grid.svg"),
     ),
     (
-        "icons/panel-left-close.svg",
-        include_bytes!("../assets/icons/panel-left-close.svg"),
+        "icons/panel-left.svg",
+        include_bytes!("../assets/icons/panel-left.svg"),
     ),
     (
-        "icons/panel-left-open.svg",
-        include_bytes!("../assets/icons/panel-left-open.svg"),
+        "icons/panel-right.svg",
+        include_bytes!("../assets/icons/panel-right.svg"),
     ),
     (
-        "icons/panel-right-close.svg",
-        include_bytes!("../assets/icons/panel-right-close.svg"),
-    ),
-    (
-        "icons/panel-top-close.svg",
-        include_bytes!("../assets/icons/panel-top-close.svg"),
-    ),
-    (
-        "icons/panel-bottom-close.svg",
-        include_bytes!("../assets/icons/panel-bottom-close.svg"),
+        "icons/chevrons-up-down.svg",
+        include_bytes!("../assets/icons/chevrons-up-down.svg"),
     ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
@@ -208,17 +200,16 @@ pub(crate) enum Icon {
     Trash,
     /// A workspace.
     LayoutGrid,
-    /// Collapse a workspace panel on each edge, or show it again.
-    PanelLeftClose,
-    PanelLeftOpen,
-    PanelRightClose,
-    PanelTopClose,
-    PanelBottomClose,
+    /// The sidebar button on each side.
+    PanelLeft,
+    PanelRight,
+    /// The session switcher row's chevron.
+    ChevronsUpDown,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 45] = [
+    const ALL: [Self; 43] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -259,11 +250,9 @@ impl Icon {
         Self::Eraser,
         Self::Trash,
         Self::LayoutGrid,
-        Self::PanelLeftClose,
-        Self::PanelLeftOpen,
-        Self::PanelRightClose,
-        Self::PanelTopClose,
-        Self::PanelBottomClose,
+        Self::PanelLeft,
+        Self::PanelRight,
+        Self::ChevronsUpDown,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -308,11 +297,9 @@ impl Icon {
             Self::Eraser => "icons/eraser.svg",
             Self::Trash => "icons/trash-2.svg",
             Self::LayoutGrid => "icons/layout-grid.svg",
-            Self::PanelLeftClose => "icons/panel-left-close.svg",
-            Self::PanelLeftOpen => "icons/panel-left-open.svg",
-            Self::PanelRightClose => "icons/panel-right-close.svg",
-            Self::PanelTopClose => "icons/panel-top-close.svg",
-            Self::PanelBottomClose => "icons/panel-bottom-close.svg",
+            Self::PanelLeft => "icons/panel-left.svg",
+            Self::PanelRight => "icons/panel-right.svg",
+            Self::ChevronsUpDown => "icons/chevrons-up-down.svg",
         }
     }
 }

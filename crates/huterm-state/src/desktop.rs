@@ -39,10 +39,11 @@ pub struct WindowLayout {
     pub mode: WindowMode,
     /// The tab sidebar's width.
     pub sidebar_width: f32,
-    /// The window shows the workspace dropdown instead of its panel or bar.
-    pub workspace_panel_collapsed: bool,
-    /// The side workspace panel's width; zero when never saved, which a
-    /// restore reads as the default width.
+    /// Whether the window shows its sidebar (the workspace panel); `None`
+    /// when never saved, which a restore reads as the configured default.
+    pub workspace_panel_visible: Option<bool>,
+    /// The sidebar's width; zero when never saved, which a restore reads as
+    /// the default width.
     pub workspace_panel_width: f32,
     /// The Quake profile the window belongs to, if any.
     pub quake_profile: Option<String>,

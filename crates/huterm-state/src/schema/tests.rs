@@ -107,9 +107,9 @@ fn a_window_display_round_trips_and_is_left_out_when_unknown() {
 }
 
 #[test]
-fn a_windows_workspace_panel_state_round_trips_and_older_files_load() {
+fn a_windows_sidebar_state_round_trips_and_older_files_load() {
     let mut layout = layout_for(&rich_capture());
-    layout.windows[0].workspace_panel_collapsed = true;
+    layout.windows[0].workspace_panel_visible = Some(false);
     layout.windows[0].workspace_panel_width = 230.0;
     let bytes = encode_desktop(&layout, SCOPE, 1).unwrap();
     let Decoded::Ok(file) = decode_desktop(&bytes) else {
@@ -120,8 +120,7 @@ fn a_windows_workspace_panel_state_round_trips_and_older_files_load() {
     // a file from before them has none, and such a file loads them as
     // defaults.
     let text = String::from_utf8(bytes).unwrap();
-    for field in ["\"workspace_panel_collapsed\"", "\"workspace_panel_width\""]
-    {
+    for field in ["\"workspace_panel_visible\"", "\"workspace_panel_width\""] {
         assert_eq!(text.matches(field).count(), 1, "{text}");
     }
     let plain = layout_for(&rich_capture());
@@ -132,7 +131,8 @@ fn a_windows_workspace_panel_state_round_trips_and_older_files_load() {
         panic!("a file without the fields did not load");
     };
     assert!(file.content.windows.iter().all(|window| {
-        !window.workspace_panel_collapsed && window.workspace_panel_width == 0.0
+        window.workspace_panel_visible.is_none()
+            && window.workspace_panel_width == 0.0
     }));
     // A width that is not a finite, non-negative number is refused.
     for width in [-1.0, f32::NAN, f32::INFINITY] {
