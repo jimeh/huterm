@@ -332,6 +332,9 @@ fn the_switcher_opens_a_popover_of_the_sidebars_content_under_native_menus(
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.window.macos_native_menus = true;
+        // A Linux window without client decorations has no title row, so
+        // the bar hosts the corner.
+        config.tabs.always_show = true;
     });
     let (window, _) = harness.workspace_window();
     let (second, seconds) = harness.add_workspace(1);
@@ -1011,12 +1014,27 @@ fn widening_a_window_with_its_sheet_open_docks_one_sidebar(
 
 #[gpui::test]
 fn each_opener_toggles_only_its_own_popover(cx: &mut TestAppContext) {
-    let mut harness = corner_harness(cx);
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+        config.tabs.position = TabPosition::Titlebar;
+    });
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     let (empty, _) = harness.add_workspace(0);
     harness.activate_window(window);
     harness.show_workspace(window, empty, &[]);
+    // An empty workspace has no tab bar to host the corner, so a Linux
+    // window takes client decorations for a title row, which it draws with
+    // tabs in the title bar, as macOS has one.
+    harness.update_view(window, |view, window, cx| {
+        view.decorations_override = Some(gpui::Decorations::Client {
+            tiling: gpui::Tiling::default(),
+        });
+        view.sync_frame(window);
+        view.refresh_tab_visibility(window, cx);
+        view.sync_tab_layout(window, cx);
+        cx.notify();
+    });
     let switcher = harness.switcher_bounds(window);
     let switch = harness.painted(window, "Switch Workspace…", |view| {
         view.empty_state_switch_bounds()

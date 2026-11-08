@@ -66,7 +66,7 @@ const x11Keys: Record<OverlayKey, string> = {
   // Openbox grabs Ctrl+Alt+arrows for desktop switching, so the X11 run
   // invokes focus_pane_left instead of sending this key.
   "split-right": "ctrl+shift+o", "focus-next-pane": "ctrl+super+bracketright", "focus-pane-left": "ctrl+alt+Left",
-  undo: "ctrl+shift+z", "next-layout": "ctrl+super+alt+bracketright", balance: "ctrl+super+equal",
+  undo: "ctrl+shift+z", "next-layout": "ctrl+super+alt+backslash", balance: "ctrl+super+equal",
 };
 
 /** xdotool input; X11 positions are physical pixels. */
@@ -116,7 +116,7 @@ const macKeys: Record<OverlayKey, [number, number, string]> = {
   "split-right": [2, commandFlag, "d"], "focus-next-pane": [30, commandFlag, "]"],
   "focus-pane-left": [123, commandFlag | optionFlag, "\uF702"],
   undo: [6, commandFlag, "z"],
-  "next-layout": [30, commandFlag | controlFlag, "]"], balance: [24, commandFlag | controlFlag, "="],
+  "next-layout": [42, commandFlag | controlFlag, "\\"], balance: [24, commandFlag | controlFlag, "="],
 };
 
 /**

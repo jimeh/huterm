@@ -771,6 +771,13 @@ fn invoke_catalog(
                     .find(|workspace| workspace.get() == number)
                     .with_context(|| format!("no workspace {number}"))?;
                 huterm_protocol::CommandValue::Workspace(workspace)
+            } else if matches!(
+                kind,
+                Some(huterm_protocol::ArgumentKind::Integer { .. })
+            ) {
+                huterm_protocol::CommandValue::Integer(
+                    value.parse().context("integer argument")?,
+                )
             } else {
                 huterm_protocol::CommandValue::Text(value.to_owned())
             };

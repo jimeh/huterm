@@ -1921,9 +1921,18 @@ impl WorkspaceView {
             }
             SwitcherMode::Sheet => {
                 let content = layout.content;
-                let top = content.origin.y
+                let mut top = content.origin.y
                     + self.title_row()
                     + self.fullscreen_insets.top.max(px(0.0));
+                // Below a top tab bar too, which may hold the sidebar
+                // button: the sheet never covers the button that closes it.
+                if matches!(
+                    self.layout_tabs().position,
+                    TabPosition::Top | TabPosition::Titlebar
+                ) && self.bar_drawn()
+                {
+                    top = top.max(layout.tabs.bottom());
+                }
                 let width = workspace_chrome::panel_width(
                     self.workspace_width,
                     content.size.width,
