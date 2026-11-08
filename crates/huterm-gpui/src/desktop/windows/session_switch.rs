@@ -822,10 +822,6 @@ impl WorkspaceView {
         if let Some(terminal) = switched.spawned {
             desktop.fresh_terminals.insert(terminal);
         }
-        let left = desktop
-            .windows
-            .record(self.window)
-            .and_then(|record| record.session);
         let memory = desktop.windows.switch_to(
             self.window,
             switched.session,
@@ -851,33 +847,7 @@ impl WorkspaceView {
         self.reconcile(&Touched::everything(), terminating(cx), cx);
         self.measure_tab_widths(window, cx);
         self.apply_reopen(window, cx);
-        self.notify_session_peers([left, Some(switched.session)], cx);
         cx.notify();
-    }
-
-    /// Redraws the other windows on `sessions`, whose workspace panels and
-    /// menus badge the workspaces this window shows. Nothing changes in
-    /// the runtime, so no batch would reach them.
-    fn notify_session_peers(
-        &self,
-        sessions: [Option<SessionId>; 2],
-        cx: &mut Context<'_, Self>,
-    ) {
-        let peers: Vec<gpui::WindowId> = cx
-            .global::<Desktop>()
-            .windows
-            .records()
-            .filter(|record| {
-                record.id != self.window
-                    && record.session.is_some()
-                    && sessions.contains(&record.session)
-            })
-            .map(|record| record.id)
-            .collect();
-        if peers.is_empty() {
-            return;
-        }
-        cx.defer(move |cx| update_windows(cx, &peers, |_, cx| cx.notify()));
     }
 
     /// Phase 4: the remembered focus applied, so the switch ends and the

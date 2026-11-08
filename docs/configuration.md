@@ -229,15 +229,21 @@ session_switcher = "bottom" # bottom or top
   title bar: the traffic lights or window buttons, and on the right the menu
   button and the session control. Drag its inner edge to resize it, between
   140 and 400 points and at most half the window; each window keeps its own
-  width. A window too narrow to leave the terminal 384 points beside it
-  shows the sidebar as a sheet over the terminal instead, which closes when
-  you pick a workspace; widening the window docks it again.
+  width. In a window too narrow to leave the terminal 384 points beside it,
+  the button opens the sidebar as a sheet over the terminal instead, which
+  closes when you pick a workspace, press Escape, or click outside it. The
+  sheet changes no saved choice: a window that had its sidebar shown docks
+  it again once it is wide enough, and one that did not keeps it hidden.
+  Resizing the sidebar or the tab column beside it stops where the
+  terminal would get narrower than 384 points.
 - Rows show the workspace's name, dimmed when automatic, and its tab count.
   A click shows the workspace, a double-click renames it, and a right-click
   opens its menu: Rename, Clear Name, New Workspace, and Close Workspace.
   Drag a row up or down to reorder the session's workspaces, in the sidebar
-  or the switcher's popover; Escape cancels the drag. `focus_sidebar` moves
-  keyboard focus to the shown workspace's row; see
+  or the switcher's popover, holding it at the list's edge to scroll;
+  Escape cancels the drag. In the popover and the sheet a click shows the
+  workspace and closes them, so rename there with F2 or the row's menu.
+  `focus_sidebar` moves keyboard focus to the shown workspace's row; see
   [keybindings](keybindings.md#sidebar).
 - The session switcher shows the session's name and workspace count at the
   bottom of the sidebar, or just its name at the top with

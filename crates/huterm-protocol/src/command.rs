@@ -2230,7 +2230,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::SIDEBAR_NEXT,
         CommandScope::Window,
         "Sidebar: Next",
-        "Move focus to the next workspace.",
+        "Move focus to the next workspace or the session switcher.",
         &[],
     ),
     spec_in(
@@ -2238,7 +2238,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::SIDEBAR_PREVIOUS,
         CommandScope::Window,
         "Sidebar: Previous",
-        "Move focus to the previous workspace.",
+        "Move focus to the previous workspace or the session switcher.",
         &[],
     ),
     spec_in(
@@ -2246,7 +2246,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::SIDEBAR_FIRST,
         CommandScope::Window,
         "Sidebar: First",
-        "Move focus to the first workspace.",
+        "Move focus to the first workspace or the session switcher.",
         &[],
     ),
     spec_in(
@@ -2254,15 +2254,15 @@ const CATALOG: &[CommandSpec] = &[
         ids::SIDEBAR_LAST,
         CommandScope::Window,
         "Sidebar: Last",
-        "Move focus to the last workspace.",
+        "Move focus to the last workspace or the session switcher.",
         &[],
     ),
     spec_in(
         "Sidebar",
         ids::SIDEBAR_SHOW,
         CommandScope::Window,
-        "Sidebar: Show Workspace",
-        "Show the focused workspace in this window.",
+        "Sidebar: Open",
+        "Show the focused workspace, or open the session menu from the session switcher.",
         &[],
     ),
     spec_in(

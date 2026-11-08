@@ -3228,6 +3228,7 @@ fn open_window_with_profile(
                 session_sidebar_drawn: Cell::new(false),
                 session_popover_bounds: Rc::new(Cell::new(None)),
                 session_popover_drawn: Cell::new(false),
+                session_row_focus: cx.focus_handle(),
                 session_menu_from: session_control::SessionHostSlot::Title,
                 session_label: session_control::SessionLabel::default(),
                 exited_sessions: HashSet::new(),
@@ -3315,6 +3316,7 @@ fn open_window_with_profile(
                         view.cancel_pane_drag(window, cx);
                         view.cancel_workspace_drag(cx);
                         view.drag_right_press = false;
+                        view.close_workspace_switcher(window, cx);
                         // An open menu or panel closes, as AppKit menus and
                         // GTK popovers do, and focus is on the terminal when
                         // the window comes back.
@@ -3513,6 +3515,7 @@ impl refresh::Animated for WorkspaceView {
                 .pane_drag
                 .as_ref()
                 .is_some_and(|drag| drag.scrolls(self.tab_scroll))
+            || self.workspace_drag_scrolls().is_some()
         {
             next = next.merge(AnimationSchedule::FRAME);
         }
@@ -3593,6 +3596,9 @@ impl refresh::Animated for WorkspaceView {
                     });
                 }
             }
+            cx.notify();
+        }
+        if self.scroll_workspace_drag(now, cx) {
             cx.notify();
         }
         if self.panel_scrollbar.advance(now)
@@ -4880,6 +4886,9 @@ struct WorkspaceView {
     session_sidebar_drawn: Cell<bool>,
     session_popover_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     session_popover_drawn: Cell<bool>,
+    /// The session switcher row's focus handle, on whichever surface draws
+    /// it.
+    session_row_focus: FocusHandle,
     /// The host whose click last opened the session menu, which anchors it.
     session_menu_from: session_control::SessionHostSlot,
     /// The session name the control last measured and its width, so the
@@ -7298,7 +7307,7 @@ impl WorkspaceView {
             session_control::title_strip_corner(
                 menu,
                 self.session_control_placement(layout),
-            ) + self.corner_trailing(host, chrome)
+            ) + self.corner_trailing(host, chrome, layout.content.size.width)
         };
         let titlebar = self.title_row();
         let content = layout.content;
@@ -7313,13 +7322,15 @@ impl WorkspaceView {
         );
         // On the left the sidebar button and switcher follow the traffic
         // lights or leading window buttons.
+        let corner_lead =
+            self.corner_leading(host, chrome, layout.content.size.width);
         let leading = if lead_held {
             px(0.0)
         } else if layout.frame.controls {
             layout.frame.buttons.leading.width()
         } else {
             TRAFFIC_LIGHT_INSET
-        } + self.corner_leading(host, chrome);
+        } + corner_lead;
         let trailing = if trail_held {
             px(0.0)
         } else {
@@ -7337,9 +7348,16 @@ impl WorkspaceView {
                 (bounds.right() - (content.right() - corner)).max(px(0.0));
             leading.max(trailing)
         } else {
+            // The title keeps clear of the corner controls after the
+            // traffic lights, when the row holds them.
+            let lead = if corner_lead > px(0.0) {
+                leading
+            } else {
+                px(0.0)
+            };
             layout
                 .strip_inset
-                .max(leading)
+                .max(lead)
                 .max(layout.strip_trailing + corner.max(CONTROL_SLOT))
         };
         TitleRowLayout {
@@ -7412,7 +7430,21 @@ impl WorkspaceView {
         &self,
         viewport: gpui::Size<Pixels>,
     ) -> WorkspaceChrome {
-        workspace_chrome::resolve(self.workspace_inputs(), |panel| {
+        self.workspace_chrome_for(viewport, self.workspace_visible)
+    }
+
+    /// The sidebar chrome for a `viewport`-sized window that wants its
+    /// sidebar shown or not.
+    pub(super) fn workspace_chrome_for(
+        &self,
+        viewport: gpui::Size<Pixels>,
+        visible: bool,
+    ) -> WorkspaceChrome {
+        let inputs = workspace_chrome::Inputs {
+            visible,
+            ..self.workspace_inputs()
+        };
+        workspace_chrome::resolve(inputs, |panel| {
             self.layout_for(viewport, panel)
                 .present(self.presentation(), self.layout_tabs().position, 0.0)
                 .terminal
@@ -7437,7 +7469,10 @@ impl WorkspaceView {
             self.notch_shelf(),
             self.window_frame(),
             workspace,
-            self.corner_slot(workspace),
+            self.corner_slot(
+                workspace,
+                content_inside(viewport, self.window_frame()).size.width,
+            ),
         )
     }
 
@@ -8302,7 +8337,7 @@ impl WorkspaceView {
         let chrome = layout.workspace_chrome;
         let corner = match self.corner_host(chrome, true) {
             host @ workspace_chrome::CornerHost::Bar => {
-                self.corner_trailing(host, chrome)
+                self.corner_trailing(host, chrome, layout.content.size.width)
             }
             _ => px(0.0),
         };
@@ -8518,13 +8553,24 @@ impl WorkspaceView {
     ) {
         // Measured from the column's outer edge, which a docked sidebar on
         // the same side moves in from the window's.
-        let tabs = self.chrome_layout(window).tabs;
+        let layout = self.chrome_layout(window);
+        let tabs = layout.tabs;
         let desired = if self.layout_tabs().position == TabPosition::Left {
             pointer.x - tabs.left()
         } else {
             tabs.right() - pointer.x
         };
-        self.sidebar_width = desired.clamp(px(140.0), px(400.0));
+        let mut width = desired.clamp(px(140.0), px(400.0));
+        // Beside a docked sidebar the terminal keeps the width docking
+        // needs, so the drag never undocks the sidebar.
+        if layout.workspace_chrome.docked() {
+            let fits = tabs.size.width
+                + (layout.terminal.size.width
+                    - workspace_chrome::MIN_TERMINAL_WIDTH)
+                    .max(px(0.0));
+            width = width.min(fits.max(px(140.0)));
+        }
+        self.sidebar_width = width;
         cx.global_mut::<Desktop>()
             .windows
             .set_sidebar_width(self.window, self.sidebar_width);
@@ -9699,6 +9745,7 @@ impl WorkspaceView {
         }
         self.cancel_pane_drag(window, cx);
         self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
+        self.close_workspace_switcher(window, cx);
         self.cancel_pending_session_menu(cx);
 
         let terminal = self.active_view(cx);
@@ -10885,6 +10932,13 @@ impl WorkspaceView {
         // that moves it, such as Next Tab or a split, still decides where.
         if invocation.id != ids::WINDOW_TRANSPARENCY {
             self.close_panel(window, cx);
+        }
+        // And the workspace switcher, except for its own keys, the commands
+        // that open or move focus into it, and a menu opened from it.
+        if !is_menu_command(invocation.id)
+            && !workspace_panel::keeps_switcher(invocation.id)
+        {
+            self.close_workspace_switcher(window, cx);
         }
         match invocation.id {
             ids::MOVE_TAB_TO_NEW_WINDOW => {
@@ -13227,8 +13281,13 @@ impl WorkspaceView {
         }
         let scroll_key = scroll_to_bottom_key(&cx.global::<Desktop>().keymap);
         if let Some((config, family, metrics)) = loaded {
+            if self.close_workspace_switcher(window, cx) {
+                self.focus_terminal(window, cx);
+            }
             self.close_menu(MenuFocusReturn::Terminal, window, cx);
             self.resizing_sidebar = false;
+            self.resizing_workspace = false;
+            self.workspace_drag = None;
             self.scroll_target = None;
             // A position change to or from `titlebar` changes who draws
             // the Linux title bar. GPUI applies the request at once, and
@@ -14304,6 +14363,11 @@ impl Render for WorkspaceView {
         let tabs = self.layout_tabs();
         let position = tabs.position;
         let layout = self.chrome_layout(window);
+        // A docked sidebar replaces an open popover or sheet before either
+        // draws, so their rows and focus handles never show twice.
+        if layout.workspace_chrome.docked() {
+            self.close_workspace_switcher(window, cx);
+        }
         self.release_stale_row_focus(&layout, window, cx);
         let frame = layout.frame;
         let content = layout.content;
@@ -14701,7 +14765,11 @@ impl Render for WorkspaceView {
                 {
                     return;
                 }
-                if view.close_workspace_switcher(window, cx) {
+                // Focus returns to the terminal only from the switcher's own
+                // rows; a press in another overlay keeps focus there.
+                let inside = view.focused_workspace_row(window).is_some()
+                    || view.session_row_focus.is_focused(window);
+                if view.close_workspace_switcher(window, cx) && inside {
                     view.focus_terminal(window, cx);
                 }
             });
@@ -14755,13 +14823,13 @@ impl Render for WorkspaceView {
                 && chrome_state.edge() == edge
                 && !(edge == workspace_chrome::Edge::Right && sidebar_title_row)
         };
-        let title_room = (title_row.bounds.size.width * 0.35).max(px(0.0));
+        let content_width = layout.content.size.width;
         let title_corner_left = title_corner(workspace_chrome::Edge::Left)
             .then(|| {
                 self.corner_controls_element(
                     chrome_state,
                     true,
-                    title_room,
+                    content_width,
                     colors,
                     cx,
                 )
@@ -14772,7 +14840,7 @@ impl Render for WorkspaceView {
                 self.corner_controls_element(
                     chrome_state,
                     true,
-                    title_room,
+                    content_width,
                     colors,
                     cx,
                 )
@@ -15401,7 +15469,11 @@ impl Render for WorkspaceView {
             let corner_right = chrome_state.edge()
                 == workspace_chrome::Edge::Right
                 && !chrome_state.docked();
-            let corner_width = self.corner_trailing(corner_host, chrome_state);
+            let corner_width = self.corner_trailing(
+                corner_host,
+                chrome_state,
+                layout.content.size.width,
+            );
             let row = split_new_tab_row(
                 (layout.tabs.size.width - VERTICAL_ROW_MARGIN_X * 2.0)
                     .max(px(0.0)),
@@ -15503,13 +15575,11 @@ impl Render for WorkspaceView {
             if corner_right {
                 match corner_host {
                     workspace_chrome::CornerHost::Bar => {
-                        let bar_room =
-                            layout.strip_bounds(tabs).size.width * 0.35;
                         chrome = chrome.child(
                             self.corner_controls_element(
                                 chrome_state,
                                 true,
-                                bar_room,
+                                layout.content.size.width,
                                 colors,
                                 cx,
                             )
@@ -15617,11 +15687,13 @@ impl Render for WorkspaceView {
                     && corner_right
                     && !trail_held;
                 if strip_corner {
+                    // A right column's strip holds only the button; the
+                    // switcher takes the row above its tabs.
                     chrome = chrome.child(
                         self.corner_controls_element(
                             chrome_state,
-                            true,
-                            layout.tabs.size.width,
+                            !self.right_column_strip(corner_host, chrome_state),
+                            layout.content.size.width,
                             colors,
                             cx,
                         )
@@ -15838,7 +15910,7 @@ impl Render for WorkspaceView {
                     self.corner_controls_element(
                         chrome_state,
                         true,
-                        slot.size.width,
+                        layout.content.size.width,
                         colors,
                         cx,
                     )
@@ -16157,7 +16229,7 @@ impl Render for WorkspaceView {
         // The switcher closes when what it opened from goes (W33): the
         // switcher or button that anchors the popover, a docked sidebar
         // that replaces the sheet, or the window's last other workspace.
-        if self.switcher_anchor_went(&layout) {
+        if self.switcher_anchor_went(&layout, window) {
             cx.defer_in(window, |view, window, cx| {
                 if view.close_workspace_switcher(window, cx) {
                     view.focus_terminal(window, cx);

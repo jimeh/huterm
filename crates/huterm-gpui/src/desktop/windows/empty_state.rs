@@ -6,8 +6,8 @@
 //! It draws the workspace icon, "No tabs in `name`", a primary New Tab
 //! button with its shortcut, Switch Workspace… while the session has other
 //! workspaces, and Close Workspace while the workspace is not the session's
-//! only one. Switch Workspace… opens the workspace menu anchored to itself,
-//! so windows without a title row or a workspace panel to switch from are
+//! only one. Switch Workspace… opens the workspace switcher anchored to
+//! itself, so windows without a title row or a sidebar to switch from are
 //! never stuck. The tab bar hides as it does for any window without tabs.
 //!
 //! Keyboard: New Tab takes focus when the state appears; the buttons take
@@ -53,7 +53,7 @@ pub(super) struct EmptyState {
     /// The button whose press opened the overlay showing now, which takes
     /// focus back when that overlay closes.
     opener: Cell<Option<Control>>,
-    /// Switch Workspace…'s painted bounds, the workspace menu's anchor.
+    /// Switch Workspace…'s painted bounds, the workspace switcher's anchor.
     switch_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Whether this frame drew Switch Workspace….
     switch_drawn: Cell<bool>,
@@ -256,6 +256,13 @@ impl WorkspaceView {
     ) {
         let result = match control {
             Control::NewTab => self.new_tab(window, cx),
+            // A second press closes the switcher it opened.
+            Control::SwitchWorkspace if self.workspace_switcher_open() => {
+                self.close_workspace_switcher(window, cx);
+                self.empty_state.opener.set(Some(control));
+                self.restore_empty_state_focus(window, cx);
+                Ok(CommandOutcome::Completed)
+            }
             Control::SwitchWorkspace => self.open_workspace_switcher(
                 super::workspace_panel::SwitcherAnchor::EmptyState,
                 window,
@@ -358,6 +365,15 @@ impl WorkspaceView {
                 )
                 .icon(icon_element(Icon::LayoutGrid, swatch.fg).size(px(14.0)))
                 .expanded(self.workspace_switcher_open())
+                .when(
+                    self.switcher_mode
+                        == Some(super::workspace_panel::SwitcherMode::Popover(
+                            super::workspace_panel::SwitcherAnchor::EmptyState,
+                        )),
+                    |button| {
+                        button.child(self.switcher_popover.trigger_probe())
+                    },
+                )
                 .child(
                     canvas(
                         |_, _, _| (),

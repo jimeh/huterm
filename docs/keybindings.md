@@ -355,11 +355,11 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `panel_last` | Window | Bound only while `Panel`. Moves the focused slider to its maximum. |
 | `panel_press` | Window | Bound only while `Panel`. Presses the focused button. |
 | `panel_reset` | Window | Bound only while `Panel`. Clears the focused slider's override, so the window uses the default or its Quake profile's value again. |
-| `sidebar_next` | Window | Bound only while `Sidebar`. Moves focus to the next workspace, wrapping. |
-| `sidebar_previous` | Window | Bound only while `Sidebar`. Moves focus to the previous workspace, wrapping. |
+| `sidebar_next` | Window | Bound only while `Sidebar`. Moves focus to the next workspace or the session switcher, wrapping. |
+| `sidebar_previous` | Window | Bound only while `Sidebar`. Moves focus to the previous workspace or the session switcher, wrapping. |
 | `sidebar_first` | Window | Bound only while `Sidebar`. |
 | `sidebar_last` | Window | Bound only while `Sidebar`. |
-| `sidebar_show` | Window | Bound only while `Sidebar`. Shows the focused workspace in the window. |
+| `sidebar_show` | Window | Bound only while `Sidebar`. Shows the focused workspace in the window, or opens the session menu from the session switcher. |
 | `sidebar_rename` | Window | Bound only while `Sidebar`. Renames the focused workspace through the palette prompt. |
 | `sidebar_menu` | Window | Bound only while `Sidebar`. Opens the focused workspace's context menu. |
 | `sidebar_exit` | Window | Bound only while `Sidebar`. Returns focus to the terminal. |
@@ -663,17 +663,20 @@ or a click outside the panel closes it and returns focus to the terminal.
 
 ### Sidebar
 
-These bind only while a workspace row has focus (`Sidebar`), in the sidebar
-or the workspace switcher's popover. `focus_sidebar` and
-`open_workspace_switcher` give focus to the shown workspace. A click on a
-row shows its workspace, a double-click renames it, a right press opens its
-context menu, which acts on that row's workspace, and a drag reorders the
-workspaces; Escape cancels a drag.
+These bind only while a workspace row or the session switcher has focus
+(`Sidebar`), in the sidebar or the workspace switcher's popover.
+`focus_sidebar` and `open_workspace_switcher` give focus to the shown
+workspace. The arrows, Home, End, Tab, and Shift-Tab walk the rows and the
+session switcher, which comes after the rows at the bottom or before them at
+the top; Return or Space shows the focused workspace or opens the session
+menu. A click on a row shows its workspace, a double-click renames it in the
+docked sidebar, a right press opens its context menu, which acts on that
+row's workspace, and a drag reorders the workspaces; Escape cancels a drag.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
-| `sidebar_next` | `down` | `down` |
-| `sidebar_previous` | `up` | `up` |
+| `sidebar_next` | `down`, `tab` | `down`, `tab` |
+| `sidebar_previous` | `up`, `shift-tab` | `up`, `shift-tab` |
 | `sidebar_first` | `home` | `home` |
 | `sidebar_last` | `end` | `end` |
 | `sidebar_show` | `enter`, `space` | `enter`, `space` |

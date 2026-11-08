@@ -480,8 +480,8 @@ pub(super) fn windows_to_visit(
                 || record.workspace.is_some_and(|workspace| {
                     touched.contains_workspace(workspace)
                 })
-                // The workspace panel, bar, and menus show every workspace
-                // of the session with its tab count.
+                // The sidebar and the workspace switcher show every
+                // workspace of the session with its tab count.
                 || record
                     .session
                     .is_some_and(|session| touched.contains_chrome(session))

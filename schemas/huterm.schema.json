@@ -8154,7 +8154,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move focus to the next workspace.",
+            "description": "Move focus to the next workspace or the session switcher.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -8164,7 +8164,7 @@
               },
               "command": {
                 "const": "sidebar_next",
-                "description": "Move focus to the next workspace.",
+                "description": "Move focus to the next workspace or the session switcher.",
                 "type": "string"
               },
               "description": {
@@ -8205,7 +8205,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move focus to the previous workspace.",
+            "description": "Move focus to the previous workspace or the session switcher.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -8215,7 +8215,7 @@
               },
               "command": {
                 "const": "sidebar_previous",
-                "description": "Move focus to the previous workspace.",
+                "description": "Move focus to the previous workspace or the session switcher.",
                 "type": "string"
               },
               "description": {
@@ -8256,7 +8256,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move focus to the first workspace.",
+            "description": "Move focus to the first workspace or the session switcher.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -8266,7 +8266,7 @@
               },
               "command": {
                 "const": "sidebar_first",
-                "description": "Move focus to the first workspace.",
+                "description": "Move focus to the first workspace or the session switcher.",
                 "type": "string"
               },
               "description": {
@@ -8307,7 +8307,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Move focus to the last workspace.",
+            "description": "Move focus to the last workspace or the session switcher.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -8317,7 +8317,7 @@
               },
               "command": {
                 "const": "sidebar_last",
-                "description": "Move focus to the last workspace.",
+                "description": "Move focus to the last workspace or the session switcher.",
                 "type": "string"
               },
               "description": {
@@ -8358,7 +8358,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Show the focused workspace in this window.",
+            "description": "Show the focused workspace, or open the session menu from the session switcher.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -8368,7 +8368,7 @@
               },
               "command": {
                 "const": "sidebar_show",
-                "description": "Show the focused workspace in this window.",
+                "description": "Show the focused workspace, or open the session menu from the session switcher.",
                 "type": "string"
               },
               "description": {

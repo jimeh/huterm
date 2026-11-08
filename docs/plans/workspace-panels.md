@@ -510,9 +510,8 @@ the corner controls' slot.
 
 `Touched::chrome` holds the sessions whose workspace list, order, names,
 or tab counts changed; `windows_to_visit` visits every window on them, so
-counts, order, names, and badges stay current, including in an open
-switcher popover. A window's own workspace switch notifies the other
-windows on its session.
+counts, order, and names stay current, including in an open switcher
+popover.
 
 ### Persistence
 
@@ -806,6 +805,20 @@ Recorded while implementing the 2026-11-08 revision:
 - `toggle_sidebar` and the `sidebar_*` commands are always available;
   `focus_sidebar` is unavailable while the sidebar is hidden in a wide
   window.
+- After the dual review: the sheet never changes the saved visible state,
+  so a peek in a narrow window does not dock a sidebar once the window
+  widens, while a window that had its sidebar docked docks it again.
+- The keyboard walk includes the session switcher, after the rows at the
+  bottom or before them at the top; Tab and Shift-Tab walk it like the
+  arrows, and Return opens the session menu there.
+- In the popover and the sheet a click shows the workspace and closes them,
+  so a double-click cannot rename there; F2 and the row's menu do.
+- Resizing the sidebar, or a tab column beside a docked one, stops where the
+  terminal would fall under 384 points, so a drag never undocks it.
+- Any command other than the switcher's own closes an open switcher, as it
+  closes a menu; so do opening the palette, a reload, and window
+  deactivation. The guard returns focus to the terminal only from the
+  switcher's own rows.
 
 Recorded while implementing the first PR B design, stacked on PR A. The
 2026-11-08 revision replaced the panel, bar, dropdown, workspace menu,

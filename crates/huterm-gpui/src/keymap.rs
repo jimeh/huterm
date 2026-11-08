@@ -1183,16 +1183,18 @@ fn panel_defaults(platform: Platform) -> Vec<BindingEntry> {
 }
 
 /// Sidebar bindings, identical on both platforms. Their commands carry the
-/// `Sidebar` context, so they match only while a workspace row has focus,
-/// in the sidebar or the workspace switcher.
+/// `Sidebar` context, so they match only while a workspace row or the
+/// session switcher has focus, in the sidebar or the workspace switcher.
 fn sidebar_defaults() -> Vec<BindingEntry> {
     vec![
-        default("down", ids::SIDEBAR_NEXT, "Next Workspace"),
-        default("up", ids::SIDEBAR_PREVIOUS, "Previous Workspace"),
-        default("home", ids::SIDEBAR_FIRST, "First Workspace"),
-        default("end", ids::SIDEBAR_LAST, "Last Workspace"),
-        default("enter", ids::SIDEBAR_SHOW, "Show Workspace"),
-        default("space", ids::SIDEBAR_SHOW, "Show Workspace"),
+        default("down", ids::SIDEBAR_NEXT, "Next"),
+        default("tab", ids::SIDEBAR_NEXT, "Next"),
+        default("up", ids::SIDEBAR_PREVIOUS, "Previous"),
+        default("shift-tab", ids::SIDEBAR_PREVIOUS, "Previous"),
+        default("home", ids::SIDEBAR_FIRST, "First"),
+        default("end", ids::SIDEBAR_LAST, "Last"),
+        default("enter", ids::SIDEBAR_SHOW, "Open"),
+        default("space", ids::SIDEBAR_SHOW, "Open"),
         default("f2", ids::SIDEBAR_RENAME, "Rename"),
         default("shift-f10", ids::SIDEBAR_MENU, "Open Menu"),
         default("menu", ids::SIDEBAR_MENU, "Open Menu"),

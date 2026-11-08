@@ -41,9 +41,10 @@ const HANDLE_WIDTH: Pixels = px(4.0);
 const POPOVER_WIDTH: Pixels = px(240.0);
 /// The popover's rows scroll beyond this.
 const POPOVER_ROWS_MAX: Pixels = px(240.0);
-/// A dragged row this close to its list's edge scrolls the list.
+/// A dragged row this close to its list's edge scrolls the list, at this
+/// speed in points per second, every frame while it rests there.
 const DRAG_SCROLL_EDGE: Pixels = px(16.0);
-const DRAG_SCROLL_STEP: Pixels = px(8.0);
+const DRAG_SCROLL_SPEED: f32 = 480.0;
 
 /// Where the workspace switcher's popover opened from, for its anchor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,15 +88,45 @@ impl Surface {
     }
 }
 
+/// Whether running `command` leaves an open switcher open: its own keys and
+/// the commands that open it or move focus into it. Every other command
+/// closes it, as it closes an open menu.
+pub(super) fn keeps_switcher(command: huterm_protocol::CommandId) -> bool {
+    matches!(
+        command,
+        ids::SIDEBAR_NEXT
+            | ids::SIDEBAR_PREVIOUS
+            | ids::SIDEBAR_FIRST
+            | ids::SIDEBAR_LAST
+            | ids::SIDEBAR_SHOW
+            | ids::SIDEBAR_RENAME
+            | ids::SIDEBAR_MENU
+            | ids::SIDEBAR_EXIT
+            | ids::OPEN_WORKSPACE_SWITCHER
+            | ids::TOGGLE_SIDEBAR
+            | ids::FOCUS_SIDEBAR
+    )
+}
+
+/// One stop of the sidebar's keyboard walk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SidebarItem {
+    Row(WorkspaceId),
+    Session,
+}
+
 /// A workspace row pressed, and dragged once it moves past the threshold.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct WorkspaceDrag {
     pub(super) workspace: WorkspaceId,
     session: SessionId,
     origin: gpui::Point<Pixels>,
+    pointer: gpui::Point<Pixels>,
     pub(super) dragging: bool,
     /// Where a drop lands: before this workspace, or at the end.
     pub(super) before: Option<WorkspaceId>,
+    /// When the edge scroll last moved the list.
+    scrolled_at: Instant,
 }
 
 impl WorkspaceView {
@@ -106,19 +137,50 @@ impl WorkspaceView {
         )
     }
 
+    /// The room the corner controls may take in a window whose content is
+    /// `content_width` wide: past it the switcher shows only its icon.
+    pub(super) fn corner_room(content_width: Pixels) -> Pixels {
+        content_width * 0.3
+    }
+
+    /// Whether the switcher shows only its icon in a window whose content
+    /// is `content_width` wide. Reservation and drawing both read this.
+    fn switcher_icon_only(&self, content_width: Pixels) -> bool {
+        Self::corner_room(content_width)
+            < CONTROL_SIZE + CORNER_GAP + self.switcher_width()
+    }
+
     /// The width the sidebar button and, beside it, the switcher take along
-    /// a strip; `inline` is false where the switcher takes a row instead.
+    /// a strip in a window whose content is `content_width` wide; `inline`
+    /// is false where the switcher takes a row instead.
     pub(super) fn corner_controls_width(
         &self,
         chrome: WorkspaceChrome,
         inline: bool,
+        content_width: Pixels,
     ) -> Pixels {
-        let switcher = if chrome.switcher() && inline {
-            CORNER_GAP + self.switcher_width()
-        } else {
+        let switcher = if !chrome.switcher() || !inline {
             px(0.0)
+        } else if self.switcher_icon_only(content_width) {
+            CORNER_GAP + CONTROL_SIZE
+        } else {
+            CORNER_GAP + self.switcher_width()
         };
         CONTROL_SIZE + switcher
+    }
+
+    /// Whether a right tab column's top strip holds the right corner's
+    /// sidebar button, with the switcher in a row above its tabs as a left
+    /// column has it; the strip is too narrow for both.
+    pub(super) fn right_column_strip(
+        &self,
+        host: CornerHost,
+        chrome: WorkspaceChrome,
+    ) -> bool {
+        host == CornerHost::TitleRow
+            && chrome.edge() == Edge::Right
+            && self.layout_tabs().position == TabPosition::Right
+            && self.presentation() != Presentation::Hidden
     }
 
     /// Where the corner controls go. `geometry` asks as the tab bar's
@@ -142,41 +204,50 @@ impl WorkspaceView {
         )
     }
 
-    /// The tab bar's share for the corner controls under `chrome`.
+    /// The tab bar's share for the corner controls under `chrome`, in a
+    /// window whose content is `content_width` wide.
     pub(super) fn corner_slot(
         &self,
         chrome: WorkspaceChrome,
+        content_width: Pixels,
     ) -> Option<CornerSlot> {
         let titled = self.title_row() > px(0.0);
-        match (self.corner_host(chrome, true), chrome.edge()) {
+        let host = self.corner_host(chrome, true);
+        let row = match (host, chrome.edge()) {
             (CornerHost::Bar, Edge::Left) => {
-                Some(CornerSlot::Lead(self.corner_controls_width(chrome, true)))
+                return Some(CornerSlot::Lead(self.corner_controls_width(
+                    chrome,
+                    true,
+                    content_width,
+                )));
             }
-            (CornerHost::Column, Edge::Left)
-                if !titled || chrome.switcher() =>
-            {
-                Some(CornerSlot::Row)
+            (CornerHost::Column, Edge::Left) => !titled || chrome.switcher(),
+            (CornerHost::Column, Edge::Right) => chrome.switcher(),
+            (CornerHost::TitleRow, Edge::Right) => {
+                chrome.switcher() && self.right_column_strip(host, chrome)
             }
-            (CornerHost::Column, Edge::Right) if chrome.switcher() => {
-                Some(CornerSlot::Row)
-            }
-            _ => None,
-        }
+            _ => false,
+        };
+        row.then_some(CornerSlot::Row)
     }
 
     /// The length the corner controls take from the end of the host that
-    /// holds the menu button, on the right; zero elsewhere.
+    /// holds the menu button, on the right, in a window whose content is
+    /// `content_width` wide; zero elsewhere.
     pub(super) fn corner_trailing(
         &self,
         host: CornerHost,
         chrome: WorkspaceChrome,
+        content_width: Pixels,
     ) -> Pixels {
         if chrome.edge() != Edge::Right || chrome.docked() {
             return px(0.0);
         }
         match host {
             CornerHost::TitleRow | CornerHost::Bar => {
-                self.corner_controls_width(chrome, true) + CORNER_GAP
+                let inline = !self.right_column_strip(host, chrome);
+                self.corner_controls_width(chrome, inline, content_width)
+                    + CORNER_GAP
             }
             CornerHost::Column => CONTROL_SLOT,
             CornerHost::Sidebar | CornerHost::Hidden => px(0.0),
@@ -184,15 +255,16 @@ impl WorkspaceView {
     }
 
     /// The length the corner controls take after the traffic lights or
-    /// leading window buttons of the title row, on the left; zero
-    /// elsewhere.
+    /// leading window buttons of the title row, on the left, in a window
+    /// whose content is `content_width` wide; zero elsewhere.
     pub(super) fn corner_leading(
         &self,
         host: CornerHost,
         chrome: WorkspaceChrome,
+        content_width: Pixels,
     ) -> Pixels {
         if chrome.edge() == Edge::Left && host == CornerHost::TitleRow {
-            self.corner_controls_width(chrome, true) + CORNER_GAP
+            self.corner_controls_width(chrome, true, content_width) + CORNER_GAP
         } else {
             px(0.0)
         }
@@ -308,6 +380,13 @@ impl WorkspaceView {
             .map(|row| row.workspace)
             .collect();
         let drawn = self.rows_drawn(layout);
+        if !drawn && self.session_row_focus.is_focused(window) {
+            cx.defer_in(window, |view, window, cx| {
+                if view.session_row_focus.is_focused(window) {
+                    view.focus_terminal(window, cx);
+                }
+            });
+        }
         let focused = self.focused_workspace_row(window);
         if let Some(focused) = focused
             && (!drawn || !rows.contains(&focused))
@@ -349,22 +428,22 @@ impl WorkspaceView {
     }
 
     /// The `toggle_sidebar` command. A docked sidebar hides; an open sheet
-    /// closes; otherwise the sidebar shows, docked when the window is wide
-    /// enough and as a sheet when it is not. The terminal keeps its
-    /// process, focus, and selection; only its size changes, as for a
-    /// window resize.
+    /// closes; otherwise the sidebar docks when the window is wide enough,
+    /// and opens as a sheet when it is not. The sheet never changes the
+    /// saved visible state. The terminal keeps its process, focus, and
+    /// selection; only its size changes, as for a window resize.
     pub(super) fn toggle_sidebar(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         // A row that holds focus goes with its sidebar.
-        let focused = self.focused_workspace_row(window).is_some();
+        let focused = self.focused_workspace_row(window).is_some()
+            || self.session_row_focus.is_focused(window);
         let viewport = window.viewport_size();
-        let visible = !(self.workspace_chrome(viewport).docked()
-            || self.switcher_mode == Some(SwitcherMode::Sheet));
+        let docked = self.workspace_chrome(viewport).docked();
+        let sheet = self.switcher_mode == Some(SwitcherMode::Sheet);
         self.close_workspace_switcher(window, cx);
-        self.set_workspace_visible(visible, cx);
         if self
             .menu
             .as_ref()
@@ -372,9 +451,16 @@ impl WorkspaceView {
         {
             self.close_menu(MenuFocusReturn::Keep, window, cx);
         }
-        if visible && !self.workspace_chrome(viewport).docked() {
+        if docked {
+            self.set_workspace_visible(false, cx);
+        } else if sheet {
+            // The sheet closed; the saved state stays as it was.
+        } else if self.workspace_chrome_for(viewport, true).docked() {
+            self.set_workspace_visible(true, cx);
+        } else {
             self.open_sheet(window, cx);
-        } else if focused {
+        }
+        if focused && self.switcher_mode.is_none() {
             self.focus_terminal(window, cx);
         }
         self.relayout_terminals(window, cx);
@@ -489,17 +575,57 @@ impl WorkspaceView {
         }
     }
 
-    /// Runs a `sidebar_*` command on the focused row; `None` when no row
-    /// holds focus, so the command is not the sidebar's.
+    /// The sidebar's keyboard stops in visual order: the workspace rows,
+    /// with the session switcher after them at the bottom or before them at
+    /// the top.
+    fn sidebar_items(&self, cx: &App) -> Vec<SidebarItem> {
+        let mut items: Vec<SidebarItem> = self
+            .workspace_rows(cx)
+            .iter()
+            .map(|row| SidebarItem::Row(row.workspace))
+            .collect();
+        if self.session_control_state(cx).is_some() {
+            if self.config.sidebar.session_switcher
+                == SessionSwitcherPosition::Top
+            {
+                items.insert(0, SidebarItem::Session);
+            } else {
+                items.push(SidebarItem::Session);
+            }
+        }
+        items
+    }
+
+    /// The sidebar stop that holds keyboard focus, if any.
+    fn focused_sidebar_item(&self, window: &Window) -> Option<SidebarItem> {
+        if self.session_row_focus.is_focused(window) {
+            return Some(SidebarItem::Session);
+        }
+        self.focused_workspace_row(window).map(SidebarItem::Row)
+    }
+
+    /// The session switcher row's host on the surface drawing the rows.
+    fn session_row_slot(&self) -> SessionHostSlot {
+        if matches!(self.switcher_mode, Some(SwitcherMode::Popover(_))) {
+            SessionHostSlot::Popover
+        } else {
+            SessionHostSlot::Sidebar
+        }
+    }
+
+    /// Runs a `sidebar_*` command on the focused row or session switcher;
+    /// `None` when neither holds focus, so the command is not the
+    /// sidebar's. The arrows, Home, End, Tab, and Shift-Tab walk the rows
+    /// and the session switcher; Return opens the focused one.
     pub(super) fn run_sidebar_command(
         &mut self,
         command: huterm_protocol::CommandId,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<Result<CommandOutcome, CommandError>> {
-        let focused = self.focused_workspace_row(window)?;
-        let rows = self.workspace_rows(cx);
-        let at = rows.iter().position(|row| row.workspace == focused);
+        let focused = self.focused_sidebar_item(window)?;
+        let items = self.sidebar_items(cx);
+        let at = items.iter().position(|item| *item == focused);
         let step = match command {
             ids::SIDEBAR_NEXT => Some(huterm_ui::roving::Move::Next),
             ids::SIDEBAR_PREVIOUS => Some(huterm_ui::roving::Move::Previous),
@@ -508,12 +634,35 @@ impl WorkspaceView {
             _ => None,
         };
         if let Some(step) = step {
-            if let Some(index) = huterm_ui::roving::target(rows.len(), at, step)
+            match huterm_ui::roving::target(items.len(), at, step)
+                .map(|index| items[index])
             {
-                self.focus_workspace_row(rows[index].workspace, window, cx);
+                Some(SidebarItem::Row(workspace)) => {
+                    self.focus_workspace_row(workspace, window, cx);
+                }
+                Some(SidebarItem::Session) => {
+                    self.session_row_focus.focus(window, cx);
+                    cx.notify();
+                }
+                None => {}
             }
             return Some(Ok(CommandOutcome::Completed));
         }
+        if command == ids::SIDEBAR_EXIT {
+            self.close_workspace_switcher(window, cx);
+            self.focus_terminal(window, cx);
+            cx.notify();
+            return Some(Ok(CommandOutcome::Completed));
+        }
+        let SidebarItem::Row(focused) = focused else {
+            // The session switcher opens the session menu; the row
+            // commands have nothing to rename or offer there.
+            if command == ids::SIDEBAR_SHOW || command == ids::SIDEBAR_MENU {
+                self.session_menu_from = self.session_row_slot();
+                self.toggle_session_menu(window, cx);
+            }
+            return Some(Ok(CommandOutcome::Completed));
+        };
         let result = match command {
             ids::SIDEBAR_SHOW => {
                 self.run_workspace_row(focused, RowAction::Show, window, cx);
@@ -534,12 +683,6 @@ impl WorkspaceView {
                         |bounds| bounds.bottom_left(),
                     );
                 self.open_workspace_row_menu(focused, anchor, true, window, cx);
-                Ok(CommandOutcome::Completed)
-            }
-            ids::SIDEBAR_EXIT => {
-                self.close_workspace_switcher(window, cx);
-                self.focus_terminal(window, cx);
-                cx.notify();
                 Ok(CommandOutcome::Completed)
             }
             _ => return None,
@@ -651,13 +794,20 @@ impl WorkspaceView {
 
     /// Whether the open switcher lost what it opened from this frame: the
     /// popover's switcher, sidebar button, or empty state button, or the
-    /// sheet's narrow window, which a docked sidebar or a hidden one
-    /// replaces.
-    pub(super) fn switcher_anchor_went(&self, layout: &ChromeLayout) -> bool {
+    /// sheet's narrow window, which a docked sidebar replaces or which grew
+    /// wide enough to dock one.
+    pub(super) fn switcher_anchor_went(
+        &self,
+        layout: &ChromeLayout,
+        window: &Window,
+    ) -> bool {
         match self.switcher_mode {
             None => false,
             Some(SwitcherMode::Sheet) => {
-                layout.workspace_chrome.docked() || !self.workspace_visible
+                layout.workspace_chrome.docked()
+                    || self
+                        .workspace_chrome_for(window.viewport_size(), true)
+                        .docked()
             }
             Some(SwitcherMode::Popover(from)) => {
                 layout.workspace_chrome.docked()
@@ -887,14 +1037,16 @@ impl WorkspaceView {
             workspace,
             session,
             origin: pointer,
+            pointer,
             dragging: false,
             before: None,
+            scrolled_at: Instant::now(),
         });
     }
 
     /// Follows the pointer: past the threshold the press becomes a drag,
-    /// the drop target follows the rows' painted midpoints, and a pointer
-    /// near the list's edge scrolls it.
+    /// and the drop target follows the rows' painted midpoints. A pointer
+    /// near the list's edge scrolls it on every frame (`scroll_workspace_drag`).
     pub(super) fn update_workspace_drag(
         &mut self,
         pointer: gpui::Point<Pixels>,
@@ -907,43 +1059,91 @@ impl WorkspaceView {
             && (pointer - drag.origin).magnitude() > TAB_DRAG_THRESHOLD
         {
             drag.dragging = true;
+            drag.scrolled_at = Instant::now();
         }
-        if drag.dragging {
-            let before = {
-                let painted = self.workspace_row_bounds.borrow();
-                self.workspace_rows(cx)
-                    .iter()
-                    .filter(|row| row.workspace != drag.workspace)
-                    .find(|row| {
-                        painted
-                            .get(&row.workspace)
-                            .is_some_and(|bounds| pointer.y < bounds.center().y)
-                    })
-                    .map(|row| row.workspace)
-            };
-            drag.before = before;
-            let scroll = if self.switcher_mode.is_some() {
-                &self.switcher_scroll
-            } else {
-                &self.workspace_scroll
-            };
-            let list = scroll.bounds();
-            let offset = scroll.offset();
-            let step = if pointer.y < list.top() + DRAG_SCROLL_EDGE {
-                DRAG_SCROLL_STEP
-            } else if pointer.y > list.bottom() - DRAG_SCROLL_EDGE {
-                -DRAG_SCROLL_STEP
-            } else {
-                px(0.0)
-            };
-            if step != px(0.0) {
-                let y =
-                    (offset.y + step).clamp(-scroll.max_offset().y, px(0.0));
-                scroll.set_offset(point(offset.x, y));
-            }
-        }
+        drag.pointer = pointer;
         self.workspace_drag = Some(drag);
+        self.retarget_workspace_drag(cx);
         cx.notify();
+    }
+
+    /// Points the drop target at the row the pointer is above, from the
+    /// rows' painted bounds.
+    fn retarget_workspace_drag(&mut self, cx: &App) {
+        let Some(mut drag) = self.workspace_drag.filter(|drag| drag.dragging)
+        else {
+            return;
+        };
+        let pointer = drag.pointer;
+        drag.before = {
+            let painted = self.workspace_row_bounds.borrow();
+            self.workspace_rows(cx)
+                .iter()
+                .filter(|row| row.workspace != drag.workspace)
+                .find(|row| {
+                    painted
+                        .get(&row.workspace)
+                        .is_some_and(|bounds| pointer.y < bounds.center().y)
+                })
+                .map(|row| row.workspace)
+        };
+        self.workspace_drag = Some(drag);
+    }
+
+    /// The scroll handle of the list a drag runs in.
+    fn drag_scroll(&self) -> &gpui::ScrollHandle {
+        if self.switcher_mode.is_some() {
+            &self.switcher_scroll
+        } else {
+            &self.workspace_scroll
+        }
+    }
+
+    /// The direction a dragged row at its list's edge scrolls the list:
+    /// positive towards the top, negative towards the bottom, `None` away
+    /// from an edge or where the list cannot move further.
+    pub(super) fn workspace_drag_scrolls(&self) -> Option<f32> {
+        let drag = self.workspace_drag.filter(|drag| drag.dragging)?;
+        let scroll = self.drag_scroll();
+        let list = scroll.bounds();
+        let offset = scroll.offset().y;
+        if drag.pointer.y < list.top() + DRAG_SCROLL_EDGE && offset < px(0.0) {
+            Some(1.0)
+        } else if drag.pointer.y > list.bottom() - DRAG_SCROLL_EDGE
+            && offset > -scroll.max_offset().y
+        {
+            Some(-1.0)
+        } else {
+            None
+        }
+    }
+
+    /// Scrolls the list under a dragged row resting at its edge by the time
+    /// since the last frame, and moves the drop target with the rows.
+    /// Returns whether it scrolled.
+    pub(super) fn scroll_workspace_drag(
+        &mut self,
+        now: Instant,
+        cx: &App,
+    ) -> bool {
+        let direction = self.workspace_drag_scrolls();
+        let Some(drag) = self.workspace_drag.as_mut() else {
+            return false;
+        };
+        let elapsed = now.saturating_duration_since(drag.scrolled_at);
+        drag.scrolled_at = now;
+        let Some(direction) = direction else {
+            return false;
+        };
+        // A long gap, such as the first frame, moves no more than a frame.
+        let seconds = elapsed.as_secs_f32().min(0.05);
+        let scroll = self.drag_scroll();
+        let offset = scroll.offset();
+        let y = (offset.y + px(DRAG_SCROLL_SPEED * seconds * direction))
+            .clamp(-scroll.max_offset().y, px(0.0));
+        scroll.set_offset(point(offset.x, y));
+        self.retarget_workspace_drag(cx);
+        true
     }
 
     /// Ends the press: a drag moves the workspace to its drop target, a
@@ -1046,6 +1246,15 @@ impl WorkspaceView {
         };
         let bounds_cell = Rc::clone(&self.sidebar_button_bounds);
         self.sidebar_button_drawn.set(true);
+        // The sheet, or a popover the button anchors, takes it as its
+        // trigger, so a press on it toggles rather than counting as outside.
+        let trigger = matches!(
+            self.switcher_mode,
+            Some(
+                SwitcherMode::Sheet
+                    | SwitcherMode::Popover(SwitcherAnchor::Button)
+            )
+        );
         Button::new("sidebar-button", label, tokens(&self.config.theme))
             .colors(colors.control())
             .icon(
@@ -1083,6 +1292,9 @@ impl WorkspaceView {
                 .absolute()
                 .inset_0(),
             )
+            .when(trigger, |button| {
+                button.child(self.switcher_popover.trigger_probe())
+            })
     }
 
     /// The workspace switcher: the workspace icon, the shown workspace's
@@ -1162,22 +1374,26 @@ impl WorkspaceView {
     }
 
     /// The sidebar button with the switcher on its inner side, as one row
-    /// for a title row, a tab bar, or a strip. Within `room` the switcher
-    /// shows its name; with less it shows its icon alone.
+    /// for a title row, a tab bar, or a strip, in a window whose content is
+    /// `content_width` wide; the switcher shows its icon alone where
+    /// [`Self::corner_controls_width`] reserves only that.
     pub(super) fn corner_controls_element(
         &self,
         chrome: WorkspaceChrome,
         inline_switcher: bool,
-        room: Pixels,
+        content_width: Pixels,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
     ) -> gpui::Div {
         let button = self.sidebar_button_element(colors, cx);
         let switcher = (chrome.switcher() && inline_switcher)
             .then(|| {
-                let width = self.switcher_width();
-                let icon_only = room < CONTROL_SIZE + CORNER_GAP + width;
-                self.workspace_switcher_element(width, icon_only, colors, cx)
+                self.workspace_switcher_element(
+                    self.switcher_width(),
+                    self.switcher_icon_only(content_width),
+                    colors,
+                    cx,
+                )
             })
             .flatten();
         let row = div().flex().flex_none().items_center().gap(CORNER_GAP);
@@ -1395,6 +1611,7 @@ impl WorkspaceView {
         &self,
         surface: Surface,
         colors: TabColors,
+        window: &Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<AnyElement> {
         let state = self.session_control_state(cx)?;
@@ -1420,12 +1637,15 @@ impl WorkspaceView {
         } else {
             "session-switcher"
         };
+        let focus = self.session_row_focus.clone();
         let row = div()
             .id(id)
             .debug_selector(move || id.to_owned())
             .role(gpui::Role::Button)
             .aria_label(state.accessible_name())
             .aria_expanded(open)
+            .track_focus(&focus.clone().tab_stop(true))
+            .key_context("Sidebar")
             .relative()
             .flex()
             .flex_none()
@@ -1490,12 +1710,19 @@ impl WorkspaceView {
                 .absolute()
                 .inset_0(),
             );
+        let row = if open {
+            row.child(self.popover.trigger_probe())
+        } else {
+            row
+        };
         Some(
-            if open {
-                row.child(self.popover.trigger_probe())
-            } else {
-                row
-            }
+            huterm_ui::focus::ring_inset(
+                row,
+                &focus,
+                tokens(&self.config.theme),
+                window,
+                cx,
+            )
             .into_any_element(),
         )
     }
@@ -1624,7 +1851,7 @@ impl WorkspaceView {
                     .child("WORKSPACES"),
             )
             .child(self.new_workspace_button(colors, cx));
-        let session = self.session_row_element(surface, colors, cx);
+        let session = self.session_row_element(surface, colors, window, cx);
         let top = self.config.sidebar.session_switcher
             == SessionSwitcherPosition::Top;
         let session = session.map(|session| {
@@ -1862,8 +2089,15 @@ impl WorkspaceView {
             Edge::Left => pointer.x - band.origin.x,
             Edge::Right => band.right() - pointer.x,
         };
+        // The terminal keeps the width docking needs, so a drag never
+        // undocks the sidebar under the pointer.
+        let fits = band.size.width
+            + (layout.terminal.size.width
+                - workspace_chrome::MIN_TERMINAL_WIDTH)
+                .max(px(0.0));
         self.workspace_width = desired
-            .clamp(workspace_chrome::PANEL_MIN, workspace_chrome::PANEL_MAX);
+            .clamp(workspace_chrome::PANEL_MIN, workspace_chrome::PANEL_MAX)
+            .min(fits.max(workspace_chrome::PANEL_MIN));
         cx.global_mut::<Desktop>()
             .windows
             .set_workspace_width(self.window, self.workspace_width);

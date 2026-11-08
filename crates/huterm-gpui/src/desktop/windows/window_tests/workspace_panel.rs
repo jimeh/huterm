@@ -584,12 +584,17 @@ fn the_keyboard_walks_the_sidebar_and_returns_to_the_terminal(
     assert_eq!(focused_row(&mut harness), Some(harness.workspace));
     harness.press(window, "down");
     assert_eq!(focused_row(&mut harness), Some(second));
-    // Down wraps; Home and End jump.
+    // The walk reaches the session switcher after the rows and wraps;
+    // Home and End jump to its ends.
+    harness.press(window, "down");
+    assert_eq!(focused_row(&mut harness), None);
     harness.press(window, "down");
     assert_eq!(focused_row(&mut harness), Some(harness.workspace));
-    harness.press(window, "end");
+    harness.press(window, "end up");
     assert_eq!(focused_row(&mut harness), Some(second));
-    harness.press(window, "enter");
+    harness.press(window, "home");
+    assert_eq!(focused_row(&mut harness), Some(harness.workspace));
+    harness.press(window, "down enter");
     harness.wait_workspace(window, second, &seconds);
     // Shift-F10 opens the focused row's menu; Escape there and in the
     // sidebar returns focus to the terminal.
@@ -826,11 +831,14 @@ fn a_narrow_window_opens_the_sidebar_as_a_sheet(cx: &mut TestAppContext) {
         .simulate_resize(gpui::size(px(500.0), height));
     harness.cx.run_until_parked();
     let before = harness.cx.update(|cx| mapped(cx, window, tab)).unwrap();
-    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
-    harness.wait_chrome(window, "narrow", WorkspaceChrome::narrow);
+    // The button opens the sheet, which leaves the saved state alone.
+    let button = harness.painted(window, "the sidebar button", |view| {
+        view.sidebar_button_bounds.get()
+    });
+    harness.click_at(window, button.center());
     harness.update_view(window, |view, _, _| {
         assert_eq!(view.switcher_mode, Some(SwitcherMode::Sheet));
-        assert!(view.workspace_visible);
+        assert!(!view.workspace_visible, "a peek is not a saved choice");
     });
     // The sheet covers the terminal rather than resizing it.
     harness.cx.run_until_parked();
@@ -839,16 +847,298 @@ fn a_narrow_window_opens_the_sidebar_as_a_sheet(cx: &mut TestAppContext) {
         let aria = &a11y_node(cx, window, "sidebar-button")["aria"];
         assert_eq!(aria["label"], "Hide Sidebar");
     });
+    // A second click on the button closes it.
+    harness.click_at(window, button.center());
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.switcher_mode, None, "the button closes the sheet");
+    });
+    harness.click_at(window, button.center());
     let row = harness.row_bounds(window, second);
     harness.click_at(window, row.center());
     harness.wait_workspace(window, second, &seconds);
     harness.update_view(window, |view, _, _| {
         assert_eq!(view.switcher_mode, None, "showing closes the sheet");
     });
-    // Widening docks it: the window still wants it.
+    // Widening keeps the sidebar hidden: only the button docks it.
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(1000.0), height));
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        assert!(!chrome(cx, window).workspace_chrome.docked());
+    });
+}
+
+#[gpui::test]
+fn widening_a_window_with_its_sheet_open_docks_one_sidebar(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    let height = harness
+        .update_view(window, |_, window, _| window.viewport_size().height);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(500.0), height));
+    harness.wait_chrome(window, "narrow", WorkspaceChrome::narrow);
+    // The window still wants its sidebar; the button peeks with a sheet,
+    // whose shown row takes focus.
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.row_bounds(window, second);
+    harness.update_view(window, |view, window, _| {
+        assert_eq!(view.switcher_mode, Some(SwitcherMode::Sheet));
+        assert!(view.focused_workspace_row(window).is_some());
+    });
+    // Widening docks it: the sheet closes before the docked sidebar draws,
+    // so no row or focus handle draws twice in a frame.
     VisualTestContext::from_window(window, &harness.cx)
         .simulate_resize(gpui::size(px(1000.0), height));
     harness.wait_chrome(window, "docked", WorkspaceChrome::docked);
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.switcher_mode, None);
+        assert!(view.workspace_visible);
+    });
+}
+
+#[gpui::test]
+fn the_switcher_closes_for_commands_the_palette_reload_and_deactivation(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.workspace_window();
+    harness.add_workspace(1);
+    harness.switcher_bounds(window);
+    let open = |harness: &mut DesktopHarness| {
+        harness
+            .invoke(window, ids::OPEN_WORKSPACE_SWITCHER)
+            .unwrap();
+        assert!(
+            harness.update_view(window, |view, _, _| {
+                view.switcher_mode.is_some()
+            }),
+            "the switcher opened"
+        );
+    };
+    let closed = |harness: &mut DesktopHarness, step: &str| {
+        harness.cx.run_until_parked();
+        assert!(
+            harness.update_view(window, |view, _, _| {
+                view.switcher_mode.is_none()
+            }),
+            "{step}: the switcher stayed open"
+        );
+    };
+    // Another command closes it, as it closes an open menu (W33).
+    open(&mut harness);
+    harness.invoke(window, ids::NEW_TAB).unwrap();
+    closed(&mut harness, "a command");
+    // So does the palette, which keeps focus.
+    open(&mut harness);
+    harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
+    closed(&mut harness, "the palette");
+    harness.cx.update(|cx| {
+        assert!(palette_state(cx, window).is_some(), "the palette closed");
+    });
+    harness.press(window, "escape");
+    // A reload closes it and returns focus to the terminal.
+    open(&mut harness);
+    harness.reload_config(window, |_| {});
+    closed(&mut harness, "a reload");
+    harness.update_view(window, |view, window, cx| {
+        assert!(view.focused_workspace_row(window).is_none());
+        let terminal = view.active_view(cx).unwrap();
+        assert!(terminal.read(cx).focus.is_focused(window), "focus went");
+    });
+    // Deactivation closes it, as it closes menus.
+    open(&mut harness);
+    harness.deactivate(window);
+    closed(&mut harness, "deactivation");
+}
+
+#[gpui::test]
+fn right_corner_controls_sit_just_inside_the_menu_button(
+    cx: &mut TestAppContext,
+) {
+    for (tabs, width) in [
+        (TabPosition::Titlebar, 1000.0),
+        (TabPosition::Titlebar, 480.0),
+        (TabPosition::Top, 1000.0),
+        (TabPosition::Right, 1000.0),
+    ] {
+        let mut harness = DesktopHarness::with_config(cx, |config| {
+            config.sidebar.position = SidebarPosition::Right;
+            config.tabs.position = tabs;
+            config.tabs.always_show = true;
+        });
+        let (window, _) = harness.workspace_window();
+        let height = harness
+            .update_view(window, |_, window, _| window.viewport_size().height);
+        VisualTestContext::from_window(window, &harness.cx)
+            .simulate_resize(gpui::size(px(width), height));
+        harness.add_workspace(1);
+        let switcher = harness.switcher_bounds(window);
+        let label = format!("{tabs:?} {width}");
+        harness.cx.run_until_parked();
+        harness.update_view(window, |view, window, _| {
+            let button = view.sidebar_button_bounds.get().unwrap();
+            let menu = view.menu_button_bounds.get().unwrap();
+            let layout = view.chrome_layout(window);
+            // The button sits just inside the menu button, with no gap
+            // left where a wider switcher was reserved.
+            assert!(button.right() <= menu.left(), "{label}");
+            assert!(
+                menu.left() - button.right() <= px(12.0),
+                "{label}: {button:?} {menu:?}"
+            );
+            if tabs == TabPosition::Right {
+                // A right column's strip holds the button; the switcher
+                // takes the row above its tabs, inside the column.
+                assert!(layout.tabs.contains(&switcher.center()), "{label}");
+                assert!(button.left() >= layout.tabs.left(), "{label}");
+            } else {
+                assert!(switcher.right() <= button.left(), "{label}");
+                assert!(
+                    button.left() - switcher.right() <= px(8.0),
+                    "{label}: {switcher:?} {button:?}"
+                );
+            }
+            if width < 500.0 {
+                assert_eq!(
+                    switcher.size.width, CONTROL_SIZE,
+                    "{label}: a narrow window shows the switcher's icon"
+                );
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn the_keyboard_reaches_the_session_switcher(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    harness.row_bounds(window, second);
+    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
+    // Tab walks the rows and then the session switcher at the bottom.
+    harness.press(window, "tab tab");
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, window, _| {
+        assert!(view.session_row_focus.is_focused(window));
+    });
+    harness.cx.update(|cx| {
+        let node = a11y_node(cx, window, "session-switcher");
+        assert_eq!(node["aria"]["role"], "Button");
+    });
+    // Return opens the session menu; Shift-Tab returns to the rows.
+    harness.press(window, "enter");
+    assert_eq!(
+        harness.cx.update(|cx| open_kind(cx, window)),
+        Some("session")
+    );
+    harness.press(window, "escape");
+    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
+    harness.press(window, "shift-tab");
+    harness.update_view(window, |view, window, _| {
+        assert!(view.session_row_focus.is_focused(window));
+    });
+    harness.press(window, "shift-tab");
+    assert_eq!(
+        harness.update_view(window, |view, window, _| {
+            view.focused_workspace_row(window)
+        }),
+        Some(second)
+    );
+}
+
+#[gpui::test]
+fn resizing_the_sidebar_keeps_the_terminal_wide_enough_to_dock(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let height = harness
+        .update_view(window, |_, window, _| window.viewport_size().height);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(700.0), height));
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    // A drag towards 400 points would leave the terminal under 384.
+    harness.update_view(window, |view, window, cx| {
+        view.resize_workspace_panel(
+            gpui::point(px(400.0), px(10.0)),
+            window,
+            cx,
+        );
+    });
+    harness.cx.run_until_parked();
+    let wide_enough = |harness: &mut DesktopHarness, step: &str| {
+        harness.cx.run_until_parked();
+        harness.cx.update(|cx| {
+            let layout = chrome(cx, window);
+            assert!(layout.workspace_chrome.docked(), "{step}: undocked");
+            assert!(
+                layout.terminal.size.width
+                    >= workspace_chrome::MIN_TERMINAL_WIDTH,
+                "{step}: {:?}",
+                layout.terminal
+            );
+        });
+    };
+    wide_enough(&mut harness, "the sidebar");
+    // So does widening a tab column beside it, in a window wide enough for
+    // both to start with.
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(1000.0), height));
+    harness.reload_config(window, |config| {
+        config.tabs.position = TabPosition::Left;
+        config.tabs.always_show = true;
+    });
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let column = harness.cx.update(|cx| chrome(cx, window).tabs);
+    harness.update_view(window, |view, window, cx| {
+        view.resize_sidebar(
+            gpui::point(column.left() + px(400.0), px(10.0)),
+            window,
+            cx,
+        );
+    });
+    wide_enough(&mut harness, "the tab column");
+}
+
+#[gpui::test]
+fn a_row_held_at_the_lists_edge_keeps_scrolling(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let (window, _) = harness.workspace_window();
+    for _ in 0..40 {
+        harness.add_workspace(1);
+    }
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let first = harness.row_bounds(window, harness.workspace);
+    let list = harness
+        .update_view(window, |view, _, _| view.workspace_scroll.bounds());
+    // Hold the dragged row at the list's bottom edge, then stop moving.
+    let edge = gpui::point(first.center().x, list.bottom() - px(4.0));
+    harness.drag_row(window, first.center(), edge);
+    harness.wait_for("the list to keep scrolling without moves", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx).workspace_scroll.offset().y < px(-60.0)
+                })
+            })
+            .unwrap_or(false)
+    });
+    harness.press(window, "escape");
+    harness.release(window, edge);
 }
 
 #[gpui::test]
@@ -906,7 +1196,7 @@ fn closing_the_focused_rows_workspace_returns_focus_to_the_terminal(
     harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
     harness.row_bounds(window, second);
     harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
-    harness.press(window, "end");
+    harness.press(window, "down");
     harness.press(window, "shift-f10");
     assert_eq!(
         harness.cx.update(|cx| open_kind(cx, window)),
