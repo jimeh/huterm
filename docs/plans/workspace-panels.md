@@ -2,14 +2,17 @@
 
 Status: in progress. Plans [issue #27][issue-27] (parent [#11][issue-11]).
 The maintainer picked the mockups and settled the open questions on
-2026-11-07; see [Settled decisions](#settled-decisions). PR A and PR B are
-implemented; see [Deviations](#deviations) and
-[PR B deviations](#pr-b-deviations). PR C remains.
+2026-11-07, then revised PR B's design on 2026-11-08; see
+[Settled decisions](#settled-decisions). PR A is implemented (see
+[Deviations](#deviations)); PR B is being reworked to the revised design;
+PR C remains.
 
 A window can show any workspace of its session, switch between them from
-a panel at any window edge or a dropdown in the tab bar, and create,
-rename, clear the name of, and close workspaces. People who never create a
-second workspace see no workspace UI. Builds on [#26][issue-26]
+a left or right sidebar or a switcher beside the sidebar button, reorder
+them by dragging, and create, rename, clear the name of, and close
+workspaces. The sidebar also holds the session switcher. People who never
+create a second workspace see only the sidebar button. Builds on
+[#26][issue-26]
 ([session switching](session-switching.md)), whose switch phases,
 navigation memory, session control, and interleaving rules this plan
 reuses.
@@ -115,17 +118,52 @@ PNGs in `shots/`; the PRs attach the picked ones):
     tab bar in fullscreen only when both share an edge; otherwise it
     stays shown.
 
+Revised on 2026-11-08 from the sidebar mockup
+(`https://plans.jimeh.dev/s3ektagrz4n65s7qmyy5n6soyq/huterm-sidebar-mockup.html`).
+These replace decisions 1, 3, 5, 6, and 11, the SW1 part of 4, and the
+top and bottom bar parts of 2; the rest stand.
+
+ 1. The workspace panel becomes a general sidebar, docked on the left
+    (default) or right only. It holds the workspace list and the session
+    switcher.
+ 2. A sidebar button is always visible in the corner on the sidebar's
+    side: after the traffic lights on the left, just inside the menu
+    button on the right (R1). It stays in the same spot while the
+    sidebar shows, inside the sidebar's strip (V1).
+ 3. While the sidebar is hidden and the session has two or more
+    workspaces, a workspace switcher sits beside the sidebar button: icon,
+    name, and chevron (K1), icon only when there is no room.
+ 4. The switcher opens a GPUI popover, as tall as its content, holding
+    the sidebar's content, even with native menus (P1).
+ 5. Session switcher: a row at the bottom of the sidebar (B1) or at the
+    top (B3), chosen by `[sidebar] session_switcher`, default bottom. It
+    uses the layers icon, as the #26 control does. The #26 title-bar
+    session control becomes opt-in, off by default (H1).
+ 6. Workspaces reorder by drag and drop, in the sidebar and in the
+    popover. Dropping a tab on a row and dragging a workspace to another
+    window are follow-ups.
+ 7. New windows start with the sidebar hidden (`[sidebar] visible`);
+    each window's state and width are saved with its layout. The sidebar
+    never opens by itself. A window too narrow to dock it (terminal under
+    384 points) opens it as a sheet over the terminal instead.
+ 8. Vertical tabs on the sidebar's side stay a separate column, with the
+    sidebar outermost (N1). Nesting tabs under their workspace (N2) is a
+    possible follow-up.
+ 9. The switcher popover and the session popover are GPUI popovers; a
+    row's right-click menu stays a `MenuSpec` and may be native.
+10. Settings: separate "Sessions" and "Workspaces" sections after
+    Windows, replacing G1's single section.
+
 Config:
 
 ```toml
 [window]
-session_button = true
-session_button_placement = "title_bar" # title_bar, sidebar, or both
+session_button = false        # the #26 title-bar session control
 
-[workspaces]
-show = "auto"      # auto, always, or never
-position = "left"  # left, top, right, or bottom
-collapsed = false  # new windows show the dropdown instead of the panel
+[sidebar]
+position = "left"             # left or right
+visible = false               # new windows start with the sidebar shown
+session_switcher = "bottom"   # bottom or top
 ```
 
 ## Delivery
@@ -136,18 +174,18 @@ Three PRs from this thread, in order (settled decision 10):
   outcomes, the workspace commands, per-workspace navigation memory, the
   switch, L1, the empty state, restore, and the session menu's New
   Workspace row. Reachable through the palette and the session menu.
-- **B. Workspace panel, bar, and dropdown.** Config, the Sessions
-  settings section, chrome geometry, the panel, bar, dropdown, and
-  workspace menu, the sidebar session-control host, and per-window
-  collapse and width. Rows show name and tab count (R1).
+- **B. Sidebar and workspace switcher.** Config, the Sessions and
+  Workspaces settings sections, chrome geometry, the sidebar, its button,
+  the switcher and its popover, the session switcher, drag reordering,
+  and per-window visibility and width. Rows show name and tab count (R1).
 - **C. Workspace status dot (R3).** A core status subscription that needs
-  no viewer, per-window bell acknowledgement, and the dot on rows, chips,
-  and menu rows.
+  no viewer, per-window bell acknowledgement, and the dot on the
+  sidebar's and the popover's rows.
 
 A lands lifecycle risk with focused review before B adds the largest
 geometry change since the tab sidebar; C adds a core notification path
-that deserves its own review. A is useful alone: with `auto` there is no
-panel to miss, and the palette reaches everything.
+that deserves its own review. A is useful alone: the palette and the
+session menu reach everything.
 
 ## PR A: switching and lifecycle
 
@@ -330,129 +368,158 @@ New Workspace follows New Session (workspace icon) and runs
 `new_workspace`. A session with more than one workspace shows "N
 workspaces · M tabs" as its detail. The native lowering keeps both.
 
-## PR B: panel, bar, and dropdown
+## PR B: sidebar and workspace switcher
+
+Revised on 2026-11-08 (settled decisions 12 to 21). The first design's
+panel, bar, and dropdown were implemented and reviewed, then replaced
+before merging; [PR B deviations](#pr-b-deviations) records what carried
+over.
 
 ### Config and Settings
 
-- `huterm-config`: `WorkspacesConfig { show, position, collapsed }` in a
-  new `[workspaces]` table and `WindowConfig::session_button_placement`,
-  with schema metadata, `schema:generate`, fixtures, and docs.
-- Settings: `SectionId::Sessions` after Windows, groups "Session control"
-  (`session_button`, `session_button_placement`), "Workspaces" (`show`,
-  `position`, `collapsed`; the last two dim under `never`), and "Restore
-  and names" (`restore_sessions`, `session_numbering`, moved from General
-  › Sessions). Search finds them by name.
-- `show = "never"` also hides PR A's session menu row and the panel
-  commands; the workspace commands stay in the palette.
-- Reload: `apply_reload` already re-lays out windows; the workspace chrome
-  reads `self.config` in the same pass.
+- `huterm-config`: a new `[sidebar]` table, `SidebarConfig { position,
+  visible, session_switcher }`, with schema metadata, `schema:generate`,
+  fixtures, and docs. `[workspaces]` and
+  `[window] session_button_placement` go; neither was released.
+  `[window] session_button` stays and now defaults to `false`.
+- Settings: `SectionId::Sessions` and then `SectionId::Workspaces`, after
+  Windows. Sessions holds "Session switcher" (`session_switcher`,
+  `session_button`) and "Restore and names" (`restore_sessions` and
+  `session_numbering`, moved from General › Sessions). Workspaces holds
+  "Sidebar" (`position`, `visible`). Search finds them by name.
+- Reload: `apply_reload` re-lays out windows; a position change moves a
+  docked sidebar and its button. A `visible` change applies to new
+  windows only.
 
-### Resolving what a window shows
+### What a window shows
 
-`WorkspaceChrome::resolve` is one pure function, read by layout,
-rendering, hit testing, menus, and smoke state. Inputs: `show`, the
-session's workspace count, the window's collapse state, `position`, and
-the terminal width a side panel would leave after the tab column, frame,
-and safe area.
+`SidebarChrome::resolve` is one pure function read by layout, rendering,
+hit testing, popovers, and smoke state. Inputs: the window's visible
+state, `position`, the session's workspace count, and the terminal width
+a docked sidebar would leave after the tab column, frame, and safe area.
 
-- `None`: `never`, or `auto` with fewer than two workspaces.
-- `Dropdown`: collapsed, or a side panel that would leave the terminal
-  under 384 points (SW1).
-- `Panel { edge, width }` for left and right, `Bar { edge }` for top and
-  bottom.
+- `Docked { edge, width }` while visible and the terminal keeps at least
+  384 points.
+- `Undocked { edge }` otherwise. While visible but too narrow to dock,
+  the sidebar button opens the sidebar as a sheet over the terminal
+  instead (settled decision 18).
+- The workspace switcher shows while undocked and the session has two or
+  more workspaces.
 
-The session control resolves to a set of placements: `title_bar` gives
-today's host; `sidebar` gives the panel's first row or the bar's leading
-slot, falling back to today's host under `None` or `Dropdown` (F1);
-`both` gives both, or one under the fallback. Each placement paints and
-records its own bounds, the click names its host, and the session menu
-anchors to the host that opened it. `open_session_menu` from the palette
-uses the first visible host.
+### Corner controls
+
+- The sidebar button sits in the corner on the sidebar's side, in
+  whichever element holds that corner: the docked sidebar's strip, a tab
+  column's strip, the title-bar tab bar, or the title row. On the left it
+  follows the traffic lights (macOS) or leads (Linux); on the right it
+  sits just inside the menu button (R1), before any Linux window buttons.
+  Docking moves it into the sidebar's strip at the same spot (V1).
+- The switcher sits beside the button on its inner side. In a tab
+  column's strip, it is a full-width row at the top of the column
+  instead. It is a `MenuTrigger` with the workspace icon, the display
+  name (dim when automatic), and a chevron (K1), named "Workspace:
+  `name`", with expanded state while its popover is open. It shrinks to
+  the icon (K3) when the strip has no room for the name.
+- With no title row (Linux server decorations, fullscreen, Quake), the
+  controls lead or end the tab bar; see [Open questions](#open-questions).
+  In fullscreen they hide and reveal with the auto-hidden bar that holds
+  them; a docked sidebar stays shown.
+- The title-bar session control from #26 shows only with
+  `session_button = true` (H1).
+
+### Sidebar content
+
+- Header: "WORKSPACES" and New Workspace.
+- Rows (R1 now, the dot in PR C): icon, name (dim when automatic), and
+  tab count; 28 points; a `ScrollArea` with the tab column's overlay
+  scrollbar; showing a workspace scrolls its row into view. Click shows;
+  double-click runs the rename prompt (RN1); a right press opens a
+  `MenuSpec` context menu (Rename…, Clear Name, New Workspace, Close
+  Workspace…) that honours `macos_native_menus`.
+- Drag to reorder (settled decision 17): rows reorder within the list in
+  the sidebar and in the switcher popover, with the tab drag's threshold,
+  insertion line, edge auto-scroll, and Escape to cancel. A drop calls
+  `Mux::move_workspace` within the session with the row it lands before
+  as the anchor, so concurrent changes cannot misplace it. A drag whose
+  workspace goes, or whose session changes, cancels.
+- Session switcher (B1, B3 as a setting): a row with the layers icon, the
+  session name, an "N workspaces" caption at the bottom (compact at the
+  top), and an up-down chevron. It opens the session menu as a Huterm
+  popover even with native menus (settled decision 20): upward from the
+  bottom, downward from the top, beside the switcher popover when opened
+  from it.
+- Keyboard: `focus_sidebar` focuses the shown row; a `Sidebar` key
+  context's `sidebar_*` commands walk rows with the arrows, Home, and End,
+  show with Return, rename with F2, open the row menu with Shift-F10 or
+  the menu key, and return to the terminal with Escape, with `huterm-ui`
+  roving focus. Each row is a button named "Workspace: `name`, `n` tabs",
+  selected while shown. Tab reaches the session row.
+- Background one step from the tab bar's, derived from theme tokens. The
+  inner edge resizes the sidebar from 140 to 400 points and at most half
+  the content.
+
+### Workspace switcher popover
+
+- P1: a GPUI popover, never a native menu, anchored under the switcher
+  and as tall as its content up to a cap, then scrolling. It holds the
+  sidebar's content: header, rows (click, drag, double-click, right
+  press), and the session row at the configured end. A row click shows
+  that workspace and closes the popover; Escape or an outside press
+  closes it and returns focus to the terminal.
+- The sheet (narrow windows) holds the same content at full height below
+  the corner strip, and closes the same ways.
+- `open_workspace_switcher` opens it at the switcher, else at the EM1
+  button, else at the sidebar button; the empty state's Switch Workspace…
+  opens it at itself.
+- Live updates: counts, names, order, and badges follow `Touched::chrome`;
+  a vanished row disappears; the popover closes when its anchor goes.
+
+### Sidebar commands
+
+`toggle_sidebar` (Window scope; flips the window's visible state, or opens
+the sheet while undocked by width), `focus_sidebar`, and
+`open_workspace_switcher` replace `toggle_workspace_panel`,
+`focus_workspace_panel`, and `open_workspace_menu`. No default bindings.
 
 ### Geometry
 
-`ChromeLayout::build` takes the resolved chrome and carves it from the
-content first, then partitions the rest exactly as today. It gains a
-`workspace: Option<Bounds>` and that band's strip inset.
-`WorkspaceChrome::None` must reproduce today's layout exactly.
+`ChromeLayout::build` takes the resolved chrome, carves the docked
+sidebar's band from the content first, then partitions the rest exactly
+as on `main`. A hidden sidebar must reproduce `main`'s layout except for
+the corner controls' slot.
 
-| Chrome      | Band                                                                                                                      | What moves                                                                                                                                                                            |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Left panel  | Full content height, width 140 to 400 and at most half the content; rows start below the title row and safe area          | Traffic lights sit in the panel strip; the title row and tab bar span the rest                                                                                                        |
-| Right panel | Mirror                                                                                                                    | The menu button and a title-bar session control sit in the panel strip, as above a right tab column                                                                                   |
-| Top bar     | The title row when the window has one; otherwise 32 points below the safe area; in non-native fullscreen, the notch shelf | `titlebar` tabs lay out as a top bar beneath it; the title text is dropped; the menu button and session control end the bar                                                           |
-| Bottom bar  | 32 points at the content bottom                                                                                           | The tab bar sits above it                                                                                                                                                             |
-| Dropdown    | None                                                                                                                      | Horizontal strips take a leading width (trigger and divider) through `strip_bounds` and `TabStrip`; a column's rows start below a trigger row; a hidden bar's title row leads with it |
+| Chrome       | Band                                                                 | What moves                                                                                                                               |
+| ------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Docked left  | Full content height; rows start below the corner strip and safe area | The traffic lights and the sidebar button sit in the sidebar's strip; the title row and tab bar span the rest                            |
+| Docked right | Mirror                                                               | The sidebar button, menu button, title-bar session control, and Linux buttons sit in the sidebar's strip                                 |
+| Undocked     | None                                                                 | The corner's holder reserves a leading (left) or trailing (right) slot for the button and switcher through `strip_bounds` and `TabStrip` |
+| Sheet        | Overlay below the corner strip; not part of the layout               | Nothing; the terminal keeps its size                                                                                                     |
 
-- **Title row ownership.** Whether the window has a Huterm title row
-  stays a property of the configured position and platform:
-  `window_frame`, the Linux frame inset, drawn buttons, and drag and
-  double-click gestures read the host-resolved position before the
-  workspace remap, and decoration requests keep reading the raw
-  configured position, as `apply_reload` does today. Only the tab bar's own layout
-  sees `top` under a top workspace bar. So `auto` showing or hiding the
-  bar never changes decorations; the bar draws the Linux buttons at the
-  ends the desktop layout names, and its empty space moves the window.
-- **Fullscreen auto-hide.** A horizontal workspace bar on the tab bar's
-  edge hides and reveals with it as one band: one presentation, one
-  reveal progress, one trigger edge, and a hover-hold region covering both
-  bars. A bar on another edge, and a side panel, stay shown.
-- **Notch shelf.** A top workspace bar takes the shelf; the tab bar then
-  never selects it and keeps today's no-auto-hide rule for shelf windows.
-- `resize_sidebar` measures from the tab column's own edge, not the
-  window edge. The panel's inner edge has its own handle with the same
-  clamp; its width is per window.
+- Title row ownership stays a property of the configured tab position and
+  platform: `window_frame`, the Linux frame inset, drawn buttons, and
+  drag and double-click gestures read the host-resolved position, so
+  showing or hiding the sidebar never changes decorations.
+- `resize_sidebar` (the tab column) measures from the column's own edge;
+  the sidebar's inner edge has its own handle; both widths are per
+  window.
 - PTY size, mouse mapping, scrollbars, and pane drops follow `terminal`;
-  `title_row_layout` excludes the dropdown and panel-strip controls.
-  `bar_reservation` and `initial_window_size` count the band.
+  `title_row_layout` excludes the corner controls. `initial_window_size`
+  counts a docked band.
 
 ### Invalidation
 
-`Touched` gains a session-level workspace-chrome flag, set by workspace
-creation, closure, move, and rename, and by a tab opening or closing in
-any workspace; `windows_to_visit` then visits every window on that
-session, so counts, order, names, and badges stay current, including in an
-open workspace menu. A window's own workspace switch notifies the other
-windows on its session (window badges) without a reconcile.
-
-### Panel and bar
-
-- P1: a header ("WORKSPACES", New Workspace, and collapse buttons) and
-  28-point rows; a `ScrollArea` with the tab column's overlay scrollbar;
-  showing a workspace scrolls its row into view. Background one step from
-  the tab bar's, derived from theme tokens (no new theme key).
-- H1: 24-point chips scrolling with the tab bar's arrows and indicator; +
-  and collapse pinned at the end.
-- Rows and chips: click switches; double-click runs the rename prompt; a
-  right press opens a `MenuSpec` context menu (Rename…, Clear Name, New
-  Workspace, Close Workspace…) acting on that row; `macos_native_menus`
-  is honoured.
-- Keyboard: `focus_workspace_panel` focuses the shown row; arrows, Home,
-  End, Enter, F2 (rename), Shift-F10 or the menu key, and Escape (back to
-  the terminal), with `huterm-ui` roving focus. Each row is a button named
-  "Workspace: `name`, `n` tabs", with selected state on the shown one.
-
-### Dropdown and workspace menu
-
-- The trigger is `huterm-ui` `MenuTrigger` with a new workspace icon, the
-  display name (dim when automatic), and a chevron; accessible name
-  "Workspace: `name`", expanded state while open.
-- M1: a `MenuSpec` like the session menu: a row per workspace (check,
-  name, "N tabs", window badge when another window shows it), then New
-  Workspace, Rename Workspace…, Clear Name (custom names only), Close
-  Workspace…, Show Workspace Panel. Opens under the trigger, upward from a
-  bottom bar; `open_workspace_menu` anchors to the trigger, the EM1
-  button, or the menu button's fallback. Live updates and vanished rows as
-  in the session menu.
-- X1: `toggle_workspace_panel` (Window scope) flips the window's collapse
-  state, saved with the window.
+`Touched::chrome` holds the sessions whose workspace list, order, names,
+or tab counts changed; `windows_to_visit` visits every window on them, so
+counts, order, names, and badges stay current, including in an open
+switcher popover. A window's own workspace switch notifies the other
+windows on its session.
 
 ### Persistence
 
-`WindowLayout` gains `workspace_panel_collapsed: bool` and
-`workspace_panel_width: f32` (serde default, skipped when default,
-validated finite and non-negative). New windows take
-`[workspaces] collapsed` and 180 points.
+`WindowLayout` gains `sidebar_visible: Option<bool>` and `sidebar_width:
+f32` (serde default, skipped when default, width validated finite and
+non-negative). A window saved without a visible state, and a new window,
+take `[sidebar] visible`; width defaults to 180 points.
 
 ## PR C: status dot
 
@@ -468,7 +535,7 @@ validated finite and non-negative). New windows take
   and failed (the `TabStatus` order). Reads run on a worker; a result
   older than the latest applied revision is dropped. Two windows can
   differ in bell state.
-- The dot draws on rows, chips, and workspace menu rows, with a tooltip
+- The dot draws on the sidebar's and the popover's rows, with a tooltip
   naming the tabs.
 
 ## Quit, close, and switch interleavings
@@ -482,114 +549,125 @@ direct follow-up; a `LeaveWorkspace` commit holds them until its
 follow-up settles; an emptied close converts to Quit only after a fresh
 `Detach` or `Session` assessment.
 
-| #    | State                                                                                                         | Event                                                     | Intended behavior                                                                                                               | Test                                                                                                                                                                                                                                                                                                                                                                            |
-| ---- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| W1   | Workspace switch installing                                                                                   | Quit in the same window                                   | Quit queues and runs after settle; both workspaces' navigation saved                                                            | `quit_waits_for_a_workspace_switch_and_saves_both_workspaces`                                                                                                                                                                                                                                                                                                                   |
-| W2   | Workspace switch installing                                                                                   | Quit in another window                                    | Quit waits (Q4) and saves the restored tab and pane                                                                             | `quit_from_another_window_waits_for_a_workspace_switch`                                                                                                                                                                                                                                                                                                                         |
-| W3   | Workspace switch or L1 follow-up in flight                                                                    | Checkpoint due                                            | Deferred until settle (Q7)                                                                                                      | `a_checkpoint_waits_for_a_workspace_switch`                                                                                                                                                                                                                                                                                                                                     |
-| W4   | Workspace switch in flight                                                                                    | Close Window                                              | Queued; runs after settle                                                                                                       | `a_window_close_queued_behind_a_workspace_switch_runs_once_it_settles`                                                                                                                                                                                                                                                                                                          |
-| W5   | Quit requested or pending                                                                                     | New, select, next, previous, own close                    | Refused, "application is quitting" (Q3)                                                                                         | `workspace_changes_are_refused_while_a_quit_runs`                                                                                                                                                                                                                                                                                                                               |
-| W6   | New Workspace preparing                                                                                       | Shell fails                                               | Workspace closed, one notice, window unchanged                                                                                  | `a_failed_new_workspace_closes_only_what_it_created`                                                                                                                                                                                                                                                                                                                            |
-| W7   | New Workspace worker held                                                                                     | Quit                                                      | Quit waits; the new workspace is saved                                                                                          | `quit_waits_for_a_new_workspace`                                                                                                                                                                                                                                                                                                                                                |
-| W8   | Select issued                                                                                                 | Target closed first                                       | Refused with "Workspace no longer exists"; window unchanged                                                                     | `selecting_a_closed_workspace_leaves_the_window_unchanged`                                                                                                                                                                                                                                                                                                                      |
-| W9   | Last tab of the shown workspace closes; another holds tabs                                                    | Tab close or exit-close commits                           | `LeaveWorkspace`: the empty workspace closes, the window moves to its remembered workspace; no Linux Quit                       | `closing_a_workspaces_last_tab_moves_to_the_previous_workspace`, `an_exit_close_of_a_workspaces_last_tab_moves_on`                                                                                                                                                                                                                                                              |
-| W10  | Last tab closes (tab close, exit-close, lone pane close, tab moved away); another workspace exists, all empty | Same                                                      | `LeaveWorkspace`: the emptied workspace closes and the window shows an empty sibling (EM1); the session survives; no Linux Quit | `closing_the_last_tab_beside_an_empty_workspace_shows_it`, `an_exit_close_beside_an_empty_workspace_shows_it`, `closing_the_last_lone_pane_beside_an_empty_workspace_shows_it`, `moving_the_last_tab_away_beside_an_empty_workspace_shows_it`, `a_linux_last_window_emptied_beside_an_empty_workspace_stays_open`, `two_windows_emptied_beside_an_empty_workspace_both_show_it` |
-| W10a | Last tab of the session's only workspace closes                                                               | Same                                                      | Today's emptied close (detach, session close, Linux Quit rule)                                                                  | existing emptied-close tests, plus `an_emptied_window_on_its_sessions_only_workspace_closes_with_the_session`                                                                                                                                                                                                                                                                   |
-| W11  | Emptied close assessed (`Assessed` held) as `Detach`, including a Linux last window with an unviewed session  | A sibling workspace appears before commit                 | The freshness check fails before any Quit conversion; reassessment answers `LeaveWorkspace`; the window stays                   | `a_new_sibling_turns_a_held_emptied_detach_into_leave_workspace`, `a_stale_emptied_detach_on_linux_does_not_quit`                                                                                                                                                                                                                                                               |
-| W12  | Emptied close assessed as `LeaveWorkspace`                                                                    | The only sibling closes or moves to another session first | Stale; reassessment answers `Detach` or `Session`; the last-window rule applies                                                 | `the_only_sibling_closing_turns_a_held_leave_workspace_into_a_window_close`                                                                                                                                                                                                                                                                                                     |
-| W12a | Emptied close assessed as `LeaveWorkspace` beside one populated sibling                                       | That sibling empties first                                | Stale; reassessment answers `LeaveWorkspace` again; the window shows the empty sibling (EM1); no Linux Quit                     | `a_sibling_emptying_keeps_a_held_leave_workspace_leaving`                                                                                                                                                                                                                                                                                                                       |
-| W13  | Linux last window, `LeaveWorkspace` assessed                                                                  | Commit                                                    | No Quit conversion; the window stays and follows                                                                                | `leaving_a_workspace_never_becomes_quit_on_linux`                                                                                                                                                                                                                                                                                                                               |
-| W14  | L1 follow-up chose W2 because it held tabs                                                                    | W2 empties or closes before settle                        | The follow-up keeps its recovery intent and owes the emptied close again at settle; the next pass resolves it                   | `an_l1_follow_up_whose_target_went_resolves_again`                                                                                                                                                                                                                                                                                                                              |
-| W15  | `LeaveWorkspace` commit held, before its follow-up                                                            | Quit or checkpoint                                        | Quit waits and checkpoints defer until the follow-up settles                                                                    | `quit_waits_for_a_leave_workspace_follow_up`                                                                                                                                                                                                                                                                                                                                    |
-| W16  | Emptied close owed (L1)                                                                                       | Quit confirming                                           | Absorbed by the Quit; a cancelled Quit leaves it owed and it runs next                                                          | `a_cancelled_quit_lets_an_owed_leave_workspace_run`                                                                                                                                                                                                                                                                                                                             |
-| W17  | Two windows on W; A closes W's last tab                                                                       | Commit                                                    | Both leave; W closed once; each lands on its own remembered workspace                                                           | `two_windows_on_an_emptied_workspace_both_move_on`                                                                                                                                                                                                                                                                                                                              |
-| W18  | A on W, B on W2                                                                                               | A leaves W                                                | B unaffected                                                                                                                    | `leaving_a_workspace_leaves_other_windows_alone`                                                                                                                                                                                                                                                                                                                                |
-| W19  | Own Close Workspace assessing or confirming                                                                   | Quit                                                      | Cancelled or dismissed (Q2); the workspace survives and is saved                                                                | `a_quit_cancels_an_own_workspace_close`                                                                                                                                                                                                                                                                                                                                         |
-| W20  | Own Close Workspace committing (commit held)                                                                  | Quit in another window, or a checkpoint                   | Quit waits and the checkpoint defers through the commit and the direct follow-up (Q4, Q7)                                       | `quit_waits_for_a_committing_workspace_close_and_its_follow_up`, `a_checkpoint_waits_for_an_own_workspace_close`                                                                                                                                                                                                                                                                |
-| W21  | Close Workspace of W from A; B shows W, or B shows W empty (EM1)                                              | Commit                                                    | A and B both leave through `LeaveWorkspace`                                                                                     | `closing_a_shared_workspace_moves_both_windows`, `closing_a_workspace_shown_empty_moves_its_window`                                                                                                                                                                                                                                                                             |
-| W22  | Close Workspace commit removes W, then teardown fails                                                         | Completion                                                | "Close failed" notice; the window still leaves W                                                                                | `a_failed_workspace_teardown_still_leaves_the_workspace`                                                                                                                                                                                                                                                                                                                        |
-| W22a | Own Close Workspace commit goes stale and leaves the workspace in place                                       | Completion                                                | Hold released, no follow-up; the close assesses again                                                                           | `a_stale_own_workspace_close_releases_its_hold`                                                                                                                                                                                                                                                                                                                                 |
-| W23  | Close Workspace of the populated one of two, the other empty                                                  | Commit                                                    | The window shows the empty sibling (EM1); the session survives                                                                  | `closing_the_populated_workspace_shows_the_empty_one`                                                                                                                                                                                                                                                                                                                           |
-| W24  | Close Workspace on the session's only workspace                                                               | Command or menu                                           | Unavailable; core refuses `LastWorkspace` if reached                                                                            | `the_last_workspace_cannot_be_closed_as_a_workspace`                                                                                                                                                                                                                                                                                                                            |
-| W25  | W moves to another session (another client), with tabs or empty                                               | Batch                                                     | The window leaves W; core leaves W alone in its new session                                                                     | `a_populated_workspace_moved_away_is_left`, `an_empty_workspace_moved_away_is_left_and_kept`                                                                                                                                                                                                                                                                                    |
-| W26  | Windows on different workspaces of one session                                                                | Close Session from one                                    | Existing Q6 follow-up for that window; others take the session-gone path; memory pruned                                         | `closing_a_session_shown_on_two_workspaces`                                                                                                                                                                                                                                                                                                                                     |
-| W27  | Windows on different workspaces of one session                                                                | Quit, then restore                                        | Each returns to its workspace with its own navigation                                                                           | `two_windows_on_two_workspaces_restore_their_workspaces`                                                                                                                                                                                                                                                                                                                        |
-| W28  | Saved memory names closed or moved workspaces                                                                 | Restore                                                   | Those entries drop; duplicates collapse; the shown navigation keeps its fallback                                                | `restore_drops_stale_workspace_memory`                                                                                                                                                                                                                                                                                                                                          |
-| W29  | Quake stash on W                                                                                              | W closes, checkpoint, then summon                         | Shows its remembered or first workspace with tabs                                                                               | `a_quake_stash_on_a_closed_workspace_shows_another`                                                                                                                                                                                                                                                                                                                             |
-| W30  | Window shows an empty workspace it selected (EM1)                                                             | Settle, Quit, checkpoint                                  | No emptied close; Quit and checkpoint save it                                                                                   | `selecting_an_empty_workspace_shows_the_empty_state`                                                                                                                                                                                                                                                                                                                            |
-| W31  | Close confirmation, reservation, or arrangement showing                                                       | Workspace switch                                          | Refused by the guard                                                                                                            | `workspace_switches_respect_the_structural_guard`                                                                                                                                                                                                                                                                                                                               |
-| W32  | PR B: panel toggle, position change, or config reload                                                         | While a terminal has focus                                | Focus, process, and mouse mapping preserved; only the size changes                                                              | `panel_changes_keep_focus_mouse_mapping_and_processes`                                                                                                                                                                                                                                                                                                                          |
-| W33  | PR B: session menu or workspace menu open                                                                     | Collapse, reload, or the host disappears                  | The menu closes or re-anchors to a remaining host; focus returns to the terminal                                                | `a_menu_whose_host_goes_closes_cleanly`                                                                                                                                                                                                                                                                                                                                         |
-| W34  | A commits `LeaveWorkspace` (commit held); Linux; an unviewed session                                          | Close Window in B                                         | A still counts as open, so B closes without becoming Quit                                                                       | `a_window_leaving_a_workspace_still_counts_as_open`                                                                                                                                                                                                                                                                                                                             |
-| W35  | Emptied close assessed in A                                                                                   | Quit confirming in B, then A reaches its commit           | `LeaveWorkspace` commits and follows, and the Quit waits for its hold; `Detach` and `Session` behave as today                   | `a_leave_workspace_commits_while_a_quit_confirms`                                                                                                                                                                                                                                                                                                                               |
-| W36  | Linux last window on the session's only workspace; an unviewed session                                        | Its last tab closes; the emptied close becomes Quit       | The Quit saves neither the emptied session nor the window; the unviewed session is saved                                        | `a_linux_emptied_quit_saves_neither_the_emptied_session_nor_its_window`                                                                                                                                                                                                                                                                                                         |
-| W37  | Emptied close of the session's only workspace assessing, assessed, or committing (held)                       | Checkpoint                                                | Saves neither the session nor the window; other sessions are saved                                                              | `a_checkpoint_while_an_emptied_close_assesses_saves_neither`, `a_checkpoint_after_an_emptied_close_assessed_saves_neither`, `a_checkpoint_while_an_emptied_close_commits_saves_neither`                                                                                                                                                                                         |
-| W38  | Emptied close of the session's only workspace refused while a tab installs into it (install held)             | Checkpoint                                                | Saves the window and its session; a refused close is not departing                                                              | `a_checkpoint_before_a_refused_emptied_close_installs_saves_the_window`                                                                                                                                                                                                                                                                                                         |
-| W39  | Linux last window, an unviewed session; its session closes elsewhere (switch target or refused close)         | Its emptied close cannot be assessed                      | Session-gone path: the last-window rule still applies, so the window quits rather than removing itself (session row 7)          | `a_target_closed_after_the_commit_on_linux_quits_and_keeps_its_old_session`, `a_refused_emptied_close_whose_session_then_closes_on_linux_quits`, plus the Linux branches of the session-gone tests                                                                                                                                                                              |
-| W40  | Linux last window, own Close Session follow-up could open nothing                                             | Its gone session owes an emptied close                    | The Quit replaces that close, which no longer runs first and removes the window; the notice stays (Q6, row 35)                  | `a_close_session_follow_up_without_a_shell_on_linux_quits_with_its_notice`                                                                                                                                                                                                                                                                                                      |
+| #    | State                                                                                                         | Event                                                                      | Intended behavior                                                                                                               | Test                                                                                                                                                                                                                                                                                                                                                                            |
+| ---- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W1   | Workspace switch installing                                                                                   | Quit in the same window                                                    | Quit queues and runs after settle; both workspaces' navigation saved                                                            | `quit_waits_for_a_workspace_switch_and_saves_both_workspaces`                                                                                                                                                                                                                                                                                                                   |
+| W2   | Workspace switch installing                                                                                   | Quit in another window                                                     | Quit waits (Q4) and saves the restored tab and pane                                                                             | `quit_from_another_window_waits_for_a_workspace_switch`                                                                                                                                                                                                                                                                                                                         |
+| W3   | Workspace switch or L1 follow-up in flight                                                                    | Checkpoint due                                                             | Deferred until settle (Q7)                                                                                                      | `a_checkpoint_waits_for_a_workspace_switch`                                                                                                                                                                                                                                                                                                                                     |
+| W4   | Workspace switch in flight                                                                                    | Close Window                                                               | Queued; runs after settle                                                                                                       | `a_window_close_queued_behind_a_workspace_switch_runs_once_it_settles`                                                                                                                                                                                                                                                                                                          |
+| W5   | Quit requested or pending                                                                                     | New, select, next, previous, own close                                     | Refused, "application is quitting" (Q3)                                                                                         | `workspace_changes_are_refused_while_a_quit_runs`                                                                                                                                                                                                                                                                                                                               |
+| W6   | New Workspace preparing                                                                                       | Shell fails                                                                | Workspace closed, one notice, window unchanged                                                                                  | `a_failed_new_workspace_closes_only_what_it_created`                                                                                                                                                                                                                                                                                                                            |
+| W7   | New Workspace worker held                                                                                     | Quit                                                                       | Quit waits; the new workspace is saved                                                                                          | `quit_waits_for_a_new_workspace`                                                                                                                                                                                                                                                                                                                                                |
+| W8   | Select issued                                                                                                 | Target closed first                                                        | Refused with "Workspace no longer exists"; window unchanged                                                                     | `selecting_a_closed_workspace_leaves_the_window_unchanged`                                                                                                                                                                                                                                                                                                                      |
+| W9   | Last tab of the shown workspace closes; another holds tabs                                                    | Tab close or exit-close commits                                            | `LeaveWorkspace`: the empty workspace closes, the window moves to its remembered workspace; no Linux Quit                       | `closing_a_workspaces_last_tab_moves_to_the_previous_workspace`, `an_exit_close_of_a_workspaces_last_tab_moves_on`                                                                                                                                                                                                                                                              |
+| W10  | Last tab closes (tab close, exit-close, lone pane close, tab moved away); another workspace exists, all empty | Same                                                                       | `LeaveWorkspace`: the emptied workspace closes and the window shows an empty sibling (EM1); the session survives; no Linux Quit | `closing_the_last_tab_beside_an_empty_workspace_shows_it`, `an_exit_close_beside_an_empty_workspace_shows_it`, `closing_the_last_lone_pane_beside_an_empty_workspace_shows_it`, `moving_the_last_tab_away_beside_an_empty_workspace_shows_it`, `a_linux_last_window_emptied_beside_an_empty_workspace_stays_open`, `two_windows_emptied_beside_an_empty_workspace_both_show_it` |
+| W10a | Last tab of the session's only workspace closes                                                               | Same                                                                       | Today's emptied close (detach, session close, Linux Quit rule)                                                                  | existing emptied-close tests, plus `an_emptied_window_on_its_sessions_only_workspace_closes_with_the_session`                                                                                                                                                                                                                                                                   |
+| W11  | Emptied close assessed (`Assessed` held) as `Detach`, including a Linux last window with an unviewed session  | A sibling workspace appears before commit                                  | The freshness check fails before any Quit conversion; reassessment answers `LeaveWorkspace`; the window stays                   | `a_new_sibling_turns_a_held_emptied_detach_into_leave_workspace`, `a_stale_emptied_detach_on_linux_does_not_quit`                                                                                                                                                                                                                                                               |
+| W12  | Emptied close assessed as `LeaveWorkspace`                                                                    | The only sibling closes or moves to another session first                  | Stale; reassessment answers `Detach` or `Session`; the last-window rule applies                                                 | `the_only_sibling_closing_turns_a_held_leave_workspace_into_a_window_close`                                                                                                                                                                                                                                                                                                     |
+| W12a | Emptied close assessed as `LeaveWorkspace` beside one populated sibling                                       | That sibling empties first                                                 | Stale; reassessment answers `LeaveWorkspace` again; the window shows the empty sibling (EM1); no Linux Quit                     | `a_sibling_emptying_keeps_a_held_leave_workspace_leaving`                                                                                                                                                                                                                                                                                                                       |
+| W13  | Linux last window, `LeaveWorkspace` assessed                                                                  | Commit                                                                     | No Quit conversion; the window stays and follows                                                                                | `leaving_a_workspace_never_becomes_quit_on_linux`                                                                                                                                                                                                                                                                                                                               |
+| W14  | L1 follow-up chose W2 because it held tabs                                                                    | W2 empties or closes before settle                                         | The follow-up keeps its recovery intent and owes the emptied close again at settle; the next pass resolves it                   | `an_l1_follow_up_whose_target_went_resolves_again`                                                                                                                                                                                                                                                                                                                              |
+| W15  | `LeaveWorkspace` commit held, before its follow-up                                                            | Quit or checkpoint                                                         | Quit waits and checkpoints defer until the follow-up settles                                                                    | `quit_waits_for_a_leave_workspace_follow_up`                                                                                                                                                                                                                                                                                                                                    |
+| W16  | Emptied close owed (L1)                                                                                       | Quit confirming                                                            | Absorbed by the Quit; a cancelled Quit leaves it owed and it runs next                                                          | `a_cancelled_quit_lets_an_owed_leave_workspace_run`                                                                                                                                                                                                                                                                                                                             |
+| W17  | Two windows on W; A closes W's last tab                                                                       | Commit                                                                     | Both leave; W closed once; each lands on its own remembered workspace                                                           | `two_windows_on_an_emptied_workspace_both_move_on`                                                                                                                                                                                                                                                                                                                              |
+| W18  | A on W, B on W2                                                                                               | A leaves W                                                                 | B unaffected                                                                                                                    | `leaving_a_workspace_leaves_other_windows_alone`                                                                                                                                                                                                                                                                                                                                |
+| W19  | Own Close Workspace assessing or confirming                                                                   | Quit                                                                       | Cancelled or dismissed (Q2); the workspace survives and is saved                                                                | `a_quit_cancels_an_own_workspace_close`                                                                                                                                                                                                                                                                                                                                         |
+| W20  | Own Close Workspace committing (commit held)                                                                  | Quit in another window, or a checkpoint                                    | Quit waits and the checkpoint defers through the commit and the direct follow-up (Q4, Q7)                                       | `quit_waits_for_a_committing_workspace_close_and_its_follow_up`, `a_checkpoint_waits_for_an_own_workspace_close`                                                                                                                                                                                                                                                                |
+| W21  | Close Workspace of W from A; B shows W, or B shows W empty (EM1)                                              | Commit                                                                     | A and B both leave through `LeaveWorkspace`                                                                                     | `closing_a_shared_workspace_moves_both_windows`, `closing_a_workspace_shown_empty_moves_its_window`                                                                                                                                                                                                                                                                             |
+| W22  | Close Workspace commit removes W, then teardown fails                                                         | Completion                                                                 | "Close failed" notice; the window still leaves W                                                                                | `a_failed_workspace_teardown_still_leaves_the_workspace`                                                                                                                                                                                                                                                                                                                        |
+| W22a | Own Close Workspace commit goes stale and leaves the workspace in place                                       | Completion                                                                 | Hold released, no follow-up; the close assesses again                                                                           | `a_stale_own_workspace_close_releases_its_hold`                                                                                                                                                                                                                                                                                                                                 |
+| W23  | Close Workspace of the populated one of two, the other empty                                                  | Commit                                                                     | The window shows the empty sibling (EM1); the session survives                                                                  | `closing_the_populated_workspace_shows_the_empty_one`                                                                                                                                                                                                                                                                                                                           |
+| W24  | Close Workspace on the session's only workspace                                                               | Command or menu                                                            | Unavailable; core refuses `LastWorkspace` if reached                                                                            | `the_last_workspace_cannot_be_closed_as_a_workspace`                                                                                                                                                                                                                                                                                                                            |
+| W25  | W moves to another session (another client), with tabs or empty                                               | Batch                                                                      | The window leaves W; core leaves W alone in its new session                                                                     | `a_populated_workspace_moved_away_is_left`, `an_empty_workspace_moved_away_is_left_and_kept`                                                                                                                                                                                                                                                                                    |
+| W26  | Windows on different workspaces of one session                                                                | Close Session from one                                                     | Existing Q6 follow-up for that window; others take the session-gone path; memory pruned                                         | `closing_a_session_shown_on_two_workspaces`                                                                                                                                                                                                                                                                                                                                     |
+| W27  | Windows on different workspaces of one session                                                                | Quit, then restore                                                         | Each returns to its workspace with its own navigation                                                                           | `two_windows_on_two_workspaces_restore_their_workspaces`                                                                                                                                                                                                                                                                                                                        |
+| W28  | Saved memory names closed or moved workspaces                                                                 | Restore                                                                    | Those entries drop; duplicates collapse; the shown navigation keeps its fallback                                                | `restore_drops_stale_workspace_memory`                                                                                                                                                                                                                                                                                                                                          |
+| W29  | Quake stash on W                                                                                              | W closes, checkpoint, then summon                                          | Shows its remembered or first workspace with tabs                                                                               | `a_quake_stash_on_a_closed_workspace_shows_another`                                                                                                                                                                                                                                                                                                                             |
+| W30  | Window shows an empty workspace it selected (EM1)                                                             | Settle, Quit, checkpoint                                                   | No emptied close; Quit and checkpoint save it                                                                                   | `selecting_an_empty_workspace_shows_the_empty_state`                                                                                                                                                                                                                                                                                                                            |
+| W31  | Close confirmation, reservation, or arrangement showing                                                       | Workspace switch                                                           | Refused by the guard                                                                                                            | `workspace_switches_respect_the_structural_guard`                                                                                                                                                                                                                                                                                                                               |
+| W32  | PR B: sidebar toggle, position change, config reload, or a width change that docks or undocks it              | While a terminal has focus                                                 | Focus, process, and mouse mapping preserved; only the size changes                                                              | `sidebar_changes_keep_focus_mouse_mapping_and_processes`                                                                                                                                                                                                                                                                                                                        |
+| W33  | PR B: switcher popover, sheet, or session popover open                                                        | Toggle, reload, or its anchor goes                                         | The popover closes; focus returns to the terminal                                                                               | `a_popover_whose_anchor_goes_closes_cleanly`                                                                                                                                                                                                                                                                                                                                    |
+| W41  | PR B: a workspace row drag in progress                                                                        | The dragged workspace closes or moves away, or the window switches session | The drag cancels; nothing moves                                                                                                 | `a_workspace_drag_cancels_when_its_workspace_goes`                                                                                                                                                                                                                                                                                                                              |
+| W42  | PR B: a workspace row drag in progress                                                                        | Its anchor row closes before the drop                                      | The drop lands at the anchor's former neighbour or the end, by ID; no other workspace moves                                     | `a_workspace_drop_whose_anchor_went_lands_by_id`                                                                                                                                                                                                                                                                                                                                |
+| W34  | A commits `LeaveWorkspace` (commit held); Linux; an unviewed session                                          | Close Window in B                                                          | A still counts as open, so B closes without becoming Quit                                                                       | `a_window_leaving_a_workspace_still_counts_as_open`                                                                                                                                                                                                                                                                                                                             |
+| W35  | Emptied close assessed in A                                                                                   | Quit confirming in B, then A reaches its commit                            | `LeaveWorkspace` commits and follows, and the Quit waits for its hold; `Detach` and `Session` behave as today                   | `a_leave_workspace_commits_while_a_quit_confirms`                                                                                                                                                                                                                                                                                                                               |
+| W36  | Linux last window on the session's only workspace; an unviewed session                                        | Its last tab closes; the emptied close becomes Quit                        | The Quit saves neither the emptied session nor the window; the unviewed session is saved                                        | `a_linux_emptied_quit_saves_neither_the_emptied_session_nor_its_window`                                                                                                                                                                                                                                                                                                         |
+| W37  | Emptied close of the session's only workspace assessing, assessed, or committing (held)                       | Checkpoint                                                                 | Saves neither the session nor the window; other sessions are saved                                                              | `a_checkpoint_while_an_emptied_close_assesses_saves_neither`, `a_checkpoint_after_an_emptied_close_assessed_saves_neither`, `a_checkpoint_while_an_emptied_close_commits_saves_neither`                                                                                                                                                                                         |
+| W38  | Emptied close of the session's only workspace refused while a tab installs into it (install held)             | Checkpoint                                                                 | Saves the window and its session; a refused close is not departing                                                              | `a_checkpoint_before_a_refused_emptied_close_installs_saves_the_window`                                                                                                                                                                                                                                                                                                         |
+| W39  | Linux last window, an unviewed session; its session closes elsewhere (switch target or refused close)         | Its emptied close cannot be assessed                                       | Session-gone path: the last-window rule still applies, so the window quits rather than removing itself (session row 7)          | `a_target_closed_after_the_commit_on_linux_quits_and_keeps_its_old_session`, `a_refused_emptied_close_whose_session_then_closes_on_linux_quits`, plus the Linux branches of the session-gone tests                                                                                                                                                                              |
+| W40  | Linux last window, own Close Session follow-up could open nothing                                             | Its gone session owes an emptied close                                     | The Quit replaces that close, which no longer runs first and removes the window; the notice stays (Q6, row 35)                  | `a_close_session_follow_up_without_a_shell_on_linux_quits_with_its_notice`                                                                                                                                                                                                                                                                                                      |
 
 ## Observable success
 
-- With one workspace and `show = "auto"`, every window looks and behaves
-  as on `main`.
-- New Workspace from the session menu or palette shows a fresh shell in a
-  new workspace; the panel appears in every window on that session.
+- With one workspace and the sidebar hidden, every window looks and
+  behaves as on `main`, plus the sidebar button.
+- New Workspace from the session menu, palette, or sidebar shows a fresh
+  shell in a new workspace; the switcher appears in every window on that
+  session whose sidebar is hidden.
 - Two windows on one session can show different workspaces and switch
   independently; each returns to its own tab and pane in each workspace.
 - Closing a workspace's last tab lands on the previous workspace, or on
   an empty one's empty state when no other holds tabs; closing the last
   tab of a session's only workspace closes the window as today.
-- The panel, bar, and dropdown match the picked mockups at every edge
-  and tab position, in fullscreen, Quake, narrow windows, and on Linux.
+- The sidebar, its button, the switcher, and the popovers match the
+  revised mockup on both sides and at every tab position, in fullscreen,
+  Quake, narrow windows, and on Linux.
+- Dragging a row reorders the session's workspaces in every window on it.
 
 ## Failure paths and risks
 
-| Risk                                                      | Handling                                                                                                    |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| An emptied detach wins over L1                            | Core decides `LeaveWorkspace` under the lock, at the commit's freshness check; W11, W12                     |
-| A selected empty workspace triggers an emptied close      | Only removal, a gone workspace, or a gone session owes one; W30                                             |
-| A Linux last window quits when it only leaves a workspace | Quit conversion only for `Detach` or `Session` effects; W13                                                 |
-| Decorations flip as `auto` shows the bar                  | Title row ownership reads the configured position, not the remapped tab layout                              |
-| Geometry regressions in today's tab positions             | `WorkspaceChrome::None` must equal today's `ChromeLayout`; a test compares both across positions and frames |
-| A side panel squeezes the terminal                        | SW1 on the terminal width after the tab column; tiny-window tests                                           |
-| Status wakes too often (PR C)                             | Coalesced: one pending wake, one worker read at a time                                                      |
-| Downgrade reads several entries per session               | Cap stays 256; older validation accepts duplicates                                                          |
-| Overlap with the #81/#407 attention work                  | PR C rebases onto whichever lands first and reuses its attention source if one exists                       |
-| Overlap with #44's ID migration                           | Mechanical rebase                                                                                           |
+| Risk                                                       | Handling                                                                                                              |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| An emptied detach wins over L1                             | Core decides `LeaveWorkspace` under the lock, at the commit's freshness check; W11, W12                               |
+| A selected empty workspace triggers an emptied close       | Only removal, a gone workspace, or a gone session owes one; W30                                                       |
+| A Linux last window quits when it only leaves a workspace  | Quit conversion only for `Detach` or `Session` effects; W13                                                           |
+| Decorations flip as the sidebar shows                      | Title row ownership reads the configured tab position and platform                                                    |
+| Geometry regressions in today's tab positions              | A hidden sidebar must equal today's `ChromeLayout` but for the corner slot; tests compare across positions and frames |
+| A docked sidebar squeezes the terminal                     | Undock under 384 points; tiny-window tests                                                                            |
+| A drop moves the wrong workspace after a concurrent change | Moves name the workspace and its anchor by ID; W41, W42                                                               |
+| Status wakes too often (PR C)                              | Coalesced: one pending wake, one worker read at a time                                                                |
+| Downgrade reads several entries per session                | Cap stays 256; older validation accepts duplicates                                                                    |
+| Overlap with the #81/#407 attention work                   | PR C rebases onto whichever lands first and reuses its attention source if one exists                                 |
+| Overlap with #44's ID migration                            | Mechanical rebase                                                                                                     |
 
 ## Non-goals
 
-- Tree style (P4), opening a workspace in a new window, reordering
-  workspaces and moving tabs onto them (#32), per-window panel position,
-  default key bindings, and server-mode workspace views (#45).
+- Tree style (P4), nested tabs (N2), opening a workspace in a new
+  window, dragging a workspace to another window, moving tabs onto
+  workspaces (#32), per-window sidebar position, default key bindings,
+  and server-mode workspace views (#45).
 - Preserving a selection across a terminal resize (settled decision 9,
   tracked on [#373][issue-373]).
 
 ## Verification
 
-| Concern                                                                                                                                                                                         | Evidence                                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Core: workspace close consent, last-workspace refusal, stale tickets; `LeaveWorkspace` resolution order and commit                                                                              | `huterm-core` lifecycle tests, one per resolution branch                                                                                                                                                                                                                                 |
-| Atomic create-with-shell rollback                                                                                                                                                               | `huterm-core` mux test                                                                                                                                                                                                                                                                   |
-| Commands: availability, defaults, picker filtered to the session                                                                                                                                | Catalog and palette tests                                                                                                                                                                                                                                                                |
-| Switching keeps shells alive and restores per-workspace navigation and undo                                                                                                                     | Tier 2 window tests with shell acknowledgements                                                                                                                                                                                                                                          |
-| One view's workspace change leaves another view's workspace, tab, pane, and selection alone (acceptance 3)                                                                                      | Tier 2 two-window test asserting each explicitly, plus a `check-viewers.ts` step through `invoke-in select_workspace` on macOS and Linux                                                                                                                                                 |
-| Interleavings W1 to W38                                                                                                                                                                         | One test per row, ordered by worker hooks and sequence waits, never sleeps                                                                                                                                                                                                               |
-| Navigation memory save, strict restore, cap, older files                                                                                                                                        | `huterm-state` schema tests; tier 2 restore tests                                                                                                                                                                                                                                        |
-| Geometry: 4 edges × 5 tab positions, collapsed, fullscreen and shared-edge auto-hide, Quake, notch shelf, Linux frame with leading and trailing buttons, small windows, overflow (acceptance 1) | Pure `ChromeLayout` and `WorkspaceChrome::resolve` tests beside `all_placements_share_nonoverlapping_terminal_and_tab_bounds`; `None` equals today's layout                                                                                                                              |
-| Mouse mapping and sidebar resize with a panel beside the tab column                                                                                                                             | Extend `application_mouse_coordinates_follow_all_tab_placements` and the sidebar resize tests                                                                                                                                                                                            |
-| Panel changes and reload keep focus, mouse coordinates, and processes (acceptance 2)                                                                                                            | W32 tier 2 test; native steps in `smoke:macos-palette` and `smoke:linux-palette`: real key input reaches the same shell (same pid) after a toggle, a PTY mouse report lands on the expected cell after a toggle, panel rect, row click switches, dropdown opens its menu, keyboard focus |
-| Session control placements, per-host anchors                                                                                                                                                    | Pure placement tests; window tests opening the menu from each host                                                                                                                                                                                                                       |
-| Invalidation: a hidden workspace's count changes; another window's badge updates with its menu open                                                                                             | Window tests                                                                                                                                                                                                                                                                             |
-| Menus: keyboard, live updates, native lowering                                                                                                                                                  | Window tests on the workspace menu; `MenuSpec` lowering tests                                                                                                                                                                                                                            |
-| Status (PR C): roll-up order, coalescing, two windows with different baselines, a publication during a read                                                                                     | Core and window tests                                                                                                                                                                                                                                                                    |
-| Settings section, schema, coverage                                                                                                                                                              | `settings.rs` section tests, schema check, coverage test                                                                                                                                                                                                                                 |
-| Visual fidelity to the picked mockups                                                                                                                                                           | Screenshots beside the mockups in each PR; `ux-review` (Codex computer use, scratch bundle) briefed with the PNGs                                                                                                                                                                        |
+| Concern                                                                                                                                                                                                 | Evidence                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core: workspace close consent, last-workspace refusal, stale tickets; `LeaveWorkspace` resolution order and commit                                                                                      | `huterm-core` lifecycle tests, one per resolution branch                                                                                                                                                                                                                                      |
+| Atomic create-with-shell rollback                                                                                                                                                                       | `huterm-core` mux test                                                                                                                                                                                                                                                                        |
+| Commands: availability, defaults, picker filtered to the session                                                                                                                                        | Catalog and palette tests                                                                                                                                                                                                                                                                     |
+| Switching keeps shells alive and restores per-workspace navigation and undo                                                                                                                             | Tier 2 window tests with shell acknowledgements                                                                                                                                                                                                                                               |
+| One view's workspace change leaves another view's workspace, tab, pane, and selection alone (acceptance 3)                                                                                              | Tier 2 two-window test asserting each explicitly, plus a `check-viewers.ts` step through `invoke-in select_workspace` on macOS and Linux                                                                                                                                                      |
+| Interleavings W1 to W38                                                                                                                                                                                 | One test per row, ordered by worker hooks and sequence waits, never sleeps                                                                                                                                                                                                                    |
+| Navigation memory save, strict restore, cap, older files                                                                                                                                                | `huterm-state` schema tests; tier 2 restore tests                                                                                                                                                                                                                                             |
+| Geometry: 2 sides × 5 tab positions, hidden, docked, undocked by width, fullscreen auto-hide, Quake, notch shelf, Linux frame with leading and trailing buttons, small windows, overflow (acceptance 1) | Pure `ChromeLayout` and `SidebarChrome::resolve` tests beside `all_placements_share_nonoverlapping_terminal_and_tab_bounds`; a hidden sidebar equals today's layout but for the corner slot                                                                                                   |
+| Mouse mapping and sidebar resize with a panel beside the tab column                                                                                                                                     | Extend `application_mouse_coordinates_follow_all_tab_placements` and the sidebar resize tests                                                                                                                                                                                                 |
+| Sidebar changes and reload keep focus, mouse coordinates, and processes (acceptance 2)                                                                                                                  | W32 tier 2 test; native steps in `smoke:macos-palette` and `smoke:linux-palette`: real key input reaches the same shell (same pid) after a toggle, a PTY mouse report lands on the expected cell after a toggle, sidebar rect, row click switches, switcher opens its popover, keyboard focus |
+| Corner controls on both sides and every tab position; session switcher at either end                                                                                                                    | Pure placement tests; window tests opening each popover from each host                                                                                                                                                                                                                        |
+| Drag reordering: order in every window, Escape cancels, W41, W42                                                                                                                                        | Window tests driving the drag through simulated mouse input                                                                                                                                                                                                                                   |
+| Invalidation: a hidden workspace's count changes; another window's badge updates with its popover open                                                                                                  | Window tests                                                                                                                                                                                                                                                                                  |
+| Popovers: keyboard, live updates, GPUI rendering under native menus                                                                                                                                     | Window tests on the switcher and session popovers                                                                                                                                                                                                                                             |
+| Status (PR C): roll-up order, coalescing, two windows with different baselines, a publication during a read                                                                                             | Core and window tests                                                                                                                                                                                                                                                                         |
+| Settings section, schema, coverage                                                                                                                                                                      | `settings.rs` section tests, schema check, coverage test                                                                                                                                                                                                                                      |
+| Visual fidelity to the picked mockups                                                                                                                                                                   | Screenshots beside the mockups in each PR; `ux-review` (Codex computer use, scratch bundle) briefed with the revised mockup                                                                                                                                                                   |
 
 ## Open questions
 
-None. The three questions raised after review were settled on
-2026-11-07 (settled decisions 9 to 11).
+- A window with no title row and no tab bar (Linux server decorations,
+  Quake, or fullscreen, with one tab and `tabs.always_show = false`)
+  has nowhere to hold the sidebar button. Recommended: accept it, as
+  mockup C1 did for the dropdown; `toggle_sidebar` and
+  `open_workspace_switcher` still work from the palette.
 
 ## Deviations
 
@@ -698,7 +776,11 @@ Recorded while implementing PR A:
 
 ### PR B deviations
 
-Recorded while implementing PR B, stacked on PR A:
+Recorded while implementing the first PR B design, stacked on PR A. The
+2026-11-08 revision replaced the panel, bar, dropdown, workspace menu,
+session placements, and `[workspaces]` settings, so entries about those
+are history. `Touched::chrome`, R1 rows, the theme-derived background,
+and W33's rule that running a command closes open popovers carry over.
 
 - Settings hides Position and Start collapsed under `show = "never"`
   through `x-huterm-visible-when`, as every dependent setting does, rather
