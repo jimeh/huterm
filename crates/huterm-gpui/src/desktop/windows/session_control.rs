@@ -302,6 +302,11 @@ impl WorkspaceView {
                 Anchor::Trigger(self.session_list_anchor(from, &layout)),
                 false,
             );
+            // Only a drawn opener mounts the trigger probe; a fallback
+            // opening has none.
+            if from == SessionListAnchor::Fallback {
+                self.session_list_popover.clear_trigger();
+            }
             self.read_exited_sessions(window, cx);
         }
         self.focus_session_row(session, window, cx);
@@ -384,7 +389,7 @@ impl WorkspaceView {
             .map(|(session, _)| *session)
     }
 
-    fn focus_session_row(
+    pub(super) fn focus_session_row(
         &mut self,
         session: SessionId,
         window: &mut Window,
@@ -591,6 +596,51 @@ impl WorkspaceView {
             .iter()
             .find(|row| row.session == session)
             .map(row_menu)
+    }
+
+    /// Whether a dismissed row menu of `kind` returns focus to its row: a
+    /// session row while the list is open, or a workspace row while the
+    /// switcher's popover or the sheet shows it.
+    pub(super) fn popover_row_takes_focus(
+        &self,
+        kind: &MenuKind,
+        cx: &App,
+    ) -> bool {
+        match kind {
+            MenuKind::SessionRow(session) => {
+                self.session_list.is_some()
+                    && self
+                        .session_rows(cx)
+                        .iter()
+                        .any(|row| row.session == *session)
+            }
+            MenuKind::WorkspaceRow(workspace) => {
+                self.switcher_mode.is_some()
+                    && self
+                        .workspace_rows(cx)
+                        .iter()
+                        .any(|row| row.workspace == *workspace)
+            }
+            _ => false,
+        }
+    }
+
+    /// Focuses the row a row menu of `kind` opened from.
+    pub(super) fn focus_menu_row(
+        &mut self,
+        kind: &MenuKind,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        match kind {
+            MenuKind::SessionRow(session) => {
+                self.focus_session_row(*session, window, cx);
+            }
+            MenuKind::WorkspaceRow(workspace) => {
+                self.focus_workspace_row(*workspace, window, cx);
+            }
+            _ => {}
+        }
     }
 
     /// Runs a session row menu pick.
@@ -956,9 +1006,12 @@ impl WorkspaceView {
             size(LIST_WIDTH, height),
             viewport,
         );
+        // The surface stops presses over it, as a menu's does: the guard
+        // lets presses inside a non-modal popover through.
         let panel = div()
             .id("session-list-popover")
             .debug_selector(|| "session-list-popover".to_owned())
+            .occlude()
             .role(gpui::Role::Dialog)
             .aria_label("Sessions")
             .w(LIST_WIDTH)

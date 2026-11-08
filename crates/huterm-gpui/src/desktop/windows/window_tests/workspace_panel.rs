@@ -768,6 +768,10 @@ fn the_session_row_opens_the_session_list_at_either_end(
 }
 
 #[gpui::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one sweep of every side, tab position, and corner setting"
+)]
 fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.tabs.always_show = true;
@@ -847,6 +851,63 @@ fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
                                 !switcher.intersects(&button),
                                 "{label}: {switcher:?} {button:?}"
                             );
+                        }
+                        // The session switcher draws where Settings ask,
+                        // and every corner control fits the room its host
+                        // reserved: none overlaps another, the menu
+                        // button, the first tab, or the terminal.
+                        let session = view
+                            .session_corner_bounds
+                            .get()
+                            .filter(|_| view.session_corner_drawn.get());
+                        assert_eq!(
+                            session.is_some(),
+                            session_button && !visible,
+                            "{label}: the session switcher"
+                        );
+                        let workspace = view
+                            .workspace_trigger_bounds
+                            .get()
+                            .filter(|_| view.workspace_trigger_drawn.get());
+                        let strip = view.tab_strip(window);
+                        let first_tab = if strip.vertical {
+                            Bounds::new(
+                                strip.bounds.origin
+                                    + point(px(0.0), strip.start(0) - strip.offset),
+                                size(strip.bounds.size.width, strip.tab_extent(0)),
+                            )
+                        } else {
+                            Bounds::new(
+                                strip.bounds.origin
+                                    + point(strip.start(0) - strip.offset, px(0.0)),
+                                size(strip.tab_extent(0), strip.bounds.size.height),
+                            )
+                        };
+                        let controls: Vec<Bounds<Pixels>> =
+                            [Some(button), session, workspace]
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                        let menu = view.menu_button_bounds.get();
+                        for (index, control) in controls.iter().enumerate() {
+                            for other in &controls[index + 1..] {
+                                assert!(
+                                    !control.intersects(other),
+                                    "{label}: {control:?} {other:?}"
+                                );
+                            }
+                            for (what, other) in [
+                                ("the menu button", menu),
+                                ("the first tab", Some(first_tab)),
+                                ("the terminal", Some(layout.terminal)),
+                            ] {
+                                if let Some(other) = other {
+                                    assert!(
+                                        !control.intersects(&other),
+                                        "{label}: {control:?} overlaps {what} {other:?}"
+                                    );
+                                }
+                            }
                         }
                     });
                 }

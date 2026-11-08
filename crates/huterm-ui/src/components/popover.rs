@@ -102,6 +102,13 @@ impl Popover {
         state.content = None;
     }
 
+    /// Forgets the trigger's bounds, for an opening with no trigger, such as
+    /// from a command while no trigger is drawn, so a press where an
+    /// earlier trigger painted counts as outside.
+    pub fn clear_trigger(&self) {
+        self.state.borrow_mut().trigger = None;
+    }
+
     /// Closes; `false` when it was not open.
     #[must_use = "a toggle needs to know whether the popover was open"]
     pub fn close(&self) -> bool {

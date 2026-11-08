@@ -444,18 +444,27 @@ impl Mux {
 
     fn restore_session(&mut self, session: &SessionCapture) -> SessionId {
         let id = SessionId::in_runtime(self.runtime_id, session.info.id.get());
+        let resumed = resumed_ordinal(
+            WORKSPACE_NAME,
+            session
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.info.automatic_name.as_str()),
+        );
+        // A saved counter keeps counting closed workspaces, within a bound,
+        // so a damaged file cannot exhaust the session's numbers.
+        let bound = resumed.saturating_add(
+            u64::try_from(MAX_HIERARCHY_ITEMS).unwrap_or(u64::MAX),
+        );
         self.sessions.push(Session {
             id,
             workspaces: Vec::new(),
             custom_name: session.info.custom_name.clone(),
             automatic_name: session.info.automatic_name.clone(),
-            workspace_ordinal: session.workspace_ordinal.max(resumed_ordinal(
-                WORKSPACE_NAME,
-                session
-                    .workspaces
-                    .iter()
-                    .map(|workspace| workspace.info.automatic_name.as_str()),
-            )),
+            workspace_ordinal: session
+                .workspace_ordinal
+                .min(bound)
+                .max(resumed),
         });
         let index = position(self.sessions.len() - 1);
         self.emit_hierarchy(|mux| HierarchyEvent::SessionCreated {

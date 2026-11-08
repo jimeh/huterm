@@ -303,7 +303,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `minimize` | Window | |
 | `zoom` | Window | |
 | `open_menu` | Window | |
-| `open_session_menu` | Window | Opens the session menu at the title bar's session control, else the sidebar's session switcher, else the window menu's place, with the first session selected. No default binding. |
+| `open_session_menu` | Window | Opens the session list at the session switcher beside the sidebar button, else the sidebar's session row, else the window menu's place, with the window's session's row focused. No default binding. |
 | `toggle_sidebar` | Window | Shows or hides this window's sidebar, saved with the window; in a window too narrow to dock it, opens or closes it as a sheet over the terminal. No default binding. |
 | `focus_sidebar` | Window | Moves keyboard focus to the shown workspace's row in the sidebar, or in the sheet a narrow window opens for it. Unavailable while the sidebar is hidden. No default binding. |
 | `open_workspace_switcher` | Window | Opens the workspace switcher's popover at the switcher, else the sidebar button, else the window menu's place, with the shown workspace's row focused. While the sidebar shows, focuses that row there instead. No default binding. |
@@ -325,7 +325,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `close_session` | Runtime | Optional `session`, defaulting to the window's; the palette asks for it, so it can close a session no window shows. Closes the session and every tab in it, asking first when jobs run. Windows that show it close. When it is the window's own session, the window switches to the session it showed most recently instead, else to the session viewed most recently that no window shows, passing over any it cannot show, else, when one could not be shown, to a new session. It closes when no session remains, or when that new session fails too; on Linux the last window quits instead while sessions no window shows remain. Closing the window's own session is refused while Quit runs, and Quit cancels such a close that has not started committing. No default binding. |
 | `new_session` | Window | Optional `name`, which the palette does not ask for. Creates a session with one tab and switches the window to it; the previous session keeps running. No default binding. |
 | `select_session` | Window | `index` (1 to 9, the session's position in the session order; 9 selects the last session) or `session`, not both. Without either, the palette prompts for a session; a position past the last session does nothing. Switches the window to that session; both sessions keep running, and the window comes back to the tab and pane it last showed there, with its own undo. Two windows can show one session and switch independently. Quake windows can switch and keep their profile. No default binding. |
-| `new_workspace` | Window | Optional `name`, which the palette does not ask for. Creates a workspace with one tab in the window's session and switches the window to it; a shell that fails to start leaves no workspace behind. The session menu lists it. No default binding. |
+| `new_workspace` | Window | Optional `name`, which the palette does not ask for. Creates a workspace with one tab in the window's session and switches the window to it; a shell that fails to start leaves no workspace behind. The workspace list's + runs it. No default binding. |
 | `select_workspace` | Window | `index` (1 to 9, the workspace's position in the window's session; 9 selects the last workspace) or `workspace`, not both. Without either, the palette prompts for a workspace, listing only the window's session's workspaces by name; a position past the last workspace does nothing. Switches the window to that workspace; the others keep running, and the window comes back to the tab, pane, and undo history it last had there. Two windows on one session switch independently. A workspace that closed or moved to another session is refused with "Workspace no longer exists". No default binding. |
 | `next_workspace` / `previous_workspace` | Window | Switches to the next or previous workspace of the window's session, in session order, wrapping. Unavailable with one workspace. |
 | `clear_workspace_name` | Runtime | Optional `workspace`, defaulting to the window's. Restores the automatic name; unavailable while the workspace has no custom name. No default binding. |
@@ -359,7 +359,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `sidebar_previous` | Window | Bound only while `Sidebar`. Moves focus to the previous workspace or the session switcher, wrapping. |
 | `sidebar_first` | Window | Bound only while `Sidebar`. |
 | `sidebar_last` | Window | Bound only while `Sidebar`. |
-| `sidebar_show` | Window | Bound only while `Sidebar`. Shows the focused workspace in the window, or opens the session menu from the session switcher. |
+| `sidebar_show` | Window | Bound only while `Sidebar`. Shows the focused workspace or session in the window, or opens the session list from the sidebar's session row. |
 | `sidebar_rename` | Window | Bound only while `Sidebar`. Renames the focused workspace through the palette prompt. |
 | `sidebar_menu` | Window | Bound only while `Sidebar`. Opens the focused workspace's context menu. |
 | `sidebar_exit` | Window | Bound only while `Sidebar`. Returns focus to the terminal. |
@@ -618,12 +618,10 @@ in a split tab, opens a submenu in place of the rows with Right, Enter, or a
 click; Left or its `‹` back row returns to it. Escape, Tab, running an item,
 or clicking elsewhere closes the menu and returns focus to the terminal.
 
-The session menu binds the same keys. The session control opens it with
-nothing selected, and `open_session_menu` selects the first session. Enter
-switches the window to the selected session, and `menu_confirm_alternate`
-opens it in a new window instead, as the selected row's inline button does.
-In a native macOS session menu, holding Command turns each session row into
-its Open in New Window item.
+The session list is no menu: its rows take the [Sidebar](#sidebar) keys, so
+the arrows, Home, and End walk them, Enter switches the window to the focused
+session, F2 renames it, the menu key or Shift-F10 opens its menu, with Open in
+New Window, and Escape closes the list.
 
 | Command | macOS | Linux |
 | --- | --- | --- |

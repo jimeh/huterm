@@ -1,9 +1,9 @@
 //! What a window shows of its sidebar, which holds the session's workspaces
 //! and the session switcher: docked on its side, or hidden with its button
 //! in that corner, beside it the workspace switcher given two or more
-//! workspaces and the session switcher when Settings turn it on. One pure resolution that layout, rendering, hit testing,
-//! popovers, and smoke state all read, so they never disagree about which
-//! chrome a frame has.
+//! workspaces and the session switcher when Settings turn it on. One pure
+//! resolution that layout, rendering, hit testing, popovers, and smoke state
+//! all read, so they never disagree about which chrome a frame has.
 
 use gpui::{Pixels, px};
 use huterm_config::SidebarPosition;

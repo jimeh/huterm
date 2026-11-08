@@ -132,7 +132,7 @@ padding_balance = false
 menu_button = true
 # Show key hints on the scroll pill and on dialog and panel buttons.
 shortcut_hints = false
-# Open the window, tab, pane, terminal, and session menus as native macOS
+# Open the window, tab, pane, terminal, and sidebar row menus as native macOS
 # menus. Linux ignores it and always draws them in Huterm's style.
 macos_native_menus = true
 # Show a preview window under the pointer while a tab or pane is dragged

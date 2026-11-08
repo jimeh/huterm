@@ -859,7 +859,7 @@ pub mod ids {
     pub const REDO: CommandId = CommandId::new("redo");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
-    /// Opens the window's session menu.
+    /// Opens the window's session list.
     pub const OPEN_SESSION_MENU: CommandId =
         CommandId::new("open_session_menu");
     /// Opens the window's workspace switcher.
@@ -1970,7 +1970,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::OPEN_SESSION_MENU,
         CommandScope::Window,
         "Open Session Menu",
-        "Open this window's session menu to switch, create, or rename sessions.",
+        "Open this window's session list to switch, create, or rename sessions.",
         &[],
     ),
     spec(
@@ -2280,7 +2280,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::SIDEBAR_SHOW,
         CommandScope::Window,
         "Sidebar: Open",
-        "Show the focused workspace, or open the session menu from the session switcher.",
+        "Show the focused workspace or session, or open the session list from the session switcher.",
         &[],
     ),
     spec_in(

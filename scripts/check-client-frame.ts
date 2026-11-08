@@ -20,10 +20,10 @@
  * settings daemon would, and changing its `Gtk/DecorationLayout`: the drawn
  * window buttons must follow it live to the start or end of the row.
  *
- * In both runs the session control ends the tab bar just before the menu
- * button, before any window buttons at the end of the row: a real click
- * opens the session menu below it, `open_session_menu` opens it from the
- * keyboard, and Escape returns focus to the terminal.
+ * In both runs the session switcher follows the sidebar button at the start
+ * of the tab bar: a real click opens the session list below it,
+ * `open_session_menu` opens it from the keyboard, and Escape returns focus
+ * to the terminal.
  */
 import { dlopen, ptr } from "bun:ffi";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -557,8 +557,8 @@ done
     }
     await assertPtyMatchesGrid();
 
-    // 1b. The session control ends the merged row's bar before the menu
-    // button and the window buttons.
+    // 1b. The session switcher follows the sidebar button at the start of
+    // the merged row's bar.
     const framedControl = await checkSessionControl("framed", scale);
     await ack("acksessionx");
 

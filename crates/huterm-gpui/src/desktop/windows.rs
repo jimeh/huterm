@@ -2138,7 +2138,7 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     // A window whose history lost an entry refreshes its open palette and
     // menu, which may offer the entry.
     update_windows(cx, &pruned, |_, cx| cx.notify());
-    // Every window's session control names its session, and its menu
+    // Every window's session switcher names its session, and its list
     // counts other windows, so a rename, a new or closed session, or a
     // window switching redraws them all. These batches are rare.
     if touched.names_changed() || touched.attachments_changed() {
@@ -2193,7 +2193,7 @@ fn activate_reconciled_tabs(
 /// Refreshes the views that show titles they do not own. A structural batch
 /// or any title change rebuilds open palettes, which compare their rows
 /// before notifying; a confirmation redraws when a title in its scope
-/// changed, and an open session menu on every structural batch, since it
+/// changed, and an open session list on every structural batch, since it
 /// counts every session's tabs. It never changes a confirmation's
 /// assessment or focus.
 fn refresh_title_consumers(
@@ -5670,6 +5670,7 @@ impl WorkspaceView {
         self.palette.is_some()
             || self.close.confirmation.is_some()
             || self.menu.is_some()
+            || self.session_list.is_some()
             || self.about.is_some()
             || self.panel.is_some()
     }
@@ -8392,6 +8393,7 @@ impl WorkspaceView {
             || self.resizing_sidebar
             || self.menu.is_some()
             || self.switcher_mode.is_some()
+            || self.session_list.is_some()
     }
 
     fn reveal_active(&mut self, window: &Window, cx: &App) {
@@ -10449,9 +10451,6 @@ impl WorkspaceView {
     /// Key context for binding predicates: `Workspace`, plus `confirming`,
     /// `reordering`, and `fullscreen` while those states hold. The About
     /// panel sets `confirming` too, so the `dialog_*` bindings close it.
-    /// A native session menu waiting for its exited read sets `menu`, so
-    /// Escape cancels it before it appears instead of reaching the
-    /// terminal.
     fn key_context(&self, _window: &Window) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Workspace");
@@ -14444,7 +14443,7 @@ impl Render for WorkspaceView {
         // Set again when a host builds the control; see the end of render.
         self.session_corner_drawn.set(false);
         self.session_sidebar_drawn.set(false);
-        // The menu button's slot, which the session control sits before.
+        // The menu button's slot, which the right corner controls sit before.
         let menu_slot = if menu_placement == MenuButtonPlacement::Hidden {
             px(0.0)
         } else {
@@ -17039,7 +17038,14 @@ impl WorkspaceView {
         };
         match event {
             MenuEvent::Dismissed => {
-                self.close_menu(MenuFocusReturn::Terminal, window, cx);
+                // A row menu dismissed inside a popover hands focus back to
+                // its row, so the list stays usable from the keyboard.
+                if self.popover_row_takes_focus(&kind, cx) {
+                    self.close_menu(MenuFocusReturn::Keep, window, cx);
+                    self.focus_menu_row(&kind, window, cx);
+                } else {
+                    self.close_menu(MenuFocusReturn::Terminal, window, cx);
+                }
             }
             MenuEvent::Picked(id) => {
                 // Focus can move before a refresh closes the menu; a pick

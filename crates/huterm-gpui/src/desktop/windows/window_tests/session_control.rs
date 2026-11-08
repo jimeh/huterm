@@ -9,7 +9,7 @@ use gpui::{Modifiers, MouseDownEvent, MouseUpEvent};
 
 use super::super::session_control::SessionListAnchor;
 use super::menus::a11y_node;
-use super::sessions::shown_session;
+use super::sessions::{shown_session, shown_tabs};
 use super::*;
 
 /// The open menu's kind, as smoke state names it, or `None` while closed.
@@ -533,5 +533,87 @@ fn a_session_list_whose_anchor_goes_closes_cleanly(cx: &mut TestAppContext) {
     });
     harness.update_view(window, |view, _, _| {
         assert!(view.session_list.is_none());
+    });
+}
+
+#[gpui::test]
+fn presses_on_the_lists_background_stay_with_the_list(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.named_window("main");
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness
+        .wait_for("the session list to paint", |cx| list_painted(cx, window));
+    let list = harness
+        .update_view(window, |view, _, _| {
+            view.session_list_popover.content_bounds()
+        })
+        .unwrap();
+    // The header's empty space, over the terminal: the surface stops the
+    // press, so the terminal takes neither focus nor the press.
+    let header = gpui::point(list.left() + px(8.0), list.top() + px(6.0));
+    press_at(&mut harness, window, header, 1);
+    release_at(&mut harness, window, header);
+    let session = harness.session;
+    harness.cx.update(|cx| {
+        assert!(list_painted(cx, window), "the list stays open");
+        assert_eq!(focused_row(cx, window), Some(session));
+    });
+}
+
+#[gpui::test]
+fn a_focused_list_keeps_focus_when_the_active_tab_closes_elsewhere(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let second = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[first, second]);
+    harness.update_view(window, |view, window, cx| {
+        view.select(second, window, cx);
+    });
+    harness.activate(window, second);
+    harness.wait_text(window, second, "READY");
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness
+        .wait_for("the session list to paint", |cx| list_painted(cx, window));
+    // Another client closes the active tab: the window activates the
+    // other, but keyboard focus stays on the open list's row.
+    let workspace = harness.workspace;
+    harness.runtime.lock().close_tab(workspace, second).unwrap();
+    harness.wait_for("the other tab to activate", |cx| {
+        shown_tabs(cx, window) == vec![first]
+    });
+    harness.cx.run_until_parked();
+    let session = harness.session;
+    harness.cx.update(|cx| {
+        assert!(list_painted(cx, window));
+        assert_eq!(focused_row(cx, window), Some(session));
+        assert!(!focused(cx, window, first), "the terminal took focus");
+    });
+    // The list's open state also holds an auto-hidden bar revealed, as an
+    // open menu or workspace popover does, so its switcher stays drawn.
+    harness.update_view(window, |view, _, _| assert!(view.reveal_held()));
+}
+
+#[gpui::test]
+fn escape_from_a_rows_menu_returns_to_its_row(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) = harness.named_window("main");
+    let other = harness.other_session("other", 1);
+    harness.wait_projection();
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness
+        .wait_for("the session list to paint", |cx| list_painted(cx, window));
+    harness.press(window, "down");
+    harness.session_row(window, other.session);
+    harness.press(window, "shift-f10");
+    harness.wait_for("the row menu", |cx| {
+        open_kind(cx, window) == Some("session_row")
+    });
+    harness.press(window, "escape");
+    harness.cx.update(|cx| {
+        assert_eq!(open_kind(cx, window), None);
+        assert!(list_painted(cx, window), "the list stays open");
+        assert_eq!(focused_row(cx, window), Some(other.session));
     });
 }

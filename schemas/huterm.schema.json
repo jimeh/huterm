@@ -6381,7 +6381,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Open this window's session menu to switch, create, or rename sessions.",
+            "description": "Open this window's session list to switch, create, or rename sessions.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -6391,7 +6391,7 @@
               },
               "command": {
                 "const": "open_session_menu",
-                "description": "Open this window's session menu to switch, create, or rename sessions.",
+                "description": "Open this window's session list to switch, create, or rename sessions.",
                 "type": "string"
               },
               "description": {
@@ -8370,7 +8370,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Show the focused workspace, or open the session menu from the session switcher.",
+            "description": "Show the focused workspace or session, or open the session list from the session switcher.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -8380,7 +8380,7 @@
               },
               "command": {
                 "const": "sidebar_show",
-                "description": "Show the focused workspace, or open the session menu from the session switcher.",
+                "description": "Show the focused workspace or session, or open the session list from the session switcher.",
                 "type": "string"
               },
               "description": {

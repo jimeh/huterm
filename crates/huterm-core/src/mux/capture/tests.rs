@@ -364,6 +364,33 @@ fn a_capture_without_workspace_counters_resumes_from_each_sessions_workspaces()
 }
 
 #[test]
+fn a_damaged_workspace_counter_still_leaves_names_to_number() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    mux.open_tab(workspace, &idle()).unwrap();
+    let mut capture = mux.capture_runtime(&HashSet::new());
+    capture.sessions[0].workspace_ordinal = u64::MAX;
+
+    let mut restored = Mux::default();
+    restored.set_automatic_numbering(AutomaticNumbering::Increasing);
+    let spawned = spawn_all(&restored, &capture);
+    restored.restore(&capture, spawned).unwrap();
+    let session = SessionId::in_runtime(restored.runtime_id(), session.get());
+    let created = restored.create_workspace(session, None).unwrap();
+    assert!(
+        restored
+            .workspace(created)
+            .unwrap()
+            .display_name()
+            .starts_with("Workspace "),
+        "a bounded counter keeps numbering"
+    );
+    restored.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
 fn a_moved_session_order_survives_capture_and_restore() {
     let mut mux = Mux::default();
     let sessions: Vec<SessionId> = (0..3)

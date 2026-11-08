@@ -530,7 +530,7 @@ impl WorkspaceView {
         Ok(CommandOutcome::Completed)
     }
 
-    fn focus_workspace_row(
+    pub(super) fn focus_workspace_row(
         &mut self,
         workspace: WorkspaceId,
         window: &mut Window,
@@ -843,6 +843,11 @@ impl WorkspaceView {
                 Anchor::Trigger(self.switcher_anchor(from, &layout)),
                 false,
             );
+            // Only a drawn opener mounts the trigger probe; a fallback
+            // opening has none.
+            if from == SwitcherAnchor::Fallback {
+                self.switcher_popover.clear_trigger();
+            }
         }
         self.focus_workspace_row(workspace, window, cx);
         Ok(CommandOutcome::Completed)
@@ -1891,9 +1896,11 @@ impl WorkspaceView {
                 );
                 let content =
                     self.sidebar_content(Surface::Popover, colors, window, cx);
+                // The surface stops presses over it, as a menu's does.
                 let panel = div()
                     .id("workspace-switcher-popover")
                     .debug_selector(|| "workspace-switcher-popover".to_owned())
+                    .occlude()
                     .role(gpui::Role::Dialog)
                     .aria_label("Workspaces")
                     .w(POPOVER_WIDTH)
@@ -1937,6 +1944,7 @@ impl WorkspaceView {
                 let sheet = div()
                     .id("workspace-sidebar-sheet")
                     .debug_selector(|| "workspace-sidebar-sheet".to_owned())
+                    .occlude()
                     .role(gpui::Role::Dialog)
                     .aria_label("Sidebar")
                     .w(width)

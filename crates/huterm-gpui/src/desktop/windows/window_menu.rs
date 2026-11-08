@@ -1,7 +1,7 @@
 //! The window menu: where its button goes, how a vertical column's new-tab
 //! row shares its width with it and the sidebar button, the rows the window
-//! menu lists, and the platform shortcut text beside them. Everything here is pure so the placement and model can be
-//! tested without a window.
+//! menu lists, and the platform shortcut text beside them. Everything here
+//! is pure so the placement and model can be tested without a window.
 
 use gpui::{KeyContext, Pixels, px};
 use huterm_protocol::{CommandId, ids, lookup};
