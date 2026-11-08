@@ -1,82 +1,90 @@
-//! The title bar's session control and the session menu it opens.
+//! The session switcher and the session list it opens.
 //!
-//! The control is a `huterm_ui` [`MenuTrigger`] that names the window's
-//! session. Where it goes and how wide it is resolve once per frame into a
-//! [`SessionControlPlacement`], which rendering, the tab strip's trailing
-//! slots, title-row hit testing, pane-drop exclusions, menu anchoring, and
-//! smoke state share. A click or `open_session_menu` opens the session
-//! menu, a [`MenuSpec`] like the window menu's, so it honours
-//! `macos_native_menus`. Huterm's popover reads the projection, so names,
-//! counts, and window tags update while it is open; "exited" tags arrive
-//! from a worker read of terminal status started when the menu opens. A
-//! native menu is a snapshot, so it opens once that read answers.
+//! The switcher names the window's session: beside the sidebar button while
+//! the sidebar is hidden and Settings show it there, and as the sidebar's
+//! session row. Either opens the session list, a GPUI popover even with
+//! native menus, as the workspace switcher's is: a "SESSIONS" header with
+//! New Session, then one two-line row per session in runtime order. A row
+//! press shows its session; a drag reorders the sessions; a right press,
+//! the "⋯" button, Shift-F10, or the menu key opens the row's menu. The
+//! list reads the projection, so names, counts, and window tags update
+//! while it is open; "exited" tags arrive from a worker read of terminal
+//! status started when it opens.
 
 use gpui::{Hsla, TextRun};
 use huterm_ui::components::menu_trigger::{self, MenuTrigger};
+use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::typography;
 
 use super::session_menu::{
-    SessionControlState, SessionMenuInput, SessionPick, parse_pick, resolve,
-    session_menu, session_rows,
+    SessionControlState, SessionPick, SessionRow, parse_pick, resolve,
+    row_menu, session_rows,
 };
-use super::window_menu::{
-    SessionControlHost, SessionControlPlacement, session_control_host,
-    shortcut_key,
+use super::sidebar_rows::{
+    self, ListRow, ROW_GAP, ROW_HEIGHT, ROW_MARGIN, RowBadge, RowDrag,
 };
+use super::workspace_panel::{HEADER_HEIGHT, RowAction, SWITCHER_LABEL_MAX};
 use super::*;
 
-/// Which host the session menu opens from.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum SessionHostSlot {
-    /// The title-bar session control: the title row, tab bar end, or
-    /// new-tab row.
-    #[default]
-    Title,
-    /// The session switcher row of the docked sidebar or the sheet.
+/// The session list's width, and the height its rows scroll beyond.
+const LIST_WIDTH: Pixels = px(260.0);
+const LIST_ROWS_MAX: Pixels = px(300.0);
+
+/// Where the session list opened from, for its anchor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SessionListAnchor {
+    /// The session switcher beside the sidebar button.
+    Corner,
+    /// The session row of the docked sidebar or the sheet.
     Sidebar,
-    /// The session switcher row of the workspace switcher's popover.
-    Popover,
+    /// The menu button's place, from `open_session_menu` while the window
+    /// draws neither.
+    Fallback,
 }
 
-/// The session name the control last measured, and its width at the
-/// control's text size.
+/// A session row pressed, and dragged once it moves past the threshold.
+pub(super) type SessionDrag = RowDrag<SessionId>;
+
+/// A name a switcher last measured, and its width at the switcher's text
+/// size.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct SessionLabel {
     pub(super) text: String,
     pub(super) width: Pixels,
 }
 
-/// Where the window's top-right controls start: the menu button's slot
-/// and the session control's, when the title strip holds them.
-pub(super) fn title_strip_corner(
-    menu: MenuButtonPlacement,
-    session: SessionControlPlacement,
-) -> Pixels {
-    let menu = if menu == MenuButtonPlacement::TitleStrip {
-        CONTROL_SLOT
-    } else {
-        px(0.0)
+/// `text`'s width at a switcher's text size.
+pub(super) fn switcher_label(
+    text: String,
+    window: &Window,
+    cx: &App,
+) -> SessionLabel {
+    let size =
+        typography::ui(menu_trigger::TEXT_SIZE).to_pixels(window.rem_size());
+    let mut font = window.text_style().font();
+    font.family = Typography::of(cx).family;
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
     };
-    let session = if session.host == SessionControlHost::TitleStrip {
-        session.slot()
-    } else {
-        px(0.0)
-    };
-    menu + session
+    let width = window
+        .text_system()
+        .layout_line(&text, size, &[run], None)
+        .width;
+    SessionLabel { text, width }
 }
 
 impl WorkspaceView {
-    /// Whether the session menu is open, Huterm's or native, or a native
-    /// one waits for its exited read.
-    pub(super) fn session_menu_open(&self) -> bool {
-        self.menu
-            .as_ref()
-            .is_some_and(|menu| menu.kind == MenuKind::Session)
-            || self.native_menu_kind() == Some(&MenuKind::Session)
-            || self.native_session_pending.is_some()
+    /// Whether the session list is open.
+    pub(super) fn session_list_open(&self) -> bool {
+        self.session_list.is_some()
     }
 
-    /// What the control shows, or `None` while the projection does not
+    /// What the switcher shows, or `None` while the projection does not
     /// hold the window's session.
     pub(super) fn session_control_state(
         &self,
@@ -85,175 +93,55 @@ impl WorkspaceView {
         SessionControlState::derive(
             cx.global::<Desktop>().hierarchy.state(),
             self.attached_session(cx),
-            self.session_menu_open(),
+            self.session_list_open(),
         )
     }
 
-    /// Measures the session's name at the control's text size, so layout
-    /// outside render reserves the control's slot. Render calls it before
-    /// laying out, as it measures tab titles.
+    /// Measures the session's name at the switcher's text size, so layout
+    /// outside render reserves the switcher's width. Render calls it
+    /// before laying out, as it measures tab titles.
     pub(super) fn measure_session_label(&mut self, window: &Window, cx: &App) {
-        let Some(state) = self.session_control_state(cx) else {
-            self.session_label = SessionLabel::default();
-            return;
-        };
-        let size = typography::ui(menu_trigger::TEXT_SIZE)
-            .to_pixels(window.rem_size());
-        let mut font = window.text_style().font();
-        font.family = Typography::of(cx).family;
-        let run = TextRun {
-            len: state.name.len(),
-            font,
-            color: Hsla::default(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let width = window
-            .text_system()
-            .layout_line(&state.name, size, &[run], None)
-            .width;
-        self.session_label = SessionLabel {
-            text: state.name,
-            width,
-        };
+        self.session_label = self
+            .session_control_state(cx)
+            .map_or_else(SessionLabel::default, |state| {
+                switcher_label(state.name, window, cx)
+            });
     }
 
-    /// The control's title-bar host for this window, with the bar shown or
-    /// not.
-    fn session_host(&self, bar_shown: bool) -> SessionControlHost {
-        session_control_host(
-            self.config.window.session_button,
-            self.title_row() > px(0.0),
-            self.corner_tab_position(),
-            bar_shown,
+    /// The corner session switcher's drawn width with its name.
+    pub(super) fn session_switcher_width(&self) -> Pixels {
+        menu_trigger::width_for_label(
+            self.session_label.width.ceil().min(SWITCHER_LABEL_MAX),
         )
     }
 
-    /// The control in its host as the tab bar's geometry sees it: the bar
-    /// reserves its slot whether or not an overlay bar is revealed, as it
-    /// does the menu button's.
-    pub(super) fn bar_session_placement(
+    /// The session switcher beside the sidebar button: the layers icon, the
+    /// session's name, dim when automatic, and a chevron, `width` wide, or
+    /// the icon alone. It records its painted bounds for the list's anchor
+    /// and never holds focus.
+    pub(super) fn session_switcher_element(
         &self,
-        layout: &ChromeLayout,
-    ) -> SessionControlPlacement {
-        self.resolve_session_placement(layout, self.session_host(true))
-    }
-
-    /// The control as this frame draws it.
-    pub(super) fn session_control_placement(
-        &self,
-        layout: &ChromeLayout,
-    ) -> SessionControlPlacement {
-        let presentation = self.presentation();
-        let bar_shown = presentation == Presentation::Reserved
-            || presentation == Presentation::Overlay
-                && self.reveal.progress > 0.0;
-        self.resolve_session_placement(layout, self.session_host(bar_shown))
-    }
-
-    /// Sizes the control for `host` from the room the host leaves it.
-    fn resolve_session_placement(
-        &self,
-        layout: &ChromeLayout,
-        host: SessionControlHost,
-    ) -> SessionControlPlacement {
-        // The menu button keeps the rightmost slot of the same host.
-        let menu = if self.config.window.menu_button {
-            CONTROL_SLOT
-        } else {
-            px(0.0)
-        };
-        let tabs = self.layout_tabs();
-        let (room, whole) = match host {
-            SessionControlHost::Hidden | SessionControlHost::SplitRow => {
-                (px(0.0), false)
-            }
-            // The strip less `+` and the menu button.
-            SessionControlHost::BarEnd => (
-                layout.strip_bounds(tabs).size.width - CONTROL_SLOT - menu,
-                false,
-            ),
-            // A docked right sidebar's corner strip, beside the sidebar
-            // button and the menu button.
-            SessionControlHost::TitleStrip if self.panel_corners(layout).1 => (
-                layout.workspace.map_or(px(0.0), |band| band.size.width)
-                    - menu
-                    - CONTROL_SLOT
-                    - CONTROL_INSET,
-                true,
-            ),
-            // A right column's top strip, beside the menu button and a
-            // hidden right sidebar's button: the control truncates to the
-            // column.
-            SessionControlHost::TitleStrip
-                if tabs.position == TabPosition::Right && self.bar_drawn() =>
-            {
-                let chrome = layout.workspace_chrome;
-                let button = if chrome.edge() == workspace_chrome::Edge::Right
-                    && !chrome.docked()
-                {
-                    CONTROL_SLOT
-                } else {
-                    px(0.0)
-                };
-                (layout.tabs.size.width - menu - button - CONTROL_INSET, true)
-            }
-            // The title row less what starts and ends it.
-            SessionControlHost::TitleStrip => {
-                let (left, width) = if tabs.position.vertical() {
-                    (layout.terminal.origin.x, layout.terminal.size.width)
-                } else {
-                    (layout.content.origin.x, layout.content.size.width)
-                };
-                let leading = if layout.frame.controls {
-                    layout.frame.buttons.leading.width()
-                } else {
-                    TRAFFIC_LIGHT_INSET
-                };
-                let lead =
-                    (layout.content.origin.x + leading - left).max(px(0.0));
-                (
-                    width - lead - layout.frame.buttons.trailing.width() - menu,
-                    false,
-                )
-            }
-        };
-        SessionControlPlacement::resolve(
-            host,
-            room,
-            self.session_label.width,
-            whole,
-        )
-    }
-
-    /// The session control at `placement`, or `None` while it is hidden or
-    /// the window shows no session. The caller positions it. It records
-    /// its painted bounds for the menu's anchor and never holds focus.
-    pub(super) fn session_control_element(
-        &self,
-        placement: SessionControlPlacement,
+        width: Pixels,
+        icon_only: bool,
         colors: TabColors,
         cx: &mut Context<'_, Self>,
-    ) -> Option<MenuTrigger> {
-        if placement.host == SessionControlHost::Hidden {
-            return None;
-        }
+    ) -> Option<AnyElement> {
         let state = self.session_control_state(cx)?;
-        let slot = SessionHostSlot::Title;
-        self.session_control_drawn.set(true);
-        let bounds_cell = Rc::clone(&self.session_button_bounds);
-        let swatch = tokens(&self.config.theme);
-        let accessible = state.accessible_name();
-        let tooltip = placement.truncated.then(|| state.name.clone().into());
-        let open = state.open && self.session_anchor_slot() == slot;
+        let open = self.session_list == Some(SessionListAnchor::Corner);
+        let bounds_cell = Rc::clone(&self.session_corner_bounds);
+        self.session_corner_drawn.set(true);
+        let label_width = (width - menu_trigger::width_for_label(px(0.0)))
+            .max(px(0.0))
+            .min(self.session_label.width.ceil());
+        let truncated =
+            icon_only || self.session_label.width.ceil() > label_width;
         let trigger = MenuTrigger::new(
-            "session-control",
-            accessible,
-            state.name,
+            "session-switcher-corner",
+            state.accessible_name(),
+            state.name.clone(),
             Icon::Layers.asset_path(),
             Icon::ChevronDown.asset_path(),
-            swatch,
+            tokens(&self.config.theme),
             ButtonColors {
                 text: colors.foreground,
                 ..colors.control()
@@ -262,15 +150,14 @@ impl WorkspaceView {
         .quiet(colors.inactive)
         .open(open)
         .open_fill(colors.active)
-        .collapsed(placement.collapsed)
-        .label_width(placement.label_width)
-        .tooltip(tooltip)
+        .collapsed(icon_only)
+        .label_width(label_width)
+        .tooltip(truncated.then(|| state.name.clone().into()))
         .occlude()
         .stop_presses()
-        .debug_selector(|| "session-control".to_owned())
-        .on_click(Self::button_action(cx, move |view, window, cx| {
-            view.session_menu_from = slot;
-            view.toggle_session_menu(window, cx);
+        .debug_selector(|| "session-switcher-corner".to_owned())
+        .on_click(Self::button_action(cx, |view, window, cx| {
+            view.toggle_session_list(SessionListAnchor::Corner, window, cx);
             cx.stop_propagation();
         }))
         .child(
@@ -286,86 +173,68 @@ impl WorkspaceView {
         } else {
             trigger
         };
-        // The title row's controls are 26-point squares.
-        let trigger = if placement.collapsed {
+        let trigger = if icon_only {
             trigger.size(CONTROL_SIZE)
         } else {
-            trigger.h(CONTROL_SIZE)
+            trigger.h(CONTROL_SIZE).w(width)
         };
-        // The popover's trigger is whichever control its open menu came
-        // from, so a press on it toggles rather than counting as outside.
-        Some(if open {
-            trigger.child(self.popover.trigger_probe())
-        } else {
-            trigger
-        })
+        Some(
+            if open {
+                trigger.child(self.session_list_popover.trigger_probe())
+            } else {
+                trigger
+            }
+            .into_any_element(),
+        )
     }
 
-    /// The session menu's anchor: the painted control, or the window
-    /// menu's fallback anchor while the control is hidden.
-    pub(super) fn session_menu_anchor(
+    /// The painted bounds of what opens the list from `from`, if drawn.
+    fn session_opener_bounds(
         &self,
+        from: SessionListAnchor,
+    ) -> Option<Bounds<Pixels>> {
+        match from {
+            SessionListAnchor::Corner => self
+                .session_corner_bounds
+                .get()
+                .filter(|_| self.session_corner_drawn.get()),
+            SessionListAnchor::Sidebar => self
+                .session_sidebar_bounds
+                .get()
+                .filter(|_| self.session_sidebar_drawn.get()),
+            SessionListAnchor::Fallback => None,
+        }
+    }
+
+    /// The list's anchor: what it opened from while painted, else the
+    /// corner switcher or the sidebar's session row, else the menu
+    /// button's place.
+    pub(super) fn session_list_anchor(
+        &self,
+        from: SessionListAnchor,
         layout: &ChromeLayout,
     ) -> Bounds<Pixels> {
-        self.session_anchor_cell()
-            .get()
+        self.session_opener_bounds(from)
+            .or_else(|| self.session_opener_bounds(SessionListAnchor::Corner))
+            .or_else(|| self.session_opener_bounds(SessionListAnchor::Sidebar))
             .unwrap_or_else(|| self.menu_anchor(layout))
     }
 
-    /// The session menu's anchor as the next frame places it.
-    #[cfg(test)]
-    pub(super) fn session_menu_anchor_for_tests(
-        &self,
-    ) -> Option<Bounds<Pixels>> {
-        self.session_anchor_cell().get()
+    /// Where `open_session_menu` opens the list from: the corner switcher
+    /// or the sidebar's session row while drawn, else the fallback.
+    fn session_list_opener(&self) -> SessionListAnchor {
+        [SessionListAnchor::Corner, SessionListAnchor::Sidebar]
+            .into_iter()
+            .find(|&from| self.session_opener_bounds(from).is_some())
+            .unwrap_or(SessionListAnchor::Fallback)
     }
 
-    /// The painted bounds cell of `slot`'s host.
-    pub(super) fn session_bounds(
-        &self,
-        slot: SessionHostSlot,
-    ) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
-        match slot {
-            SessionHostSlot::Title => &self.session_button_bounds,
-            SessionHostSlot::Sidebar => &self.session_sidebar_bounds,
-            SessionHostSlot::Popover => &self.session_popover_bounds,
+    /// Whether the open list lost what it opened from this frame.
+    pub(super) fn session_list_anchor_went(&self) -> bool {
+        match self.session_list {
+            None | Some(SessionListAnchor::Fallback) => false,
+            Some(from) => self.session_opener_bounds(from).is_none(),
         }
-    }
-
-    /// Whether this render built `slot`'s host; one that built none clears
-    /// its bounds.
-    pub(super) fn session_drawn(&self, slot: SessionHostSlot) -> &Cell<bool> {
-        match slot {
-            SessionHostSlot::Title => &self.session_control_drawn,
-            SessionHostSlot::Sidebar => &self.session_sidebar_drawn,
-            SessionHostSlot::Popover => &self.session_popover_drawn,
-        }
-    }
-
-    /// The bounds cell of the host that opens the session menu.
-    pub(super) fn session_anchor_cell(
-        &self,
-    ) -> &Rc<Cell<Option<Bounds<Pixels>>>> {
-        self.session_bounds(self.session_anchor_slot())
-    }
-
-    /// The host the session menu anchors to, which also shows it expanded:
-    /// the one clicked while it is painted, else the first painted of the
-    /// title bar, the sidebar, and the popover.
-    pub(super) fn session_anchor_slot(&self) -> SessionHostSlot {
-        let painted =
-            |slot: SessionHostSlot| self.session_bounds(slot).get().is_some();
-        if painted(self.session_menu_from) {
-            return self.session_menu_from;
-        }
-        [
-            SessionHostSlot::Title,
-            SessionHostSlot::Sidebar,
-            SessionHostSlot::Popover,
-        ]
-        .into_iter()
-        .find(|&slot| painted(slot))
-        .unwrap_or_default()
     }
 
     /// Whether `open_session_menu` can run.
@@ -382,81 +251,329 @@ impl WorkspaceView {
         Ok(())
     }
 
-    /// Opens the session menu at the control, or focuses it when it is
-    /// already open; another open menu is replaced. `from_keyboard`
-    /// selects the first row, as `open_session_menu` does; the control
-    /// opens it with no selection.
+    /// The `open_session_menu` command: opens the session list at the
+    /// switcher, or focuses its current row when it is already open.
     pub(super) fn open_session_menu(
         &mut self,
-        from_keyboard: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let from = self
+            .session_list
+            .unwrap_or_else(|| self.session_list_opener());
+        self.open_session_list(from, window, cx)
+    }
+
+    /// Opens the session list from `from` with the window's session's row
+    /// focused, or focuses that row when it is already open. An open menu
+    /// and the workspace switcher's popover close; a narrow window's sheet
+    /// stays, since its session row may be the opener.
+    pub(super) fn open_session_list(
+        &mut self,
+        from: SessionListAnchor,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.session_menu_availability(cx)?;
-        if self.native_menu.is_some() || self.native_session_pending.is_some() {
-            return Ok(CommandOutcome::Completed);
-        }
-        if let Some(menu) = &self.menu
-            && menu.kind == MenuKind::Session
-        {
-            menu.view.read(cx).focus_handle(cx).focus(window, cx);
-            cx.notify();
-            return Ok(CommandOutcome::Completed);
-        }
         if self.palette.is_some() {
             return Err(CommandError::Unavailable(
                 "command palette is open".to_owned(),
             ));
         }
+        let Some(session) = self.attached_session(cx) else {
+            return Err(CommandError::Unavailable(
+                "window shows no session".to_owned(),
+            ));
+        };
         self.close_menu(MenuFocusReturn::Keep, window, cx);
+        if matches!(
+            self.switcher_mode,
+            Some(workspace_panel::SwitcherMode::Popover(_))
+        ) {
+            self.close_workspace_switcher(window, cx);
+        }
         if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, TerminalView::clear_composition);
         }
-        self.read_exited_sessions(window, cx);
-        // The sidebar's and the popover's session switcher open Huterm's
-        // popover, even with native menus.
-        if self.uses_native_menus(cx)
-            && self.session_anchor_slot() == SessionHostSlot::Title
-        {
-            // A native menu cannot take tags later; it opens once the read
-            // answers, and the control shows it open meanwhile.
-            self.native_session_pending = Some(from_keyboard);
-            cx.notify();
-            return Ok(CommandOutcome::Completed);
+        if self.session_list.is_none() {
+            self.session_list = Some(from);
+            let layout = self.chrome_layout(window);
+            self.session_list_popover.open(
+                Anchor::Trigger(self.session_list_anchor(from, &layout)),
+                false,
+            );
+            self.read_exited_sessions(window, cx);
         }
-        self.present_session_menu(from_keyboard, window, cx);
+        self.focus_session_row(session, window, cx);
         Ok(CommandOutcome::Completed)
     }
 
-    /// Shows the session menu at its host: natively from the title-bar
-    /// control when this window uses native menus and the presenter
-    /// answers, else Huterm's popover.
-    fn present_session_menu(
+    /// A switcher: closes an open list, otherwise opens it from `from`.
+    pub(super) fn toggle_session_list(
         &mut self,
+        from: SessionListAnchor,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.session_list.is_some() {
+            let refocus = from == SessionListAnchor::Sidebar
+                && self.session_sidebar_drawn.get();
+            self.close_session_list(window, cx);
+            if refocus {
+                self.session_row_focus.focus(window, cx);
+            } else {
+                self.focus_terminal(window, cx);
+            }
+            return;
+        }
+        if let Err(error) = self.open_session_list(from, window, cx) {
+            self.report_failure("Open Session List", error.to_string(), cx);
+        }
+    }
+
+    /// Closes the session list with a row menu opened from it; the caller
+    /// moves focus. `false` when it was not open.
+    pub(super) fn close_session_list(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        let _ = self.session_list_popover.close();
+        if self.session_list.take().is_none() {
+            return false;
+        }
+        self.session_drag = None;
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|menu| matches!(menu.kind, MenuKind::SessionRow(_)))
+        {
+            self.close_menu(MenuFocusReturn::Terminal, window, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    /// Every session, as the list shows them.
+    pub(super) fn session_rows(&self, cx: &App) -> Vec<SessionRow> {
+        let desktop = cx.global::<Desktop>();
+        session_rows(
+            desktop.hierarchy.state(),
+            &desktop.windows,
+            self.window,
+            &self.exited_sessions,
+        )
+    }
+
+    /// The focus handle of `session`'s row.
+    fn session_focus(&mut self, session: SessionId, cx: &App) -> FocusHandle {
+        self.session_focus
+            .entry(session)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+
+    /// The list row that holds keyboard focus, if any.
+    pub(super) fn focused_session_row(
+        &self,
+        window: &Window,
+    ) -> Option<SessionId> {
+        self.session_focus
+            .iter()
+            .find(|(_, handle)| handle.is_focused(window))
+            .map(|(session, _)| *session)
+    }
+
+    fn focus_session_row(
+        &mut self,
+        session: SessionId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let handle = self.session_focus(session, cx);
+        handle.focus(window, cx);
+        if let Some(index) = self
+            .session_rows(cx)
+            .iter()
+            .position(|row| row.session == session)
+        {
+            self.session_list_scroll.scroll_to_item(index);
+        }
+        cx.notify();
+    }
+
+    /// Hands focus to the terminal when the list row that holds it is no
+    /// longer drawn, drops the handles of sessions that went, and ends a
+    /// drag whose session went or whose list closed.
+    pub(super) fn release_stale_session_focus(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let rows: HashSet<SessionId> = self
+            .session_rows(cx)
+            .iter()
+            .map(|row| row.session)
+            .collect();
+        let drawn = self.session_list.is_some();
+        let focused = self.focused_session_row(window);
+        if let Some(focused) = focused
+            && (!drawn || !rows.contains(&focused))
+        {
+            cx.defer_in(window, move |view, window, cx| {
+                if view.focused_session_row(window) == Some(focused) {
+                    view.focus_terminal(window, cx);
+                }
+            });
+        }
+        self.session_focus.retain(|session, _| {
+            rows.contains(session) || Some(*session) == focused
+        });
+        self.session_row_bounds
+            .borrow_mut()
+            .retain(|session, _| rows.contains(session));
+        if let Some(drag) = self.session_drag
+            && (!drawn || !rows.contains(&drag.item))
+        {
+            self.session_drag = None;
+        }
+    }
+
+    /// Runs a `sidebar_*` command on the focused list row; `None` when no
+    /// list row holds focus. The arrows, Home, End, Tab, and Shift-Tab walk
+    /// the rows; Return shows the focused session; F2 renames it; the menu
+    /// key opens its menu; Escape closes the list.
+    pub(super) fn run_session_list_command(
+        &mut self,
+        command: huterm_protocol::CommandId,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<Result<CommandOutcome, CommandError>> {
+        let focused = self.focused_session_row(window)?;
+        let rows: Vec<SessionId> = self
+            .session_rows(cx)
+            .iter()
+            .map(|row| row.session)
+            .collect();
+        let at = rows.iter().position(|session| *session == focused);
+        let step = match command {
+            ids::SIDEBAR_NEXT => Some(huterm_ui::roving::Move::Next),
+            ids::SIDEBAR_PREVIOUS => Some(huterm_ui::roving::Move::Previous),
+            ids::SIDEBAR_FIRST => Some(huterm_ui::roving::Move::First),
+            ids::SIDEBAR_LAST => Some(huterm_ui::roving::Move::Last),
+            _ => None,
+        };
+        if let Some(step) = step {
+            if let Some(index) = huterm_ui::roving::target(rows.len(), at, step)
+            {
+                self.focus_session_row(rows[index], window, cx);
+            }
+            return Some(Ok(CommandOutcome::Completed));
+        }
+        match command {
+            ids::SIDEBAR_EXIT => {
+                let from = self.session_list;
+                self.close_session_list(window, cx);
+                if from == Some(SessionListAnchor::Sidebar)
+                    && self.session_sidebar_drawn.get()
+                {
+                    self.session_row_focus.focus(window, cx);
+                } else {
+                    self.focus_terminal(window, cx);
+                }
+                cx.notify();
+            }
+            ids::SIDEBAR_SHOW => {
+                self.run_session_row(focused, RowAction::Show, window, cx);
+            }
+            ids::SIDEBAR_RENAME => {
+                self.run_session_row(focused, RowAction::Rename, window, cx);
+            }
+            ids::SIDEBAR_MENU => {
+                let anchor = self
+                    .session_row_bounds
+                    .borrow()
+                    .get(&focused)
+                    .copied()
+                    .map_or_else(
+                        || window.mouse_position(),
+                        |bounds| bounds.bottom_left(),
+                    );
+                self.open_session_row_menu(focused, anchor, true, window, cx);
+            }
+            _ => return None,
+        }
+        Some(Ok(CommandOutcome::Completed))
+    }
+
+    /// Shows, renames, clears the name of, or closes `session`, as the
+    /// palette's commands do with that session named. Showing one closes
+    /// the list.
+    pub(super) fn run_session_row(
+        &mut self,
+        session: SessionId,
+        action: RowAction,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let command = match action {
+            RowAction::Show => {
+                if self.close_session_list(window, cx) {
+                    self.focus_terminal(window, cx);
+                }
+                // Showing the shown session changes nothing.
+                if self.attached_session(cx) == Some(session) {
+                    return;
+                }
+                ids::SELECT_SESSION
+            }
+            RowAction::Rename => ids::RENAME_SESSION,
+            RowAction::ClearName => ids::CLEAR_SESSION_NAME,
+            RowAction::Close => ids::CLOSE_SESSION,
+        };
+        self.run_recorded(
+            &CommandInvocation::new(
+                command,
+                vec![CommandArgument::new(
+                    "session",
+                    CommandValue::Session(session),
+                )],
+            ),
+            window,
+            cx,
+        );
+    }
+
+    /// Opens `session`'s row menu at `pointer`, replacing any open menu. It
+    /// refuses where the tab menu does.
+    pub(super) fn open_session_row_menu(
+        &mut self,
+        session: SessionId,
+        pointer: gpui::Point<Pixels>,
         from_keyboard: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let contexts = window.context_stack();
-        let spec = self.session_menu_spec(cx);
-        let anchor = MenuAnchor::Below(
-            self.session_menu_anchor(&self.chrome_layout(window)),
-        );
-        if self.session_anchor_slot() == SessionHostSlot::Title
-            && self.open_native_menu(
-                MenuKind::Session,
-                &spec,
-                anchor,
-                window,
-                cx,
-            )
+        if self.check_available(true).is_err()
+            || self.palette.is_some()
+            || self.native_menu.is_some()
         {
+            return;
+        }
+        let Some(spec) = self.session_row_menu_spec(session, cx) else {
+            return;
+        };
+        self.close_menu(MenuFocusReturn::Keep, window, cx);
+        let contexts = window.context_stack();
+        let kind = MenuKind::SessionRow(session);
+        let anchor = MenuAnchor::Pointer(pointer);
+        if self.open_native_menu(kind.clone(), &spec, anchor, window, cx) {
             return;
         }
         self.mount_menu(
             spec.to_listbox(Platform::current()),
-            MenuKind::Session,
-            None,
+            kind,
+            Some(pointer),
             contexts,
             from_keyboard,
             window,
@@ -464,107 +581,467 @@ impl WorkspaceView {
         );
     }
 
-    /// Presents the native session menu that waited for the exited read,
-    /// unless the request went away (`cancel_pending_session_menu`) or the
-    /// window can no longer take it.
-    fn present_pending_session_menu(
+    /// A row's context menu, or `None` once the session went.
+    pub(super) fn session_row_menu_spec(
+        &self,
+        session: SessionId,
+        cx: &App,
+    ) -> Option<MenuSpec> {
+        self.session_rows(cx)
+            .iter()
+            .find(|row| row.session == session)
+            .map(row_menu)
+    }
+
+    /// Runs a session row menu pick.
+    pub(super) fn run_session_pick(
         &mut self,
+        id: &str,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(from_keyboard) = self.native_session_pending.take() else {
+        let Some(pick) = parse_pick(id) else {
+            self.report_failure(
+                "Command failed",
+                format!("unknown session menu item `{id}`"),
+                cx,
+            );
+            return;
+        };
+        let raw = match pick {
+            SessionPick::Rename(raw)
+            | SessionPick::ClearName(raw)
+            | SessionPick::OpenInNewWindow(raw)
+            | SessionPick::Close(raw) => raw,
+        };
+        let Some(session) =
+            resolve(cx.global::<Desktop>().hierarchy.state(), raw)
+        else {
+            self.report_failure(
+                "Command failed",
+                "Session no longer exists".to_owned(),
+                cx,
+            );
+            return;
+        };
+        let action = match pick {
+            SessionPick::Rename(_) => RowAction::Rename,
+            SessionPick::ClearName(_) => RowAction::ClearName,
+            SessionPick::Close(_) => RowAction::Close,
+            SessionPick::OpenInNewWindow(_) => {
+                self.close_session_list(window, cx);
+                self.run_recorded(
+                    &CommandInvocation::new(
+                        ids::OPEN_SESSION_IN_NEW_WINDOW,
+                        vec![CommandArgument::new(
+                            "session",
+                            CommandValue::Session(session),
+                        )],
+                    ),
+                    window,
+                    cx,
+                );
+                return;
+            }
+        };
+        self.run_session_row(session, action, window, cx);
+    }
+
+    /// Starts tracking a press on `session`'s row; it becomes a drag once
+    /// the pointer moves past the threshold, and a click that shows the
+    /// session otherwise.
+    fn begin_session_drag(
+        &mut self,
+        session: SessionId,
+        pointer: gpui::Point<Pixels>,
+    ) {
+        self.session_drag = Some(RowDrag::new(session, session, pointer));
+    }
+
+    /// Follows the pointer and points the drop target at the row it is
+    /// above.
+    pub(super) fn update_session_drag(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(mut drag) = self.session_drag else {
+            return;
+        };
+        drag.follow(pointer);
+        let order: Vec<SessionId> = self
+            .session_rows(cx)
+            .iter()
+            .map(|row| row.session)
+            .collect();
+        drag.retarget(&order, &self.session_row_bounds.borrow());
+        self.session_drag = Some(drag);
+        cx.notify();
+    }
+
+    /// Whether a dragged session row rests at the list's edge, so frames
+    /// keep scrolling it.
+    pub(super) fn session_drag_scrolls(&self) -> bool {
+        self.session_drag.is_some_and(|drag| {
+            drag.edge_scroll(&self.session_list_scroll).is_some()
+        })
+    }
+
+    /// Scrolls the list under a dragged row resting at its edge, and moves
+    /// the drop target with the rows. Returns whether it scrolled.
+    pub(super) fn scroll_session_drag(
+        &mut self,
+        now: Instant,
+        cx: &App,
+    ) -> bool {
+        let Some(mut drag) = self.session_drag else {
+            return false;
+        };
+        let scrolled = drag.scroll(now, &self.session_list_scroll);
+        if scrolled {
+            let order: Vec<SessionId> = self
+                .session_rows(cx)
+                .iter()
+                .map(|row| row.session)
+                .collect();
+            drag.retarget(&order, &self.session_row_bounds.borrow());
+        }
+        self.session_drag = Some(drag);
+        scrolled
+    }
+
+    /// Ends the press: a drag moves the session to its drop target, a press
+    /// that never moved shows the session.
+    pub(super) fn finish_session_drag(
+        &mut self,
+        pointer: gpui::Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.update_session_drag(pointer, cx);
+        let Some(drag) = self.session_drag.take() else {
             return;
         };
         cx.notify();
-        if self.menu.is_some()
-            || self.native_menu.is_some()
-            || self.palette.is_some()
-            || self.session_menu_availability(cx).is_err()
-        {
+        if !drag.dragging {
+            self.run_session_row(drag.item, RowAction::Show, window, cx);
             return;
         }
-        self.present_session_menu(from_keyboard, window, cx);
+        let order: Vec<SessionId> = self
+            .session_rows(cx)
+            .iter()
+            .map(|row| row.session)
+            .collect();
+        if drag.moves(&order) {
+            Self::move_session(drag.item, drag.before, cx);
+        }
     }
 
-    /// Whether a native session menu waiting for its exited read takes the
-    /// `menu_*` commands, while no other menu is mounted.
-    pub(super) fn pending_session_menu_takes_keys(&self) -> bool {
-        self.menu.is_none() && self.native_session_pending.is_some()
-    }
-
-    /// Drops a native session menu still waiting for its exited read, and
-    /// supersedes that read, so its answer presents nothing: a dismissal,
-    /// Escape, window deactivation, the palette, or another menu replaced
-    /// it.
-    /// Returns whether one was waiting.
-    pub(super) fn cancel_pending_session_menu(
+    /// Cancels a session row press or drag; nothing moves. `true` when one
+    /// was under way.
+    pub(super) fn cancel_session_drag(
         &mut self,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        if self.native_session_pending.take().is_none() {
-            return false;
+        let cancelled = self.session_drag.take().is_some();
+        if cancelled {
+            cx.notify();
         }
-        self.exited_read = self.exited_read.wrapping_add(1);
-        cx.notify();
-        true
+        cancelled
     }
 
-    /// A session host: closes an open session menu, otherwise opens it
-    /// with no selection.
-    pub(super) fn toggle_session_menu(
-        &mut self,
-        window: &mut Window,
+    /// Moves `session` before `before`, or to the end, on a worker. The
+    /// projection applies the committed order; this only reports failure.
+    fn move_session(
+        session: SessionId,
+        before: Option<SessionId>,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.cancel_pending_session_menu(cx) {
-            return;
-        }
-        if self
-            .menu
-            .as_ref()
-            .is_some_and(|menu| menu.kind == MenuKind::Session)
-        {
-            self.close_menu(MenuFocusReturn::Terminal, window, cx);
-            return;
-        }
-        if let Err(error) = self.open_session_menu(false, window, cx) {
-            self.report_failure("Open Session Menu", error.to_string(), cx);
-        }
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        let task = cx
+            .background_executor()
+            .spawn(async move { runtime.move_session(session, before) });
+        let app = cx.to_async();
+        cx.spawn(async move |view, cx| {
+            let Committed { result, seq } = task.await;
+            projected(&app, seq).await;
+            let _ = view.update(cx, |view, cx| {
+                if let Err(error) = result
+                    && !terminating(cx)
+                {
+                    view.report_failure(
+                        "Reorder sessions",
+                        format!("Cannot reorder sessions: {error}"),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
     }
 
-    /// The session menu's rows from the projection, the window model, and
-    /// the last exited read.
-    pub(super) fn session_menu_spec(&self, cx: &App) -> MenuSpec {
-        let desktop = cx.global::<Desktop>();
-        let mut contexts = self
+    /// One session row: a press shows it, a drag reorders it, a right press
+    /// or its "⋯" button opens its menu.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one element tree, read top to bottom"
+    )]
+    fn session_list_row_element(
+        &mut self,
+        row: &SessionRow,
+        last: bool,
+        colors: TabColors,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let session = row.session;
+        let focus = self.session_focus(session, cx);
+        let swatch = tokens(&self.config.theme);
+        let targeted = self
             .menu
             .as_ref()
-            .map(|menu| menu.contexts.clone())
-            .unwrap_or_default();
-        contexts.push(
-            KeyContext::parse(huterm_ui::components::menu::KEY_CONTEXT)
-                .unwrap_or_default(),
+            .is_some_and(|menu| menu.kind == MenuKind::SessionRow(session));
+        let drag = self.session_drag.filter(|drag| drag.dragging);
+        let dragged = drag.is_some_and(|drag| drag.item == session);
+        let mut badges = Vec::new();
+        if row.windows > 0 {
+            badges.push(RowBadge {
+                icon: Some(Icon::AppWindow),
+                text: row.windows.to_string(),
+                warning: false,
+            });
+        }
+        if row.exited {
+            badges.push(RowBadge {
+                icon: None,
+                text: "exited".to_owned(),
+                warning: true,
+            });
+        }
+        let more = sidebar_rows::more_button(
+            format!("session-row-more-{}", session.get()),
+            format!("Session actions: {}", row.name),
+            targeted,
+            colors,
+            swatch,
+        )
+        .on_click(Self::button_action(cx, move |view, window, cx| {
+            cx.stop_propagation();
+            let anchor = view
+                .session_row_bounds
+                .borrow()
+                .get(&session)
+                .copied()
+                .map_or_else(
+                    || window.mouse_position(),
+                    |bounds| bounds.bottom_right(),
+                );
+            view.open_session_row_menu(session, anchor, false, window, cx);
+        }));
+        let bounds_cell = Rc::clone(&self.session_row_bounds);
+        let element = sidebar_rows::list_row(
+            ListRow {
+                id: format!("session-row-{}", session.get()),
+                icon: Icon::Layers,
+                name: row.name.clone(),
+                automatic: row.automatic,
+                detail: row.detail(),
+                accessible: row.accessible_name(),
+                selected: self.attached_session(cx) == Some(session),
+                targeted,
+                dragged,
+                line_above: drag
+                    .is_some_and(|drag| drag.before == Some(session)),
+                line_below: last
+                    && !dragged
+                    && drag.is_some_and(|drag| drag.before.is_none()),
+                badges,
+            },
+            &focus,
+            Some(more.into_any_element()),
+            colors,
+            swatch,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                // The row takes no focus from a press; keyboard focus stays
+                // where it was, as on tabs.
+                window.prevent_default();
+                cx.stop_propagation();
+                view.begin_session_drag(session, event.position);
+            }),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                view.cancel_session_drag(cx);
+                view.open_session_row_menu(
+                    session,
+                    event.position,
+                    false,
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            }),
+        )
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, (), _, _| {
+                    bounds_cell.borrow_mut().insert(session, bounds);
+                },
+            )
+            .absolute()
+            .inset_0(),
         );
-        session_menu(&SessionMenuInput {
-            rows: session_rows(
-                desktop.hierarchy.state(),
-                &desktop.windows,
-                self.window,
-                &self.exited_sessions,
-            ),
-            current: self.attached_session(cx),
-            alternate: shortcut_key(
-                &desktop.keymap,
-                &contexts,
-                ids::MENU_CONFIRM_ALTERNATE,
-            ),
-        })
+        huterm_ui::focus::ring_inset(element, &focus, swatch, window, cx)
+            .into_any_element()
+    }
+
+    /// The open session list under its anchor, as tall as its content up to
+    /// its cap: the "SESSIONS" header with New Session, then the rows.
+    pub(super) fn session_list_overlay(
+        &mut self,
+        layout: &ChromeLayout,
+        colors: TabColors,
+        window: &Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Option<AnyElement> {
+        let from = self.session_list?;
+        let viewport = window.viewport_size();
+        let swatch = tokens(&self.config.theme);
+        let rows = self.session_rows(cx);
+        let count = rows.len();
+        let row_elements: Vec<AnyElement> = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                self.session_list_row_element(
+                    row,
+                    index + 1 == count,
+                    colors,
+                    window,
+                    cx,
+                )
+            })
+            .collect();
+        let view = cx.entity();
+        let list = ScrollArea::new("session-rows", &self.session_list_scroll)
+            .padding(gpui::Edges {
+                bottom: px(6.0),
+                ..gpui::Edges::default()
+            })
+            .children(row_elements)
+            .max_height(Some(LIST_ROWS_MAX))
+            .render(
+                &mut self.session_list_scrollbar,
+                colors.scrollbar,
+                &view,
+                |view| &mut view.session_list_scrollbar,
+                cx,
+            );
+        let header = Self::list_header(
+            "SESSIONS",
+            self.new_session_button(colors, cx).into_any_element(),
+            colors,
+        );
+        let shown = f32::from(u16::try_from(count.max(1)).unwrap_or(u16::MAX));
+        let height = HEADER_HEIGHT
+            + ((ROW_HEIGHT + ROW_GAP) * shown + px(6.0)).min(LIST_ROWS_MAX)
+            + px(10.0);
+        let placement = place(
+            Anchor::Trigger(self.session_list_anchor(from, layout)),
+            size(LIST_WIDTH, height),
+            viewport,
+        );
+        let panel = div()
+            .id("session-list-popover")
+            .debug_selector(|| "session-list-popover".to_owned())
+            .role(gpui::Role::Dialog)
+            .aria_label("Sessions")
+            .w(LIST_WIDTH)
+            .max_h(placement.max_height)
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .py(px(4.0))
+            .bg(swatch.surface)
+            .border_1()
+            .border_color(swatch.line)
+            .rounded(px(9.0))
+            .shadow(swatch.shadow())
+            .text_size(tab_bar::TAB_TEXT_SIZE)
+            .text_color(colors.foreground)
+            .child(header)
+            .child(list);
+        self.session_list_popover.render(placement, viewport, panel)
+    }
+
+    /// A list's header: its uppercase label and a "+" button.
+    pub(super) fn list_header(
+        label: &'static str,
+        button: AnyElement,
+        colors: TabColors,
+    ) -> gpui::Div {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(HEADER_HEIGHT)
+            .pl(px(14.0))
+            .pr(ROW_MARGIN)
+            .gap(px(2.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(typography::ui(10.5))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(colors.inactive)
+                    .child(label),
+            )
+            .child(button)
+    }
+
+    /// New Session, for the list's header.
+    fn new_session_button(
+        &self,
+        colors: TabColors,
+        cx: &Context<'_, Self>,
+    ) -> Button {
+        let id = "session-new";
+        Button::new(id, "New Session", tokens(&self.config.theme))
+            .debug_selector(move || id.to_owned())
+            .colors(colors.control())
+            .icon(
+                icon_element(Icon::Plus, colors.inactive)
+                    .group_hover(id, |style| {
+                        style.text_color(colors.foreground)
+                    }),
+            )
+            .icon_only()
+            .group(id)
+            .stop_presses()
+            .size(px(22.0))
+            .rounded(px(6.0))
+            .on_click(Self::button_action(cx, |view, window, cx| {
+                if view.close_session_list(window, cx) {
+                    view.focus_terminal(window, cx);
+                }
+                view.run_recorded(
+                    &CommandInvocation::new(ids::NEW_SESSION, Vec::new()),
+                    window,
+                    cx,
+                );
+            }))
     }
 
     /// Reads which sessions' shells have all exited on a worker, from each
     /// terminal's published status. When it answers, the tags go into the
-    /// open popover, or a native menu that waited for them opens. A later
-    /// read supersedes an earlier one.
+    /// open list. A later read supersedes an earlier one.
     fn read_exited_sessions(
         &mut self,
         window: &mut Window,
@@ -583,115 +1060,39 @@ impl WorkspaceView {
         });
         cx.spawn_in(window, async move |view, cx| {
             let exited = task.await;
-            let _ = view.update_in(cx, |view, window, cx| {
+            let _ = view.update_in(cx, |view, _, cx| {
                 if view.exited_read != generation {
                     return;
                 }
                 let exited: HashSet<SessionId> = exited.into_iter().collect();
                 if view.exited_sessions != exited {
                     view.exited_sessions = exited;
-                    view.refresh_session_menu(cx);
+                    cx.notify();
                 }
-                view.present_pending_session_menu(window, cx);
             });
         })
         .detach();
     }
 
-    /// Rebuilds an open session menu's rows from the projection; the menu
-    /// keeps its selection on the same row, or on the row that took the
-    /// place of one that went away.
-    pub(super) fn refresh_session_menu(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(menu) = self
-            .menu
-            .as_ref()
-            .filter(|menu| menu.kind == MenuKind::Session)
-            .map(|menu| menu.view.clone())
-        else {
-            return;
-        };
-        let model = self.session_menu_spec(cx).to_listbox(Platform::current());
-        menu.update(cx, |menu, cx| menu.set_model_keeping_place(model, cx));
-    }
-
-    /// Runs a session menu pick: switch to a session, open it in a new
-    /// window, or one of the menu's actions, as the palette would.
-    pub(super) fn run_session_pick(
-        &mut self,
-        id: &str,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let state = cx.global::<Desktop>().hierarchy.state();
-        let session = |raw: u64| {
-            resolve(state, raw).ok_or_else(|| {
-                CommandError::Unavailable("Session no longer exists".to_owned())
-            })
-        };
-        let invocation = match parse_pick(id) {
-            Some(SessionPick::Select(raw)) => session(raw).map(|session| {
-                CommandInvocation::new(
-                    ids::SELECT_SESSION,
-                    vec![CommandArgument::new(
-                        "session",
-                        CommandValue::Session(session),
-                    )],
-                )
-            }),
-            Some(SessionPick::OpenInNewWindow(raw)) => {
-                session(raw).map(|session| {
-                    CommandInvocation::new(
-                        ids::OPEN_SESSION_IN_NEW_WINDOW,
-                        vec![CommandArgument::new(
-                            "session",
-                            CommandValue::Session(session),
-                        )],
-                    )
-                })
-            }
-            Some(SessionPick::Command(command)) => {
-                Ok(CommandInvocation::new(command, Vec::new()))
-            }
-            None => Err(CommandError::Unavailable(format!(
-                "unknown session menu item `{id}`"
-            ))),
-        };
-        // Picking the session the window shows changes nothing.
-        if let Ok(invocation) = &invocation
-            && invocation.id == ids::SELECT_SESSION
-            && invocation.session("session") == self.attached_session(cx)
-        {
-            return;
-        }
-        let result = invocation.and_then(|invocation| {
-            let result = self.invoke_interactive(&invocation, window, cx);
-            if result.is_ok() {
-                self.recent.record(invocation.id);
-                cx.global_mut::<Desktop>().frequency.record(invocation.id);
-            }
-            result
-        });
-        if let Err(error) = result {
-            self.report_failure("Command failed", error.to_string(), cx);
-        }
-        cx.notify();
-    }
-
-    /// Smoke output for the session control: its host, painted bounds,
-    /// whether it is collapsed, truncated, and open, and its name.
+    /// Smoke output for the session switcher: the corner switcher's host
+    /// and painted bounds, whether the list is open, where from, and where
+    /// it painted, and the session's name.
     pub(super) fn session_control_smoke_state(
         &self,
         prefix: &str,
         window: &Window,
         cx: &App,
     ) -> String {
-        let placement =
-            self.session_control_placement(&self.chrome_layout(window));
-        let rect = self
-            .session_button_bounds
-            .get()
-            .filter(|_| placement.host != SessionControlHost::Hidden)
-            .map_or_else(
+        // Where the corner session switcher goes this frame, or `Hidden`
+        // while it does not show.
+        let chrome = self.chrome_layout(window).workspace_chrome;
+        let host = if chrome.session() {
+            self.corner_host(chrome, false)
+        } else {
+            workspace_chrome::CornerHost::Hidden
+        };
+        let rect = |bounds: Option<Bounds<Pixels>>| {
+            bounds.map_or_else(
                 || "none".to_owned(),
                 |bounds| {
                     format!(
@@ -702,14 +1103,25 @@ impl WorkspaceView {
                         f32::from(bounds.size.height)
                     )
                 },
-            );
+            )
+        };
+        let list = rect(
+            self.session_list_popover
+                .content_bounds()
+                .filter(|_| self.session_list.is_some()),
+        );
+        let rect = rect(
+            self.session_corner_bounds
+                .get()
+                .filter(|_| self.session_corner_drawn.get()),
+        );
         let state = self.session_control_state(cx);
+        let from = self
+            .session_list
+            .map_or_else(|| "none".to_owned(), |from| format!("{from:?}"));
         format!(
-            "{prefix}session_host={:?} {prefix}session_rect={rect} {prefix}session_collapsed={} {prefix}session_truncated={} {prefix}session_open={} {prefix}session_name={:?} {prefix}session_automatic={}",
-            placement.host,
-            placement.collapsed,
-            placement.truncated,
-            self.session_menu_open(),
+            "{prefix}session_host={host:?} {prefix}session_rect={rect} {prefix}session_open={} {prefix}session_list_from={from} {prefix}session_list_rect={list} {prefix}session_name={:?} {prefix}session_automatic={}",
+            self.session_list_open(),
             state.as_ref().map_or("", |state| state.name.as_str()),
             state.as_ref().is_some_and(|state| state.automatic),
         )

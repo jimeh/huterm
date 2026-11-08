@@ -115,6 +115,9 @@ pub struct Session {
     pub workspaces: Vec<WorkspaceId>,
     custom_name: Option<String>,
     automatic_name: String,
+    /// The highest workspace automatic-name number this session handed
+    /// out or restored; workspaces number per session.
+    workspace_ordinal: u64,
 }
 macro_rules! named_record {
     ($kind:ty) => {
@@ -165,15 +168,18 @@ pub struct OpenedPane {
 }
 
 /// How a new session or workspace picks the number in its automatic name,
-/// such as the 2 in "Session 2". Records with a custom name keep their
+/// such as the 2 in "Session 2". Sessions number across the runtime and
+/// workspaces within their session. Records with a custom name keep their
 /// automatic one for Clear Name, so their numbers count as used.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AutomaticNumbering {
-    /// The lowest number no live record of the same kind uses.
+    /// The lowest number no live record of the same kind uses, among a
+    /// session's workspaces for a workspace.
     #[default]
     LowestUnused,
-    /// One more than the last number this runtime handed out; a restore
-    /// resumes after the highest number it restored.
+    /// One more than the last number this runtime, or for a workspace its
+    /// session, handed out; a restore resumes after the highest number it
+    /// restored.
     Increasing,
 }
 
@@ -192,9 +198,9 @@ pub struct Mux {
     runtime_id: RuntimeId,
     socket_name: String,
     next_id: u64,
-    /// The highest automatic-name number handed out or restored, per kind.
+    /// The highest session automatic-name number handed out or restored.
+    /// Each session keeps its own workspace counterpart.
     session_ordinal: u64,
-    workspace_ordinal: u64,
     numbering: AutomaticNumbering,
     sessions: Vec<Session>,
     workspaces: BTreeMap<WorkspaceId, Workspace>,
@@ -222,7 +228,6 @@ impl Mux {
             socket_name: socket_name.into(),
             next_id: 0,
             session_ordinal: 0,
-            workspace_ordinal: 0,
             numbering: AutomaticNumbering::default(),
             sessions: Vec::new(),
             workspaces: BTreeMap::new(),
@@ -304,7 +309,7 @@ impl Mux {
             Err(MuxError::ForeignRuntime(runtime))
         }
     }
-    /// Lists sessions in creation order.
+    /// Lists sessions in presentation order.
     #[must_use]
     pub fn sessions(&self) -> &[Session] {
         &self.sessions
@@ -423,6 +428,7 @@ impl Mux {
             workspaces: Vec::new(),
             custom_name: name.map(str::to_owned),
             automatic_name: automatic_name(SESSION_NAME, ordinal),
+            workspace_ordinal: 0,
         });
         self.session_ordinal = self.session_ordinal.max(ordinal);
         let index = position(self.sessions.len() - 1);
@@ -443,12 +449,16 @@ impl Mux {
         self.select_session(session)?;
         validate_name(name)?;
         self.admit_items(0, 1)?;
+        let record = self
+            .session(session)
+            .ok_or(MuxError::UnknownSession(session))?;
         let ordinal = next_ordinal(
             self.numbering,
-            self.workspace_ordinal,
-            self.workspaces
-                .values()
-                .map(|workspace| workspace.automatic_name.as_str()),
+            record.workspace_ordinal,
+            record
+                .workspaces
+                .iter()
+                .map(|id| self.workspaces[id].automatic_name.as_str()),
             WORKSPACE_NAME,
         )?;
         let value = self.allocate()?;
@@ -463,15 +473,14 @@ impl Mux {
                 automatic_name: automatic_name(WORKSPACE_NAME, ordinal),
             },
         );
-        let siblings = &mut self
+        let record = self
             .sessions
             .iter_mut()
             .find(|s| s.id == session)
-            .ok_or(MuxError::UnknownSession(session))?
-            .workspaces;
-        siblings.push(id);
-        let index = position(siblings.len() - 1);
-        self.workspace_ordinal = self.workspace_ordinal.max(ordinal);
+            .ok_or(MuxError::UnknownSession(session))?;
+        record.workspaces.push(id);
+        record.workspace_ordinal = record.workspace_ordinal.max(ordinal);
+        let index = position(record.workspaces.len() - 1);
         self.emit_hierarchy(|mux| HierarchyEvent::WorkspaceCreated {
             session,
             workspace: mux.workspaces[&id].info(),
@@ -970,6 +979,46 @@ impl Mux {
         });
         Ok(())
     }
+    /// Moves a session before an anchor or to the end of the session order.
+    /// Its workspaces, tabs, terminals, and attachments stay as they are, so
+    /// the move leaves the revision and pending close tickets alone.
+    /// # Errors
+    /// Rejects foreign or missing targets before changing structure.
+    pub fn move_session(
+        &mut self,
+        session: SessionId,
+        before: Option<SessionId>,
+    ) -> Result<(), MuxError> {
+        self.validate_scope(session.runtime())?;
+        if let Some(anchor) = before {
+            self.validate_scope(anchor.runtime())?;
+        }
+        let source_index = self
+            .sessions
+            .iter()
+            .position(|s| s.id == session)
+            .ok_or(MuxError::UnknownSession(session))?;
+        let target_index =
+            before.map_or(Ok(self.sessions.len()), |anchor| {
+                self.sessions
+                    .iter()
+                    .position(|s| s.id == anchor)
+                    .ok_or(MuxError::UnknownSession(anchor))
+            })?;
+        // The final position, after removing the session from the order.
+        let target_index =
+            target_index - usize::from(source_index < target_index);
+        if source_index == target_index {
+            return Ok(());
+        }
+        let record = self.sessions.remove(source_index);
+        self.sessions.insert(target_index, record);
+        self.emit_hierarchy(|_| HierarchyEvent::SessionMoved {
+            session,
+            index: position(target_index),
+        });
+        Ok(())
+    }
     /// Atomically transfers a workspace before an anchor or to a session's end.
     /// Empty sessions remain owned. All tabs and terminal attachments survive.
     /// # Errors
@@ -1035,10 +1084,19 @@ impl Mux {
         self.sessions[target_session]
             .workspaces
             .insert(target_index, workspace);
-        self.workspaces
+        let moved = self
+            .workspaces
             .get_mut(&workspace)
-            .ok_or(MuxError::UnknownWorkspace(workspace))?
-            .session_id = destination;
+            .ok_or(MuxError::UnknownWorkspace(workspace))?;
+        moved.session_id = destination;
+        // The moved number counts as handed out in its new session, so
+        // increasing numbering never repeats it there.
+        if let Some(ordinal) =
+            automatic_ordinal(WORKSPACE_NAME, &moved.automatic_name)
+        {
+            let counter = &mut self.sessions[target_session].workspace_ordinal;
+            *counter = (*counter).max(ordinal);
+        }
         self.emit_hierarchy(|_| HierarchyEvent::WorkspaceMoved {
             workspace,
             session: destination,

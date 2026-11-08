@@ -278,7 +278,8 @@ pub(crate) fn fill_rename_target(
     }
 }
 
-/// Converts a validated one-based `select_tab` index to a tab slot.
+/// Converts a validated one-based `index` argument, as `select_tab`,
+/// `select_session`, and `select_workspace` take, to a zero-based slot.
 ///
 /// # Errors
 /// Returns [`CommandError::MissingArgument`] when the invocation omits

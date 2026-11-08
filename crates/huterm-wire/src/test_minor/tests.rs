@@ -299,7 +299,7 @@ fn a_test_minor_server_converges_with_older_and_newer_clients_through_every_down
     let bytes = w.into_bytes();
     assert!(matches!(
         decode_event(&mut Reader::new(&bytes), scope),
-        Err(DecodeError::UnknownTag { tag: 21, .. })
+        Err(DecodeError::UnknownTag { tag: 22, .. })
     ));
 }
 

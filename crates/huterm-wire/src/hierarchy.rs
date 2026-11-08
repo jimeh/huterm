@@ -783,6 +783,14 @@ pub fn encode_event(
             w.tag(20);
             w.record(|_| Ok(()))
         }
+        HierarchyEvent::SessionMoved { session, index } => {
+            w.tag(21);
+            w.record(|w| {
+                w.id(scope, *session)?;
+                w.u32(*index);
+                Ok(())
+            })
+        }
         // A variant added to the protocol without a wire form; give it a
         // tag, an encoding, and vectors before any peer can send it.
         _ => Err(EncodeError::Unsupported),
@@ -883,6 +891,10 @@ pub fn decode_event(
             },
             19 => HierarchyEvent::Reset,
             20 => HierarchyEvent::Skipped,
+            21 => HierarchyEvent::SessionMoved {
+                session: r.id(scope)?,
+                index: r.u32()?,
+            },
             tag => {
                 return Err(DecodeError::UnknownTag {
                     field: "hierarchy event",

@@ -330,6 +330,7 @@ fn a_capture_past_the_name_or_item_limits_is_refused_before_anything_spawns() {
                 custom_name: None,
                 automatic_name: "Session".into(),
             },
+            workspace_ordinal: 0,
             workspaces: Vec::new(),
         });
     }

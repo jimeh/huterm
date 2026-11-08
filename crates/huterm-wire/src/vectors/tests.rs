@@ -31,7 +31,7 @@ fn every_message_vector_encodes_to_its_bytes_and_decodes_back() {
             _ => None,
         })
         .collect();
-    assert_eq!(events.len(), 21);
+    assert_eq!(events.len(), 22);
 }
 
 #[test]

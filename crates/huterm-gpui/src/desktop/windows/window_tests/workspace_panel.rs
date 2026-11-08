@@ -78,6 +78,16 @@ fn order(cx: &mut App, session: SessionId) -> Vec<WorkspaceId> {
         .to_vec()
 }
 
+/// A harness whose one-tab windows draw the sidebar button on both
+/// platforms. Without client decorations a Linux window has no title row,
+/// and a one-tab window hides its bar, which would leave the corner no
+/// host; an always-shown bar hosts it there.
+pub(super) fn corner_harness(cx: &mut TestAppContext) -> DesktopHarness {
+    DesktopHarness::with_config(cx, |config| {
+        config.tabs.always_show = true;
+    })
+}
+
 impl DesktopHarness {
     /// A focused window on one echo tab, waiting for its shell.
     fn workspace_window(&mut self) -> (AnyWindowHandle, TabId) {
@@ -137,7 +147,7 @@ impl DesktopHarness {
     }
 
     /// The painted bounds `read` returns from the view, once it paints.
-    fn painted(
+    pub(super) fn painted(
         &mut self,
         window: AnyWindowHandle,
         what: &str,
@@ -155,7 +165,10 @@ impl DesktopHarness {
     }
 
     /// The workspace switcher's painted bounds.
-    fn switcher_bounds(&mut self, window: AnyWindowHandle) -> Bounds<Pixels> {
+    pub(super) fn switcher_bounds(
+        &mut self,
+        window: AnyWindowHandle,
+    ) -> Bounds<Pixels> {
         self.painted(window, "the switcher to paint", |view| {
             view.workspace_trigger_bounds
                 .get()
@@ -164,7 +177,7 @@ impl DesktopHarness {
     }
 
     /// Presses `from`, moves past the drag threshold to `to`, and holds.
-    fn drag_row(
+    pub(super) fn drag_row(
         &mut self,
         window: AnyWindowHandle,
         from: gpui::Point<Pixels>,
@@ -186,7 +199,11 @@ impl DesktopHarness {
     }
 
     /// Releases a held drag at `at`.
-    fn release(&mut self, window: AnyWindowHandle, at: gpui::Point<Pixels>) {
+    pub(super) fn release(
+        &mut self,
+        window: AnyWindowHandle,
+        at: gpui::Point<Pixels>,
+    ) {
         VisualTestContext::from_window(window, &self.cx).simulate_event(
             MouseUpEvent {
                 button: MouseButton::Left,
@@ -202,7 +219,7 @@ impl DesktopHarness {
 fn the_sidebar_button_shows_alone_until_a_second_workspace(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = corner_harness(cx);
     let (window, _) = harness.workspace_window();
     harness.cx.update(|cx| {
         let layout = chrome(cx, window);
@@ -334,13 +351,21 @@ fn the_switcher_opens_a_popover_of_the_sidebars_content_under_native_menus(
         assert!(view.native_menu.is_none(), "a GPUI popover, never native");
         assert!(popover.top() >= switcher.bottom(), "{popover:?}");
     });
-    // It holds the rows and the session switcher.
+    // It holds the rows, without the sidebar's session row, and each row
+    // has a "⋯" button for its menu.
     let row = harness.row_bounds(window, second);
     assert!(popover.contains(&row.center()), "{row:?} {popover:?}");
-    let session = harness.painted(window, "the session row to paint", |view| {
-        view.session_popover_bounds.get()
+    harness.update_view(window, |view, _, _| {
+        assert!(!view.session_sidebar_drawn.get(), "no session row");
     });
-    assert!(popover.contains(&session.center()), "{session:?}");
+    harness.cx.update(|cx| {
+        let more = &a11y_node(
+            cx,
+            window,
+            &format!("workspace-row-more-{}", second.get()),
+        )["aria"];
+        assert_eq!(more["label"], "Workspace actions: Workspace 2");
+    });
     // The shown row takes focus; the keyboard picks the second workspace,
     // which closes the popover and returns focus to its terminal.
     harness.press(window, "down enter");
@@ -397,7 +422,6 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
             menu_ids(cx, window),
             [
                 format!("workspace-rename:{raw}"),
-                "new_workspace".to_owned(),
                 format!("workspace-close:{raw}"),
             ]
         );
@@ -622,25 +646,23 @@ fn the_keyboard_walks_the_sidebar_and_returns_to_the_terminal(
 
 #[gpui::test]
 fn a_popover_whose_anchor_goes_closes_cleanly(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = corner_harness(cx);
     let (window, tab) = harness.workspace_window();
     let (second, _) = harness.add_workspace(1);
     harness.switcher_bounds(window);
     let switcher_open = |harness: &mut DesktopHarness| {
         harness.update_view(window, |view, _, _| view.switcher_mode.is_some())
     };
-    // The session menu opened from the popover's session row is Huterm's,
-    // even with native menus.
+    // A row menu opened from the popover's "⋯" button leaves it open.
     harness
         .invoke(window, ids::OPEN_WORKSPACE_SWITCHER)
         .unwrap();
-    let session = harness.painted(window, "the session row to paint", |view| {
-        view.session_popover_bounds.get()
-    });
-    harness.click_at(window, session.center());
+    let row = harness.row_bounds(window, second);
+    harness
+        .click_at(window, gpui::point(row.right() - px(16.0), row.center().y));
     assert_eq!(
         harness.cx.update(|cx| open_kind(cx, window)),
-        Some("session")
+        Some("workspace_row")
     );
     assert!(switcher_open(&mut harness), "the menu closed its popover");
     // The switcher goes with the last other workspace (W33): the popover
@@ -672,7 +694,7 @@ fn a_popover_whose_anchor_goes_closes_cleanly(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_session_row_opens_huterms_session_menu_at_either_end(
+fn the_session_row_opens_the_session_list_at_either_end(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
@@ -690,28 +712,40 @@ fn the_session_row_opens_huterms_session_menu_at_either_end(
     harness.cx.update(|cx| {
         let aria = &a11y_node(cx, window, "session-switcher")["aria"];
         assert_eq!(aria["role"], "Button");
-        assert!(aria["label"].as_str().unwrap().starts_with("Session: "));
+        // Its caption counts the session's workspaces and tabs.
+        assert!(
+            aria["label"]
+                .as_str()
+                .unwrap()
+                .ends_with(", 1 workspace · 1 tab"),
+            "{aria}"
+        );
     });
     harness.click_at(window, bottom.center());
+    let list = harness.painted(window, "the session list", |view| {
+        view.session_list_popover.content_bounds()
+    });
     harness.update_view(window, |view, _, _| {
         assert!(view.native_menu.is_none(), "Huterm's popover, never native");
         assert_eq!(
-            view.session_menu_anchor_for_tests(),
-            Some(bottom),
-            "the menu anchors to the row that opened it"
+            view.session_list,
+            Some(super::super::session_control::SessionListAnchor::Sidebar)
         );
     });
-    assert_eq!(
-        harness.cx.update(|cx| open_kind(cx, window)),
-        Some("session")
-    );
+    // From the bottom row it opens upward, against the row.
+    assert!(list.bottom() <= bottom.top(), "{list:?} {bottom:?}");
     harness.cx.update(|cx| {
         assert_eq!(
             a11y_node(cx, window, "session-switcher")["aria"]["expanded"],
             true
         );
     });
+    // Escape closes it and returns focus to the row that opened it.
     harness.press(window, "escape");
+    harness.update_view(window, |view, window, _| {
+        assert!(view.session_list.is_none());
+        assert!(view.session_row_focus.is_focused(window));
+    });
     // The setting moves it to the top, above the workspace rows.
     harness.reload_config(window, |config| {
         config.sidebar.session_switcher = SessionSwitcherPosition::Top;
@@ -753,7 +787,8 @@ fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
                     harness.reload_config(window, |config| {
                         config.sidebar.position = position;
                         config.tabs.position = tabs;
-                        config.window.session_button = session_button;
+                        config.sidebar.session_switcher_in_corner =
+                            session_button;
                     });
                     harness.update_view(window, |view, window, cx| {
                         if view.workspace_visible != visible {
@@ -822,7 +857,7 @@ fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_narrow_window_opens_the_sidebar_as_a_sheet(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = corner_harness(cx);
     let (window, tab) = harness.workspace_window();
     let (second, seconds) = harness.add_workspace(1);
     let height = harness
@@ -915,7 +950,7 @@ fn widening_a_window_with_its_sheet_open_docks_one_sidebar(
 
 #[gpui::test]
 fn each_opener_toggles_only_its_own_popover(cx: &mut TestAppContext) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = corner_harness(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     let (empty, _) = harness.add_workspace(0);
@@ -960,7 +995,7 @@ fn each_opener_toggles_only_its_own_popover(cx: &mut TestAppContext) {
 fn the_switcher_closes_for_commands_the_palette_reload_and_deactivation(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    let mut harness = corner_harness(cx);
     let (window, _) = harness.workspace_window();
     harness.add_workspace(1);
     harness.switcher_bounds(window);
@@ -1026,7 +1061,7 @@ fn right_corner_controls_sit_just_inside_the_menu_button(
             config.sidebar.position = SidebarPosition::Right;
             config.tabs.position = tabs;
             config.tabs.always_show = true;
-            config.window.session_button = session_button;
+            config.sidebar.session_switcher_in_corner = session_button;
         });
         let (window, _) = harness.workspace_window();
         let height = harness
@@ -1059,16 +1094,20 @@ fn right_corner_controls_sit_just_inside_the_menu_button(
                 "{label}: {button:?} {menu:?}"
             );
             if tabs == TabPosition::Right {
-                // A right column's strip holds the button; the switcher
-                // takes the row above its tabs, inside the column.
+                // A right column's strip holds the button; the switchers
+                // take rows above its tabs, inside the column, the session
+                // switcher first.
                 assert!(layout.tabs.contains(&switcher.center()), "{label}");
                 assert!(button.left() >= layout.tabs.left(), "{label}");
-                // The opt-in session control fits the strip beside them.
-                if let Some(control) = view.session_button_bounds.get() {
+                if let Some(session) = view
+                    .session_corner_bounds
+                    .get()
+                    .filter(|_| view.session_corner_drawn.get())
+                {
                     assert!(
-                        control.left() >= layout.tabs.left()
-                            && control.right() <= button.left(),
-                        "{label}: {control:?} {button:?} {:?}",
+                        layout.tabs.contains(&session.center())
+                            && session.bottom() <= switcher.top(),
+                        "{label}: {session:?} {switcher:?} {:?}",
                         layout.tabs
                     );
                 }
@@ -1109,16 +1148,17 @@ fn the_keyboard_reaches_the_session_switcher(cx: &mut TestAppContext) {
         let node = a11y_node(cx, window, "session-switcher");
         assert_eq!(node["aria"]["role"], "Button");
     });
-    // Return opens the session menu; Shift-Tab returns to the rows.
+    // Return opens the session list with the session's row focused;
+    // Escape returns to the session switcher, and Shift-Tab to the rows.
     harness.press(window, "enter");
-    assert_eq!(
-        harness.cx.update(|cx| open_kind(cx, window)),
-        Some("session")
-    );
-    harness.press(window, "escape");
-    harness.invoke(window, ids::FOCUS_SIDEBAR).unwrap();
-    harness.press(window, "shift-tab");
+    let session = harness.session;
     harness.update_view(window, |view, window, _| {
+        assert!(view.session_list.is_some());
+        assert_eq!(view.focused_session_row(window), Some(session));
+    });
+    harness.press(window, "escape");
+    harness.update_view(window, |view, window, _| {
+        assert!(view.session_list.is_none());
         assert!(view.session_row_focus.is_focused(window));
     });
     harness.press(window, "shift-tab");

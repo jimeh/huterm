@@ -362,9 +362,14 @@ operation that adds items must call it too. A restore checks names and items
 in `within_limits` before it spawns anything, not in `RuntimeCapture::validate`,
 whose looser bounds `huterm-state` shares.
 A session or workspace takes its automatic name's number when it is created
-and keeps it, never from its membership position. `Mux::set_automatic_numbering`
-picks the number: the lowest one no live record of the kind holds (the default,
-so a closed record's number is reused), or one above the highest handed out.
+and keeps it, never from its membership position. Sessions number across the
+runtime; workspaces number within their session, on a counter each
+`Session` keeps, so every session's first workspace is "Workspace 1". A
+workspace moved in raises its new session's counter to its number.
+`Mux::set_automatic_numbering` picks the number: the lowest one no live
+record of the kind holds, among the session's workspaces for a workspace
+(the default, so a closed record's number is reused), or one above the
+highest handed out.
 Custom-named records keep their automatic name, so their numbers stay taken and
 Clear Name never repeats a live name. The client stores
 `[general] session_numbering` in an atomic that every `DesktopRuntime::lock`
@@ -428,7 +433,8 @@ and recreates structure, never processes. `Mux::capture_runtime` records
 sessions that hold a tab, and the tabless sessions the caller's `shown`
 set names (the client's saved windows), in order, with unscoped numeric
 IDs, the
-allocator watermark, and both creation ordinals, plus up to three
+allocator watermark, the session creation ordinal, and each session's
+workspace ordinal, plus up to three
 directory candidates per shown terminal, read from registry status
 without waiting on its thread: the local effective directory, the root
 shell directory, and the launch directory `TerminalRuntime` keeps,
@@ -446,13 +452,15 @@ through `RuntimeCapture::validate`, which `huterm-state` shares. Every
 refusal stops and joins the spawned runtimes, and dropping an unused
 `SpawnedTerminals` does the same. A restore sets `next_id` to the
 watermark, so later allocations of every kind land above restored IDs,
-resumes each ordinal from the highest automatic name of its kind it
+resumes the session ordinal from the highest automatic session name it
 restored, custom-named records included, rather than from the saved
 ordinal (so increasing numbering stops counting sessions closed before
-Quit across restarts), scopes saved IDs into its `RuntimeId`, takes pane
-fallback names from the commands it launched (captures blank them, since
-they are process labels), and emits the creation
-events so existing subscribers follow. A pane whose terminal failed
+Quit across restarts), keeps each session's saved workspace ordinal,
+raised to the highest automatic name among its restored workspaces (a
+file from before per-session counters reads as zero), scopes saved IDs
+into its `RuntimeId`, takes pane fallback names from the commands it
+launched (captures blank them, since they are process labels), and emits
+the creation events so existing subscribers follow. A pane whose terminal failed
 leaves its layout through `without_pane`, a tab left with no pane is
 removed, and the report names both and every session left without a tab.
 Tear-off orphan cleanup asks `Mux::session_attached` under the lock.
@@ -465,6 +473,9 @@ attachments from a projection, and `subscribe_hierarchy` snapshots the
 attachment map. The reducer refuses a foreign or repeated attachment, a
 retarget or detach of an unknown one, and one naming an unknown session.
 Any session's attachment change makes `windows_to_visit` visit every window.
+`move_session` reorders the session list and emits `SessionMoved`, which
+touches every window's session list through the names summary. It leaves
+the revision alone, since no close covers a different set of terminals.
 Moves retain empty workspaces and sessions and never change terminal lifetime.
 Desktop windows retain their attachment identity for assessed close. Orphaned
 spawn cleanup must preserve resources adopted by another attachment or moved

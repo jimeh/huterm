@@ -231,6 +231,42 @@ fn switching_workspaces_keeps_each_workspaces_shells_navigation_and_undo(
 }
 
 #[gpui::test]
+fn select_workspace_by_index_shows_that_position_or_the_last_and_skips_an_empty_slot(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[first]);
+    let (second, others) = harness.add_workspace(1);
+    // Another session's workspace never counts toward a position.
+    harness.other_session("other", 1);
+    harness.wait_projection();
+    let at = |index| {
+        CommandInvocation::new(
+            ids::SELECT_WORKSPACE,
+            vec![CommandArgument::new("index", CommandValue::Integer(index))],
+        )
+    };
+    harness.invoke_with(window, &at(2)).unwrap();
+    harness.wait_workspace(window, second, &others);
+    // An empty slot completes without switching, as select_tab's does.
+    assert!(matches!(
+        harness.invoke_with(window, &at(3)),
+        Ok(CommandOutcome::Completed)
+    ));
+    harness.cx.update(|cx| {
+        assert!(!switching(cx, window));
+        assert_eq!(shown_workspace(cx, window), Some(second));
+    });
+    harness.invoke_with(window, &at(1)).unwrap();
+    harness.wait_workspace(window, harness.workspace, &[first]);
+    // The ninth position is the last workspace, however many there are,
+    // as select_tab's is.
+    harness.invoke_with(window, &at(9)).unwrap();
+    harness.wait_workspace(window, second, &others);
+}
+
+#[gpui::test]
 fn two_windows_on_one_session_switch_workspaces_independently(
     cx: &mut TestAppContext,
 ) {
@@ -1819,7 +1855,7 @@ fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
         Some("empty-close-workspace")
     );
     // A menu a button did not open returns focus to New Tab.
-    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.invoke(window, ids::OPEN_MENU).unwrap();
     assert!(harness.update_view(window, |view, _, _| view.menu.is_some()));
     harness.press(window, "escape");
     assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
@@ -2132,6 +2168,13 @@ fn workspace_commands_follow_availability_and_the_palette_prompts_for_a_workspac
         .rename_workspace(second, Some("build"))
         .unwrap();
     let other = harness.other_session("other", 1);
+    // Workspaces number per session, so the other session's first one
+    // shares this one's automatic name; a custom name tells them apart.
+    harness
+        .runtime
+        .lock()
+        .rename_workspace(other.workspace, Some("elsewhere"))
+        .unwrap();
     harness.wait_projection();
     for command in [
         ids::NEXT_WORKSPACE,
@@ -2230,10 +2273,8 @@ fn workspace_names_default_to_the_windows_workspace_and_cycling_wraps(
     harness.invoke(window, ids::PREVIOUS_WORKSPACE).unwrap();
     harness.wait_workspace(window, second, &seconds);
 
-    // The session menu's New Workspace creates one and shows it.
-    harness.update_view(window, |view, window, cx| {
-        view.run_session_pick(ids::NEW_WORKSPACE.as_str(), window, cx);
-    });
+    // New Workspace creates one and shows it.
+    harness.invoke(window, ids::NEW_WORKSPACE).unwrap();
     let own = harness.workspace;
     harness.wait_for("the new workspace", |cx| {
         shown_workspace(cx, window)

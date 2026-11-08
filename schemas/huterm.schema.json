@@ -3608,17 +3608,23 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Show another session in this window; both sessions keep running.",
+            "description": "Show another session in this window, by position from a keybinding or chosen; both sessions keep running.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "index": {
+                    "maximum": 9,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "select_session",
-                "description": "Show another session in this window; both sessions keep running.",
+                "description": "Show another session in this window, by position from a keybinding or chosen; both sessions keep running.",
                 "type": "string"
               },
               "description": {
@@ -3867,17 +3873,23 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Show another workspace of this window's session in this window.",
+            "description": "Show another workspace of this window's session in this window, by position from a keybinding or chosen.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "index": {
+                    "maximum": 9,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "select_workspace",
-                "description": "Show another workspace of this window's session in this window.",
+                "description": "Show another workspace of this window's session in this window, by position from a keybinding or chosen.",
                 "type": "string"
               },
               "description": {
@@ -11709,12 +11721,36 @@
             }
           ],
           "default": "bottom",
-          "description": "Where the session switcher sits in the sidebar and in the workspace\nswitcher: at the bottom or the top.",
+          "description": "Where the session switcher sits in the sidebar: at the bottom or the\ntop.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Session switcher",
           "x-huterm-label": "Position in the sidebar",
           "x-huterm-order": 10,
           "x-huterm-section": "sessions"
+        },
+        "session_switcher_in_corner": {
+          "default": false,
+          "description": "While the sidebar is hidden, also show the session switcher beside\nthe sidebar button.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Session switcher",
+          "x-huterm-label": "Show beside the sidebar button",
+          "x-huterm-order": 11,
+          "x-huterm-section": "sessions"
+        },
+        "switcher_style": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SwitcherStyle"
+            }
+          ],
+          "default": "full",
+          "description": "How the switchers beside the sidebar button look: the icon and name,\nor the icon alone. A narrow window shows icons either way.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Switcher style",
+          "x-huterm-order": 23,
+          "x-huterm-section": "workspaces"
         },
         "visible": {
           "default": false,
@@ -11724,6 +11760,16 @@
           "x-huterm-group": "Sidebar",
           "x-huterm-label": "Show the sidebar in new windows",
           "x-huterm-order": 21,
+          "x-huterm-section": "workspaces"
+        },
+        "workspace_switcher_in_corner": {
+          "default": true,
+          "description": "While the sidebar is hidden and the session has two or more\nworkspaces, show the workspace switcher beside the sidebar button.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Show the workspace switcher beside the sidebar button",
+          "x-huterm-order": 22,
           "x-huterm-section": "workspaces"
         }
       },
@@ -11764,6 +11810,23 @@
           "description": "No indicator.",
           "type": "string",
           "x-huterm-label": "Off"
+        }
+      ]
+    },
+    "SwitcherStyle": {
+      "description": "How the switchers beside the sidebar button look.",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "The icon, the name, and a chevron.",
+          "type": "string",
+          "x-huterm-label": "Icon and name"
+        },
+        {
+          "const": "icon",
+          "description": "The icon alone; the name shows in its tooltip.",
+          "type": "string",
+          "x-huterm-label": "Icon only"
         }
       ]
     },
@@ -12591,13 +12654,14 @@
           "x-huterm-section": "windows"
         },
         "session_button": {
-          "default": false,
-          "description": "Also show a session control, which names the window's session and\nopens the session menu, beside the window menu button. The sidebar\nalways holds the session switcher.",
+          "deprecated": true,
+          "description": "Deprecated and ignored: the session switcher beside the sidebar\nbutton replaced the title-bar session control. Use\n`sidebar.session_switcher_in_corner`, and remove this field.",
           "type": "boolean",
+          "x-huterm-advanced": true,
           "x-huterm-apply": "live",
           "x-huterm-group": "Session switcher",
-          "x-huterm-label": "Show session control in the title bar",
-          "x-huterm-order": 11,
+          "x-huterm-label": "Title-bar session control",
+          "x-huterm-order": 90,
           "x-huterm-section": "sessions"
         },
         "shortcut_hints": {

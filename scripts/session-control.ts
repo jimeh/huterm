@@ -1,33 +1,41 @@
 /**
- * Reads and checks the session control the palette smoke's title-bar and
- * client-frame steps publish: its host, its painted rect, and where the
- * session menu opened against it. Pure, so the checks have unit tests.
+ * Reads and checks the session switcher beside the sidebar button, which
+ * the palette smoke's title-bar and client-frame steps publish: its corner
+ * host, its painted rect, and where the session list opened against it.
+ * Pure, so the checks have unit tests.
  */
 import { field, parseRect } from "./check-overlays";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
-/** The control's drawn size: a 26-point control, like the menu button. */
+/** The switcher's drawn height, and its width with only its icon. */
 export const CONTROL_SIZE = 26;
-/** The widest the control draws before its name truncates. */
-export const CONTROL_MAX = 168;
+/** The widest the switcher draws before its name truncates: a 140-point
+ * label and the trigger's icon, chevron, and padding. */
+export const CONTROL_MAX = 192;
+/** The gap between the sidebar button and the switcher beside it. */
+export const CORNER_GAP = 4;
 
-export type SessionControl = {
+export type SessionSwitcher = {
   host: string;
   rect: Rect;
-  collapsed: boolean;
-  truncated: boolean;
+  /** Only the layers icon shows. */
+  icon: boolean;
   open: boolean;
+  /** Where the session list painted, while open. */
+  list?: Rect;
 };
 
 /** The `w0.session_*` fields of a state dump; `rect` is required. */
-export function sessionControl(state: string): SessionControl {
+export function sessionSwitcher(state: string): SessionSwitcher {
+  const rect = parseRect(field(state, "session_rect"));
+  const list = field(state, "session_list_rect");
   return {
     host: field(state, "session_host"),
-    rect: parseRect(field(state, "session_rect")),
-    collapsed: field(state, "session_collapsed") === "true",
-    truncated: field(state, "session_truncated") === "true",
+    rect,
+    icon: Math.abs(rect.w - CONTROL_SIZE) <= 0.5,
     open: field(state, "session_open") === "true",
+    list: list === "none" ? undefined : parseRect(list),
   };
 }
 
@@ -35,45 +43,44 @@ const right = (rect: Rect) => rect.x + rect.w;
 const bottom = (rect: Rect) => rect.y + rect.h;
 
 /**
- * Problems with the control's placement: the expected host, a 26-point
- * height (and width when collapsed), no wider than its widest look, inside
- * `row`, and, when the menu button shows, directly before it at the same
- * height, so the button keeps the rightmost slot.
+ * Problems with the switcher's placement: the expected host, a 26-point
+ * height (and width with only its icon), no wider than its widest look,
+ * inside `row`, and, when the sidebar button shows in the same row, just
+ * after it on the left or just before it on the right, at the same height.
  */
 export function placementProblems(
-  control: SessionControl,
+  switcher: SessionSwitcher,
   host: string,
   row: Rect,
-  menu?: Rect,
+  button?: Rect,
 ): string[] {
-  const { rect } = control;
+  const { rect } = switcher;
   const problems: string[] = [];
-  if (control.host !== host) problems.push(`host ${control.host}, expected ${host}`);
+  if (switcher.host !== host) problems.push(`host ${switcher.host}, expected ${host}`);
   if (Math.abs(rect.h - CONTROL_SIZE) > 0.5) problems.push(`height ${rect.h}`);
-  if (control.collapsed && Math.abs(rect.w - CONTROL_SIZE) > 0.5) problems.push(`collapsed width ${rect.w}`);
   if (rect.w > CONTROL_MAX + 0.5) problems.push(`width ${rect.w} beyond ${CONTROL_MAX}`);
   if (rect.x < row.x - 0.5 || right(rect) > right(row) + 0.5 || rect.y < row.y - 0.5 || bottom(rect) > bottom(row) + 0.5) {
     problems.push(`rect ${JSON.stringify(rect)} outside ${JSON.stringify(row)}`);
   }
-  if (menu) {
-    if (right(rect) > menu.x + 0.5) problems.push(`ends at ${right(rect)}, past the menu button at ${menu.x}`);
-    if (menu.x - right(rect) > 8) problems.push(`leaves ${menu.x - right(rect)} points before the menu button`);
-    if (Math.abs(rect.y - menu.y) > 0.5) problems.push(`top ${rect.y}, menu button top ${menu.y}`);
+  if (button) {
+    const gap = rect.x >= right(button) - 0.5 ? rect.x - right(button) : button.x - right(rect);
+    if (gap < -0.5 || gap > CORNER_GAP + 4) problems.push(`leaves ${gap} points beside the sidebar button ${JSON.stringify(button)}`);
+    if (Math.abs(rect.y - button.y) > 0.5) problems.push(`top ${rect.y}, sidebar button top ${button.y}`);
   }
   return problems;
 }
 
 /**
- * Problems with where the session menu opened: below the control, or above
- * it from a bottom bar, and inside the window either way.
+ * Problems with where the session list opened: below the switcher, or
+ * above it from a bottom bar, and inside the window either way.
  */
-export function menuProblems(menu: Rect, control: Rect, upward: boolean, window: Rect): string[] {
+export function listProblems(list: Rect, switcher: Rect, upward: boolean, window: Rect): string[] {
   const problems: string[] = [];
-  if (upward ? bottom(menu) > control.y + 0.5 : menu.y < bottom(control) - 0.5) {
-    problems.push(`menu ${JSON.stringify(menu)} is not ${upward ? "above" : "below"} the control ${JSON.stringify(control)}`);
+  if (upward ? bottom(list) > switcher.y + 0.5 : list.y < bottom(switcher) - 0.5) {
+    problems.push(`list ${JSON.stringify(list)} is not ${upward ? "above" : "below"} the switcher ${JSON.stringify(switcher)}`);
   }
-  if (menu.x < window.x - 0.5 || right(menu) > right(window) + 0.5) {
-    problems.push(`menu ${JSON.stringify(menu)} leaves the window ${JSON.stringify(window)}`);
+  if (list.x < window.x - 0.5 || right(list) > right(window) + 0.5) {
+    problems.push(`list ${JSON.stringify(list)} leaves the window ${JSON.stringify(window)}`);
   }
   return problems;
 }

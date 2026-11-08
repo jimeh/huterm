@@ -1240,12 +1240,10 @@ fn a_narrow_titlebar_tear_off_pill_turns_compact_instead_of_covering_tabs(
     cx: &mut TestAppContext,
 ) {
     // The fixture width fits two tabs and the compact pill beside the
-    // sidebar button, without the session control, whose own narrow-host
-    // collapse has its tests.
+    // sidebar button.
     let mut h = DesktopHarness::with_config(cx, |config| {
         config.tabs.always_show = true;
         config.tabs.position = TabPosition::Titlebar;
-        config.window.session_button = false;
     });
     let tab = h.open_tab(ECHO);
     let _ = h.open_tab(ECHO);

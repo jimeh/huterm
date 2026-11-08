@@ -1519,13 +1519,22 @@ const CATALOG: &[CommandSpec] = &[
         ids::SELECT_SESSION,
         CommandScope::Window,
         "Switch Session",
-        "Show another session in this window; both sessions keep running.",
-        &[ArgumentSpec {
-            name: "session",
-            kind: ArgumentKind::Session,
-            required: Requirement::Always,
-            prompt: true,
-        }],
+        "Show another session in this window, by position from a \
+         keybinding or chosen; both sessions keep running.",
+        &[
+            ArgumentSpec {
+                name: "index",
+                kind: ArgumentKind::Integer { min: 1, max: 9 },
+                required: Requirement::OneOf("target"),
+                prompt: false,
+            },
+            ArgumentSpec {
+                name: "session",
+                kind: ArgumentKind::Session,
+                required: Requirement::OneOf("target"),
+                prompt: true,
+            },
+        ],
     ),
     spec(
         ids::CLEAR_SESSION_NAME,
@@ -1570,13 +1579,22 @@ const CATALOG: &[CommandSpec] = &[
         ids::SELECT_WORKSPACE,
         CommandScope::Window,
         "Switch Workspace",
-        "Show another workspace of this window's session in this window.",
-        &[ArgumentSpec {
-            name: "workspace",
-            kind: ArgumentKind::Workspace,
-            required: Requirement::Always,
-            prompt: true,
-        }],
+        "Show another workspace of this window's session in this window, \
+         by position from a keybinding or chosen.",
+        &[
+            ArgumentSpec {
+                name: "index",
+                kind: ArgumentKind::Integer { min: 1, max: 9 },
+                required: Requirement::OneOf("target"),
+                prompt: false,
+            },
+            ArgumentSpec {
+                name: "workspace",
+                kind: ArgumentKind::Workspace,
+                required: Requirement::OneOf("target"),
+                prompt: true,
+            },
+        ],
     ),
     spec(
         ids::NEXT_WORKSPACE,

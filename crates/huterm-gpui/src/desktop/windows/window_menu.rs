@@ -1,16 +1,14 @@
-//! The window menu: where its button goes, where the session control goes
-//! beside it, how a vertical column's new-tab row shares its width with
-//! both, the rows the window menu lists, and the platform shortcut text
-//! beside them. Everything here is pure so the placement and model can be
+//! The window menu: where its button goes, how a vertical column's new-tab
+//! row shares its width with it and the sidebar button, the rows the window
+//! menu lists, and the platform shortcut text beside them. Everything here is pure so the placement and model can be
 //! tested without a window.
 
 use gpui::{KeyContext, Pixels, px};
 use huterm_protocol::{CommandId, ids, lookup};
 
 use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
-use huterm_ui::components::menu_trigger;
 
-use super::{CONTROL_SIZE, CONTROL_SLOT, TabPosition};
+use super::{CONTROL_SIZE, TabPosition};
 use crate::keymap::{InstalledKeymap, Origin, Platform};
 
 /// Where the menu button is drawn.
@@ -55,135 +53,6 @@ pub(super) fn menu_button_placement(
     }
 }
 
-/// Which host draws the session control. It follows the menu button, one
-/// slot further in, so the button keeps the rightmost slot; with the
-/// button off the control takes its slot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SessionControlHost {
-    /// `window.session_button = false`, or the bar that would hold it is
-    /// hidden; `open_session_menu` still works from a fallback anchor.
-    Hidden,
-    /// The title row's right end: the macOS strip, the terminal column's
-    /// row beside a left column, the top strip of a right column, or the
-    /// row Huterm draws on Linux, before its window buttons.
-    TitleStrip,
-    /// The right end of a top or bottom tab bar.
-    BarEnd,
-    /// A vertical column's new-tab row, icon-only between `+` and the menu
-    /// button.
-    SplitRow,
-}
-
-/// Where the control goes for the window's state. `title_strip`,
-/// `position`, and `bar_shown` mean what they mean to
-/// [`menu_button_placement`].
-pub(super) fn session_control_host(
-    enabled: bool,
-    title_strip: bool,
-    position: TabPosition,
-    bar_shown: bool,
-) -> SessionControlHost {
-    if !enabled {
-        return SessionControlHost::Hidden;
-    }
-    match menu_button_placement(true, title_strip, position, bar_shown) {
-        MenuButtonPlacement::Hidden => SessionControlHost::Hidden,
-        MenuButtonPlacement::TitleStrip => SessionControlHost::TitleStrip,
-        MenuButtonPlacement::BarEnd => SessionControlHost::BarEnd,
-        MenuButtonPlacement::SplitRow => SessionControlHost::SplitRow,
-    }
-}
-
-/// The control's widest look: a name truncates beyond it.
-pub(super) const SESSION_CONTROL_MAX: Pixels = px(168.0);
-/// The narrowest label the control shows before it collapses to its icon.
-const SESSION_LABEL_MIN: Pixels = px(28.0);
-/// The share of a title row or bar the control may take, so a long name
-/// truncates before tabs or the title start to crowd.
-const SESSION_HOST_SHARE: f32 = 0.35;
-
-/// The resolved session control: its host and drawn size. Rendering, the
-/// tab strip's trailing slots, title-row hit testing, pane-drop
-/// exclusions, menu anchoring, and smoke state all read this one value.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct SessionControlPlacement {
-    pub(super) host: SessionControlHost,
-    /// The control's drawn width; zero while hidden.
-    pub(super) width: Pixels,
-    /// The width the name is laid out in; zero while collapsed.
-    pub(super) label_width: Pixels,
-    /// Only the icon shows.
-    pub(super) collapsed: bool,
-    /// The name needs more room than it has, so the tooltip shows it whole.
-    pub(super) truncated: bool,
-}
-
-impl SessionControlPlacement {
-    pub(super) const HIDDEN: Self = Self {
-        host: SessionControlHost::Hidden,
-        width: px(0.0),
-        label_width: px(0.0),
-        collapsed: false,
-        truncated: false,
-    };
-
-    /// Sizes the control in `host` for a name `name_width` wide. `room` is
-    /// what the host leaves the control and the title or tabs beside it: a
-    /// title row or bar lends it a share, a right column's top strip its
-    /// whole width beside the menu button, and a new-tab row only the
-    /// icon. Below the narrowest label it collapses to the icon.
-    pub(super) fn resolve(
-        host: SessionControlHost,
-        room: Pixels,
-        name_width: Pixels,
-        whole_room: bool,
-    ) -> Self {
-        let icon = |host| Self {
-            host,
-            width: CONTROL_SIZE,
-            label_width: px(0.0),
-            collapsed: true,
-            truncated: true,
-        };
-        match host {
-            SessionControlHost::Hidden => Self::HIDDEN,
-            SessionControlHost::SplitRow => icon(host),
-            SessionControlHost::TitleStrip | SessionControlHost::BarEnd => {
-                let room = room.max(px(0.0));
-                let limit = if whole_room {
-                    room
-                } else {
-                    room * SESSION_HOST_SHARE
-                }
-                .min(SESSION_CONTROL_MAX);
-                let chrome = menu_trigger::width_for_label(px(0.0));
-                let label_room = limit - chrome;
-                if label_room < SESSION_LABEL_MIN {
-                    return icon(host);
-                }
-                let label_width = name_width.ceil().min(label_room);
-                Self {
-                    host,
-                    width: chrome + label_width,
-                    label_width,
-                    collapsed: false,
-                    truncated: name_width.ceil() > label_room,
-                }
-            }
-        }
-    }
-
-    /// The trailing space the control takes in its host, with the inset
-    /// that separates it from its neighbours; zero while hidden.
-    pub(super) fn slot(&self) -> Pixels {
-        if self.host == SessionControlHost::Hidden {
-            px(0.0)
-        } else {
-            self.width + (CONTROL_SLOT - CONTROL_SIZE)
-        }
-    }
-}
-
 /// Gap between the narrowed `+` target and the square controls.
 const ROW_GAP: Pixels = px(4.0);
 
@@ -192,9 +61,6 @@ const ROW_GAP: Pixels = px(4.0);
 pub(super) struct NewTabRow {
     /// Width of the `+` target from the row's left edge.
     pub(super) plus_width: Pixels,
-    /// Left offset of the square session control within the row, when
-    /// present.
-    pub(super) session_x: Option<Pixels>,
     /// Left offset of the square menu control within the row, when present.
     pub(super) menu_x: Option<Pixels>,
     /// Left offset of the sidebar button within the row, when present.
@@ -204,13 +70,11 @@ pub(super) struct NewTabRow {
 /// Splits a row of `row_width` (the column width less its margins). Without
 /// controls, `+` keeps the whole row; each control takes a square at the
 /// row's right end, the menu control rightmost, then the sidebar button,
-/// then the session control, and `+` gives up their width and a small gap
-/// before each.
+/// and `+` gives up their width and a small gap before each.
 pub(super) fn split_new_tab_row(
     row_width: Pixels,
     with_menu: bool,
     with_sidebar: bool,
-    with_session: bool,
 ) -> NewTabRow {
     let row_width = row_width.max(px(0.0));
     let mut end = row_width;
@@ -223,17 +87,12 @@ pub(super) fn split_new_tab_row(
     };
     let menu_x = take(with_menu);
     let sidebar_x = take(with_sidebar);
-    let session_x = take(with_session);
     NewTabRow {
-        plus_width: if menu_x.is_some()
-            || sidebar_x.is_some()
-            || session_x.is_some()
-        {
+        plus_width: if menu_x.is_some() || sidebar_x.is_some() {
             end
         } else {
             row_width
         },
-        session_x,
         menu_x,
         sidebar_x,
     }

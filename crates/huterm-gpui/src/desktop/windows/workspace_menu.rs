@@ -2,7 +2,7 @@
 //! row's context menu. Everything here is pure so the rows and the menu
 //! can be tested without a window.
 
-use huterm_protocol::{CommandId, HierarchyState, SessionId, WorkspaceId, ids};
+use huterm_protocol::{HierarchyState, SessionId, WorkspaceId};
 
 use super::menu_spec::{Item as MenuItem, MenuSpec, Row as MenuRow};
 use crate::assets::Icon;
@@ -17,9 +17,14 @@ pub(super) struct WorkspaceRow {
 }
 
 impl WorkspaceRow {
+    /// The row's second line: its tab count, for now.
+    pub(super) fn detail(&self) -> String {
+        tabs_text(self.tabs)
+    }
+
     /// What assistive technology reads for the row.
     pub(super) fn accessible_name(&self) -> String {
-        format!("Workspace: {}, {}", self.name, tabs_text(self.tabs))
+        format!("Workspace: {}, {}", self.name, self.detail())
     }
 }
 
@@ -66,8 +71,6 @@ pub(super) enum WorkspacePick {
     Rename(u64),
     ClearName(u64),
     Close(u64),
-    /// A catalog command, such as New Workspace.
-    Command(CommandId),
 }
 
 /// The pick an item id names; `None` for an id no menu lists.
@@ -79,11 +82,7 @@ pub(super) fn parse_pick(id: &str) -> Option<WorkspacePick> {
     if let Some(raw) = raw(CLEAR_PREFIX) {
         return Some(WorkspacePick::ClearName(raw));
     }
-    if let Some(raw) = raw(CLOSE_PREFIX) {
-        return Some(WorkspacePick::Close(raw));
-    }
-    (id == ids::NEW_WORKSPACE.as_str())
-        .then_some(WorkspacePick::Command(ids::NEW_WORKSPACE))
+    raw(CLOSE_PREFIX).map(WorkspacePick::Close)
 }
 
 /// The live workspace among `state`'s whose raw identity is `raw`.
@@ -97,13 +96,9 @@ pub(super) fn resolve(state: &HierarchyState, raw: u64) -> Option<WorkspaceId> {
         .find(|workspace| workspace.get() == raw)
 }
 
-fn action(id: CommandId, label: &str, icon: Icon) -> MenuRow {
-    MenuRow::Item(MenuItem::new(id.as_str(), label).icon(icon.asset_path()))
-}
-
 /// A row's context menu, acting on that row's workspace: Rename…,
-/// Clear Name for a custom name, New Workspace, and Close Workspace… while
-/// the session has another workspace.
+/// Clear Name for a custom name, and Close Workspace… while the session has
+/// another workspace, as the session rows' menu has them.
 pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
     let raw = row.workspace.get();
     let item = |id: String, label: &str, icon: Icon| {
@@ -121,8 +116,6 @@ pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
             Icon::Eraser,
         ));
     }
-    rows.push(MenuRow::Separator);
-    rows.push(action(ids::NEW_WORKSPACE, "New Workspace", Icon::Plus));
     if workspaces > 1 {
         rows.push(MenuRow::Separator);
         rows.push(item(

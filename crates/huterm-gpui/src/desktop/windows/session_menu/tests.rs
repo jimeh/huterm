@@ -1,286 +1,86 @@
-use std::fmt::Write as _;
-
 use super::*;
-use crate::desktop::windows::menu_spec::NativeItem;
 use crate::keymap::Platform;
-use huterm_ui::components::kbd;
-use huterm_ui::listbox::{Row as ListRow, TagTone};
+use huterm_ui::listbox::Row as ListRow;
 
-fn row(
-    raw: u64,
-    name: &str,
-    automatic: bool,
-    tabs: usize,
-    windows: usize,
-    exited: bool,
-) -> SessionRow {
+fn row(raw: u64, name: &str, automatic: bool) -> SessionRow {
     SessionRow {
         session: SessionId::new(raw),
         name: name.to_owned(),
         automatic,
-        tabs,
-        workspaces: 1,
-        windows,
-        exited,
+        tabs: 3,
+        workspaces: 2,
+        windows: 0,
+        exited: false,
     }
 }
 
-fn input(rows: Vec<SessionRow>, current: u64) -> SessionMenuInput {
-    SessionMenuInput {
-        rows,
-        current: Some(SessionId::new(current)),
-        alternate: Some("cmd-enter".to_owned()),
-    }
-}
-
-/// The mockup's four sessions: this window's custom-named one, an
-/// automatic one, one another window shows, and one whose shells exited.
-fn four() -> Vec<SessionRow> {
-    vec![
-        row(1, "huterm", false, 3, 0, false),
-        row(2, "Session 2", true, 1, 0, false),
-        row(3, "infra", false, 2, 1, false),
-        row(4, "Session 4", true, 1, 0, true),
-    ]
-}
-
-/// Each row as `id label` with marks: `*` checked, `~` muted, `[detail]`,
-/// `<tag>` per tag, `!` warning tone, and `(hint)`.
+/// Each row as `id label`, separators as `-`.
 fn drawn(spec: &MenuSpec) -> Vec<String> {
     spec.to_listbox(Platform::MacOs)
         .rows
         .iter()
         .map(|row| match row {
-            ListRow::Item(item) => {
-                let mut text = format!("{} {}", item.id, item.label);
-                if item.checked == Some(true) {
-                    text.push('*');
-                }
-                if item.muted {
-                    text.push('~');
-                }
-                if let Some(detail) = &item.detail {
-                    let _ = write!(text, " [{detail}]");
-                }
-                for tag in &item.tags {
-                    let warning = if tag.tone == TagTone::Warning {
-                        "!"
-                    } else {
-                        ""
-                    };
-                    let _ =
-                        write!(text, " <{}{warning}>", kbd::text(&tag.glyphs));
-                }
-                text
-            }
+            ListRow::Item(item) => format!("{} {}", item.id, item.label),
             ListRow::Separator => "-".to_owned(),
-            ListRow::Hint(hint) => format!("({hint})"),
-            ListRow::Buttons { .. } | ListRow::Submenu { .. } => {
-                "other".to_owned()
-            }
+            _ => "other".to_owned(),
         })
         .collect()
 }
 
 #[test]
-fn the_menu_lists_every_session_then_the_session_actions() {
-    let spec = session_menu(&input(four(), 1));
+fn a_row_menu_acts_on_its_own_session() {
     assert_eq!(
-        drawn(&spec),
+        drawn(&row_menu(&row(2, "infra", false))),
         [
-            "session:1 huterm* [3 tabs]",
-            "session:2 Session 2~ [1 tab]",
-            "session:3 infra [2 tabs] <1>",
-            "session:4 Session 4~ [1 tab] <exited!>",
+            "session-rename:2 Rename Session…",
+            "session-clear:2 Clear Name",
+            "session-window:2 Open in New Window",
             "-",
-            "new_session New Session",
-            "new_workspace New Workspace",
-            "rename_session Rename Session…",
-            "clear_session_name Clear Name",
-            "-",
-            "close_session Close Session…",
+            "session-close:2 Close Session…",
         ]
     );
-    // The window tag names its count of other windows.
-    let model = spec.to_listbox(Platform::MacOs);
-    let ListRow::Item(infra) = &model.rows[2] else {
-        panic!("a session row");
-    };
-    assert_eq!(infra.tags[0].label, "Shown in 1 other window");
-    // Every session row offers Open in New Window with the platform key.
+    // An automatic name has nothing to clear.
     assert_eq!(
-        infra.action.as_ref().map(|action| (
-            action.id.to_string(),
-            action.label.as_str(),
-            kbd::text(&action.shortcut)
-        )),
-        Some((
-            "session-window:3".to_owned(),
-            "Open in New Window",
-            "⌘↩".to_owned()
-        ))
-    );
-    // Action rows carry icons in the leading column.
-    let ListRow::Item(new) = &model.rows[5] else {
-        panic!("New Session");
-    };
-    assert_eq!(new.icon.as_deref(), Some(Icon::Plus.asset_path()));
-}
-
-#[test]
-fn an_automatic_name_offers_no_clear_and_a_lone_session_shows_a_hint() {
-    let automatic = session_menu(&input(four(), 2));
-    assert!(
-        !drawn(&automatic)
-            .iter()
-            .any(|row| row.contains("clear_session_name")),
-        "an automatic name has nothing to clear"
-    );
-    let lone =
-        session_menu(&input(vec![row(1, "huterm", false, 3, 0, false)], 1));
-    assert_eq!(
-        drawn(&lone),
+        drawn(&row_menu(&row(1, "Session 1", true))),
         [
-            "session:1 huterm* [3 tabs]",
-            "(No other sessions)",
+            "session-rename:1 Rename Session…",
+            "session-window:1 Open in New Window",
             "-",
-            "new_session New Session",
-            "new_workspace New Workspace",
-            "rename_session Rename Session…",
-            "clear_session_name Clear Name",
-            "-",
-            "close_session Close Session…",
+            "session-close:1 Close Session…",
         ]
     );
-    // With one workspace per session, only New Workspace mentions
-    // workspaces.
-    for spec in [automatic, lone] {
-        let mentions: Vec<String> = drawn(&spec)
-            .into_iter()
-            .filter(|row| row.to_lowercase().contains("workspace"))
-            .collect();
-        assert_eq!(mentions, ["new_workspace New Workspace"]);
-    }
 }
 
 #[test]
-fn a_session_with_several_workspaces_counts_them_and_new_workspace_follows_new_session()
- {
-    let mut rows = four();
-    rows[0].workspaces = 3;
-    let spec = session_menu(&input(rows, 1));
-    let drawn = drawn(&spec);
-    assert_eq!(drawn[0], "session:1 huterm* [3 workspaces · 3 tabs]");
-    assert_eq!(drawn[1], "session:2 Session 2~ [1 tab]");
-    let new = drawn
-        .iter()
-        .position(|row| row == "new_session New Session")
-        .unwrap();
-    assert_eq!(drawn[new + 1], "new_workspace New Workspace");
-    let model = spec.to_listbox(Platform::MacOs);
-    let ListRow::Item(item) = &model.rows[new + 1] else {
-        panic!("New Workspace");
-    };
-    assert_eq!(item.icon.as_deref(), Some(Icon::LayoutGrid.asset_path()));
-    // The native menu keeps the count as the row's subtitle.
-    let native = spec.to_native(true);
-    assert!(native.items.iter().any(|item| matches!(
-        item,
-        NativeItem::Item { subtitle: Some(subtitle), .. }
-            if subtitle == "3 workspaces · 3 tabs"
-    )));
-}
-
-#[test]
-fn picks_name_a_session_by_its_raw_identity_or_a_session_command() {
-    assert_eq!(parse_pick("session:7"), Some(SessionPick::Select(7)));
-    assert_eq!(
-        parse_pick("session-window:7"),
-        Some(SessionPick::OpenInNewWindow(7))
-    );
-    for command in [
-        ids::NEW_SESSION,
-        ids::NEW_WORKSPACE,
-        ids::OPEN_SESSION_IN_NEW_WINDOW,
-        ids::RENAME_SESSION,
-        ids::CLEAR_SESSION_NAME,
-        ids::CLOSE_SESSION,
+fn picks_round_trip_through_their_ids() {
+    for (id, pick) in [
+        ("session-rename:7", SessionPick::Rename(7)),
+        ("session-clear:7", SessionPick::ClearName(7)),
+        ("session-window:7", SessionPick::OpenInNewWindow(7)),
+        ("session-close:7", SessionPick::Close(7)),
     ] {
-        assert_eq!(
-            parse_pick(command.as_str()),
-            Some(SessionPick::Command(command))
-        );
+        assert_eq!(parse_pick(id), Some(pick), "{id}");
     }
-    assert_eq!(parse_pick("session:x"), None);
-    assert_eq!(parse_pick("new_tab"), None, "only the menu's own actions");
+    assert_eq!(parse_pick("new_session"), None);
+    assert_eq!(parse_pick("session-close:x"), None);
 }
 
 #[test]
-fn the_native_menu_keeps_check_and_name_with_the_detail_as_a_subtitle() {
-    let native = session_menu(&input(four(), 1)).to_native(true);
-    let shown: Vec<String> = native
-        .items
-        .iter()
-        .map(|item| match item {
-            NativeItem::Item {
-                id,
-                title,
-                enabled,
-                checked,
-                subtitle,
-                alternate,
-                ..
-            } => format!(
-                "{}{id}={title}{}{}{}",
-                if *alternate { "~" } else { "" },
-                if *enabled { "" } else { "!" },
-                if *checked == Some(true) { "*" } else { "" },
-                subtitle
-                    .as_deref()
-                    .map(|text| format!(" ({text})"))
-                    .unwrap_or_default(),
-            ),
-            NativeItem::Separator => "-".to_owned(),
-            NativeItem::Submenu { title, .. } => format!("{title}>"),
-        })
-        .collect();
+fn rows_count_workspaces_and_tabs_and_name_their_tags() {
+    let mut session = row(3, "infra", false);
+    assert_eq!(session.detail(), "2 workspaces · 3 tabs");
     assert_eq!(
-        shown,
-        [
-            "session:1=huterm* (3 tabs)",
-            "~session-window:1=Open \"huterm\" in New Window",
-            "session:2=Session 2 (1 tab)",
-            "~session-window:2=Open \"Session 2\" in New Window",
-            "session:3=infra (2 tabs · Shown in 1 other window)",
-            "~session-window:3=Open \"infra\" in New Window",
-            "session:4=Session 4 (1 tab · Every shell exited)",
-            "~session-window:4=Open \"Session 4\" in New Window",
-            "-",
-            "new_session=New Session",
-            "new_workspace=New Workspace",
-            "open_session_in_new_window=Open Session in New Window…",
-            "rename_session=Rename Session…",
-            "clear_session_name=Clear Name",
-            "-",
-            "close_session=Close Session…",
-        ]
+        session.accessible_name(),
+        "Session: infra, 2 workspaces · 3 tabs"
     );
-    // Only the native menu lists the command: Huterm's menu offers it as
-    // each row's inline button.
-    assert!(
-        !drawn(&session_menu(&input(four(), 1)))
-            .iter()
-            .any(|row| row.contains("open_session_in_new_window"))
+    session.workspaces = 1;
+    session.tabs = 1;
+    session.windows = 2;
+    session.exited = true;
+    assert_eq!(session.detail(), "1 workspace · 1 tab");
+    assert_eq!(
+        session.accessible_name(),
+        "Session: infra, 1 workspace · 1 tab, shown in 2 other windows, \
+         every shell exited"
     );
-    // An alternate is picked by its own tag.
-    assert_eq!(native.id_at(1).as_deref(), Some("session-window:1"));
-    // The lone-session hint is a disabled item that is never picked.
-    let lone =
-        session_menu(&input(vec![row(1, "huterm", false, 3, 0, false)], 1))
-            .to_native(false);
-    assert!(matches!(
-        &lone.items[2],
-        NativeItem::Item { title, enabled: false, .. } if title == "No other sessions"
-    ));
-    assert_eq!(lone.id_at(2), None);
 }

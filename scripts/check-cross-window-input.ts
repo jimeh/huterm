@@ -65,12 +65,12 @@ const linuxKeys: Record<string, string> = { new_window: "F1", new_tab: "F2", spl
 
 /**
  * The fixture's config. Windows are 36 columns wide, about 296 points, so
- * two fit side by side. The session control is off: on Linux it ends the
- * tab bar, and its width would scroll the three-tab strip until the tab
- * the drag grabs is mostly out of view.
+ * two fit side by side. Tabs stay at most 100 points wide, so two tabs, the
+ * sidebar button that leads the bar, `+`, and the menu button fit without
+ * scrolling the strip, which would move the tab a drag aims at.
  */
 export function fixtureConfig(options: { preview: boolean; alwaysShow: boolean }): string {
-  return `[window]\ninitial_columns=36\ninitial_rows=12\nsession_button=false\nmacos_drag_preview=${options.preview}\n[tabs]\nposition="top"\nalways_show=${options.alwaysShow}\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f3"\ncommand="split_right"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`;
+  return `[window]\ninitial_columns=36\ninitial_rows=12\nmacos_drag_preview=${options.preview}\n[tabs]\nposition="top"\nalways_show=${options.alwaysShow}\nmax_width=100\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f3"\ncommand="split_right"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`;
 }
 
 /** Launches one fixture app with recorder shells, runs `body`, and always

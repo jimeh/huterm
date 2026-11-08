@@ -161,7 +161,7 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
         "{capture:?}"
     );
     assert_eq!(capture.next_id, fixture.mux.next_id);
-    assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 4));
+    assert_eq!(capture.session_ordinal, 3);
 
     let mut restored = Mux::default();
     restored.set_automatic_numbering(AutomaticNumbering::Increasing);
@@ -213,7 +213,8 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     assert_eq!(state, fresh);
 
     // New allocations of every kind land above the watermark, and
-    // automatic names continue from the restored ordinals.
+    // automatic names continue from the restored ordinals: sessions across
+    // the runtime, workspaces within their session.
     let watermark = capture.next_id;
     let session = restored.create_session(None).unwrap();
     assert_eq!(
@@ -223,7 +224,7 @@ fn capture_then_restore_keeps_structure_identities_names_and_layouts() {
     let workspace = restored.create_workspace(session, None).unwrap();
     assert_eq!(
         restored.workspace(workspace).unwrap().display_name(),
-        "Workspace 5"
+        "Workspace 1"
     );
     let tab = restored.open_tab(workspace, &idle()).unwrap().tab;
     let pane = tab.first_pane().clone();
@@ -260,11 +261,11 @@ fn increasing_names_resume_after_the_highest_one_restored() {
     let named = mux.create_session(Some("work")).unwrap();
     let named_workspace = mux.create_workspace(named, Some("code")).unwrap();
     mux.open_tab(named_workspace, &idle()).unwrap();
-    // Holding no tab, the highest of each kind is left out of the capture.
+    // Holding no tab, the highest session is left out of the capture.
     let gone = mux.create_session(None).unwrap();
     mux.create_workspace(gone, None).unwrap();
     let capture = mux.capture_runtime(&HashSet::new());
-    assert_eq!((capture.session_ordinal, capture.workspace_ordinal), (3, 3));
+    assert_eq!(capture.session_ordinal, 3);
 
     let mut restored = Mux::default();
     restored.set_automatic_numbering(AutomaticNumbering::Increasing);
@@ -275,13 +276,120 @@ fn increasing_names_resume_after_the_highest_one_restored() {
         restored.session(session).unwrap().display_name(),
         "Session 3"
     );
-    let workspace = restored.create_workspace(session, None).unwrap();
+    let named = SessionId::in_runtime(restored.runtime_id(), named.get());
+    let workspace = restored.create_workspace(named, None).unwrap();
     assert_eq!(
         restored.workspace(workspace).unwrap().display_name(),
-        "Workspace 3"
+        "Workspace 2"
     );
     restored.shutdown().unwrap();
     mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_restore_keeps_each_sessions_workspace_counter() {
+    let mut mux = Mux::default();
+    mux.set_automatic_numbering(AutomaticNumbering::Increasing);
+    let first = mux.create_session(None).unwrap();
+    let kept = mux.create_workspace(first, None).unwrap();
+    mux.open_tab(kept, &idle()).unwrap();
+    for _ in 0..2 {
+        let closed = mux.create_workspace(first, None).unwrap();
+        mux.close_workspace(closed).unwrap();
+    }
+    let second = mux.create_session(None).unwrap();
+    let other = mux.create_workspace(second, None).unwrap();
+    mux.open_tab(other, &idle()).unwrap();
+    let capture = mux.capture_runtime(&HashSet::new());
+    let counters: Vec<u64> = capture
+        .sessions
+        .iter()
+        .map(|session| session.workspace_ordinal)
+        .collect();
+    assert_eq!(counters, [3, 1]);
+
+    let mut restored = Mux::default();
+    restored.set_automatic_numbering(AutomaticNumbering::Increasing);
+    let spawned = spawn_all(&restored, &capture);
+    restored.restore(&capture, spawned).unwrap();
+    assert_eq!(restored.capture_runtime(&HashSet::new()), capture);
+    let runtime = restored.runtime_id();
+    for (session, expected) in [(first, "Workspace 4"), (second, "Workspace 2")]
+    {
+        let session = SessionId::in_runtime(runtime, session.get());
+        let workspace = restored.create_workspace(session, None).unwrap();
+        assert_eq!(
+            restored.workspace(workspace).unwrap().display_name(),
+            expected
+        );
+    }
+    restored.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_capture_without_workspace_counters_resumes_from_each_sessions_workspaces()
+{
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    for _ in 0..2 {
+        let workspace = mux.create_workspace(first, None).unwrap();
+        mux.open_tab(workspace, &idle()).unwrap();
+    }
+    let second = mux.create_session(None).unwrap();
+    let other = mux.create_workspace(second, Some("code")).unwrap();
+    mux.open_tab(other, &idle()).unwrap();
+    let mut capture = mux.capture_runtime(&HashSet::new());
+    // As a file saved before workspaces numbered per session reads.
+    for session in &mut capture.sessions {
+        session.workspace_ordinal = 0;
+    }
+
+    let mut restored = Mux::default();
+    restored.set_automatic_numbering(AutomaticNumbering::Increasing);
+    let spawned = spawn_all(&restored, &capture);
+    restored.restore(&capture, spawned).unwrap();
+    let runtime = restored.runtime_id();
+    for (session, expected) in [(first, "Workspace 3"), (second, "Workspace 2")]
+    {
+        let session = SessionId::in_runtime(runtime, session.get());
+        let workspace = restored.create_workspace(session, None).unwrap();
+        assert_eq!(
+            restored.workspace(workspace).unwrap().display_name(),
+            expected
+        );
+    }
+    restored.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_moved_session_order_survives_capture_and_restore() {
+    let mut mux = Mux::default();
+    let sessions: Vec<SessionId> = (0..3)
+        .map(|_| {
+            let session = mux.create_session(None).unwrap();
+            mux.create_workspace(session, None).unwrap();
+            session
+        })
+        .collect();
+    mux.move_session(sessions[2], Some(sessions[0])).unwrap();
+    let shown: HashSet<SessionId> = sessions
+        .iter()
+        .map(|session| SessionId::new(session.get()))
+        .collect();
+    let capture = mux.capture_runtime(&shown);
+    let order: Vec<u64> =
+        capture.sessions.iter().map(|s| s.info.id.get()).collect();
+    let expected = [sessions[2], sessions[0], sessions[1]].map(SessionId::get);
+    assert_eq!(order, expected);
+
+    let mut restored = Mux::default();
+    let spawned = spawn_all(&restored, &capture);
+    restored.restore(&capture, spawned).unwrap();
+    let order: Vec<u64> =
+        restored.sessions().iter().map(|s| s.id.get()).collect();
+    assert_eq!(order, expected);
 }
 
 #[test]

@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 317);
+    assert_eq!(fixtures.len(), 319);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -524,6 +524,13 @@ fn bell_audio_settings_parse_validate_and_warn_on_linux() {
             LEGACY_ALACRITTY_WARNING.to_owned()
         })
     );
+    // The retired title-bar session control loads, ignored, with a warning.
+    for value in ["true", "false"] {
+        let config =
+            parse(&format!("[window]\nsession_button = {value}")).unwrap();
+        assert_eq!(config.warning.as_deref(), Some(SESSION_BUTTON_WARNING));
+        assert_eq!(config.sidebar, huterm_config::SidebarConfig::default());
+    }
 }
 
 #[test]
@@ -929,7 +936,7 @@ fn window_padding_rejects_invalid_values_and_accepts_zero() {
             padding_balance: false,
             macos_fullscreen_mode: MacosFullscreenMode::NonNative,
             menu_button: true,
-            session_button: false,
+            session_button: None,
             shortcut_hints: false,
             macos_native_menus: true,
             size_indicator: huterm_config::SizeIndicator::Full,

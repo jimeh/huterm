@@ -221,6 +221,7 @@ mod session_control;
 mod session_menu;
 mod session_switch;
 mod settings_window;
+mod sidebar_rows;
 mod system_appearance;
 mod tab_bar;
 mod tab_menu;
@@ -289,8 +290,8 @@ use tab_visibility::{Presentation, Reveal};
 use terminal_menu::{DirectoryState, TerminalMenuInput, terminal_menu};
 use views::{Views, broadcast, update_windows};
 use window_menu::{
-    MenuButtonPlacement, SessionControlHost, WindowMenuInput,
-    menu_button_placement, split_new_tab_row, window_menu,
+    MenuButtonPlacement, WindowMenuInput, menu_button_placement,
+    split_new_tab_row, window_menu,
 };
 use workspace_chrome::WorkspaceChrome;
 /// Space the tab strip reserves for the new-tab control on its axis.
@@ -883,6 +884,23 @@ impl DesktopRuntime {
             Err(RuntimeError::Stopped.into())
         } else {
             mux.move_workspace(session, workspace, session, before)
+        };
+        Committed {
+            result,
+            seq: mux.hierarchy_seq(),
+        }
+    }
+
+    fn move_session(
+        &self,
+        session: SessionId,
+        before: Option<SessionId>,
+    ) -> Committed<Result<(), MuxError>> {
+        let mut mux = self.lock();
+        let result = if self.terminating.load(Ordering::Acquire) {
+            Err(RuntimeError::Stopped.into())
+        } else {
+            mux.move_session(session, before)
         };
         Committed {
             result,
@@ -2191,8 +2209,8 @@ fn refresh_title_consumers(
         if view.palette.is_some() {
             view.refresh_palette_hierarchy(cx);
         }
-        // An open session menu counts tabs and windows in every session.
-        if structural && view.session_menu_open() {
+        // An open session list counts tabs and windows in every session.
+        if structural && view.session_list_open() {
             cx.notify();
         }
         let in_scope = match &view.close.confirmation {
@@ -3076,6 +3094,7 @@ fn open_window_with_profile(
                 .set_transparency(window_id, own_transparency);
             let workspace_scroll = gpui::ScrollHandle::new();
             let switcher_scroll = gpui::ScrollHandle::new();
+            let session_list_scroll = gpui::ScrollHandle::new();
             let view = cx.new(|cx| WorkspaceView {
                 native_alpha,
                 transparency_support,
@@ -3128,6 +3147,7 @@ fn open_window_with_profile(
                 workspace_chrome_now: Cell::new(WorkspaceChrome::Hidden {
                     edge: workspace_chrome::Edge::of(config.sidebar.position),
                     switcher: false,
+                    session: false,
                     narrow: false,
                 }),
                 workspace_revealed: None,
@@ -3222,18 +3242,24 @@ fn open_window_with_profile(
                 native_menu: None,
                 native_menu_token: 0,
                 menu_button_bounds: Rc::new(Cell::new(None)),
-                session_button_bounds: Rc::new(Cell::new(None)),
-                session_control_drawn: Cell::new(false),
+                session_corner_bounds: Rc::new(Cell::new(None)),
+                session_corner_drawn: Cell::new(false),
                 session_sidebar_bounds: Rc::new(Cell::new(None)),
                 session_sidebar_drawn: Cell::new(false),
-                session_popover_bounds: Rc::new(Cell::new(None)),
-                session_popover_drawn: Cell::new(false),
                 session_row_focus: cx.focus_handle(),
-                session_menu_from: session_control::SessionHostSlot::Title,
                 session_label: session_control::SessionLabel::default(),
                 exited_sessions: HashSet::new(),
                 exited_read: 0,
-                native_session_pending: None,
+                session_list: None,
+                session_list_popover: Popover::new(),
+                session_list_scroll: session_list_scroll.clone(),
+                session_list_scrollbar:
+                    crate::ui::list_scrollbar::ListScrollbar::new(
+                        session_list_scroll,
+                    ),
+                session_focus: HashMap::new(),
+                session_row_bounds: Rc::new(RefCell::new(HashMap::new())),
+                session_drag: None,
                 popover: Popover::new(),
                 window_button_bounds: Rc::default(),
                 title_row_press: Rc::new(Cell::new(false)),
@@ -3315,8 +3341,10 @@ fn open_window_with_profile(
                         view.cancel_reorder(window, cx);
                         view.cancel_pane_drag(window, cx);
                         view.cancel_workspace_drag(cx);
+                        view.cancel_session_drag(cx);
                         view.drag_right_press = false;
                         view.close_workspace_switcher(window, cx);
+                        view.close_session_list(window, cx);
                         // An open menu or panel closes, as AppKit menus and
                         // GTK popovers do, and focus is on the terminal when
                         // the window comes back.
@@ -3486,6 +3514,7 @@ impl refresh::Animated for WorkspaceView {
             .merge(self.panel_scrollbar.schedule(now))
             .merge(self.workspace_scrollbar.schedule(now))
             .merge(self.switcher_scrollbar.schedule(now))
+            .merge(self.session_list_scrollbar.schedule(now))
             .merge(self.notice_scrollbar.schedule(now))
             .merge(self.reveal.schedule(now))
             .merge(self.pane_bars.schedule(now))
@@ -3516,6 +3545,7 @@ impl refresh::Animated for WorkspaceView {
                 .as_ref()
                 .is_some_and(|drag| drag.scrolls(self.tab_scroll))
             || self.workspace_drag_scrolls().is_some()
+            || self.session_drag_scrolls()
         {
             next = next.merge(AnimationSchedule::FRAME);
         }
@@ -3598,12 +3628,15 @@ impl refresh::Animated for WorkspaceView {
             }
             cx.notify();
         }
-        if self.scroll_workspace_drag(now, cx) {
+        if self.scroll_workspace_drag(now, cx)
+            | self.scroll_session_drag(now, cx)
+        {
             cx.notify();
         }
         if self.panel_scrollbar.advance(now)
             | self.workspace_scrollbar.advance(now)
             | self.switcher_scrollbar.advance(now)
+            | self.session_list_scrollbar.advance(now)
             | self.notice_scrollbar.advance(now)
         {
             cx.notify();
@@ -4874,33 +4907,35 @@ struct WorkspaceView {
     /// Where the menu button was last painted, for anchoring the menu and
     /// for smoke state; `None` while the button is not drawn.
     menu_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Where the session control was last painted, for anchoring the
-    /// session menu and for smoke state; `None` while it is not drawn.
-    session_button_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Whether this render built the session control; one that built none
-    /// clears `session_button_bounds`.
-    session_control_drawn: Cell<bool>,
-    /// The sidebar's and the popover's session switcher rows: painted
-    /// bounds and whether this render built them.
+    /// The session switcher beside the sidebar button: where it was last
+    /// painted, for the session list's anchor and smoke state, and whether
+    /// this render built it; one that built none clears its bounds.
+    session_corner_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    session_corner_drawn: Cell<bool>,
+    /// The session row of the docked sidebar or the sheet: painted bounds
+    /// and whether this render built it.
     session_sidebar_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     session_sidebar_drawn: Cell<bool>,
-    session_popover_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    session_popover_drawn: Cell<bool>,
-    /// The session switcher row's focus handle, on whichever surface draws
-    /// it.
+    /// The sidebar's session row's focus handle, on whichever surface
+    /// draws it.
     session_row_focus: FocusHandle,
-    /// The host whose click last opened the session menu, which anchors it.
-    session_menu_from: session_control::SessionHostSlot,
-    /// The session name the control last measured and its width, so the
-    /// tab strip and title row reserve its slot between renders.
+    /// The session name the switcher last measured and its width, so
+    /// layout outside render reserves the corner switcher's width.
     session_label: session_control::SessionLabel,
     /// Sessions whose every shell exited, as the last read for the session
-    /// menu found them, and that read's generation.
+    /// list found them, and that read's generation.
     exited_sessions: HashSet<SessionId>,
     exited_read: u64,
-    /// A native session menu waiting for its exited read, and whether the
-    /// keyboard asked for it.
-    native_session_pending: Option<bool>,
+    /// The open session list and what it opened from, its non-modal
+    /// popover, its rows' scroll, focus handles, and painted bounds, and a
+    /// row press or drag under way.
+    session_list: Option<session_control::SessionListAnchor>,
+    session_list_popover: Popover,
+    session_list_scroll: gpui::ScrollHandle,
+    session_list_scrollbar: crate::ui::list_scrollbar::ListScrollbar,
+    session_focus: HashMap<SessionId, FocusHandle>,
+    session_row_bounds: Rc<RefCell<HashMap<SessionId, Bounds<Pixels>>>>,
+    session_drag: Option<session_control::SessionDrag>,
     /// The window controls' painted bounds in Huterm's own title row, for
     /// smoke pointer fixtures; `None` while the row is not drawn.
     /// The painted window buttons, by [`WindowButton::index`].
@@ -4951,9 +4986,8 @@ enum MenuKind {
     Pane { tab: TabId, pane: PaneId },
     /// A text field's context menu, in the palette or the Licenses view.
     Field(WeakEntity<Input>),
-    /// The session menu, from the session control, a session switcher row,
-    /// or `open_session_menu`.
-    Session,
+    /// A session row's context menu, in the session list.
+    SessionRow(SessionId),
     /// A workspace row's context menu.
     WorkspaceRow(WorkspaceId),
 }
@@ -4964,7 +4998,7 @@ impl MenuKind {
         match self {
             Self::Window
             | Self::Field(_)
-            | Self::Session
+            | Self::SessionRow(_)
             | Self::WorkspaceRow(_) => None,
             Self::Tab(tab)
             | Self::Terminal { tab, .. }
@@ -4980,7 +5014,7 @@ impl MenuKind {
             | Self::Tab(_)
             | Self::Terminal { .. }
             | Self::Field(_)
-            | Self::Session
+            | Self::SessionRow(_)
             | Self::WorkspaceRow(_) => None,
         }
     }
@@ -4993,7 +5027,7 @@ impl MenuKind {
             Self::Terminal { .. } => "terminal",
             Self::Pane { .. } => "pane",
             Self::Field(_) => "field",
-            Self::Session => "session",
+            Self::SessionRow(_) => "session_row",
             Self::WorkspaceRow(_) => "workspace_row",
         }
     }
@@ -7073,11 +7107,11 @@ impl WorkspaceView {
     }
 
     /// Records whether this window shows a title consumer: an open palette,
-    /// a close confirmation, or the session menu.
+    /// a close confirmation, or the session list.
     fn sync_title_consumer(&self, cx: &mut App) {
         let host = self.palette.is_some()
             || self.close.confirmation.is_some()
-            || self.session_menu_open();
+            || self.session_list_open();
         cx.global_mut::<Desktop>()
             .title_consumers
             .set_host(self.window, host);
@@ -7299,15 +7333,17 @@ impl WorkspaceView {
         let (lead_held, trail_held) = self.panel_corners(layout);
         let chrome = layout.workspace_chrome;
         let host = self.corner_host(chrome, false);
-        // The menu button's slot, the session control's, and on the right
-        // the sidebar button's and switcher's beside them.
+        // The menu button's slot, and on the right the sidebar button's and
+        // switchers' beside it.
         let corner = if trail_held {
             px(0.0)
         } else {
-            session_control::title_strip_corner(
-                menu,
-                self.session_control_placement(layout),
-            ) + self.corner_trailing(host, chrome, layout.content.size.width)
+            let menu = if menu == MenuButtonPlacement::TitleStrip {
+                CONTROL_SLOT
+            } else {
+                px(0.0)
+            };
+            menu + self.corner_trailing(host, chrome, layout.content.size.width)
         };
         let titlebar = self.title_row();
         let content = layout.content;
@@ -7422,6 +7458,8 @@ impl WorkspaceView {
             workspaces: self.workspace_count,
             position: self.config.sidebar.position,
             width: self.workspace_width,
+            session_corner: self.config.sidebar.session_switcher_in_corner,
+            workspace_corner: self.config.sidebar.workspace_switcher_in_corner,
         }
     }
 
@@ -7951,6 +7989,7 @@ impl WorkspaceView {
             || self.resizing_sidebar
             || self.resizing_workspace
             || self.workspace_drag.is_some()
+            || self.session_drag.is_some()
             || self.reorder.is_some()
             || self.pane_drag.is_some()
             || self.tab_scrollbars.dragging()
@@ -8320,17 +8359,10 @@ impl WorkspaceView {
     }
 
     /// The bar length a top or bottom bar's trailing controls take after
-    /// `+`: the session control's slot, the sidebar button's and
-    /// switcher's on the right, and the menu button's.
+    /// `+`: the corner controls' on the right, and the menu button's.
     pub(super) fn bar_trailing(&self, layout: &ChromeLayout) -> Pixels {
         let menu = if self.bar_menu_placement() == MenuButtonPlacement::BarEnd {
             CONTROL_SLOT
-        } else {
-            px(0.0)
-        };
-        let session = self.bar_session_placement(layout);
-        let session = if session.host == SessionControlHost::BarEnd {
-            session.slot()
         } else {
             px(0.0)
         };
@@ -8341,7 +8373,7 @@ impl WorkspaceView {
             }
             _ => px(0.0),
         };
-        menu + session + corner
+        menu + corner
     }
 
     /// Whether the window draws its tab bar: reserved, or an overlay bar
@@ -9746,7 +9778,7 @@ impl WorkspaceView {
         self.cancel_pane_drag(window, cx);
         self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
         self.close_workspace_switcher(window, cx);
-        self.cancel_pending_session_menu(cx);
+        self.close_session_list(window, cx);
 
         let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
@@ -10187,13 +10219,7 @@ impl WorkspaceView {
                 | ids::MENU_SELECT_LEFT
                 | ids::MENU_CONFIRM
                 | ids::MENU_CONFIRM_ALTERNATE
-                | ids::MENU_CLOSE => {
-                    if self.pending_session_menu_takes_keys() {
-                        Ok(())
-                    } else {
-                        self.open_menu_entity().map(|_| ())
-                    }
-                }
+                | ids::MENU_CLOSE => self.open_menu_entity().map(|_| ()),
                 ids::NEXT_TAB | ids::PREVIOUS_TAB => {
                     self.check_navigation_available(cx)
                 }
@@ -10429,9 +10455,6 @@ impl WorkspaceView {
     fn key_context(&self, _window: &Window) -> KeyContext {
         let mut context = KeyContext::default();
         context.add("Workspace");
-        if self.pending_session_menu_takes_keys() {
-            context.add(huterm_ui::components::menu::KEY_CONTEXT);
-        }
         if self.dialog_showing() {
             context.add("confirming");
         }
@@ -10933,13 +10956,14 @@ impl WorkspaceView {
         if invocation.id != ids::WINDOW_TRANSPARENCY {
             self.close_panel(window, cx);
         }
-        // And the workspace switcher, except for its own keys, the commands
-        // that open or move focus into it, and the keys of a menu opened
-        // from it; the window menu replaces it.
+        // And the workspace switcher and the session list, except for their
+        // own keys, the commands that open or move focus into them, and the
+        // keys of a menu opened from them; the window menu replaces them.
         let switcher_menu =
             is_menu_command(invocation.id) && invocation.id != ids::OPEN_MENU;
         if !switcher_menu && !workspace_panel::keeps_switcher(invocation.id) {
             self.close_workspace_switcher(window, cx);
+            self.close_session_list(window, cx);
         }
         match invocation.id {
             ids::MOVE_TAB_TO_NEW_WINDOW => {
@@ -10950,12 +10974,7 @@ impl WorkspaceView {
             }
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
-            ids::OPEN_SESSION_MENU => {
-                // The palette's menu anchors to the first host drawn.
-                self.session_menu_from =
-                    session_control::SessionHostSlot::Title;
-                self.open_session_menu(true, window, cx)
-            }
+            ids::OPEN_SESSION_MENU => self.open_session_menu(window, cx),
             ids::OPEN_WORKSPACE_SWITCHER => {
                 // The palette's switcher opens at the switcher, else the
                 // sidebar button, else the menu button's place.
@@ -11036,12 +11055,26 @@ impl WorkspaceView {
                 )
             }
             ids::SELECT_SESSION => {
-                let session = invocation.session("session").ok_or(
-                    CommandError::MissingArgument {
-                        command: invocation.id,
-                        name: "session",
-                    },
-                )?;
+                let session =
+                    if let Some(session) = invocation.session("session") {
+                        session
+                    } else if invocation.integer("index").is_some() {
+                        let slot = select_tab_slot(invocation)?;
+                        self.check_switch_available(cx)?;
+                        // Slot 8 is the last session, and an empty slot
+                        // completes without switching, as select_tab's do.
+                        let sessions =
+                            cx.global::<Desktop>().hierarchy.state().sessions();
+                        let Some(&session) = nth_or_last(sessions, slot) else {
+                            return Ok(CommandOutcome::Completed);
+                        };
+                        session
+                    } else {
+                        return Err(CommandError::MissingArgument {
+                            command: invocation.id,
+                            name: "session",
+                        });
+                    };
                 self.switch_session(
                     session_switch::SwitchTarget::Existing(session),
                     window,
@@ -11072,12 +11105,27 @@ impl WorkspaceView {
                 self.new_workspace(name, window, cx)
             }
             ids::SELECT_WORKSPACE => {
-                let workspace = invocation.workspace("workspace").ok_or(
-                    CommandError::MissingArgument {
+                let workspace = if let Some(workspace) =
+                    invocation.workspace("workspace")
+                {
+                    workspace
+                } else if invocation.integer("index").is_some() {
+                    let slot = select_tab_slot(invocation)?;
+                    self.check_switch_available(cx)?;
+                    // Slot 8 is the last workspace, and an empty slot
+                    // completes without switching, as select_tab's do.
+                    let workspaces = self.session_workspaces(cx);
+                    let Some(&workspace) = nth_or_last(&workspaces, slot)
+                    else {
+                        return Ok(CommandOutcome::Completed);
+                    };
+                    workspace
+                } else {
+                    return Err(CommandError::MissingArgument {
                         command: invocation.id,
                         name: "workspace",
-                    },
-                )?;
+                    });
+                };
                 self.switch_workspace(workspace, window, cx)
             }
             ids::NEXT_WORKSPACE => self.cycle_workspace(true, window, cx),
@@ -12210,11 +12258,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
         self.check_available(true)?;
-        let tab = if index == 8 {
-            self.tabs.last()
-        } else {
-            self.tabs.get(index)
-        };
+        let tab = nth_or_last(&self.tabs, index);
         // A stray cmd-5 in a three-tab window is routine; other terminals
         // ignore it too, so it is not a refusal worth reporting.
         if let Some(tab) = tab {
@@ -13289,6 +13333,9 @@ impl WorkspaceView {
             self.resizing_sidebar = false;
             self.resizing_workspace = false;
             self.workspace_drag = None;
+            if self.close_session_list(window, cx) {
+                self.focus_terminal(window, cx);
+            }
             self.scroll_target = None;
             // A position change to or from `titlebar` changes who draws
             // the Linux title bar. GPUI applies the request at once, and
@@ -13622,14 +13669,14 @@ pub(super) struct ChromeLayout {
     corner: Option<Bounds<Pixels>>,
 }
 
-/// The share of the tab bar the sidebar button and workspace switcher
-/// take when the bar holds them.
+/// The share of the tab bar the sidebar button and switchers take when the
+/// bar holds them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum CornerSlot {
     /// A slot this long at the start of a horizontal strip.
     Lead(Pixels),
-    /// A row above a vertical column's first tab.
-    Row,
+    /// This many rows, one or more, above a vertical column's first tab.
+    Rows(u8),
 }
 
 /// One fact each about the window the layout partitions.
@@ -14122,24 +14169,29 @@ impl ChromeLayout {
             }
         }
         // The corner controls lead the strip: a slot before the first tab of
-        // a horizontal bar, or a row above a column's first tab. A slot of
+        // a horizontal bar, or rows above a column's first tab. A slot of
         // the other kind for the bar has no place and is ignored.
         let corner = corner.and_then(|slot| match slot {
-            CornerSlot::Row if !position.vertical() => None,
+            CornerSlot::Rows(_) if !position.vertical() => None,
             CornerSlot::Lead(_) if position.vertical() => None,
-            CornerSlot::Row => {
-                let row = workspace_chrome::CORNER_ROW
+            CornerSlot::Rows(rows) => {
+                // One control's height per row, a margin between them.
+                let more = f32::from(rows.max(1) - 1);
+                let controls = CONTROL_SIZE
+                    + (CONTROL_SIZE + workspace_chrome::CORNER_MARGIN) * more;
+                let row = (workspace_chrome::CORNER_ROW - CONTROL_SIZE
+                    + controls)
                     .min((tabs.size.height - strip_inset).max(px(0.0)));
                 let margin = tab_bar::VERTICAL_ROW_MARGIN_X
                     .min((tabs.size.width / 2.0).max(px(0.0)));
                 let slot = Bounds::new(
                     point(
                         margin,
-                        strip_inset + (row - CONTROL_SIZE).max(px(0.0)) / 2.0,
+                        strip_inset + (row - controls).max(px(0.0)) / 2.0,
                     ),
                     size(
                         (tabs.size.width - margin * 2.0).max(px(0.0)),
-                        CONTROL_SIZE.min(row),
+                        controls.min(row),
                     ),
                 );
                 strip_inset += row;
@@ -14370,6 +14422,7 @@ impl Render for WorkspaceView {
             self.close_workspace_switcher(window, cx);
         }
         self.release_stale_row_focus(&layout, window, cx);
+        self.release_stale_session_focus(window, cx);
         let frame = layout.frame;
         let content = layout.content;
         // Opaque windows retain their root/frame underlay. A translucent
@@ -14388,11 +14441,9 @@ impl Render for WorkspaceView {
             // A hidden button anchors nothing; `open_menu` falls back.
             self.menu_button_bounds.set(None);
         }
-        let session_placement = self.session_control_placement(&layout);
         // Set again when a host builds the control; see the end of render.
-        self.session_control_drawn.set(false);
+        self.session_corner_drawn.set(false);
         self.session_sidebar_drawn.set(false);
-        self.session_popover_drawn.set(false);
         // The menu button's slot, which the session control sits before.
         let menu_slot = if menu_placement == MenuButtonPlacement::Hidden {
             px(0.0)
@@ -14449,6 +14500,13 @@ impl Render for WorkspaceView {
                         && event.keystroke.key == "escape"
                     {
                         view.cancel_workspace_drag(cx);
+                        cx.stop_propagation();
+                    } else if view
+                        .session_drag
+                        .is_some_and(|drag| drag.dragging)
+                        && event.keystroke.key == "escape"
+                    {
+                        view.cancel_session_drag(cx);
                         cx.stop_propagation();
                     } else if view.reorder.is_some()
                         && event.keystroke.key == "escape"
@@ -14548,6 +14606,12 @@ impl Render for WorkspaceView {
                                         cx.stop_propagation();
                                     } else if view.workspace_drag.is_some() {
                                         view.update_workspace_drag(
+                                            event.position,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    } else if view.session_drag.is_some() {
+                                        view.update_session_drag(
                                             event.position,
                                             cx,
                                         );
@@ -14706,6 +14770,13 @@ impl Render for WorkspaceView {
                                                 cx,
                                             );
                                             cx.stop_propagation();
+                                        } else if view.session_drag.is_some() {
+                                            view.finish_session_drag(
+                                                event.position,
+                                                window,
+                                                cx,
+                                            );
+                                            cx.stop_propagation();
                                         } else if view.reorder.is_some() {
                                             view.finish_reorder(
                                                 event.position,
@@ -14754,16 +14825,18 @@ impl Render for WorkspaceView {
         }));
         // The workspace switcher's guard: a press outside its popover or
         // sheet closes it and goes on to what it hit. A press in a menu
-        // opened from it, such as the session menu, leaves it open.
+        // opened from it, or in a session list opened from the sheet,
+        // leaves it open.
         let switcher_view = cx.entity().downgrade();
         root = root.child(self.switcher_popover.guard(move |_, window, cx| {
             let _ = switcher_view.update(cx, |view, cx| {
                 let pointer = window.mouse_position();
-                if view
-                    .popover
-                    .content_bounds()
-                    .is_some_and(|menu| menu.contains(&pointer))
-                {
+                let inside = |popover: &Popover| {
+                    popover
+                        .content_bounds()
+                        .is_some_and(|bounds| bounds.contains(&pointer))
+                };
+                if inside(&view.popover) || inside(&view.session_list_popover) {
                     return;
                 }
                 // Focus returns to the terminal only from the switcher's own
@@ -14775,6 +14848,28 @@ impl Render for WorkspaceView {
                 }
             });
         }));
+        // The session list's guard, as the switcher's: a press outside it
+        // closes it and goes on to what it hit; one in a row menu opened
+        // from it leaves it open.
+        let session_view = cx.entity().downgrade();
+        root = root.child(self.session_list_popover.guard(
+            move |_, window, cx| {
+                let _ = session_view.update(cx, |view, cx| {
+                    let pointer = window.mouse_position();
+                    if view
+                        .popover
+                        .content_bounds()
+                        .is_some_and(|menu| menu.contains(&pointer))
+                    {
+                        return;
+                    }
+                    let inside = view.focused_session_row(window).is_some();
+                    if view.close_session_list(window, cx) && inside {
+                        view.focus_terminal(window, cx);
+                    }
+                });
+            },
+        ));
         // A dialog's guard stops every press and wheel event on its scrim
         // outside its panel, and anywhere before its first frame. None of
         // the window's dialogs closes on an outside press, so the reason it
@@ -14805,17 +14900,6 @@ impl Render for WorkspaceView {
             && !sidebar_title_row
             && !trail_held)
             .then(|| self.menu_button_element(colors, cx).mr(CONTROL_INSET));
-        // The session control sits further in than the menu button and, on
-        // the right, the sidebar button and switcher.
-        let title_session_control = (session_placement.host
-            == SessionControlHost::TitleStrip
-            && !sidebar_title_row
-            && !trail_held)
-            .then(|| {
-                self.session_control_element(session_placement, colors, cx)
-            })
-            .flatten()
-            .map(|control| control.mr(CONTROL_SLOT - CONTROL_SIZE));
         // The corner controls at the title row's start or end: on the left
         // after the traffic lights or leading window buttons, on the right
         // just inside the menu button.
@@ -14862,14 +14946,13 @@ impl Render for WorkspaceView {
                     cx,
                 )
             });
-        // The strip's trailing group: the session control, the corner
-        // controls, the menu button when the strip holds it, then the
-        // window buttons that end the row Huterm draws.
+        // The strip's trailing group: the corner controls, the menu button
+        // when the strip holds it, then the window buttons that end the row
+        // Huterm draws.
         let title_trailing = div()
             .ml_auto()
             .flex()
             .items_center()
-            .children(title_session_control)
             .children(title_corner_right)
             .children(title_menu_button)
             .when(
@@ -15463,8 +15546,8 @@ impl Render for WorkspaceView {
                     );
                 }
             }
-            // A vertical column shares the new-tab row with the session and
-            // menu controls, and on the right with the sidebar button.
+            // A vertical column shares the new-tab row with the menu button,
+            // and on the right with the sidebar button.
             let chrome_state = layout.workspace_chrome;
             let corner_host = self.corner_host(chrome_state, false);
             let corner_right = chrome_state.edge()
@@ -15481,7 +15564,6 @@ impl Render for WorkspaceView {
                 menu_placement == MenuButtonPlacement::SplitRow,
                 corner_right
                     && corner_host == workspace_chrome::CornerHost::Column,
-                session_placement.host == SessionControlHost::SplitRow,
             );
             chrome = chrome.child(bar).child(
                 Button::new("new-tab", "New Tab", swatch)
@@ -15620,48 +15702,6 @@ impl Render for WorkspaceView {
                     _ => {}
                 }
             }
-            // The session control's slot ends where the corner controls'
-            // or the menu button's starts, or at the bar's end without
-            // them.
-            let bar_corner = if corner_host == workspace_chrome::CornerHost::Bar
-            {
-                corner_width
-            } else {
-                px(0.0)
-            };
-            let bar_session_control = match session_placement.host {
-                SessionControlHost::BarEnd => Some(point(
-                    layout.strip_bounds(tabs).right()
-                        - clip.origin.x
-                        - menu_slot
-                        - bar_corner
-                        - session_placement.slot()
-                        + CONTROL_INSET,
-                    strip.bounds.origin.y - clip.origin.y + bar_inset,
-                )),
-                SessionControlHost::SplitRow => row.session_x.map(|x| {
-                    let row_height = CONTROL_SLOT - VERTICAL_ROW_MARGIN_Y * 2.0;
-                    point(
-                        strip.bounds.origin.x - clip.origin.x
-                            + VERTICAL_ROW_MARGIN_X
-                            + x,
-                        strip.bounds.origin.y - clip.origin.y
-                            + strip.available()
-                            + VERTICAL_ROW_MARGIN_Y
-                            + (row_height - CONTROL_SIZE) / 2.0,
-                    )
-                }),
-                SessionControlHost::TitleStrip | SessionControlHost::Hidden => {
-                    None
-                }
-            };
-            if let Some(origin) = bar_session_control
-                && let Some(control) =
-                    self.session_control_element(session_placement, colors, cx)
-            {
-                chrome = chrome
-                    .child(control.absolute().left(origin.x).top(origin.y));
-            }
             if sidebar_title_row {
                 chrome = chrome.child(
                     self.title_row_gestures(
@@ -15727,34 +15767,6 @@ impl Render for WorkspaceView {
                         self.sidebar_button_element(colors, cx)
                             .absolute()
                             .left(content.origin.x + lead - clip.origin.x)
-                            .top(
-                                content.origin.y
-                                    + (titlebar - CONTROL_SIZE) / 2.0
-                                    - clip.origin.y,
-                            ),
-                    );
-                }
-                let strip_corner_width =
-                    if strip_corner { corner_width } else { px(0.0) };
-                if session_placement.host == SessionControlHost::TitleStrip
-                    && !trail_held
-                    && let Some(control) = self.session_control_element(
-                        session_placement,
-                        colors,
-                        cx,
-                    )
-                {
-                    chrome = chrome.child(
-                        control
-                            .absolute()
-                            .left(
-                                content.right()
-                                    - menu_slot
-                                    - strip_corner_width
-                                    - session_placement.slot()
-                                    + CONTROL_INSET
-                                    - clip.origin.x,
-                            )
                             .top(
                                 content.origin.y
                                     + (titlebar - CONTROL_SIZE) / 2.0
@@ -15959,11 +15971,12 @@ impl Render for WorkspaceView {
         root = root.children(
             self.workspace_switcher_overlay(&layout, colors, window, cx),
         );
+        root = root
+            .children(self.session_list_overlay(&layout, colors, window, cx));
         root = root.children(self.panel_corner_controls(
             &layout,
             lead_held,
             trail_held,
-            session_placement,
             menu_placement,
             colors,
             window,
@@ -16204,22 +16217,21 @@ impl Render for WorkspaceView {
             refresh::Animated::animation_schedule(self, Instant::now()),
             cx,
         );
-        // A frame that draws no control, because it is hidden, its host is
-        // not drawn, or the window shows no session, anchors nothing.
-        // A host that went hands an open session menu to the other, which
-        // shows it expanded from the next frame.
-        let mut host_went = false;
-        if !self.session_control_drawn.get() {
-            host_went |= self.session_button_bounds.take().is_some();
+        // The session list closes when what it opened from goes, as the
+        // workspace switcher does (W33); a frame that draws no switcher
+        // anchors nothing.
+        if self.session_list_anchor_went() {
+            cx.defer_in(window, |view, window, cx| {
+                if view.close_session_list(window, cx) {
+                    view.focus_terminal(window, cx);
+                }
+            });
+        }
+        if !self.session_corner_drawn.get() {
+            self.session_corner_bounds.set(None);
         }
         if !self.session_sidebar_drawn.get() {
-            host_went |= self.session_sidebar_bounds.take().is_some();
-        }
-        if !self.session_popover_drawn.get() {
-            host_went |= self.session_popover_bounds.take().is_some();
-        }
-        if host_went && self.session_menu_open() {
-            window.request_animation_frame();
+            self.session_sidebar_bounds.set(None);
         }
         if !self.workspace_trigger_drawn.get() {
             self.workspace_trigger_bounds.set(None);
@@ -16845,7 +16857,9 @@ impl WorkspaceView {
             kind @ MenuKind::Field(_) => {
                 Self::field_menu_spec(kind, &menu.contexts, cx)
             }
-            MenuKind::Session => Some(self.session_menu_spec(cx)),
+            MenuKind::SessionRow(session) => {
+                self.session_row_menu_spec(*session, cx)
+            }
             MenuKind::WorkspaceRow(workspace) => {
                 self.workspace_row_menu_spec(*workspace, cx)
             }
@@ -16869,10 +16883,8 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        // An opening menu closes the panel, supersedes a native session
-        // menu waiting for its read, and ends a tab or pane drag; the menu
-        // then takes focus.
-        self.cancel_pending_session_menu(cx);
+        // An opening menu closes the panel and ends a tab or pane drag; the
+        // menu then takes focus.
         self.dismiss_panel(transparency_panel::PanelFocus::Keep, window, cx);
         self.cancel_reorder(window, cx);
         self.cancel_pane_drag(window, cx);
@@ -16885,7 +16897,7 @@ impl WorkspaceView {
             MenuKind::Terminal { .. } => "Terminal",
             MenuKind::Pane { .. } => "Pane",
             MenuKind::Field(_) => "Edit",
-            MenuKind::Session => "Sessions",
+            MenuKind::SessionRow(_) => "Sessions",
             MenuKind::WorkspaceRow(_) => "Workspaces",
         };
         let view = cx.new(|cx| {
@@ -16921,10 +16933,7 @@ impl WorkspaceView {
         });
         menu_focus.focus(window, cx);
         // The button's anchor follows its painted bounds at every render.
-        let trigger = match kind {
-            MenuKind::Session => self.session_anchor_cell(),
-            _ => &self.menu_button_bounds,
-        };
+        let trigger = &self.menu_button_bounds;
         self.popover.open(
             pointer.map_or_else(
                 || Anchor::Trigger(trigger.get().unwrap_or_default()),
@@ -16961,9 +16970,6 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> bool {
         let _ = self.popover.close();
-        // A native session menu still waiting for its read is dismissed
-        // with it; it does not count as an open menu.
-        self.cancel_pending_session_menu(cx);
         let Some(menu) = self.menu.take() else {
             return false;
         };
@@ -17006,21 +17012,9 @@ impl WorkspaceView {
         else {
             return;
         };
-        // The session menu keeps the keyboard's place when another window
-        // closes the selected session.
-        let keep_place = self
-            .menu
-            .as_ref()
-            .is_some_and(|menu| menu.kind == MenuKind::Session);
         match self.current_menu_model(cx) {
             Some(model) => {
-                menu.update(cx, |menu, cx| {
-                    if keep_place {
-                        menu.set_model_keeping_place(model, cx);
-                    } else {
-                        menu.set_model(model, cx);
-                    }
-                });
+                menu.update(cx, |menu, cx| menu.set_model(model, cx));
             }
             None => {
                 self.close_menu(MenuFocusReturn::Terminal, window, cx);
@@ -17132,7 +17126,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if *kind == MenuKind::Session {
+        if matches!(kind, MenuKind::SessionRow(_)) {
             self.run_session_pick(id, window, cx);
             return;
         }
@@ -17276,14 +17270,6 @@ impl WorkspaceView {
         command: huterm_protocol::CommandId,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        if self.pending_session_menu_takes_keys() {
-            // `menu_close` cancels the native session menu before it
-            // appears; the others have no rows to act on yet.
-            if command == ids::MENU_CLOSE {
-                self.cancel_pending_session_menu(cx);
-            }
-            return Ok(CommandOutcome::Completed);
-        }
         let menu = self.open_menu_entity()?;
         menu.update(cx, |menu, cx| {
             match command {
@@ -17398,10 +17384,7 @@ impl WorkspaceView {
                 .absolute()
                 .inset_0(),
             )
-            // The session control holds the probe while its menu is open.
-            .when(!self.session_menu_open(), |button| {
-                button.child(self.popover.trigger_probe())
-            })
+            .child(self.popover.trigger_probe())
     }
 
     /// The gestures of a title row Huterm owns, on its empty space: a
@@ -17556,22 +17539,6 @@ impl WorkspaceView {
             MenuView::content_height(menu.read(cx).model(), window.rem_size());
         let anchor = match open.pointer {
             Some(pointer) => Anchor::Pointer(pointer),
-            // Beside the switcher's popover from its session row, as a
-            // submenu, so the menu covers none of its rows.
-            None if open.kind == MenuKind::Session
-                && self.session_anchor_slot()
-                    == session_control::SessionHostSlot::Popover =>
-            {
-                self.session_menu_beside_switcher(
-                    layout,
-                    menu_min_width(window),
-                    height,
-                    viewport,
-                )
-            }
-            None if open.kind == MenuKind::Session => {
-                Anchor::Trigger(self.session_menu_anchor(layout))
-            }
             None => Anchor::Trigger(self.menu_anchor(layout)),
         };
         // The menu's labels follow the interface scale, and so does its
@@ -17895,7 +17862,7 @@ impl WorkspaceView {
                 | MenuKind::Terminal { .. }
                 | MenuKind::Pane { .. }
                 | MenuKind::Field(_)
-                | MenuKind::Session
+                | MenuKind::SessionRow(_)
                 | MenuKind::WorkspaceRow(_) => None,
             })
             .and_then(|tab| {
@@ -18105,6 +18072,16 @@ pub(super) fn active_composition(window: &Window, cx: &App) -> bool {
         })
 }
 
+/// The item at zero-based select slot `slot` of `items`, where slot 8, the
+/// ninth key, picks the last item however many there are, as browsers'
+/// Cmd-9 does.
+fn nth_or_last<T>(items: &[T], slot: usize) -> Option<&T> {
+    if slot == 8 {
+        items.last()
+    } else {
+        items.get(slot)
+    }
+}
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, feature = "test-support"))]

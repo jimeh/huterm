@@ -912,13 +912,11 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
         Platform::MacOs => "cmd-alt-i",
         Platform::Linux => "ctrl-shift-alt-i",
     };
-    // GPUI folds Shift+bracket into a brace, so the Linux cycle keys add
-    // Alt to the `ctrl-super` focus keys instead.
-    let (next_layout, previous_layout, balance) = match platform {
-        Platform::MacOs => ("cmd-ctrl-]", "cmd-ctrl-[", "cmd-ctrl-="),
-        Platform::Linux => {
-            ("ctrl-super-alt-]", "ctrl-super-alt-[", "ctrl-super-=")
-        }
+    // The previous layout has no default; the workspace cycle took its
+    // bracket key.
+    let (next_layout, balance) = match platform {
+        Platform::MacOs => ("cmd-ctrl-\\", "cmd-ctrl-="),
+        Platform::Linux => ("ctrl-super-alt-\\", "ctrl-super-="),
     };
     let mut bindings = vec![
         default(
@@ -951,11 +949,6 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
             next_layout,
             ids::NEXT_PANE_LAYOUT,
             "Arrange the panes in the next layout",
-        ),
-        default(
-            previous_layout,
-            ids::PREVIOUS_PANE_LAYOUT,
-            "Arrange the panes in the previous layout",
         ),
         default(balance, ids::BALANCE_PANES, "Balance the panes"),
     ];
@@ -1074,6 +1067,34 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             "ctrl-shift-tab",
             ids::PREVIOUS_TAB,
             "Activate the previous tab",
+        ),
+    ]);
+    // macOS GPUI clears Shift from a non-letter key and reports the
+    // shifted character, so Shift-Cmd-] arrives as `cmd-}`. Linux folds
+    // Shift+bracket into a brace too, so its workspace cycle adds Alt to
+    // the `ctrl-super` pane focus keys instead.
+    let (next_tab, previous_tab, next_workspace, previous_workspace) =
+        match platform {
+            Platform::MacOs => ("cmd-}", "cmd-{", "cmd-ctrl-]", "cmd-ctrl-["),
+            Platform::Linux => (
+                "ctrl-pagedown",
+                "ctrl-pageup",
+                "ctrl-super-alt-]",
+                "ctrl-super-alt-[",
+            ),
+        };
+    entries.extend([
+        default(next_tab, ids::NEXT_TAB, "Activate the next tab"),
+        default(previous_tab, ids::PREVIOUS_TAB, "Activate the previous tab"),
+        default(
+            next_workspace,
+            ids::NEXT_WORKSPACE,
+            "Show the next workspace",
+        ),
+        default(
+            previous_workspace,
+            ids::PREVIOUS_WORKSPACE,
+            "Show the previous workspace",
         ),
     ]);
     entries.extend(pane_defaults(platform));

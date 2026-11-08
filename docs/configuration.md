@@ -193,22 +193,27 @@ session_numbering = "lowest_unused"
 Set `session_numbering = "increasing"` to keep counting up instead: each
 new session takes one more than the highest number used since launch, and
 a restart continues after the highest number it restored. Workspaces
-number the same way. The setting applies to sessions created after it
-changes, without a restart; existing names never change.
+number the same way within their session: each session's first workspace is
+Workspace 1, and with `increasing` a restart keeps each session's count. The
+setting applies to sessions created after it changes, without a restart;
+existing names never change.
 
 ## Sidebar and workspaces
 
 A session holds one or more workspaces, each with its own tabs. The
 sidebar lists the window's workspaces and holds its session switcher. Its
 button sits in the corner of the title bar or tab bar on the sidebar's
-side, so it is always one click away. New Workspace in the sidebar, the
-session menu, or the palette creates a workspace with a fresh shell.
+side, so it is always one click away. The + in the workspace list's header,
+or New Workspace in the palette, creates a workspace with a fresh shell.
 
 ```toml
 [sidebar]
-position = "left"           # left or right
-visible = false             # new windows start with the sidebar shown
-session_switcher = "bottom" # bottom or top
+position = "left"                   # left or right
+visible = false                     # new windows start with the sidebar shown
+session_switcher = "bottom"         # bottom or top
+session_switcher_in_corner = false  # session switcher beside the button
+workspace_switcher_in_corner = true # workspace switcher beside the button
+switcher_style = "full"             # full (icon and name) or icon
 ```
 
 - The sidebar button shows or hides the sidebar. On the left it follows the
@@ -217,39 +222,49 @@ session_switcher = "bottom" # bottom or top
   inside the sidebar's top strip. `toggle_sidebar` does the same from the
   palette. Each window keeps its own choice, saved with it; `visible` sets
   it for new windows. The sidebar never opens by itself.
-- While the sidebar is hidden and the session has two or more workspaces,
-  the workspace switcher sits beside the button: the shown workspace's
-  name, dimmed when automatic, or only its icon when the bar is short of
-  room. It opens a popover with the sidebar's content, as tall as it needs,
-  in Huterm's style even with `macos_native_menus`. Picking a workspace
-  closes it; so do Escape and a click outside. `open_workspace_switcher`
-  opens it from the palette.
+- While the sidebar is hidden, switchers sit beside the button: the
+  workspace switcher while the session has two or more workspaces, and the
+  session switcher when `session_switcher_in_corner = true`. On the left
+  the button comes first, then the session switcher, then the workspace
+  switcher; on the right the order mirrors, ending at the menu button. Each
+  shows its icon and the name, dimmed when automatic, or only its icon with
+  `switcher_style = "icon"` or when the bar is short of room. In a left or
+  right tab column they take a row each above the tabs. The workspace
+  switcher opens a popover with the workspace list, as tall as it needs, in
+  Huterm's style even with `macos_native_menus`; the session switcher opens
+  the session list. Picking a row closes them; so do Escape and a click
+  outside. `open_workspace_switcher` and `open_session_menu` open them from
+  the palette.
 - The sidebar spans the window's height and is outermost on its side, with
   a tab column on the same side next to it. It holds that corner of the
   title bar: the traffic lights or window buttons, and on the right the menu
-  button and the session control. Drag its inner edge to resize it, between
-  140 and 400 points and at most half the window; each window keeps its own
-  width. In a window too narrow to leave the terminal 384 points beside it,
-  the button opens the sidebar as a sheet over the terminal instead, which
-  closes when you pick a workspace, press Escape, or click outside it. The
-  sheet changes no saved choice: a window that had its sidebar shown docks
-  it again once it is wide enough, and one that did not keeps it hidden.
-  Resizing the sidebar or the tab column beside it stops where the
-  terminal would get narrower than 384 points.
-- Rows show the workspace's name, dimmed when automatic, and its tab count.
-  A click shows the workspace, a double-click renames it, and a right-click
-  opens its menu: Rename, Clear Name, New Workspace, and Close Workspace.
-  Drag a row up or down to reorder the session's workspaces, in the sidebar
-  or the switcher's popover, holding it at the list's edge to scroll;
-  Escape cancels the drag. In the popover and the sheet a click shows the
-  workspace and closes them, so rename there with F2 or the row's menu.
-  `focus_sidebar` moves keyboard focus to the shown workspace's row; see
+  button. Drag its inner edge to resize it, between 140 and 400 points and
+  at most half the window; each window keeps its own width. In a window too
+  narrow to leave the terminal 384 points beside it, the button opens the
+  sidebar as a sheet over the terminal instead, which closes when you pick a
+  workspace, press Escape, or click outside it. The sheet changes no saved
+  choice: a window that had its sidebar shown docks it again once it is wide
+  enough, and one that did not keeps it hidden. Resizing the sidebar or the
+  tab column beside it stops where the terminal would get narrower than 384
+  points.
+- Workspace and session rows look alike: an icon, the name, dimmed when
+  automatic, and a second line of details. A workspace row shows its tab
+  count; a session row shows its workspace and tab counts, a window tag
+  while other windows show it, and an "exited" tag once all its shells
+  exited. A click shows the workspace or session, and a right-click opens
+  the row's menu: Rename, Clear Name, and Close, and for a session, Open in
+  New Window. In the popovers each row also has a "⋯" button that opens the
+  same menu. Drag a row up or down to reorder the session's workspaces or
+  the sessions, holding it at the list's edge to scroll; Escape cancels the
+  drag. A double-click renames a workspace row in the sidebar; in the
+  popovers and the sheet a click shows the workspace and closes them, so
+  rename there with F2 or the row's menu. `focus_sidebar` moves keyboard
+  focus to the shown workspace's row; see
   [keybindings](keybindings.md#sidebar).
-- The session switcher shows the session's name and workspace count at the
-  bottom of the sidebar, or just its name at the top with
-  `session_switcher = "top"`. It opens the session menu as Huterm's popover,
-  even with `macos_native_menus`. The switcher's popover places it the same
-  way.
+- The session switcher row shows the session's name over its workspace and
+  tab counts, at the bottom of the sidebar or at the top with
+  `session_switcher = "top"`. It opens the session list, a popover in
+  Huterm's style even with `macos_native_menus`, with a + for New Session.
 
 Showing or hiding the sidebar resizes the window's terminals as a window
 resize does, so a selection survives only when the grid size stays the same.
@@ -878,7 +893,6 @@ padding_y = 4.0
 padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
-session_button = false # also a session control beside the menu button
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
 macos_native_menus = true # native macOS menus; ignored on Linux
 macos_drag_preview = true # floating drag preview; ignored on Linux
@@ -1110,20 +1124,12 @@ column. It hides with an auto-hidden bar. A yellow dot marks waiting notices.
 `menu_button = false` removes the button; `open_menu` and every menu item stay
 available through the palette and shortcuts.
 
-The sidebar's session switcher opens the session menu, which switches,
-creates, renames, and closes sessions and opens one in a new window.
-`session_button = true` also shows a session control in the title bar: a
-layers icon, the window's session name, and a chevron, opening the same menu.
-It follows the menu button's placement further in, past the sidebar button
-and switcher on the right, so the menu button keeps the rightmost slot, and
-takes the button's slot when `menu_button = false`. In a left or right column
-without a title bar it shows only its icon in the new-tab row. Its name
-truncates at 168 points and in narrow hosts, and below about 345 points of
-title bar it shows only the icon; the tooltip and accessible name keep the
-full name. It hides with an auto-hidden bar. `open_session_menu` and the
-session commands work either way. Opened from this control, the session menu
-follows `macos_native_menus` like the other menus; a native menu shows each
-session's tab count and tags as a subtitle on macOS 14.4 and later.
+The session switcher, in the sidebar or beside the sidebar button, opens
+the session list, which switches, creates, renames, reorders, and closes
+sessions and opens one in a new window; see
+[Sidebar and workspaces](#sidebar-and-workspaces). `[window] session_button`,
+the title-bar session control it replaced, is deprecated: Huterm ignores it
+and warns until you remove it.
 Right-clicking empty tab-bar space also opens the window menu, except in
 Huterm's own Linux title row, where it opens the window manager's menu.
 

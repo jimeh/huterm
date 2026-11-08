@@ -2,7 +2,8 @@
 //!
 //! A [`RuntimeCapture`] records what a restore recreates: sessions,
 //! workspaces, and tabs in order with their identities, names, and pane
-//! layouts, the allocator watermark and creation ordinals, and for each
+//! layouts, the allocator watermark and creation ordinals (the session one
+//! for the runtime, a workspace one per session), and for each
 //! terminal the directories its fresh shell may start in. It records no
 //! program, argument, environment, title, process, command record, or exit
 //! state, so restoring it never runs saved text.
@@ -32,8 +33,6 @@ pub struct RuntimeCapture {
     pub next_id: u64,
     /// The last session creation ordinal, which automatic names count.
     pub session_ordinal: u64,
-    /// The last workspace creation ordinal, which automatic names count.
-    pub workspace_ordinal: u64,
     /// Sessions in order, each with its workspaces and their tabs.
     pub sessions: Vec<SessionCapture>,
     /// One record for each terminal a captured pane shows, in pane
@@ -46,6 +45,10 @@ pub struct RuntimeCapture {
 pub struct SessionCapture {
     /// Identity and names.
     pub info: SessionInfo,
+    /// The last workspace creation ordinal this session handed out, which
+    /// its workspaces' automatic names count. Zero when unknown, such as
+    /// in a file saved before workspaces numbered per session.
+    pub workspace_ordinal: u64,
     /// Workspaces in order.
     pub workspaces: Vec<WorkspaceCapture>,
 }

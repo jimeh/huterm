@@ -577,11 +577,7 @@ fn a_press_on_an_inactive_tabs_close_button_neither_selects_nor_drags_it(
 fn a_press_on_the_menu_button_starts_no_title_row_move(
     cx: &mut TestAppContext,
 ) {
-    // The session control would sit in the empty space this test presses;
-    // `session_control` covers its own press and the strip beside it.
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.window.session_button = false;
-    });
+    let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_window();
     harness.wait_text(window, tab, "READY");
@@ -823,12 +819,9 @@ fn full_height_sidebars_keep_title_gestures_and_the_window_corner_menu(
     cx: &mut TestAppContext,
 ) {
     for position in [TabPosition::Left, TabPosition::Right] {
-        // The session control would sit in the sidebar strip's centre,
-        // which this test presses; `session_control` covers it.
         let mut harness = DesktopHarness::with_config(cx, |config| {
             config.tabs.position = position;
             config.tabs.always_show = true;
-            config.window.session_button = false;
         });
         let tab = harness.open_tab(ECHO);
         let window = harness.attach_window();

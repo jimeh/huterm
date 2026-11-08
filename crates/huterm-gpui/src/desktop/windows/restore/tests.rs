@@ -61,13 +61,13 @@ fn capture() -> RuntimeCapture {
         socket_name: "default".into(),
         next_id: 5,
         session_ordinal: 1,
-        workspace_ordinal: 1,
         sessions: vec![SessionCapture {
             info: SessionInfo {
                 id: SessionId::new(1),
                 custom_name: Some("main".into()),
                 automatic_name: "Session 1".into(),
             },
+            workspace_ordinal: 1,
             workspaces: vec![WorkspaceCapture {
                 info: WorkspaceInfo {
                     id: WorkspaceId::new(2),

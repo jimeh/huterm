@@ -14,6 +14,8 @@ fn inputs(visible: bool, workspaces: usize) -> Inputs {
         workspaces,
         position: SidebarPosition::Left,
         width: PANEL_WIDTH,
+        session_corner: false,
+        workspace_corner: true,
     }
 }
 
@@ -30,11 +32,50 @@ fn a_hidden_sidebar_shows_the_switcher_only_with_another_workspace() {
             WorkspaceChrome::Hidden {
                 edge: Edge::Left,
                 switcher,
+                session: false,
                 narrow: false,
             },
             "{workspaces}"
         );
     }
+}
+
+#[test]
+fn settings_choose_which_switchers_a_hidden_sidebar_shows() {
+    // (session setting, workspace setting, workspaces) -> (session, switcher)
+    for (session_corner, workspace_corner, workspaces, session, switcher) in [
+        (true, true, 1, true, false),
+        (true, true, 2, true, true),
+        (true, false, 2, true, false),
+        (false, false, 2, false, false),
+    ] {
+        let chrome = resolve(
+            Inputs {
+                session_corner,
+                workspace_corner,
+                ..inputs(false, workspaces)
+            },
+            wide,
+        );
+        assert_eq!(
+            (chrome.session(), chrome.switcher()),
+            (session, switcher),
+            "{session_corner} {workspace_corner} {workspaces}"
+        );
+        assert_eq!(
+            chrome.switchers(),
+            usize::from(session) + usize::from(switcher)
+        );
+    }
+    // A docked sidebar holds both itself.
+    let docked = resolve(
+        Inputs {
+            session_corner: true,
+            ..inputs(true, 2)
+        },
+        wide,
+    );
+    assert!(docked.docked() && docked.switchers() == 0);
 }
 
 #[test]
@@ -74,6 +115,7 @@ fn a_sidebar_that_squeezes_the_terminal_stays_hidden_and_narrow() {
         WorkspaceChrome::Hidden {
             edge: Edge::Left,
             switcher: true,
+            session: false,
             narrow: true,
         }
     );
@@ -96,6 +138,7 @@ fn hidden(edge: Edge) -> WorkspaceChrome {
     WorkspaceChrome::Hidden {
         edge,
         switcher: true,
+        session: false,
         narrow: false,
     }
 }
@@ -573,7 +616,7 @@ fn the_corner_slot_leads_a_bar_or_takes_a_row_above_a_column() {
             hidden(Edge::Left),
         ));
         let slotted = ChromeLayout::build_with(LayoutInputs {
-            corner: Some(CornerSlot::Row),
+            corner: Some(CornerSlot::Rows(1)),
             ..layout_inputs(window, px(28.0), position, hidden(Edge::Left))
         });
         // A row above the first tab, below the title row.
@@ -587,6 +630,20 @@ fn the_corner_slot_leads_a_bar_or_takes_a_row_above_a_column() {
         assert!(slot.bottom() <= slotted.tabs.top() + slotted.strip_inset);
         assert!(inside(slot, slotted.tabs), "{position:?}");
         assert_eq!(slotted.terminal, plain.terminal, "{position:?}");
+        // Two switchers take a row each, one control and a margin taller.
+        let two = ChromeLayout::build_with(LayoutInputs {
+            corner: Some(CornerSlot::Rows(2)),
+            ..layout_inputs(window, px(28.0), position, hidden(Edge::Left))
+        });
+        let taller = super::super::CONTROL_SIZE + CORNER_MARGIN;
+        assert_eq!(two.strip_inset, slotted.strip_inset + taller);
+        let slot = two.corner().expect("a slot");
+        assert_eq!(
+            slot.size.height,
+            super::super::CONTROL_SIZE * 2.0 + CORNER_MARGIN
+        );
+        assert!(slot.bottom() <= two.tabs.top() + two.strip_inset);
+        assert_eq!(two.terminal, plain.terminal, "{position:?}");
     }
 }
 
@@ -603,7 +660,7 @@ fn small_windows_keep_every_part_inside_and_nonnegative() {
                     for (workspace, corner) in [
                         (docked(edge), None),
                         (hidden(edge), Some(CornerSlot::Lead(px(160.0)))),
-                        (hidden(edge), Some(CornerSlot::Row)),
+                        (hidden(edge), Some(CornerSlot::Rows(1))),
                     ] {
                         let layout = ChromeLayout::build_with(LayoutInputs {
                             corner,

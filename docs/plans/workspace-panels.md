@@ -2,7 +2,7 @@
 
 Status: in progress. Plans [issue #27][issue-27] (parent [#11][issue-11]).
 The maintainer picked the mockups and settled the open questions on
-2026-11-07, then revised PR B's design on 2026-11-08; see
+2026-11-07, then revised PR B's design twice on 2026-11-08; see
 [Settled decisions](#settled-decisions). PR A is implemented (see
 [Deviations](#deviations)); PR B is being reworked to the revised design;
 PR C remains.
@@ -154,16 +154,51 @@ top and bottom bar parts of 2; the rest stand.
 10. Settings: separate "Sessions" and "Workspaces" sections after
     Windows, replacing G1's single section.
 
+Revised again on 2026-11-08 from the second mockup
+(`https://plans.jimeh.dev/wje7hjohtru35mwxtxxuetqhdi/huterm-sidebar-mockup-v3.html`),
+all in PR B. These replace H1 in decision 5 above, the popover's session row in
+decision 4, and decision 9's session popover; the rest stand.
+
+ 1. While the sidebar is hidden, the corner holds the sidebar button, the
+    workspace switcher (two or more workspaces), and the session switcher
+    when `[sidebar] session_switcher_in_corner` asks (default off);
+    `workspace_switcher_in_corner` (default on) hides the workspace one.
+    On the left: button, session, workspace; on the right the order
+    mirrors, ending at the menu button. `switcher_style` picks the icon and
+    name (default) or the icon alone; narrow windows show icons either
+    way. In a tab column on the sidebar's side each switcher takes a row
+    above the tabs.
+ 2. The #26 title-bar session control goes. `[window] session_button`
+    shipped in v0.31.0, so it keeps loading, ignored, with a deprecation
+    warning, and stays out of Settings.
+ 3. The session menu becomes the session list, a GPUI popover even with
+    native menus, opened from either session switcher or
+    `open_session_menu`. It and the workspace list share one row design:
+    icon, name, details on a second line (a workspace's tab count for now,
+    more later; a session's workspace and tab counts, window and exited
+    tags), a header with +, drag to reorder (`Mux::move_session` for
+    sessions), F2, and a row context menu (Rename, Clear Name, Close, and
+    for sessions Open in New Window). Popover rows add a "⋯" button that
+    opens the same menu.
+ 4. The workspace switcher's popover drops its session row.
+ 5. Automatic workspace names count per session.
+ 6. `select_session` and `select_workspace` take `index` (1 to 9, 9 the
+    last) as `select_tab` does.
+ 7. Default keys: previous and next workspace on Ctrl-Cmd-[ and ] (Linux
+    `ctrl-super-alt-[`/`]`), next pane layout on Ctrl-Cmd-\ (Linux
+    `ctrl-super-alt-\`) with no previous default, and previous and next tab
+    also on Shift-Cmd-[ and ] (Linux `ctrl-pageup`/`ctrl-pagedown`).
+
 Config:
 
 ```toml
-[window]
-session_button = false        # the #26 title-bar session control
-
 [sidebar]
-position = "left"             # left or right
-visible = false               # new windows start with the sidebar shown
-session_switcher = "bottom"   # bottom or top
+position = "left"                   # left or right
+visible = false                     # new windows start with the sidebar shown
+session_switcher = "bottom"         # bottom or top
+session_switcher_in_corner = false  # session switcher beside the button
+workspace_switcher_in_corner = true # workspace switcher beside the button
+switcher_style = "full"             # full or icon
 ```
 
 ## Delivery
@@ -589,6 +624,8 @@ follow-up settles; an emptied close converts to Quit only after a fresh
 | W33  | PR B: switcher popover, sheet, or session popover open                                                        | Toggle, reload, or its anchor goes                                         | The popover closes; focus returns to the terminal                                                                               | `a_popover_whose_anchor_goes_closes_cleanly`                                                                                                                                                                                                                                                                                                                                    |
 | W41  | PR B: a workspace row drag in progress                                                                        | The dragged workspace closes or moves away, or the window switches session | The drag cancels; nothing moves                                                                                                 | `a_workspace_drag_cancels_when_its_workspace_goes`                                                                                                                                                                                                                                                                                                                              |
 | W42  | PR B: a workspace row drag in progress                                                                        | Its anchor row closes before the drop                                      | The drop lands at the anchor's former neighbour or the end, by ID; no other workspace moves                                     | `a_workspace_drop_whose_anchor_went_lands_by_id`                                                                                                                                                                                                                                                                                                                                |
+| W43  | PR B: a session row drag in progress                                                                          | The dragged session closes                                                 | The drag cancels; nothing moves                                                                                                 | `a_session_drag_cancels_when_its_session_goes`                                                                                                                                                                                                                                                                                                                                  |
+| W44  | PR B: session list open                                                                                       | What it opened from goes: the corner switcher or the sidebar's session row | It closes and focus returns to the terminal                                                                                     | `a_session_list_whose_anchor_goes_closes_cleanly`                                                                                                                                                                                                                                                                                                                               |
 | W34  | A commits `LeaveWorkspace` (commit held); Linux; an unviewed session                                          | Close Window in B                                                          | A still counts as open, so B closes without becoming Quit                                                                       | `a_window_leaving_a_workspace_still_counts_as_open`                                                                                                                                                                                                                                                                                                                             |
 | W35  | Emptied close assessed in A                                                                                   | Quit confirming in B, then A reaches its commit                            | `LeaveWorkspace` commits and follows, and the Quit waits for its hold; `Detach` and `Session` behave as today                   | `a_leave_workspace_commits_while_a_quit_confirms`                                                                                                                                                                                                                                                                                                                               |
 | W36  | Linux last window on the session's only workspace; an unviewed session                                        | Its last tab closes; the emptied close becomes Quit                        | The Quit saves neither the emptied session nor the window; the unviewed session is saved                                        | `a_linux_emptied_quit_saves_neither_the_emptied_session_nor_its_window`                                                                                                                                                                                                                                                                                                         |
@@ -776,7 +813,23 @@ Recorded while implementing PR A:
 
 ### PR B deviations
 
-Recorded while implementing the 2026-11-08 revision:
+Recorded while implementing the second 2026-11-08 revision:
+
+- Index 9 of `select_session` and `select_workspace` picks the last item,
+  as `select_tab`'s does, rather than the ninth.
+- With `increasing` numbering a restore keeps each session's saved
+  workspace counter, raised to its highest restored number; an older file
+  falls back to that number. Moving a workspace to another session raises
+  the destination's counter, so a live name never repeats there.
+- `move_session` does not advance the Mux revision: the order of sessions
+  changes no close's set of terminals.
+- The session list focuses the window's session's row when it opens, as the
+  workspace popover does, so the keyboard works at once; Escape returns
+  focus to the sidebar's session row when that opened it.
+- The workspace row menu drops New Workspace, matching the session row
+  menu; the lists' headers have the + buttons.
+
+Recorded while implementing the first 2026-11-08 revision:
 
 - The user-facing "sidebar" keeps the internal name workspace panel
   (`workspace_chrome.rs`, `workspace_panel.rs`, `WorkspaceChrome`, the

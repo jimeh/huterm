@@ -194,9 +194,10 @@ fn names_reset_to_stable_ordinals_and_current_title_with_duplicate_id_targeting(
         mux.session(second_session).unwrap().display_name(),
         "Session 2"
     );
+    // Workspaces number within their session.
     assert_eq!(
         mux.workspace(second_workspace).unwrap().display_name(),
-        "Workspace 2"
+        "Workspace 1"
     );
 }
 
@@ -481,16 +482,103 @@ fn lowest_unused_numbering_reuses_closed_numbers_and_skips_custom_named_ones() {
     );
 
     // Switching to increasing numbering continues above every number
-    // handed out, so no live name repeats.
+    // handed out, so no live name repeats; workspaces count per session.
     mux.set_automatic_numbering(AutomaticNumbering::Increasing);
     mux.close_session(next).unwrap();
     let after = mux.create_session(None).unwrap();
     assert_eq!(mux.session(after).unwrap().display_name(), "Session 5");
-    let workspace = mux.create_workspace(after, None).unwrap();
+    let workspace = mux.create_workspace(first, None).unwrap();
     assert_eq!(
         mux.workspace(workspace).unwrap().display_name(),
         "Workspace 3"
     );
+}
+
+#[test]
+fn workspaces_number_within_their_session_in_both_modes() {
+    for numbering in [
+        AutomaticNumbering::LowestUnused,
+        AutomaticNumbering::Increasing,
+    ] {
+        let mut mux = Mux::default();
+        mux.set_automatic_numbering(numbering);
+        let first = mux.create_session(None).unwrap();
+        let second = mux.create_session(None).unwrap();
+        let mut names = Vec::new();
+        for session in [first, second, first, second] {
+            let workspace = mux.create_workspace(session, None).unwrap();
+            names.push(
+                mux.workspace(workspace).unwrap().display_name().to_owned(),
+            );
+        }
+        assert_eq!(
+            names,
+            ["Workspace 1", "Workspace 1", "Workspace 2", "Workspace 2"],
+            "{numbering:?}"
+        );
+    }
+}
+
+#[test]
+fn increasing_workspace_numbers_skip_closed_and_moved_in_numbers_per_session() {
+    let mut mux = Mux::default();
+    mux.set_automatic_numbering(AutomaticNumbering::Increasing);
+    let first = mux.create_session(None).unwrap();
+    let second = mux.create_session(None).unwrap();
+    mux.create_workspace(first, None).unwrap();
+    let closed = mux.create_workspace(first, None).unwrap();
+    mux.close_workspace(closed).unwrap();
+    let reopened = mux.create_workspace(first, None).unwrap();
+    assert_eq!(
+        mux.workspace(reopened).unwrap().display_name(),
+        "Workspace 3"
+    );
+    // The second session's count is its own, and a workspace moved in
+    // keeps its number, which the session then counts as handed out.
+    let own = mux.create_workspace(second, None).unwrap();
+    assert_eq!(mux.workspace(own).unwrap().display_name(), "Workspace 1");
+    mux.move_workspace(first, reopened, second, None).unwrap();
+    let next = mux.create_workspace(second, None).unwrap();
+    assert_eq!(mux.workspace(next).unwrap().display_name(), "Workspace 4");
+}
+
+#[test]
+fn session_moves_reorder_sessions_without_staling_close_tickets() {
+    let mut mux = Mux::default();
+    let first = mux.create_session(None).unwrap();
+    let second = mux.create_session(None).unwrap();
+    let third = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(first, None).unwrap();
+    let order = |mux: &Mux| -> Vec<SessionId> {
+        mux.sessions().iter().map(|session| session.id).collect()
+    };
+    let revision = mux.revision;
+    mux.move_session(third, Some(first)).unwrap();
+    assert_eq!(order(&mux), [third, first, second]);
+    mux.move_session(third, None).unwrap();
+    assert_eq!(order(&mux), [first, second, third]);
+    // Moving before the session after it is already in place.
+    mux.move_session(first, Some(second)).unwrap();
+    assert_eq!(order(&mux), [first, second, third]);
+    mux.move_session(first, Some(third)).unwrap();
+    assert_eq!(order(&mux), [second, first, third]);
+    assert_eq!(mux.revision, revision);
+    assert_eq!(mux.session(first).unwrap().workspaces, [workspace]);
+
+    let mut foreign = Mux::default();
+    let foreign_session = foreign.create_session(None).unwrap();
+    assert_eq!(foreign_session.get(), first.get());
+    let stale = SessionId::in_runtime(mux.runtime_id(), u64::MAX);
+    for (session, anchor) in [
+        (stale, None),
+        (first, Some(stale)),
+        (foreign_session, None),
+        (first, Some(foreign_session)),
+        (SessionId::new(first.get()), None),
+    ] {
+        assert!(mux.move_session(session, anchor).is_err());
+        assert_eq!(order(&mux), [second, first, third]);
+    }
 }
 
 #[test]
@@ -518,7 +606,7 @@ fn exhausted_creation_does_not_publish_partial_structure() {
     // Only increasing numbering can run out of numbers.
     mux.set_automatic_numbering(AutomaticNumbering::Increasing);
     mux.session_ordinal = u64::MAX;
-    mux.workspace_ordinal = u64::MAX;
+    mux.sessions[0].workspace_ordinal = u64::MAX;
     mux.next_id = 5;
     assert!(matches!(
         mux.create_session(None),

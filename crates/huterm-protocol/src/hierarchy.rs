@@ -336,6 +336,13 @@ pub enum HierarchyEvent {
         /// Closed session.
         session: SessionId,
     },
+    /// A session moved within the session order.
+    SessionMoved {
+        /// Moved session.
+        session: SessionId,
+        /// Final position in the session order.
+        index: u32,
+    },
     /// A workspace was inserted into a session.
     WorkspaceCreated {
         /// Owning session.
@@ -954,6 +961,11 @@ impl HierarchyState {
                 }
                 touched.names = true;
             }
+            HierarchyEvent::SessionMoved { session, index } => {
+                self.move_session(session, position(index)?)?;
+                // Every window's session list shows the order.
+                touched.names = true;
+            }
             HierarchyEvent::WorkspaceCreated {
                 session,
                 workspace,
@@ -1122,6 +1134,18 @@ impl HierarchyState {
             HierarchyEvent::Skipped => {}
         }
         Some(touched)
+    }
+
+    /// Moves a session to its final position in the session order, or
+    /// returns `None` without changes.
+    fn move_session(&mut self, session: SessionId, index: usize) -> Option<()> {
+        let source = self.session_order.iter().position(|id| *id == session)?;
+        if index >= self.session_order.len() {
+            return None;
+        }
+        self.session_order.remove(source);
+        self.session_order.insert(index, session);
+        Some(())
     }
 
     /// Moves a workspace to its final position in a session, or returns

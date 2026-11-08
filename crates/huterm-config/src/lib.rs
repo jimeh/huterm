@@ -1008,17 +1008,19 @@ pub struct WindowConfig {
         "x-huterm-apply" = "live",
     )))]
     pub menu_button: bool,
-    /// Also show a session control, which names the window's session and
-    /// opens the session menu, beside the window menu button. The sidebar
-    /// always holds the session switcher.
+    /// Deprecated and ignored: the session switcher beside the sidebar
+    /// button replaced the title-bar session control. Use
+    /// `sidebar.session_switcher_in_corner`, and remove this field.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "sessions",
         "x-huterm-group" = "Session switcher",
-        "x-huterm-label" = "Show session control in the title bar",
-        "x-huterm-order" = 11,
+        "x-huterm-label" = "Title-bar session control",
+        "x-huterm-order" = 90,
         "x-huterm-apply" = "live",
+        "x-huterm-advanced" = true,
+        "deprecated" = true,
     )))]
-    pub session_button: bool,
+    pub session_button: Option<bool>,
     /// Show key hints on the scroll pill and on dialog and panel buttons.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "windows",
@@ -1115,9 +1117,7 @@ pub enum SizeIndicator {
 }
 
 /// The sidebar, which holds the window's workspaces and session switcher.
-#[derive(
-    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct SidebarConfig {
@@ -1141,8 +1141,8 @@ pub struct SidebarConfig {
         "x-huterm-apply" = "new_windows",
     )))]
     pub visible: bool,
-    /// Where the session switcher sits in the sidebar and in the workspace
-    /// switcher: at the bottom or the top.
+    /// Where the session switcher sits in the sidebar: at the bottom or the
+    /// top.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "sessions",
         "x-huterm-group" = "Session switcher",
@@ -1151,6 +1151,71 @@ pub struct SidebarConfig {
         "x-huterm-apply" = "live",
     )))]
     pub session_switcher: SessionSwitcherPosition,
+    /// While the sidebar is hidden, also show the session switcher beside
+    /// the sidebar button.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "sessions",
+        "x-huterm-group" = "Session switcher",
+        "x-huterm-label" = "Show beside the sidebar button",
+        "x-huterm-order" = 11,
+        "x-huterm-apply" = "live",
+    )))]
+    pub session_switcher_in_corner: bool,
+    /// While the sidebar is hidden and the session has two or more
+    /// workspaces, show the workspace switcher beside the sidebar button.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "workspaces",
+        "x-huterm-group" = "Sidebar",
+        "x-huterm-label" = "Show the workspace switcher beside the sidebar button",
+        "x-huterm-order" = 22,
+        "x-huterm-apply" = "live",
+    )))]
+    pub workspace_switcher_in_corner: bool,
+    /// How the switchers beside the sidebar button look: the icon and name,
+    /// or the icon alone. A narrow window shows icons either way.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "workspaces",
+        "x-huterm-group" = "Sidebar",
+        "x-huterm-label" = "Switcher style",
+        "x-huterm-order" = 23,
+        "x-huterm-apply" = "live",
+    )))]
+    pub switcher_style: SwitcherStyle,
+}
+
+impl Default for SidebarConfig {
+    fn default() -> Self {
+        Self {
+            position: SidebarPosition::default(),
+            visible: false,
+            session_switcher: SessionSwitcherPosition::default(),
+            session_switcher_in_corner: false,
+            workspace_switcher_in_corner: true,
+            switcher_style: SwitcherStyle::default(),
+        }
+    }
+}
+
+/// How the switchers beside the sidebar button look.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SwitcherStyle {
+    /// The icon, the name, and a chevron.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Icon and name"))
+    )]
+    Full,
+    /// The icon alone; the name shows in its tooltip.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Icon only"))
+    )]
+    Icon,
 }
 
 /// The window side the sidebar docks on.
@@ -1384,7 +1449,7 @@ impl Default for WindowConfig {
             padding_y: 4.0,
             padding_balance: false,
             menu_button: true,
-            session_button: false,
+            session_button: None,
             shortcut_hints: false,
             macos_native_menus: true,
             macos_drag_preview: true,

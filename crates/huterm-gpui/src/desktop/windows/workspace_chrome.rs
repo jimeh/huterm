@@ -1,7 +1,7 @@
 //! What a window shows of its sidebar, which holds the session's workspaces
 //! and the session switcher: docked on its side, or hidden with its button
-//! and, given two or more workspaces, the workspace switcher in that
-//! corner. One pure resolution that layout, rendering, hit testing,
+//! in that corner, beside it the workspace switcher given two or more
+//! workspaces and the session switcher when Settings turn it on. One pure resolution that layout, rendering, hit testing,
 //! popovers, and smoke state all read, so they never disagree about which
 //! chrome a frame has.
 
@@ -9,7 +9,7 @@ use gpui::{Pixels, px};
 use huterm_config::SidebarPosition;
 
 use super::TabPosition;
-use super::window_menu::{SessionControlHost, session_control_host};
+use super::window_menu::{MenuButtonPlacement, menu_button_placement};
 
 /// A new window's sidebar width.
 pub(super) const PANEL_WIDTH: Pixels = px(180.0);
@@ -45,12 +45,13 @@ impl Edge {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::desktop) enum WorkspaceChrome {
     /// The sidebar is hidden. Its button sits in the corner on `edge`, with
-    /// the workspace switcher beside it while `switcher`. `narrow` means
-    /// the window wants it shown but cannot dock it, so the button opens
-    /// it as a sheet.
+    /// the workspace switcher beside it while `switcher` and the session
+    /// switcher while `session`. `narrow` means the window wants it shown
+    /// but cannot dock it, so the button opens it as a sheet.
     Hidden {
         edge: Edge,
         switcher: bool,
+        session: bool,
         narrow: bool,
     },
     /// The sidebar docks `width` wide on `edge`.
@@ -58,11 +59,12 @@ pub(in crate::desktop) enum WorkspaceChrome {
 }
 
 impl WorkspaceChrome {
-    /// A hidden left sidebar without the switcher, whose layout has no
+    /// A hidden left sidebar without switchers, whose layout has no
     /// sidebar band and no corner slot.
     pub(super) const NONE: Self = Self::Hidden {
         edge: Edge::Left,
         switcher: false,
+        session: false,
         narrow: false,
     };
 
@@ -79,6 +81,16 @@ impl WorkspaceChrome {
     /// The workspace switcher shows beside the sidebar button.
     pub(super) fn switcher(self) -> bool {
         matches!(self, Self::Hidden { switcher: true, .. })
+    }
+
+    /// The session switcher shows beside the sidebar button.
+    pub(super) fn session(self) -> bool {
+        matches!(self, Self::Hidden { session: true, .. })
+    }
+
+    /// How many switchers show beside the sidebar button.
+    pub(super) fn switchers(self) -> usize {
+        usize::from(self.switcher()) + usize::from(self.session())
     }
 
     /// The window wants the sidebar but is too narrow to dock it.
@@ -102,6 +114,12 @@ pub(super) struct Inputs {
     pub(super) position: SidebarPosition,
     /// The window's preferred sidebar width.
     pub(super) width: Pixels,
+    /// Settings show the session switcher beside the hidden sidebar's
+    /// button.
+    pub(super) session_corner: bool,
+    /// Settings show the workspace switcher there, given two or more
+    /// workspaces.
+    pub(super) workspace_corner: bool,
 }
 
 /// Resolves the chrome. `terminal_width` lays the window out with a
@@ -116,7 +134,8 @@ pub(super) fn resolve(
     let edge = Edge::of(inputs.position);
     let hidden = |narrow| WorkspaceChrome::Hidden {
         edge,
-        switcher: inputs.workspaces >= 2,
+        switcher: inputs.workspace_corner && inputs.workspaces >= 2,
+        session: inputs.session_corner,
         narrow,
     };
     if !inputs.visible {
@@ -141,7 +160,7 @@ pub(super) fn panel_width(width: Pixels, available: Pixels) -> Pixels {
         .min((available * 0.5).max(px(0.0)))
 }
 
-/// Which element holds the sidebar button, and the switcher beside it.
+/// Which element holds the sidebar button, and the switchers beside it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CornerHost {
     /// The docked sidebar's own corner strip.
@@ -156,7 +175,7 @@ pub(super) enum CornerHost {
     Bar,
     /// A vertical tab column: its top strip beside the traffic lights, or
     /// the row above its tabs, on the left; the new-tab row beside the menu
-    /// button on the right. Its switcher takes the row above its tabs.
+    /// button on the right. Its switchers take rows above its tabs.
     Column,
     /// Nowhere: no title row and the tab bar is hidden. `toggle_sidebar`
     /// and `open_workspace_switcher` still work.
@@ -166,8 +185,8 @@ pub(super) enum CornerHost {
 /// Where the corner controls go. `title_row` is a title row Huterm or macOS
 /// draws; `position` is the tab position the corner controls follow;
 /// `bar_shown` whether the tab bar is shown now. On the right they follow
-/// the menu button's host, as the session control does; on the left they
-/// take the matching leading spot.
+/// the menu button's host, just inside it; on the left they take the
+/// matching leading spot.
 pub(super) fn corner_host(
     chrome: WorkspaceChrome,
     title_row: bool,
@@ -178,12 +197,12 @@ pub(super) fn corner_host(
         return CornerHost::Sidebar;
     }
     if chrome.edge() == Edge::Right {
-        return match session_control_host(true, title_row, position, bar_shown)
+        return match menu_button_placement(true, title_row, position, bar_shown)
         {
-            SessionControlHost::Hidden => CornerHost::Hidden,
-            SessionControlHost::TitleStrip => CornerHost::TitleRow,
-            SessionControlHost::BarEnd => CornerHost::Bar,
-            SessionControlHost::SplitRow => CornerHost::Column,
+            MenuButtonPlacement::Hidden => CornerHost::Hidden,
+            MenuButtonPlacement::TitleStrip => CornerHost::TitleRow,
+            MenuButtonPlacement::BarEnd => CornerHost::Bar,
+            MenuButtonPlacement::SplitRow => CornerHost::Column,
         };
     }
     if bar_shown && position == TabPosition::Titlebar {

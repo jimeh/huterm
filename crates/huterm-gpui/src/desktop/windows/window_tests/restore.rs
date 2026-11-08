@@ -112,7 +112,6 @@ fn capture(scratch: &Scratch) -> RuntimeCapture {
         socket_name: huterm_core::DEFAULT_SOCKET_NAME.into(),
         next_id: 16,
         session_ordinal: 2,
-        workspace_ordinal: 2,
         sessions: vec![
             SessionCapture {
                 info: SessionInfo {
@@ -120,6 +119,7 @@ fn capture(scratch: &Scratch) -> RuntimeCapture {
                     custom_name: Some("work".into()),
                     automatic_name: "Session 1".into(),
                 },
+                workspace_ordinal: 2,
                 workspaces: vec![workspace(
                     2,
                     vec![
@@ -134,6 +134,7 @@ fn capture(scratch: &Scratch) -> RuntimeCapture {
                     custom_name: None,
                     automatic_name: "Session 2".into(),
                 },
+                workspace_ordinal: 13,
                 workspaces: vec![workspace(
                     13,
                     vec![tab(14, pane(15, 16, None), None)],
@@ -1502,7 +1503,7 @@ fn unviewed_sessions_notices_go_to_the_first_window_that_opened(
 fn two_workspace_capture(scratch: &Scratch) -> RuntimeCapture {
     let mut saved = capture(scratch);
     saved.next_id = 21;
-    saved.workspace_ordinal = 3;
+    saved.sessions[0].workspace_ordinal = 3;
     saved.sessions[0].workspaces.push(WorkspaceCapture {
         info: WorkspaceInfo {
             id: WorkspaceId::new(17),

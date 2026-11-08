@@ -73,12 +73,6 @@ pub(super) struct NativeMenuSession {
 }
 
 impl WorkspaceView {
-    /// Whether this window's menus open natively.
-    pub(super) fn uses_native_menus(&self, cx: &gpui::App) -> bool {
-        self.config.window.macos_native_menus
-            && cx.global::<Desktop>().menu_presenter.is_some()
-    }
-
     /// Opens `spec` as a native menu when this window uses them. `false`
     /// leaves the menu to Huterm's own popover.
     pub(super) fn open_native_menu(
@@ -96,10 +90,8 @@ impl WorkspaceView {
         else {
             return false;
         };
-        // The panel closes first, and a native session menu waiting for its
-        // read gives way. A native menu leaves GPUI focus where it is, so
-        // focus goes back to the terminal.
-        self.cancel_pending_session_menu(cx);
+        // The panel closes first. A native menu leaves GPUI focus where it
+        // is, so focus goes back to the terminal.
         self.dismiss_panel(
             super::transparency_panel::PanelFocus::Terminal,
             window,
@@ -140,7 +132,7 @@ impl WorkspaceView {
             terminal: matches!(kind, MenuKind::Terminal { .. })
                 .then(|| terminal.map(|terminal| terminal.downgrade()))
                 .flatten(),
-            from_button: matches!(kind, MenuKind::Window | MenuKind::Session)
+            from_button: matches!(kind, MenuKind::Window)
                 && matches!(anchor, MenuAnchor::Below(_)),
             kind,
             menu,
@@ -220,7 +212,13 @@ impl WorkspaceView {
         cx: &gpui::App,
     ) -> bool {
         match kind {
-            MenuKind::Window | MenuKind::Session => true,
+            MenuKind::Window => true,
+            MenuKind::SessionRow(session) => cx
+                .global::<super::Desktop>()
+                .hierarchy
+                .state()
+                .session(*session)
+                .is_some(),
             MenuKind::WorkspaceRow(workspace) => self
                 .workspace_rows(cx)
                 .iter()

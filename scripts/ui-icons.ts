@@ -49,6 +49,7 @@ export const iconNames = [
   "panel-left",
   "panel-right",
   "chevrons-up-down",
+  "ellipsis",
 ] as const;
 
 function sourceFile(packageRoot: string, name: string): string {

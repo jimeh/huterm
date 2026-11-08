@@ -22,6 +22,7 @@ pub(crate) fn write_lock() -> &'static std::sync::Mutex<()> {
     &LOCK
 }
 
+pub(super) const SESSION_BUTTON_WARNING: &str = "window.session_button is deprecated and ignored; the session switcher beside the sidebar button replaced it (sidebar.session_switcher_in_corner). Remove window.session_button from your configuration.";
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
 
 pub(super) const LINUX_AUDIBLE_BELL_WARNING: &str =
@@ -129,10 +130,6 @@ padding_y = 4.0
 padding_balance = false
 # Show the window menu button in the title bar, or in the tab bar without one.
 menu_button = true
-# Also show a session control, which names the window's session and opens the
-# session menu, beside the window menu button. The sidebar always holds the
-# session switcher.
-session_button = false
 # Show key hints on the scroll pill and on dialog and panel buttons.
 shortcut_hints = false
 # Open the window, tab, pane, terminal, and session menus as native macOS
@@ -182,6 +179,15 @@ position = "left"
 visible = false
 # Where the session switcher sits in the sidebar: bottom or top.
 session_switcher = "bottom"
+# While the sidebar is hidden, also show the session switcher beside the
+# sidebar button.
+session_switcher_in_corner = false
+# While the sidebar is hidden and the session has two or more workspaces, show
+# the workspace switcher beside the sidebar button.
+workspace_switcher_in_corner = true
+# How those switchers look: full (icon and name) or icon. A narrow window shows
+# icons either way.
+switcher_style = "full"
 
 [panes]
 # Whether a split tab's panes show title bars: visible, hover, or hidden.
@@ -675,6 +681,13 @@ fn parse_consumed(
         warning,
         (cfg!(target_os = "linux") && raw.terminal.bell.audio)
             .then_some(LINUX_AUDIBLE_BELL_WARNING),
+    );
+    let warning = join_warnings(
+        warning,
+        raw.window
+            .session_button
+            .is_some()
+            .then_some(SESSION_BUTTON_WARNING),
     );
     raw.validate_values()?;
     let directory = path

@@ -359,6 +359,36 @@ fn events_apply_in_order_and_summarize_what_they_touched() {
 }
 
 #[test]
+fn a_session_move_reorders_sessions_and_touches_every_session_list() {
+    let mut state = seeded(1);
+    assert_eq!(
+        apply(
+            &mut state,
+            HierarchyEvent::SessionMoved {
+                session: session_id(2),
+                index: 0,
+            },
+        ),
+        touched(true, &[], &[])
+    );
+    assert_eq!(state.sessions(), [session_id(2), session_id(1)]);
+    // Workspace membership stays with each session.
+    assert_eq!(
+        state.session_workspaces(session_id(1)).unwrap(),
+        [workspace_id(10), workspace_id(11)]
+    );
+    // Its index is final: moving to the end of two sessions is index 1.
+    apply(
+        &mut state,
+        HierarchyEvent::SessionMoved {
+            session: session_id(2),
+            index: 1,
+        },
+    );
+    assert_eq!(state.sessions(), [session_id(1), session_id(2)]);
+}
+
+#[test]
 fn stale_and_duplicate_sequences_change_nothing() {
     let mut state = seeded(5);
     let rename = HierarchyEnvelope {
@@ -427,6 +457,14 @@ fn gaps_foreign_streams_and_contradictions_require_resync() {
         HierarchyEvent::SessionCreated {
             session: session(3),
             index: 3,
+        },
+        HierarchyEvent::SessionMoved {
+            session: session_id(9),
+            index: 0,
+        },
+        HierarchyEvent::SessionMoved {
+            session: session_id(1),
+            index: 2,
         },
         HierarchyEvent::WorkspaceCreated {
             session: session_id(9),
@@ -911,6 +949,10 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
         }),
         variant(HierarchyEvent::WorkspaceMoved {
             workspace: workspace_id(11),
+            session: session_id(2),
+            index: 0,
+        }),
+        variant(HierarchyEvent::SessionMoved {
             session: session_id(2),
             index: 0,
         }),

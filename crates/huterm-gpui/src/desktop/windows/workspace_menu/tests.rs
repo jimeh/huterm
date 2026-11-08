@@ -32,19 +32,13 @@ fn a_row_menu_acts_on_its_own_workspace() {
             "workspace-rename:2 Rename Workspace…",
             "workspace-clear:2 Clear Name",
             "-",
-            "new_workspace New Workspace",
-            "-",
             "workspace-close:2 Close Workspace…",
         ]
     );
     // An automatic name has nothing to clear; a lone workspace cannot close.
     assert_eq!(
         drawn(&row_menu(&row(1, "Workspace 1", true, 1), 1)),
-        [
-            "workspace-rename:1 Rename Workspace…",
-            "-",
-            "new_workspace New Workspace",
-        ]
+        ["workspace-rename:1 Rename Workspace…"]
     );
 }
 
@@ -62,10 +56,7 @@ fn picks_round_trip_through_their_ids() {
         parse_pick("workspace-close:7"),
         Some(WorkspacePick::Close(7))
     );
-    assert_eq!(
-        parse_pick("new_workspace"),
-        Some(WorkspacePick::Command(ids::NEW_WORKSPACE))
-    );
+    assert_eq!(parse_pick("new_workspace"), None);
     assert_eq!(parse_pick("close_session"), None);
     assert_eq!(parse_pick("workspace-close:x"), None);
 }

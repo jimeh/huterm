@@ -177,6 +177,7 @@ pub(crate) fn capture(
                 custom_name: None,
                 automatic_name: format!("Session {}", session.get()),
             },
+            workspace_ordinal: u64::try_from(workspaces).unwrap(),
             workspaces: spaces,
         });
     }
@@ -184,7 +185,6 @@ pub(crate) fn capture(
         socket_name: "default".into(),
         next_id: ids.0,
         session_ordinal: u64::try_from(sessions).unwrap(),
-        workspace_ordinal: u64::try_from(sessions * workspaces).unwrap(),
         sessions: captured,
         terminals,
     }

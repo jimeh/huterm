@@ -228,14 +228,14 @@
     "theme": false
   },
   {
-    "name": "window session button off",
+    "name": "window session button deprecated but loads",
     "toml": "[window]\nsession_button = false",
     "valid": true,
     "theme": false
   },
   {
     "name": "sidebar every option",
-    "toml": "[sidebar]\nposition = \"right\"\nvisible = true\nsession_switcher = \"top\"",
+    "toml": "[sidebar]\nposition = \"right\"\nvisible = true\nsession_switcher = \"top\"\nsession_switcher_in_corner = true\nworkspace_switcher_in_corner = false\nswitcher_style = \"icon\"",
     "valid": true,
     "theme": false
   },
@@ -248,6 +248,18 @@
   {
     "name": "sidebar session switcher unknown",
     "toml": "[sidebar]\nsession_switcher = \"middle\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "sidebar switcher style unknown",
+    "toml": "[sidebar]\nswitcher_style = \"compact\"",
+    "valid": false,
+    "theme": false
+  },
+  {
+    "name": "sidebar corner switcher string",
+    "toml": "[sidebar]\nsession_switcher_in_corner = \"yes\"",
     "valid": false,
     "theme": false
   },

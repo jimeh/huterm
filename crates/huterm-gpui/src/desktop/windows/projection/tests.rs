@@ -1381,6 +1381,34 @@ fn a_revoked_view_whose_tab_stays_is_replaced_once_and_otherwise_removed() {
 }
 
 #[test]
+fn a_session_move_reorders_the_session_list_and_leaves_windows_alone() {
+    let mut feed = Feed::new();
+    feed.apply(HierarchyEvent::SessionCreated {
+        session: SessionInfo {
+            id: session(2),
+            custom_name: None,
+            automatic_name: "Session 2".into(),
+        },
+        index: 1,
+    });
+    let mut model = WindowModel::default();
+    let mut fake = attached_window(&mut model, 1, workspace(10));
+    let seq = feed.open(workspace(10), 1);
+    push(&mut fake, &mut model, &feed.state, 1, seq);
+    let touched = feed.apply(HierarchyEvent::SessionMoved {
+        session: session(2),
+        index: 0,
+    });
+    assert_eq!(feed.state.sessions(), [session(2), session(1)]);
+    // Every window's session list redraws through the name change, and no
+    // window's workspace or tabs change.
+    assert!(touched.names_changed());
+    let change = reconcile(&mut fake, &mut model, &feed.state, &touched);
+    assert!(!change.changed);
+    assert_eq!(view_order(&fake), [tab(1)]);
+}
+
+#[test]
 fn a_workspace_moved_to_another_session_leaves_the_window() {
     let mut feed = Feed::new();
     feed.apply(HierarchyEvent::SessionCreated {

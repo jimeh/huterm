@@ -16,7 +16,7 @@ fn unchecked(capture: &RuntimeCapture) -> Vec<u8> {
         socket_name: capture.socket_name.clone(),
         next_id: capture.next_id,
         session_ordinal: capture.session_ordinal,
-        workspace_ordinal: capture.workspace_ordinal,
+        workspace_ordinal: 0,
         sessions: Bounded(
             capture.sessions.iter().map(session_record).collect(),
         ),
@@ -86,6 +86,37 @@ fn a_capture_round_trips_through_its_file() {
     assert_eq!(file.content, layout);
     assert_eq!(ScopeId::parse(&SCOPE.to_string()), Some(SCOPE));
     assert_eq!(SCOPE.to_string(), "07".repeat(16));
+}
+
+#[test]
+fn workspace_counters_round_trip_per_session_and_older_files_load() {
+    let mut capture = rich_capture();
+    capture.sessions[0].workspace_ordinal = 7;
+    capture.sessions[1].workspace_ordinal = 3;
+    let bytes = encode_runtime(&capture, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_runtime(&bytes) else {
+        panic!("the file did not decode");
+    };
+    assert_eq!(file.content, capture);
+    // Builds that require the runtime-wide field still find it.
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["workspace_ordinal"], 7);
+
+    // A file from before per-session counters has only the runtime-wide
+    // one, which loads as each session's unknown (zero) counter.
+    for session in json["sessions"].as_array_mut().unwrap() {
+        session.as_object_mut().unwrap().remove("workspace_ordinal");
+    }
+    let older = serde_json::to_vec(&json).unwrap();
+    let Decoded::Ok(file) = decode_runtime(&older) else {
+        panic!("an older file did not load");
+    };
+    assert!(
+        file.content
+            .sessions
+            .iter()
+            .all(|session| session.workspace_ordinal == 0)
+    );
 }
 
 const DISPLAY: &str = "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b";

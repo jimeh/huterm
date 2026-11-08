@@ -243,6 +243,50 @@ impl DesktopHarness {
 }
 
 #[gpui::test]
+fn select_session_by_index_follows_the_session_order_and_skips_an_empty_slot_or_picks_the_last(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[first]);
+    let other = harness.other_session("other", 1);
+    harness.wait_projection();
+    let at = |index| {
+        CommandInvocation::new(
+            ids::SELECT_SESSION,
+            vec![CommandArgument::new("index", CommandValue::Integer(index))],
+        )
+    };
+    harness.invoke_with(window, &at(2)).unwrap();
+    harness.wait_switched(window, other.session, &other.tabs);
+    // An empty slot completes without switching, as select_tab's does.
+    assert!(matches!(
+        harness.invoke_with(window, &at(3)),
+        Ok(CommandOutcome::Completed)
+    ));
+    harness.cx.update(|cx| {
+        assert!(!switching(cx, window));
+        assert_eq!(shown_session(cx, window), Some(other.session));
+    });
+    // Positions follow the session order, which a move changes.
+    harness
+        .runtime
+        .lock()
+        .move_session(other.session, Some(harness.session))
+        .unwrap();
+    harness.wait_projection();
+    harness.invoke_with(window, &at(2)).unwrap();
+    harness.wait_switched(window, harness.session, &[first]);
+    // The ninth position is the last session, as select_tab's is.
+    harness.invoke_with(window, &at(9)).unwrap();
+    harness.wait_switched(window, harness.session, &[first]);
+    harness.invoke_with(window, &at(1)).unwrap();
+    harness.wait_switched(window, other.session, &other.tabs);
+    harness.invoke_with(window, &at(9)).unwrap();
+    harness.wait_switched(window, harness.session, &[first]);
+}
+
+#[gpui::test]
 fn two_windows_on_one_session_switch_independently(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
     let first = harness.open_tab(ECHO);

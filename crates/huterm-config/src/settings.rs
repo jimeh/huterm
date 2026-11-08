@@ -1095,17 +1095,24 @@ mod tests {
                     {
                         SectionId::Appearance
                     }
-                    // The title-bar session control sits with the sidebar's
-                    // session switcher.
+                    // The deprecated title-bar session control sits with
+                    // the session switcher it gave way to.
                     Some(
                         ("window", "session_button")
-                        | ("sidebar", "session_switcher")
+                        | (
+                            "sidebar",
+                            "session_switcher" | "session_switcher_in_corner",
+                        )
                         | ("general", "restore_sessions" | "session_numbering"),
                     ) => SectionId::Sessions,
                     Some(("window", _)) => SectionId::Windows,
-                    Some(("sidebar", "position" | "visible")) => {
-                        SectionId::Workspaces
-                    }
+                    Some((
+                        "sidebar",
+                        "position"
+                        | "visible"
+                        | "workspace_switcher_in_corner"
+                        | "switcher_style",
+                    )) => SectionId::Workspaces,
                     Some(("panes", _)) => SectionId::Panes,
                     _ => continue,
                 };
