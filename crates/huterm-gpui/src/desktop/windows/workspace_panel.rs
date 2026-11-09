@@ -1419,6 +1419,7 @@ impl WorkspaceView {
             workspace,
             &desktop.statuses,
             bells,
+            self.config.tabs,
         )
     }
 

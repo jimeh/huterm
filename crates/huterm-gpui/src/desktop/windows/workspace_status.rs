@@ -13,7 +13,7 @@ use std::sync::Arc;
 use huterm_core::TerminalStatuses;
 use huterm_protocol::{
     HierarchyState, SessionId, TabId, TerminalId, TerminalLifecycle,
-    TerminalStatus, WorkspaceId,
+    TerminalStatus, WorkspaceId, resolve_tab_name,
 };
 
 /// The latest statuses read from the feed.
@@ -238,16 +238,18 @@ fn workspace_terminals(
 
 /// `workspace`'s row status: each tab at its most urgent pane, the row at
 /// its most urgent tab. `bells` is the window's baselines, or `None` for
-/// the workspace it shows, whose tabs show their own bells.
+/// the workspace it shows, whose tabs show their own bells; `labels` names
+/// the tabs as the tab bar does.
 pub(super) fn workspace_status(
     state: &HierarchyState,
     workspace: WorkspaceId,
     statuses: &Statuses,
     bells: Option<&BellBaselines>,
+    labels: huterm_config::TabsConfig,
 ) -> Option<RowStatus> {
     let mut tabs: Vec<(Dot, String)> = Vec::new();
     for &tab in state.workspace_tabs(workspace).unwrap_or_default() {
-        if let Some(entry) = tab_status(state, tab, statuses, bells) {
+        if let Some(entry) = tab_status(state, tab, statuses, bells, labels) {
             tabs.push(entry);
         }
     }
@@ -269,33 +271,37 @@ pub(super) fn workspace_status(
     })
 }
 
-/// A tab's dot and name: its custom name, else its first pane's title,
-/// else that pane's fallback name.
+/// A tab's dot at its most urgent pane, and its name as the tab bar would
+/// label that pane: its custom name, else the `[tabs]` label of the pane's
+/// title, program, and directory.
 fn tab_status(
     state: &HierarchyState,
     tab: TabId,
     statuses: &Statuses,
     bells: Option<&BellBaselines>,
+    labels: huterm_config::TabsConfig,
 ) -> Option<(Dot, String)> {
     let info = state.tab(tab)?;
-    let panes = info.layout.panes();
-    let dot = panes
-        .iter()
+    let (dot, pane, status) = info
+        .layout
+        .panes()
+        .into_iter()
         .filter_map(|pane| {
             let status = statuses.get(pane.terminal_id)?;
             let bell = bells.is_some_and(|bells| {
                 bells.unseen(pane.terminal_id, status.bells)
             });
-            terminal_dot(status, bell)
+            Some((terminal_dot(status, bell)?, pane, status))
         })
-        .max()?;
-    let first = panes.first()?;
+        .max_by_key(|(dot, ..)| *dot)?;
     let name = info.custom_name.clone().unwrap_or_else(|| {
-        statuses
-            .get(first.terminal_id)
-            .map(|status| status.title.trim())
-            .filter(|title| !title.is_empty())
-            .map_or_else(|| first.fallback_name.clone(), str::to_owned)
+        super::resolve_tab_label(
+            labels.label,
+            labels.directory,
+            resolve_tab_name(None, &status.title, &pane.fallback_name),
+            &status.metadata,
+            super::home_paths(),
+        )
     });
     Some((dot, name))
 }

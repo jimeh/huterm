@@ -66,6 +66,10 @@ fn state(projected: bool) -> HierarchyState {
     .unwrap()
 }
 
+fn tabs() -> huterm_config::TabsConfig {
+    huterm_config::TabsConfig::default()
+}
+
 fn session() -> SessionId {
     SessionId::in_runtime(RUNTIME, 1)
 }
@@ -95,17 +99,17 @@ fn running(process: &str) -> TerminalStatus {
 fn a_workspace_rolls_up_to_its_most_urgent_tab_and_names_tabs_by_state() {
     let state = state(true);
     let mut statuses = Statuses::default();
-    let titled = TerminalStatus {
-        title: "vim notes.md".into(),
-        ..running("vim")
-    };
-    statuses.apply(read(1, &[(120, running("cargo")), (121, titled)]));
-    let status = workspace_status(&state, workspace(10), &statuses, None);
+    // An untitled shell running a program is named by the program, as the
+    // tab bar names it, not by its fallback "zsh".
+    statuses
+        .apply(read(1, &[(120, running("cargo")), (121, running("sleep"))]));
+    let status =
+        workspace_status(&state, workspace(10), &statuses, None, tabs());
     assert_eq!(
         status,
         Some(RowStatus {
             dot: Dot::Running,
-            text: "Running: api, vim notes.md".into(),
+            text: "Running: api, sleep".into(),
         })
     );
 
@@ -122,7 +126,8 @@ fn a_workspace_rolls_up_to_its_most_urgent_tab_and_names_tabs_by_state() {
         ..idle()
     };
     statuses.apply(read(2, &[(120, progress), (121, exited)]));
-    let status = workspace_status(&state, workspace(10), &statuses, None);
+    let status =
+        workspace_status(&state, workspace(10), &statuses, None, tabs());
     assert_eq!(
         status,
         Some(RowStatus {
@@ -139,14 +144,14 @@ fn a_workspace_rolls_up_to_its_most_urgent_tab_and_names_tabs_by_state() {
     };
     statuses.apply(read(3, &[(120, failed), (121, idle())]));
     assert_eq!(
-        workspace_status(&state, workspace(10), &statuses, None)
+        workspace_status(&state, workspace(10), &statuses, None, tabs())
             .map(|status| status.dot),
         Some(Dot::Failed)
     );
     // Idle tabs, or none known, show no dot.
     statuses.apply(read(4, &[(120, idle())]));
     assert_eq!(
-        workspace_status(&state, workspace(10), &statuses, None),
+        workspace_status(&state, workspace(10), &statuses, None, tabs()),
         None
     );
 }
@@ -174,7 +179,7 @@ fn dot(
     statuses: &Statuses,
     value: u64,
 ) -> Option<Dot> {
-    workspace_status(state, workspace(value), statuses, Some(bells))
+    workspace_status(state, workspace(value), statuses, Some(bells), tabs())
         .map(|status| status.dot)
 }
 

@@ -571,7 +571,11 @@ fn a_window_switched_between_reads_marks_the_next_bell(
 fn an_exited_shell_in_an_unviewed_workspace_marks_its_row(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
+    // The status names tabs as the tab bar labels them; titles keep the
+    // name independent of the test's directory.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.label = huterm_config::TabLabel::Title;
+    });
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     let (hidden, exits) = harness.add_workspace_running(EXITS, 1);
