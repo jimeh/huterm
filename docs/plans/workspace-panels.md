@@ -6,7 +6,9 @@ The maintainer picked the mockups and settled the open questions on
 workspaces to PR C on 2026-11-09; see
 [Settled decisions](#settled-decisions). PR A and PR B are implemented (see
 [Deviations](#deviations) and [PR B deviations](#pr-b-deviations)); PR C is
-being implemented (see [PR C deviations](#pr-c-deviations)).
+being implemented (see [PR C deviations](#pr-c-deviations)). The workspace
+switch this plan describes, an install with the session switch's phases,
+was replaced by [retained workspace views](retained-workspace-views.md).
 
 A window can show any workspace of its session, switch between them from
 a left or right sidebar or a switcher beside the sidebar button, reorder

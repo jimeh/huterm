@@ -402,9 +402,12 @@ fn an_empty_summary_visits_no_window() {
     let mut fake = open_window(&mut model, 1, workspace(10));
     let seq = feed.open(workspace(10), 1);
     push(&mut fake, &mut model, &feed.state, 1, seq);
-    assert_eq!(windows_to_visit(&model, &Touched::default()), []);
     assert_eq!(
-        windows_to_visit(&model, &Touched::everything()),
+        windows_to_visit(&model, &feed.state, &Touched::default()),
+        []
+    );
+    assert_eq!(
+        windows_to_visit(&model, &feed.state, &Touched::everything()),
         [window(1)]
     );
 }
@@ -419,7 +422,10 @@ fn an_attachment_change_visits_every_window() {
         attachment: AttachmentId::in_runtime(RUNTIME, 50),
         session: session(1),
     });
-    assert_eq!(windows_to_visit(&model, &touched), [window(1), window(2)]);
+    assert_eq!(
+        windows_to_visit(&model, &feed.state, &touched),
+        [window(1), window(2)]
+    );
 }
 
 #[test]
@@ -439,9 +445,9 @@ fn several_renames_notify_their_window_once_and_skip_other_windows() {
     for (value, name) in [(1, "one"), (2, "two"), (3, "three")] {
         touched.merge(feed.rename(value, Some(name)));
     }
-    assert_eq!(windows_to_visit(&model, &touched), [window(1)]);
+    assert_eq!(windows_to_visit(&model, &feed.state, &touched), [window(1)]);
     let mut notifications = 0;
-    for id in windows_to_visit(&model, &touched) {
+    for id in windows_to_visit(&model, &feed.state, &touched) {
         assert_eq!(id, first.id);
         if reconcile(&mut first, &mut model, &feed.state, &touched).changed {
             notifications += 1;

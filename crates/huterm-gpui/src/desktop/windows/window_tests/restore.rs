@@ -1645,6 +1645,52 @@ fn restore_drops_stale_workspace_memory(cx: &mut TestAppContext) {
     harness.runtime.terminate().unwrap();
 }
 
+/// R1-12: a restored window holds hidden views of every workspace of its
+/// session, so switching to one lands on its restored memory at once,
+/// with no install.
+#[gpui::test]
+fn a_restored_window_holds_every_workspace_and_switches_to_its_memory(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut saved = layout();
+    saved.windows[0].remembered = vec![navigation(1, 17, Some(18))];
+    let mut harness = DesktopHarness::restoring(
+        cx,
+        |_| {},
+        two_workspace_capture(&scratch),
+        Some(saved),
+        ECHO,
+    );
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let window = harness.windows_of(SessionId::in_runtime(runtime, 1))[0];
+    let hidden = WorkspaceId::in_runtime(runtime, 17);
+    let tab = TabId::in_runtime(runtime, 18);
+    harness.wait_hidden(window, hidden, &[tab]);
+    let subscribed = harness.runtime.worker_hooks.entered(Stage::Subscribe);
+    harness
+        .invoke_with(
+            window,
+            &super::workspaces::workspace_pick(ids::SELECT_WORKSPACE, hidden),
+        )
+        .unwrap();
+    harness.cx.update(|cx| {
+        let record = cx
+            .global::<Desktop>()
+            .windows
+            .record(window.window_id())
+            .unwrap();
+        assert_eq!(record.workspace, Some(hidden));
+        assert_eq!(record.active, Some(tab));
+    });
+    assert_eq!(
+        harness.runtime.worker_hooks.entered(Stage::Subscribe),
+        subscribed
+    );
+    harness.runtime.terminate().unwrap();
+}
+
 impl DesktopHarness {
     /// Switches `window` to `workspace` and selects `active` there once it
     /// shows.

@@ -352,6 +352,31 @@ impl WindowModel {
         target
     }
 
+    /// Replaces a window's tab entries with those of the workspace a
+    /// switch just showed from views it already held: the remembered
+    /// activation `history`, most recent first, keeping only tabs it shows,
+    /// and `active` when it shows it, else the first tab.
+    pub(super) fn show_tabs(
+        &mut self,
+        id: WindowId,
+        tabs: Vec<TabEntry>,
+        active: Option<TabId>,
+        history: &[TabId],
+    ) {
+        let Some(record) = self.saved_mut(id) else {
+            return;
+        };
+        let shows = |tab: &TabId| tabs.iter().any(|entry| entry.id == *tab);
+        record.history = history.iter().copied().filter(shows).collect();
+        record.active = active
+            .filter(shows)
+            .or_else(|| tabs.first().map(|entry| entry.id));
+        if let Some(active) = record.active {
+            record_tab_activation(&mut record.history, active);
+        }
+        record.tabs = tabs;
+    }
+
     /// The workspace a window left last in `session`, if it remembers one.
     pub(super) fn remembered_workspace(
         &self,

@@ -338,6 +338,13 @@ exchanges panes within one tab. A zone whose result would leave a pane under
 the minimum size is drawn refused and takes no drop. A release commits one
 Mux operation through the move commands' `commit_pane_move`.
 
+A workspace switch cancels every drag first (`switch_workspace`), as a
+session switch and New Tab do. The window already holds every workspace's
+views (see the [window model](desktop-client.md#threading-and-the-window-model)),
+so spring-loading a workspace row would only be a visibility change, like a
+tab's, and a tab dropped on a hidden workspace keeps its view; neither is
+built yet.
+
 A lone pane's title bar, enabled by `title_bar_always_show`, uses the same
 spring-load and edge-drop path to join another tab. Its own pane is skipped,
 and tab insertion slots are excluded even after spring loading: core treats

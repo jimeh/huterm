@@ -594,7 +594,8 @@ fn a_window_switched_between_reads_marks_the_next_bell(
 }
 
 /// W54: a shell that exits in a workspace no window shows marks its row,
-/// whose status names the tab: with no view, nothing closes the tab.
+/// whose status names the tab: without `close_on_exit`, the window's
+/// hidden view keeps the tab.
 #[gpui::test]
 fn an_exited_shell_in_an_unviewed_workspace_marks_its_row(
     cx: &mut TestAppContext,
@@ -603,12 +604,13 @@ fn an_exited_shell_in_an_unviewed_workspace_marks_its_row(
     // name independent of the test's directory.
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.tabs.label = huterm_config::TabLabel::Title;
+        config.terminal.close_on_exit = false;
     });
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     let (hidden, exits) = harness.add_workspace_running(EXITS, 1);
     harness.wait_projection();
-    // Nothing views the hidden tab; its exit still reaches the row.
+    // The window shows nothing of the hidden tab; its exit reaches the row.
     let _viewer = harness.send_line(exits[0], "done");
     harness.wait_for_dot(window, hidden, Some(Dot::Exited));
     let text = harness.update_view(window, |view, _, cx| {

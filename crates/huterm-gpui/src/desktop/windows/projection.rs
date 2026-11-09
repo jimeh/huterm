@@ -6,7 +6,7 @@
 //! Everything here is free of GPUI so the rules can be tested without a
 //! window; `windows.rs` supplies the application glue.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{Task, WindowId};
@@ -414,60 +414,73 @@ pub(super) fn holds_no_tabs(
     installs(state, workspace, session, &[], &[], false, false).is_empty()
 }
 
-/// A window's tab subscriptions in flight, at most one per tab, and the
-/// panes whose installs failed. A failed pane waits for a later batch that
-/// touches the window's workspace, or an explicit retry, before reconcile
-/// tries it again, so a failure cannot loop; other panes of its tab still
-/// install.
+/// A window's tab subscriptions in flight, at most one per tab, each with
+/// the workspace it installs into, and the panes whose installs failed,
+/// with theirs. A failed pane waits for a later batch that touches its
+/// workspace, or an explicit retry, before reconcile tries it again, so a
+/// failure cannot loop; other panes of its tab still install.
 #[derive(Debug, Default)]
 pub(super) struct PendingInstalls {
-    in_flight: Vec<TabId>,
-    failed: HashSet<PaneId>,
+    in_flight: Vec<(TabId, Option<WorkspaceId>)>,
+    failed: HashMap<PaneId, Option<WorkspaceId>>,
 }
 
 impl PendingInstalls {
-    fn begin(&mut self, tabs: &[TabId]) {
-        self.in_flight.extend_from_slice(tabs);
+    fn begin(&mut self, workspace: Option<WorkspaceId>, tabs: &[TabId]) {
+        self.in_flight
+            .extend(tabs.iter().map(|tab| (*tab, workspace)));
     }
 
     /// Ends `tab`'s subscription and excludes only panes that failed in it.
     pub(super) fn finish(&mut self, tab: TabId, failed: &[PaneId]) {
-        self.in_flight.retain(|pending| *pending != tab);
-        self.failed.extend(failed);
+        let workspace = self
+            .in_flight
+            .iter()
+            .find(|(pending, _)| *pending == tab)
+            .and_then(|(_, workspace)| *workspace);
+        self.in_flight.retain(|(pending, _)| *pending != tab);
+        self.failed
+            .extend(failed.iter().map(|pane| (*pane, workspace)));
     }
 
     pub(super) fn failed(&self, pane: PaneId) -> bool {
-        self.failed.contains(&pane)
+        self.failed.contains_key(&pane)
     }
 
-    /// Whether no subscription is in flight.
-    pub(super) fn idle(&self) -> bool {
-        self.in_flight.is_empty()
+    /// Whether no subscription into `workspace` is in flight.
+    pub(super) fn idle_in(&self, workspace: Option<WorkspaceId>) -> bool {
+        !self
+            .in_flight
+            .iter()
+            .any(|(_, pending)| *pending == workspace)
     }
 
     pub(super) fn failed_panes(&self) -> impl Iterator<Item = PaneId> + '_ {
-        self.failed.iter().copied()
+        self.failed.keys().copied()
     }
 
-    /// Allows failed installs again once a batch touched `workspace`.
+    /// Allows the installs that failed in `workspace` again once a batch
+    /// touched it.
     fn touched(&mut self, touched: &Touched, workspace: Option<WorkspaceId>) {
-        if workspace
-            .is_some_and(|workspace| touched.contains_workspace(workspace))
+        if let Some(workspace) =
+            workspace.filter(|workspace| touched.contains_workspace(*workspace))
         {
-            self.failed.clear();
+            self.failed.retain(|_, failed| *failed != Some(workspace));
         }
     }
 
     /// The tabs already subscribing viewers.
     fn excluded(&self) -> Vec<TabId> {
-        self.in_flight.clone()
+        self.in_flight.iter().map(|(tab, _)| *tab).collect()
     }
 }
 
-/// Windows a summary concerns: those showing a touched workspace or tab,
-/// or every window once any session's attachments changed, which is rare.
+/// Windows a summary concerns: those holding a touched workspace or tab,
+/// shown or hidden, or every window once any session's attachments
+/// changed, which is rare.
 pub(super) fn windows_to_visit(
     model: &WindowModel,
+    state: &HierarchyState,
     touched: &Touched,
 ) -> Vec<WindowId> {
     if touched.is_empty() {
@@ -485,6 +498,17 @@ pub(super) fn windows_to_visit(
                 || record
                     .session
                     .is_some_and(|session| touched.contains_chrome(session))
+                // The window keeps hidden views of every workspace of its
+                // session.
+                || record.session.is_some_and(|session| {
+                    state.session_workspaces(session).is_some_and(
+                        |workspaces| {
+                            workspaces.iter().any(|workspace| {
+                                touched.contains_workspace(*workspace)
+                            })
+                        },
+                    )
+                })
                 || record
                     .tabs
                     .iter()
@@ -821,7 +845,8 @@ fn start_installs(
     terminating: bool,
 ) {
     let pending = target.pending_installs().excluded();
-    let failed = target.pending_installs().failed.clone();
+    let failed: HashSet<PaneId> =
+        target.pending_installs().failed.keys().copied().collect();
     let mut install = installs(
         target.projection(),
         workspace,
@@ -853,7 +878,7 @@ fn start_installs(
             )
     }));
     if !install.is_empty() {
-        target.pending_installs().begin(&install);
+        target.pending_installs().begin(workspace, &install);
         target.install(&install);
     }
     let pending = target.pending_installs().excluded();
@@ -867,7 +892,7 @@ fn start_installs(
         terminating,
     );
     if !replace.is_empty() {
-        target.pending_installs().begin(&replace);
+        target.pending_installs().begin(workspace, &replace);
         target.replace(&replace);
     }
 }

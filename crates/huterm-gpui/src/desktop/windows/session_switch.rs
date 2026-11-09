@@ -805,7 +805,9 @@ impl WorkspaceView {
     /// window was in the workspace it leaves, takes the target's memory,
     /// and reconciles with removals allowed and the emptied edge
     /// suppressed. `switched` names a session, or another workspace of the
-    /// session the window shows. `attachment` replaces the window's own,
+    /// session the window shows, whose views the window already holds:
+    /// the left workspace's views then stay, hidden, as a workspace switch
+    /// leaves them. `attachment` replaces the window's own,
     /// as when Close Session took it away. `recovers` says the target was
     /// chosen because it held tabs, so a target left empty or gone at the
     /// settle owes the emptied close again; a workspace the user selected
@@ -818,6 +820,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        let left = self.workspace_id(cx);
+        let same_session = attachment.is_none()
+            && self.attached_session(cx) == Some(switched.session);
         let desktop = cx.global_mut::<Desktop>();
         if let Some(terminal) = switched.spawned {
             desktop.fresh_terminals.insert(terminal);
@@ -845,11 +850,15 @@ impl WorkspaceView {
         // nothing left to return to.
         let state = desktop.hierarchy.state();
         desktop.windows.prune_sessions(state);
+        desktop.windows.set_emptied_close(self.window, false);
+        if same_session {
+            self.swap_shown(left, switched.workspace, memory.as_ref(), cx);
+        }
         self.switch = Some(SwitchPhase::Installing);
         self.switch_recovers = recovers;
         self.close.emptied = EmptiedClose::None;
-        desktop.windows.set_emptied_close(self.window, false);
         self.restore_focus = None;
+        self.arriving = None;
         self.reopen = Some(remembered_focus(memory));
         if !self.overlay_holds_focus() {
             // The focused view is about to drop.

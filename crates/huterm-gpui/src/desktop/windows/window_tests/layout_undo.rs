@@ -428,11 +428,13 @@ fn a_palette_opened_while_a_restored_view_installs_keeps_focus(
     let first = harness.open_tab(ECHO);
     let lone = harness.open_tab(ECHO);
     let pane = harness.first_pane(lone);
-    let elsewhere = harness
-        .runtime
-        .lock()
-        .create_workspace(harness.session, None)
-        .unwrap();
+    // Another session's workspace, whose views this window does not keep,
+    // so the restored tab needs an install.
+    let elsewhere = {
+        let mut mux = harness.runtime.lock();
+        let session = mux.create_session(None).unwrap();
+        mux.create_workspace(session, None).unwrap()
+    };
     let window = harness.attach_window();
     harness.activate(window, first);
     harness.focus(window, lone, pane);

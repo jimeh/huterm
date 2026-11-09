@@ -262,7 +262,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let Some((tab_id, pane_id)) = self.tabs.iter().find_map(|tab| {
+        let Some((tab_id, pane_id)) = self.all_tab_views().find_map(|tab| {
             tab.panes
                 .iter()
                 .find(|shown| shown.pane.get() == pane)
@@ -270,6 +270,13 @@ impl WorkspaceView {
         }) else {
             return false;
         };
+        // A pane in a hidden workspace shows its workspace first, which
+        // only a window free to switch does.
+        if let Some(workspace) = self.hidden_workspace_of(tab_id)
+            && self.switch_workspace(workspace, window, cx).is_err()
+        {
+            return false;
+        }
         let hidden_quake = self
             .quake
             .as_ref()
@@ -308,8 +315,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let Some(view) = self
-            .tabs
-            .iter()
+            .all_tab_views()
             .find(|shown| shown.id == tab)
             .and_then(|shown| shown.pane(pane))
             .map(|shown| shown.view.clone())

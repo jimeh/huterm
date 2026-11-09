@@ -409,10 +409,11 @@ fn a_row_menu_opened_before_the_status_tooltip_keeps_it_hidden(
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.window.macos_native_menus = false;
         config.tabs.always_show = true;
+        config.terminal.close_on_exit = false;
     });
     let (window, _) = harness.workspace_window();
     let (second, exits) = harness.add_workspace_running(EXITS, 1);
-    // No window views the tab, so its exit leaves it, exited, in place.
+    // Without `close_on_exit`, its exit leaves it, exited, in place.
     let _viewer = harness.send_line(exits[0], "done");
     harness.wait_for("the row's status", |cx| {
         window
