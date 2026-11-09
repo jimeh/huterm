@@ -279,3 +279,90 @@ fn a_read_older_than_the_one_applied_changes_nothing() {
     // The same revision again still applies: nothing newer is lost.
     assert!(statuses.apply(read(5, &[(120, idle())])));
 }
+
+#[test]
+fn a_split_tab_is_named_by_its_urgent_pane_as_the_tab_bar_labels_it() {
+    use huterm_protocol::{
+        PaneNode, SPLIT_TOTAL, SplitAxis, SplitChild, SplitId, SplitNode,
+    };
+    let pane = |value: u64, name: Option<&str>| PaneInfo {
+        id: PaneId::in_runtime(RUNTIME, value),
+        terminal_id: terminal(value + 100),
+        fallback_name: "zsh".into(),
+        custom_name: name.map(str::to_owned),
+    };
+    let split = |zoomed: Option<u64>| TabInfo {
+        id: TabId::in_runtime(RUNTIME, 40),
+        custom_name: None,
+        layout: PaneLayout::new(PaneNode::Split(SplitNode {
+            id: SplitId::in_runtime(RUNTIME, 49),
+            axis: SplitAxis::Columns,
+            children: vec![
+                SplitChild {
+                    weight: SPLIT_TOTAL / 2,
+                    node: PaneNode::Pane(pane(41, None)),
+                },
+                SplitChild {
+                    weight: SPLIT_TOTAL / 2,
+                    node: PaneNode::Pane(pane(42, Some("server"))),
+                },
+            ],
+        }))
+        .unwrap(),
+        zoomed: zoomed.map(|value| PaneId::in_runtime(RUNTIME, value)),
+        input_sync: false,
+    };
+    let state = |zoomed| {
+        HierarchyState::from_sessions(
+            StreamId::new(RUNTIME),
+            1,
+            [(
+                SessionInfo {
+                    id: session(),
+                    custom_name: None,
+                    automatic_name: "Session 1".into(),
+                },
+                vec![(
+                    WorkspaceInfo {
+                        id: workspace(10),
+                        custom_name: None,
+                        automatic_name: "Workspace 10".into(),
+                        pinned: false,
+                    },
+                    vec![split(zoomed)],
+                )],
+            )],
+            [],
+        )
+        .unwrap()
+    };
+    let text = |state: &HierarchyState, statuses: &Statuses| {
+        workspace_status(state, workspace(10), statuses, None, tabs())
+            .map(|status| status.text)
+    };
+    let mut statuses = Statuses::default();
+    // The more urgent pane names the tab, by its custom name as the tab
+    // bar would.
+    let exited = TerminalStatus {
+        lifecycle: TerminalLifecycle::Exited(ExitStatus {
+            code: Some(0),
+            success: true,
+        }),
+        ..idle()
+    };
+    statuses.apply(read(1, &[(141, running("make")), (142, exited)]));
+    assert_eq!(
+        text(&state(None), &statuses).as_deref(),
+        Some("Exited: server")
+    );
+    // Equally urgent panes name the first, unless another is zoomed.
+    statuses.apply(read(2, &[(141, running("make")), (142, running("node"))]));
+    assert_eq!(
+        text(&state(None), &statuses).as_deref(),
+        Some("Running: make")
+    );
+    assert_eq!(
+        text(&state(Some(42)), &statuses).as_deref(),
+        Some("Running: server")
+    );
+}

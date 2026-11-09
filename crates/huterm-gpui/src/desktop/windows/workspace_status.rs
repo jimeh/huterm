@@ -272,8 +272,8 @@ pub(super) fn workspace_status(
 }
 
 /// A tab's dot at its most urgent pane, and its name as the tab bar would
-/// label that pane: its custom name, else the `[tabs]` label of the pane's
-/// title, program, and directory.
+/// label that pane: the tab's custom name, else the pane's, else the
+/// `[tabs]` label of the pane's title, program, and directory.
 fn tab_status(
     state: &HierarchyState,
     tab: TabId,
@@ -282,27 +282,36 @@ fn tab_status(
     labels: huterm_config::TabsConfig,
 ) -> Option<(Dot, String)> {
     let info = state.tab(tab)?;
-    let (dot, pane, status) = info
+    // Equally urgent panes name the shared zoom's pane, which is all the
+    // tab shows, else the first in layout order.
+    let (dot, _, _, pane, status) = info
         .layout
         .panes()
         .into_iter()
-        .filter_map(|pane| {
+        .enumerate()
+        .filter_map(|(index, pane)| {
             let status = statuses.get(pane.terminal_id)?;
             let bell = bells.is_some_and(|bells| {
                 bells.unseen(pane.terminal_id, status.bells)
             });
-            Some((terminal_dot(status, bell)?, pane, status))
+            let dot = terminal_dot(status, bell)?;
+            let zoomed = info.zoomed == Some(pane.id);
+            Some((dot, zoomed, std::cmp::Reverse(index), pane, status))
         })
-        .max_by_key(|(dot, ..)| *dot)?;
-    let name = info.custom_name.clone().unwrap_or_else(|| {
-        super::resolve_tab_label(
-            labels.label,
-            labels.directory,
-            resolve_tab_name(None, &status.title, &pane.fallback_name),
-            &status.metadata,
-            super::home_paths(),
-        )
-    });
+        .max_by_key(|(dot, zoomed, index, ..)| (*dot, *zoomed, *index))?;
+    let name = info
+        .custom_name
+        .clone()
+        .or_else(|| pane.custom_name.clone())
+        .unwrap_or_else(|| {
+            super::resolve_tab_label(
+                labels.label,
+                labels.directory,
+                resolve_tab_name(None, &status.title, &pane.fallback_name),
+                &status.metadata,
+                super::home_paths(),
+            )
+        });
     Some((dot, name))
 }
 
