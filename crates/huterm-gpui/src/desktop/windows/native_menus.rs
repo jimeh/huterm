@@ -255,9 +255,13 @@ impl WorkspaceView {
 
     /// Whether an open menu, native or not, is `tab`'s context menu.
     pub(super) fn menu_targets_tab(&self, tab: TabId) -> bool {
-        let kind = MenuKind::Tab(tab);
-        self.menu.as_ref().is_some_and(|menu| menu.kind == kind)
-            || self.native_menu_kind() == Some(&kind)
+        self.menu_targets(&MenuKind::Tab(tab))
+    }
+
+    /// Whether the open menu, native or not, is of `kind`.
+    pub(super) fn menu_targets(&self, kind: &MenuKind) -> bool {
+        self.menu.as_ref().is_some_and(|menu| menu.kind == *kind)
+            || self.native_menu_kind() == Some(kind)
     }
 
     /// The open native menu's kind.

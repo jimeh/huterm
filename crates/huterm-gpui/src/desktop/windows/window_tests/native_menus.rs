@@ -807,3 +807,19 @@ fn a_settings_native_field_menu_closes_when_a_reload_hides_its_row(
         presenter.shown.borrow()[0].closed.get()
     });
 }
+
+#[gpui::test]
+fn a_native_row_menu_opened_before_the_more_tooltip_keeps_it_hidden(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.macos_native_menus = true;
+        config.tabs.always_show = true;
+    });
+    let (window, _, presenter) = harness.native_window();
+    let (second, _) = harness.add_workspace(1);
+    harness.click_more_before_its_tooltip(window, second, |cx| {
+        native_kind(cx, window) == Some(MenuKind::WorkspaceRow(second))
+    });
+    assert_eq!(presenter.shown.borrow().len(), 1);
+}

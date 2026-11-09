@@ -394,39 +394,53 @@ fn a_row_menu_opened_before_the_more_tooltip_keeps_it_hidden(
     });
     let (window, _) = harness.workspace_window();
     let (second, _) = harness.add_workspace(1);
-    let switcher = harness.switcher_bounds(window);
-    harness.click_at(window, switcher.center());
-    let row = harness.row_bounds(window, second);
-    let id: &'static str =
-        format!("workspace-row-more-{}", second.get()).leak();
-    let mut visual = VisualTestContext::from_window(window, &harness.cx);
-    let more = visual.debug_bounds(id).expect("the row's ⋯ button");
-    let hover = |visual: &mut VisualTestContext, at| {
-        visual.simulate_mouse_move(at, None, Modifiers::none());
-    };
-    // Resting on the button shows its tooltip.
-    hover(&mut visual, more.center());
-    visual.executor().advance_clock(Duration::from_secs(2));
-    visual.run_until_parked();
-    assert!(
-        visual.debug_bounds("tooltip").is_some(),
-        "the hover tooltip"
-    );
-    hover(&mut visual, point(row.left() + px(8.0), row.center().y));
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("tooltip").is_none(), "leaving hides it");
-    // A click before the tooltip's delay opens the menu, and the pointer
-    // resting there afterwards does not bring the tooltip over it.
-    hover(&mut visual, more.center());
-    visual.simulate_click(more.center(), Modifiers::none());
-    harness.wait_for("the row menu", |cx| open_kind(cx, window).is_some());
-    let mut visual = VisualTestContext::from_window(window, &harness.cx);
-    visual.executor().advance_clock(Duration::from_secs(2));
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("tooltip").is_none(), "over the menu");
-    harness.cx.update(|cx| {
-        assert_eq!(a11y_node(cx, window, id)["aria"]["expanded"], true);
+    harness.click_more_before_its_tooltip(window, second, |cx| {
+        open_kind(cx, window).is_some()
     });
+}
+
+impl DesktopHarness {
+    /// Opens the workspace switcher's popover and checks `workspace`'s row
+    /// "⋯" button: resting on it shows its tooltip, and a click before the
+    /// tooltip's delay opens the row menu, which `menu_open` reports, with
+    /// no tooltip over it while the pointer stays.
+    pub(super) fn click_more_before_its_tooltip(
+        &mut self,
+        window: AnyWindowHandle,
+        workspace: WorkspaceId,
+        menu_open: impl Fn(&mut App) -> bool,
+    ) {
+        let switcher = self.switcher_bounds(window);
+        self.click_at(window, switcher.center());
+        let row = self.row_bounds(window, workspace);
+        let id: &'static str =
+            format!("workspace-row-more-{}", workspace.get()).leak();
+        let mut visual = VisualTestContext::from_window(window, &self.cx);
+        let more = visual.debug_bounds(id).expect("the row's ⋯ button");
+        let hover = |visual: &mut VisualTestContext, at| {
+            visual.simulate_mouse_move(at, None, Modifiers::none());
+        };
+        hover(&mut visual, more.center());
+        visual.executor().advance_clock(Duration::from_secs(2));
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("tooltip").is_some(),
+            "the hover tooltip"
+        );
+        hover(&mut visual, point(row.left() + px(8.0), row.center().y));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("tooltip").is_none(), "leaving hides it");
+        hover(&mut visual, more.center());
+        visual.simulate_click(more.center(), Modifiers::none());
+        self.wait_for("the row menu", menu_open);
+        let mut visual = VisualTestContext::from_window(window, &self.cx);
+        visual.executor().advance_clock(Duration::from_secs(2));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("tooltip").is_none(), "over the menu");
+        self.cx.update(|cx| {
+            assert_eq!(a11y_node(cx, window, id)["aria"]["expanded"], true);
+        });
+    }
 }
 
 #[gpui::test]

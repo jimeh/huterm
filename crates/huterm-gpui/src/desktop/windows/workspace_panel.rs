@@ -1403,10 +1403,6 @@ impl WorkspaceView {
     /// click renames it, a right press opens its menu, and in the popover
     /// its "⋯" button does too. A button named "Workspace: name, n tabs",
     /// selected while shown.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one element tree, read top to bottom"
-    )]
     fn workspace_row_element(
         &mut self,
         row: &WorkspaceRow,
@@ -1419,10 +1415,8 @@ impl WorkspaceView {
         let workspace = row.workspace;
         let focus = self.workspace_focus(workspace, cx);
         let swatch = tokens(&self.config.theme);
-        let targeted = self
-            .menu
-            .as_ref()
-            .is_some_and(|menu| menu.kind == MenuKind::WorkspaceRow(workspace));
+        // The row's menu is open, native or Huterm's own.
+        let targeted = self.menu_targets(&MenuKind::WorkspaceRow(workspace));
         let drag = self.workspace_drag.filter(|drag| drag.dragging);
         let dragged = drag.is_some_and(|drag| drag.item == workspace);
         let bounds_cell = Rc::clone(&self.workspace_row_bounds);

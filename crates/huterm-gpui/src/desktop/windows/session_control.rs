@@ -832,10 +832,6 @@ impl WorkspaceView {
 
     /// One session row: a press shows it, a drag reorders it, a right press
     /// or its "⋯" button opens its menu.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one element tree, read top to bottom"
-    )]
     fn session_list_row_element(
         &mut self,
         row: &SessionRow,
@@ -847,10 +843,8 @@ impl WorkspaceView {
         let session = row.session;
         let focus = self.session_focus(session, cx);
         let swatch = tokens(&self.config.theme);
-        let targeted = self
-            .menu
-            .as_ref()
-            .is_some_and(|menu| menu.kind == MenuKind::SessionRow(session));
+        // The row's menu is open, native or Huterm's own.
+        let targeted = self.menu_targets(&MenuKind::SessionRow(session));
         let drag = self.session_drag.filter(|drag| drag.dragging);
         let dragged = drag.is_some_and(|drag| drag.item == session);
         let mut badges = Vec::new();
