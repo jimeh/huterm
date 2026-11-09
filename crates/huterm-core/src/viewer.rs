@@ -216,6 +216,8 @@ pub(crate) struct Registry {
     close_requested: AtomicBool,
     generation: AtomicU64,
     state: Mutex<RegistryState>,
+    /// The Mux's viewer-free status feed, once Mux owns the terminal.
+    feed: Mutex<Option<Arc<crate::status_feed::StatusFeed>>>,
     /// Idle compression totals the runtime publishes for benchmarks.
     pub(crate) compression: crate::compression::CompressionCounters,
 }
@@ -246,6 +248,7 @@ impl Registry {
                 slots: Vec::new(),
                 status: Arc::new(TerminalStatus::default()),
             }),
+            feed: Mutex::new(None),
             compression: crate::compression::CompressionCounters::default(),
         }
     }
@@ -392,12 +395,37 @@ impl Registry {
         }
     }
 
-    /// Replaces the published status and wakes every viewer.
+    /// Replaces the published status and wakes every viewer, and the
+    /// status feed when the change shows in a summary.
     pub(crate) fn publish_status(&self, status: Arc<TerminalStatus>) {
         let mut state = self.state();
+        let summarized =
+            crate::status_feed::summary_changed(&state.status, &status);
         state.status = status;
         for slot in &state.slots {
             slot.signal();
+        }
+        drop(state);
+        if summarized {
+            self.signal_feed();
+        }
+    }
+
+    /// Connects the terminal to its Mux's status feed and signals it once,
+    /// so a subscriber reads a terminal that published before it joined.
+    pub(crate) fn join_feed(&self, feed: Arc<crate::status_feed::StatusFeed>) {
+        *self.feed.lock().unwrap_or_else(PoisonError::into_inner) = Some(feed);
+        self.signal_feed();
+    }
+
+    fn signal_feed(&self) {
+        let feed = self
+            .feed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(feed) = feed {
+            feed.signal();
         }
     }
 

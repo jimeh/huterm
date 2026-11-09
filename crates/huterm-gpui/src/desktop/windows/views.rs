@@ -56,6 +56,27 @@ pub(super) fn update_windows(
     update_views(cx, views, update);
 }
 
+/// Notifies the views of `windows` that `redraws` picks, reading each
+/// first, so a view it skips is not updated at all.
+pub(super) fn notify_windows_where(
+    cx: &mut App,
+    windows: &[WindowId],
+    redraws: impl Fn(&WorkspaceView) -> bool,
+) {
+    let views = cx
+        .global::<Desktop>()
+        .views
+        .0
+        .iter()
+        .filter(|(window, view)| {
+            windows.contains(window)
+                && view.upgrade().is_some_and(|view| redraws(view.read(cx)))
+        })
+        .map(|(_, view)| view.clone())
+        .collect();
+    update_views(cx, views, |_, cx| cx.notify());
+}
+
 fn update_views(
     cx: &mut App,
     views: Vec<WeakEntity<WorkspaceView>>,

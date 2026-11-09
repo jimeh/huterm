@@ -535,6 +535,8 @@ impl WorkspaceView {
             RowAction::Rename => ids::RENAME_SESSION,
             RowAction::ClearName => ids::CLEAR_SESSION_NAME,
             RowAction::Close => ids::CLOSE_SESSION,
+            // Sessions have no pin; their menu never offers one.
+            RowAction::TogglePin => return,
         };
         self.run_recorded(
             &CommandInvocation::new(
@@ -832,6 +834,10 @@ impl WorkspaceView {
 
     /// One session row: a press shows it, a drag reorders it, a right press
     /// or its "⋯" button opens its menu.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row element and its listeners, read top to bottom"
+    )]
     fn session_list_row_element(
         &mut self,
         row: &SessionRow,
@@ -900,6 +906,8 @@ impl WorkspaceView {
                     && !dragged
                     && drag.is_some_and(|drag| drag.before.is_none()),
                 badges,
+                pinned: false,
+                status: None,
             },
             &focus,
             Some(more.into_any_element()),

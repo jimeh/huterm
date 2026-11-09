@@ -6,9 +6,15 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
+use huterm_ui::components::tooltip::Tooltip;
 use huterm_ui::typography;
 
+use super::workspace_status::{Dot, RowStatus};
 use super::*;
+
+/// The status dot at a row's end, and the pin mark after its name.
+const DOT_SIZE: Pixels = px(7.0);
+const PIN_SIZE: Pixels = px(11.0);
 
 /// A row, and the space above each.
 pub(super) const ROW_HEIGHT: Pixels = px(40.0);
@@ -52,11 +58,18 @@ pub(super) struct ListRow {
     pub(super) line_above: bool,
     pub(super) line_below: bool,
     pub(super) badges: Vec<RowBadge>,
+    /// The pin mark after the name: a pinned workspace.
+    pub(super) pinned: bool,
+    /// The status dot at the row's end, with the tooltip naming its tabs.
+    pub(super) status: Option<RowStatus>,
 }
 
-/// The row: its icon, the name over its detail, then any badges, with a
-/// press, focus, and drop-line look; `more` is the "⋯" button at its end,
-/// which popovers show. The caller adds the listeners and the focus ring.
+/// The row: its icon, the name (with a pin mark when pinned) over its
+/// detail, then any badges and the status dot, with a press, focus, and
+/// drop-line look; `more` is the "⋯" button at its end, which popovers
+/// show. Hovering a row with a dot shows its status text, which assistive
+/// technology reads as the row's description. The caller adds the
+/// listeners and the focus ring.
 #[expect(
     clippy::too_many_lines,
     reason = "one element tree, read top to bottom"
@@ -81,6 +94,8 @@ pub(super) fn list_row(
         line_above,
         line_below,
         badges,
+        pinned,
+        status,
     } = row;
     // Shown, then custom, then automatic names: an automatic name dims to
     // the tab bar's inactive text and no further, so it still reads as
@@ -104,10 +119,36 @@ pub(super) fn list_row(
             .bg(swatch.accent)
     };
     let selector = id.clone();
+    let selector_dot = id.clone();
+    let description = status.as_ref().map(|status| status.text.clone());
+    let dot = status.map(|status| {
+        let color = match status.dot {
+            Dot::Running => colors.running,
+            Dot::Bell => colors.accent,
+            Dot::Exited => colors.inactive,
+            Dot::Failed => colors.error,
+        };
+        div()
+            .debug_selector(move || format!("{selector_dot}-dot"))
+            .flex_none()
+            .size(DOT_SIZE)
+            .rounded_full()
+            .bg(color)
+    });
     div()
         .id(gpui::ElementId::Name(id.into()))
         .role(gpui::Role::Button)
         .aria_label(accessible)
+        .when_some(description, |row, text| {
+            let tooltip = text.clone();
+            // While the row's menu is open, the tooltip goes, and one still
+            // waiting for its delay never shows over the menu.
+            row.aria_description(text).when(!targeted, |row| {
+                row.tooltip(move |_, cx| {
+                    Tooltip::view(tooltip.clone(), swatch, cx)
+                })
+            })
+        })
         .aria_selected(selected)
         .track_focus(&focus.clone().tab_stop(selected))
         .key_context("Sidebar")
@@ -150,12 +191,26 @@ pub(super) fn list_row(
                 .min_w_0()
                 .child(
                     div()
-                        .truncate()
-                        .text_color(name_color)
-                        .when(!automatic, |name| {
-                            name.font_weight(gpui::FontWeight::SEMIBOLD)
-                        })
-                        .child(name),
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_color(name_color)
+                                .when(!automatic, |name| {
+                                    name.font_weight(gpui::FontWeight::SEMIBOLD)
+                                })
+                                .child(name),
+                        )
+                        .when(pinned, |line| {
+                            line.child(
+                                icon_element(Icon::Pin, colors.inactive)
+                                    .size(PIN_SIZE)
+                                    .flex_none(),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -187,6 +242,7 @@ pub(super) fn list_row(
                 }))
                 .child(badge.text)
         }))
+        .children(dot)
         .children(more)
         .when(line_above, |row| row.child(line(true)))
         .when(line_below, |row| row.child(line(false)))

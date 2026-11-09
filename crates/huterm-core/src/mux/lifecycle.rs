@@ -531,7 +531,8 @@ impl Mux {
     /// Resolves an emptied window's close so that it stops no terminal,
     /// deciding under the lock and scoped to the attachment's session:
     /// refused while its workspace belongs to that session and holds
-    /// tabs; a [`CloseEffect::LeaveWorkspace`] while the session holds
+    /// tabs ([`MuxError::ViewNotEmpty`]) or is pinned
+    /// ([`MuxError::PinnedWorkspace`]); a [`CloseEffect::LeaveWorkspace`] while the session holds
     /// another workspace, with or without tabs, including when the
     /// workspace no longer belongs to the session (closed, or moved to
     /// another) and the session keeps one; otherwise, when it was the
@@ -553,6 +554,11 @@ impl Mux {
         if members().any(|w| w.id == workspace && !w.tabs.is_empty()) {
             return Err(MuxError::ViewNotEmpty(workspace));
         }
+        // Pinned, the emptied workspace stays and its window shows it
+        // empty, even as its session's only workspace.
+        if members().any(|w| w.id == workspace && w.pinned) {
+            return Err(MuxError::PinnedWorkspace(workspace));
+        }
         // Also true when `workspace` left the session that keeps one.
         if members().any(|w| w.id != workspace) {
             return Ok(CloseEffect::LeaveWorkspace {
@@ -569,19 +575,18 @@ impl Mux {
         }
     }
     /// Commits [`CloseEffect::LeaveWorkspace`]: closes `workspace` only if
-    /// it still belongs to the attachment's session and holds no tab, and
-    /// leaves a missing or moved-away workspace alone. The attachment
-    /// stays.
+    /// it still belongs to the attachment's session, holds no tab, and is
+    /// not pinned, and leaves a missing, moved-away, or pinned workspace
+    /// alone. The attachment stays.
     fn leave_workspace(
         &mut self,
         attachment: AttachmentId,
         workspace: WorkspaceId,
     ) -> Result<(), MuxError> {
         let session = self.attachment_session(attachment)?;
-        let empty_member = self
-            .workspaces
-            .get(&workspace)
-            .is_some_and(|w| w.session_id == session && w.tabs.is_empty());
+        let empty_member = self.workspaces.get(&workspace).is_some_and(|w| {
+            w.session_id == session && w.tabs.is_empty() && !w.pinned
+        });
         if empty_member {
             self.close_workspace(workspace)
         } else {

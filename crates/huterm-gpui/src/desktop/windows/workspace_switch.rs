@@ -432,6 +432,7 @@ mod tests {
             id: w(n),
             custom_name: None,
             automatic_name: format!("Workspace {n}"),
+            pinned: false,
         };
         let tab = |n: u64| TabInfo {
             id: TabId::in_runtime(runtime, n),

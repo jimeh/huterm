@@ -14,6 +14,8 @@ pub(super) struct WorkspaceRow {
     pub(super) name: String,
     pub(super) automatic: bool,
     pub(super) tabs: usize,
+    /// The workspace stays when its last tab closes.
+    pub(super) pinned: bool,
 }
 
 impl WorkspaceRow {
@@ -24,7 +26,8 @@ impl WorkspaceRow {
 
     /// What assistive technology reads for the row.
     pub(super) fn accessible_name(&self) -> String {
-        format!("Workspace: {}, {}", self.name, self.detail())
+        let pinned = if self.pinned { ", pinned" } else { "" };
+        format!("Workspace: {}{pinned}, {}", self.name, self.detail())
     }
 }
 
@@ -46,6 +49,7 @@ pub(super) fn workspace_rows(
                 name: info.display_name().to_owned(),
                 automatic: info.custom_name.is_none(),
                 tabs: state.workspace_tabs(workspace).map_or(0, <[_]>::len),
+                pinned: info.pinned,
             })
         })
         .collect()
@@ -61,15 +65,17 @@ pub(super) fn tabs_text(count: usize) -> String {
 
 const RENAME_PREFIX: &str = "workspace-rename:";
 const CLEAR_PREFIX: &str = "workspace-clear:";
+const PIN_PREFIX: &str = "workspace-pin:";
 const CLOSE_PREFIX: &str = "workspace-close:";
 
 /// What a row menu pick runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum WorkspacePick {
-    /// Rename, clear the name of, or close the workspace with this raw
-    /// identity: a row menu acts on its own row.
+    /// Rename, clear the name of, pin or unpin, or close the workspace with
+    /// this raw identity: a row menu acts on its own row.
     Rename(u64),
     ClearName(u64),
+    TogglePin(u64),
     Close(u64),
 }
 
@@ -81,6 +87,9 @@ pub(super) fn parse_pick(id: &str) -> Option<WorkspacePick> {
     }
     if let Some(raw) = raw(CLEAR_PREFIX) {
         return Some(WorkspacePick::ClearName(raw));
+    }
+    if let Some(raw) = raw(PIN_PREFIX) {
+        return Some(WorkspacePick::TogglePin(raw));
     }
     raw(CLOSE_PREFIX).map(WorkspacePick::Close)
 }
@@ -97,8 +106,9 @@ pub(super) fn resolve(state: &HierarchyState, raw: u64) -> Option<WorkspaceId> {
 }
 
 /// A row's context menu, acting on that row's workspace: Rename…,
-/// Clear Name for a custom name, and Close Workspace… while the session has
-/// another workspace, as the session rows' menu has them.
+/// Clear Name for a custom name, Pin Workspace or Unpin Workspace, and
+/// Close Workspace… while the session has another workspace, as the
+/// session rows' menu has them.
 pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
     let raw = row.workspace.get();
     let item = |id: String, label: &str, icon: Icon| {
@@ -116,6 +126,15 @@ pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
             Icon::Eraser,
         ));
     }
+    rows.push(if row.pinned {
+        item(
+            format!("{PIN_PREFIX}{raw}"),
+            "Unpin Workspace",
+            Icon::PinOff,
+        )
+    } else {
+        item(format!("{PIN_PREFIX}{raw}"), "Pin Workspace", Icon::Pin)
+    });
     if workspaces > 1 {
         rows.push(MenuRow::Separator);
         rows.push(item(

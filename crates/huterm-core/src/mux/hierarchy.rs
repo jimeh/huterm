@@ -247,6 +247,7 @@ impl Workspace {
             id: self.id,
             custom_name: self.custom_name.clone(),
             automatic_name: self.automatic_name.clone(),
+            pinned: self.pinned,
         }
     }
 }

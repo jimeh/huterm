@@ -757,6 +757,10 @@ pub mod ids {
     /// Clears a workspace's custom name.
     pub const CLEAR_WORKSPACE_NAME: CommandId =
         CommandId::new("clear_workspace_name");
+    /// Pins a workspace, so it stays when its last tab closes, or unpins
+    /// it.
+    pub const TOGGLE_WORKSPACE_PIN: CommandId =
+        CommandId::new("toggle_workspace_pin");
     /// Closes a workspace after assessment.
     pub const CLOSE_WORKSPACE: CommandId = CommandId::new("close_workspace");
     /// Renames a pane.
@@ -1615,6 +1619,13 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Runtime,
         "Clear Workspace Name",
         "Remove a workspace's custom name, restoring its automatic one.",
+        OWN_WORKSPACE,
+    ),
+    spec(
+        ids::TOGGLE_WORKSPACE_PIN,
+        CommandScope::Runtime,
+        "Pin or Unpin Workspace",
+        "Keep a workspace when its last tab closes, or stop keeping it.",
         OWN_WORKSPACE,
     ),
     spec(

@@ -47,6 +47,7 @@ fn capture() -> RuntimeCapture {
                     id: WorkspaceId::new(2),
                     custom_name: Some("work".into()),
                     automatic_name: "Workspace 1".into(),
+                    pinned: false,
                 },
                 tabs: vec![TabInfo {
                     id: TabId::new(3),
@@ -55,6 +56,7 @@ fn capture() -> RuntimeCapture {
                     zoomed: Some(PaneId::new(6)),
                     input_sync: true,
                 }],
+                directory: None,
             }],
         }],
         terminals: [5, 7]

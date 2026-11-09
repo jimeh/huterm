@@ -196,6 +196,11 @@ struct WorkspaceRecord {
     custom_name: Option<String>,
     automatic_name: String,
     tabs: Bounded<TabRecord, MAX_TABS>,
+    /// Older files hold no pin; their workspaces load unpinned.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -361,7 +366,17 @@ pub(crate) fn check_runtime(
             "a layout is deeper than {MAX_LAYOUT_DEPTH}"
         )));
     }
-    for directory in capture.terminals.iter().flat_map(|t| &t.directories) {
+    let workspace_directories = capture
+        .sessions
+        .iter()
+        .flat_map(|session| &session.workspaces)
+        .filter_map(|workspace| workspace.directory.as_ref());
+    for directory in capture
+        .terminals
+        .iter()
+        .flat_map(|t| &t.directories)
+        .chain(workspace_directories)
+    {
         let Some(text) = directory.to_str().filter(|_| directory.is_absolute())
         else {
             return Err(InvalidState::new("a saved directory is not absolute"));
@@ -387,13 +402,21 @@ pub(crate) fn encode_runtime(
     generation: u64,
 ) -> Result<Vec<u8>, InvalidState> {
     let mut capture = capture.clone();
+    let savable = |path: &PathBuf| {
+        path.is_absolute()
+            && path
+                .to_str()
+                .is_some_and(|text| text.len() <= MAX_PATH_BYTES)
+    };
     for terminal in &mut capture.terminals {
-        terminal.directories.retain(|path| {
-            path.is_absolute()
-                && path
-                    .to_str()
-                    .is_some_and(|text| text.len() <= MAX_PATH_BYTES)
-        });
+        terminal.directories.retain(savable);
+    }
+    for workspace in capture
+        .sessions
+        .iter_mut()
+        .flat_map(|session| &mut session.workspaces)
+    {
+        workspace.directory = workspace.directory.take().filter(savable);
     }
     check_runtime(&capture)?;
     let file = RuntimeFile {
@@ -602,7 +625,9 @@ fn workspace_capture(
             id: WorkspaceId::new(workspace.id),
             custom_name: workspace.custom_name,
             automatic_name: workspace.automatic_name,
+            pinned: workspace.pinned,
         },
+        directory: workspace.directory.map(PathBuf::from),
         tabs: workspace
             .tabs
             .0
@@ -696,6 +721,12 @@ fn session_record(session: &SessionCapture) -> SessionRecord {
                     id: workspace.info.id.get(),
                     custom_name: workspace.info.custom_name.clone(),
                     automatic_name: workspace.info.automatic_name.clone(),
+                    pinned: workspace.info.pinned,
+                    directory: workspace
+                        .directory
+                        .as_deref()
+                        .and_then(Path::to_str)
+                        .map(str::to_owned),
                     tabs: Bounded(
                         workspace
                             .tabs

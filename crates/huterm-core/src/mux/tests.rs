@@ -774,6 +774,88 @@ fn a_workspace_whose_tab_fails_to_open_is_closed_again() {
 }
 
 #[test]
+fn a_workspace_pin_emits_once_per_change_and_moves_the_revision() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let events = mux.subscribe_hierarchy().1;
+    let revision = mux.revision;
+    mux.set_workspace_pinned(workspace, true).unwrap();
+    mux.set_workspace_pinned(workspace, true).unwrap();
+    assert!(mux.workspace(workspace).unwrap().pinned());
+    assert_eq!(mux.revision, revision + 1);
+    let mut pins = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        pins.push(envelope.event);
+    }
+    assert_eq!(
+        pins,
+        [HierarchyEvent::WorkspacePinned {
+            workspace,
+            pinned: true,
+        }]
+    );
+    let foreign = WorkspaceId::in_runtime(RuntimeId::new(u64::MAX), 1);
+    assert!(mux.set_workspace_pinned(foreign, false).is_err());
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn the_status_feed_wakes_for_a_bell_but_not_for_a_title() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let feed = mux.subscribe_status();
+    let tab = mux
+        .open_test_tab(
+            workspace,
+            &command(
+                "printf READY; read value; printf '\\033]2;renamed\\007DONE'; read value; printf '\\007'; read value",
+            ),
+        )
+        .unwrap();
+    let terminal = tab.tab.first_pane().terminal_id;
+    let status = |mux: &Mux| {
+        let read = mux.terminal_statuses();
+        let (_, status) = read
+            .statuses
+            .iter()
+            .find(|(id, _)| *id == terminal)
+            .cloned()
+            .expect("the terminal is listed");
+        (read.revision, status)
+    };
+    // Joining the Mux signals the feed, so a subscriber reads it at once.
+    assert!(feed.try_changed());
+    wait_for_text(&tab.client, "READY");
+    while feed.try_changed() {}
+    tab.client
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    wait_for_text(&tab.client, "DONE");
+    crate::test_support::wait_until("the new title", || {
+        let (_, status) = status(&mux);
+        if status.title == "renamed" {
+            Ok(())
+        } else {
+            Err(status.title.clone())
+        }
+    });
+    assert!(!feed.try_changed(), "a title is not summarized");
+    let (before, _) = status(&mux);
+    tab.client
+        .send_input(TerminalInput::Text("go\n".into()))
+        .unwrap();
+    crate::test_support::wait_until("the bell's wake", || {
+        feed.try_changed().then_some(()).ok_or(())
+    });
+    let (after, rung) = status(&mux);
+    assert_eq!(rung.bells, 1);
+    assert!(after > before);
+    mux.shutdown().unwrap();
+}
+
+#[test]
 fn closing_tabs_preserves_order_and_other_workspace_processes() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();

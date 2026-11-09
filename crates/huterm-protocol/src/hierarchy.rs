@@ -129,6 +129,9 @@ pub struct WorkspaceInfo {
     pub custom_name: Option<String>,
     /// Immutable creation-ordinal name used without an override.
     pub automatic_name: String,
+    /// The workspace stays when its last tab closes, instead of closing
+    /// with the window's emptied close.
+    pub pinned: bool,
 }
 
 impl WorkspaceInfo {
@@ -359,6 +362,13 @@ pub enum HierarchyEvent {
         /// New override; `None` resumes the automatic name.
         custom_name: Option<String>,
     },
+    /// A workspace was pinned or unpinned.
+    WorkspacePinned {
+        /// The workspace.
+        workspace: WorkspaceId,
+        /// Whether it is now pinned.
+        pinned: bool,
+    },
     /// A workspace moved within or between sessions.
     WorkspaceMoved {
         /// Moved workspace.
@@ -517,8 +527,8 @@ pub enum ResyncReason {
 /// layout or shared zoom changed or that opened. The names flag records any
 /// change to the session or workspace lists or their names. Attachments
 /// list the sessions whose set of attachments changed. Chrome lists the
-/// sessions whose workspace list, workspace names, or tab counts changed,
-/// which every client view of the session shows.
+/// sessions whose workspace list, workspace names or pins, or tab counts
+/// changed, which every client view of the session shows.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Touched {
     everything: bool,
@@ -871,7 +881,8 @@ impl HierarchyState {
     /// name is `0`, or `1` followed by the string.
     ///
     /// - Session: `b'S'`, ID, custom name, automatic name, workspace count.
-    /// - Workspace: `b'W'`, ID, custom name, automatic name, tab count.
+    /// - Workspace: `b'W'`, ID, custom name, automatic name, pinned (`0` or
+    ///   `1`), tab count.
     /// - Tab: `b'T'`, ID, custom name, shared zoom (`0`, or `1` and the pane
     ///   ID), input sync (`0` or `1`), then its layout in traversal order:
     ///   for a pane, `b'P'`, pane ID, terminal ID, fallback name, custom
@@ -905,6 +916,7 @@ impl HierarchyState {
                 hash.number(workspace.info.id.get());
                 hash.optional(workspace.info.custom_name.as_deref());
                 hash.text(&workspace.info.automatic_name);
+                hash.byte(u8::from(workspace.info.pinned));
                 hash.count(workspace.tabs.len());
                 for tab_id in &workspace.tabs {
                     let tab = &self.tabs[tab_id].info;
@@ -985,6 +997,14 @@ impl HierarchyState {
                 touched.names =
                     rename(&mut entry.info.custom_name, custom_name);
                 if touched.names {
+                    touched.chrome.insert(entry.session);
+                }
+            }
+            HierarchyEvent::WorkspacePinned { workspace, pinned } => {
+                let entry = self.workspaces.get_mut(&workspace)?;
+                if entry.info.pinned != pinned {
+                    entry.info.pinned = pinned;
+                    // Rows show the pin mark.
                     touched.chrome.insert(entry.session);
                 }
             }

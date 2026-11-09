@@ -127,20 +127,23 @@ fn keeps_minimum(
 }
 
 /// Whether a close decides only once the projection reaches the hierarchy
-/// core assessed it at: a refused emptied close decides from batches up to
-/// that hierarchy, so none that arrived during the assessment is lost, and a
-/// pane close whose pane moved finds the pane's new tab.
+/// core assessed it at: a refused emptied close, whether its workspace held
+/// tabs or is pinned, decides from batches up to that hierarchy, so none
+/// that arrived during the assessment is lost, and a pane close whose pane
+/// moved finds the pane's new tab.
 fn close_waits_for_projection<T>(
     checking: &CloseTarget,
     result: &Result<T, MuxError>,
 ) -> bool {
     matches!(
         (checking, result),
-        (CloseTarget::Emptied, Err(MuxError::ViewNotEmpty(_)))
-            | (
-                CloseTarget::Pane { .. },
-                Err(MuxError::UnknownPane(_) | MuxError::UnknownTab(_))
-            )
+        (
+            CloseTarget::Emptied,
+            Err(MuxError::ViewNotEmpty(_) | MuxError::PinnedWorkspace(_))
+        ) | (
+            CloseTarget::Pane { .. },
+            Err(MuxError::UnknownPane(_) | MuxError::UnknownTab(_))
+        )
     )
 }
 
@@ -240,6 +243,7 @@ mod worker_hooks;
 mod workspace_chrome;
 mod workspace_menu;
 mod workspace_panel;
+mod workspace_status;
 mod workspace_switch;
 use crate::assets::Icon;
 use crate::ui::scrollbar::{
@@ -973,6 +977,9 @@ struct Desktop {
     /// The runtime structure every window and palette reads names, tab
     /// membership, and order from. The UI thread never locks Mux for it.
     hierarchy: Projection,
+    /// Every terminal's status from the runtime's viewer-free feed, for the
+    /// workspace rows' dots.
+    statuses: workspace_status::Statuses,
     /// Open palettes and close confirmations, which show titles they do not
     /// own, and the windows whose titles changed since their last refresh.
     title_consumers: TitleConsumers,
@@ -1815,6 +1822,7 @@ fn install_desktop(
         windows: WindowModel::default(),
         exit_closes: ExitCloses::default(),
         hierarchy,
+        statuses: workspace_status::Statuses::default(),
         title_consumers: TitleConsumers::default(),
         views: Views::default(),
         keymap,
@@ -1858,6 +1866,7 @@ fn install_desktop(
     apply_typography(cx);
     terminal_notifications::install(cx);
     start_hierarchy_drain(cx);
+    start_status_feed(cx);
     checkpoints::observe(cx);
     cross_window::start_smoke_publisher(cx);
     cx.on_window_closed(|cx, window| {
@@ -1977,6 +1986,85 @@ fn start_hierarchy_drain(cx: &mut App) {
     cx.global_mut::<Desktop>().hierarchy.set_drain_task(task);
 }
 
+/// Starts the application task that follows the runtime's status feed:
+/// one read on a worker at a time, then one more after any change that
+/// arrived meanwhile, so wakes coalesce. It subscribes on the worker, so
+/// the UI thread takes no lock for it.
+fn start_status_feed(cx: &mut App) {
+    let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+    cx.spawn(async move |cx| {
+        let worker = Arc::clone(&runtime);
+        let subscription = cx
+            .background_executor()
+            .spawn(async move { worker.lock().subscribe_status() })
+            .await;
+        loop {
+            let worker = Arc::clone(&runtime);
+            let read = cx
+                .background_executor()
+                .spawn(async move { worker.lock().terminal_statuses() })
+                .await;
+            cx.update(|cx| apply_statuses(cx, read));
+            if !subscription.changed().await {
+                return;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Moves every window's bell baselines to the statuses already read, as a
+/// window attaches or switches, so a bell rung before the next read still
+/// counts.
+fn follow_bells(cx: &mut App) {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop
+        .windows
+        .follow_bells(desktop.hierarchy.state(), &mut desktop.statuses);
+}
+
+/// Applies a status read: every window follows it with its bell
+/// baselines, and windows on a session whose terminals changed redraw
+/// their workspace rows, when they draw any: a shown sidebar, the
+/// switcher's popover, or the sheet. A read older than the one applied
+/// changes nothing.
+fn apply_statuses(cx: &mut App, read: huterm_core::TerminalStatuses) {
+    let desktop = cx.global_mut::<Desktop>();
+    let before = desktop.statuses.snapshot();
+    if !desktop.statuses.apply(read) {
+        return;
+    }
+    let state = desktop.hierarchy.state();
+    let statuses = &desktop.statuses;
+    let changed: HashSet<SessionId> = state
+        .sessions()
+        .iter()
+        .copied()
+        .filter(|session| {
+            state
+                .session_workspaces(*session)
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|workspace| {
+                    state.workspace_tabs(*workspace).unwrap_or_default()
+                })
+                .filter_map(|tab| state.tab(*tab))
+                .flat_map(|tab| tab.layout.panes())
+                .any(|pane| statuses.changed_since(&before, pane.terminal_id))
+        })
+        .collect();
+    desktop.windows.follow_bells(state, &mut desktop.statuses);
+    let windows: Vec<gpui::WindowId> = desktop
+        .windows
+        .records()
+        .filter(|record| record.session.is_some_and(|s| changed.contains(&s)))
+        .map(|record| record.id)
+        .collect();
+    views::notify_windows_where(cx, &windows, |view| {
+        view.workspace_visible || view.switcher_mode.is_some()
+    });
+}
+
 /// Applies queued hierarchy events, reconciles the windows they touched,
 /// and releases the sequence waiters the projection now satisfies. Lost
 /// events start a resubscription instead; nothing reconciles against a
@@ -2088,6 +2176,8 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         .retain(|pane| state.pane_tab(pane).is_some());
     let pruned = desktop.windows.prune_layout_histories(state);
     desktop.windows.prune_sessions(state);
+    // A terminal the projection lists only now may have rung already.
+    desktop.windows.follow_bells(state, &mut desktop.statuses);
     // A Quake stash whose session closed before its first summon goes; the
     // summon opens a fresh profile session instead. One whose workspace
     // went shows another of its session.
@@ -2523,21 +2613,23 @@ fn capture_windows(cx: &App) -> huterm_state::DesktopLayout {
 /// Whether a window's close already decided to end it and its session:
 /// it shows no tab, its emptied close is owed (still to be assessed,
 /// assessing, or committing) or became the Quit under way, and its
-/// session holds no workspace other than the one it shows. Captures save
-/// neither the window nor, through [`shown_sessions`], its tabless session.
-/// A refused emptied close kept the window, which stays saved.
+/// session holds no workspace other than the one it shows, which is not
+/// pinned. Captures save neither the window nor, through
+/// [`shown_sessions`], its tabless session. A refused emptied close kept the
+/// window, which stays saved, and core refuses one whose workspace is
+/// pinned.
 fn departing(desktop: &Desktop, record: &WindowRecord) -> bool {
+    let state = desktop.hierarchy.state();
     record.tabs.is_empty()
         && (record.emptied_close || desktop.emptied_quit == Some(record.id))
         && record.session.zip(record.workspace).is_some_and(
             |(session, workspace)| {
-                desktop
-                    .hierarchy
-                    .state()
-                    .session_workspaces(session)
-                    .unwrap_or_default()
-                    .iter()
-                    .all(|other| *other == workspace)
+                !state.workspace(workspace).is_some_and(|info| info.pinned)
+                    && state
+                        .session_workspaces(session)
+                        .unwrap_or_default()
+                        .iter()
+                        .all(|other| *other == workspace)
             },
         )
 }
@@ -5975,6 +6067,7 @@ impl WorkspaceView {
             session,
             workspace,
         );
+        follow_bells(cx);
         if self
             .reconcile(&Touched::everything(), terminating(cx), cx)
             .changed
@@ -9038,8 +9131,9 @@ impl WorkspaceView {
         if let Some(view) = self.active_view(cx) {
             command.grid_size = view.read(cx).requested_grid;
         }
-        let inherited_directories = self
-            .active_view(cx)
+        let active = self.active_view(cx);
+        let inherited_directories = active
+            .as_ref()
             .map(|view| {
                 inherited_directories(
                     self.config.terminal.new_tab_directory,
@@ -9047,6 +9141,11 @@ impl WorkspaceView {
                 )
             })
             .unwrap_or_default();
+        // A workspace with no tab inherits the directory its last tab left
+        // behind instead.
+        let remembered = active.is_none()
+            && self.config.terminal.new_tab_directory
+                == huterm_config::NewTabDirectory::Inherit;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let workspace = self.workspace_id(cx);
         let attachment = self.attachment_id(cx);
@@ -9054,7 +9153,21 @@ impl WorkspaceView {
         self.busy = true;
         cx.global_mut::<Desktop>().pending_spawns += 1;
         let task = cx.background_executor().spawn(async move {
-            if let Some(directory) = launch_directory(inherited_directories) {
+            let candidates = if remembered {
+                workspace
+                    .and_then(|workspace| {
+                        runtime
+                            .lock()
+                            .workspace(workspace)?
+                            .directory()
+                            .map(Path::to_path_buf)
+                    })
+                    .into_iter()
+                    .collect()
+            } else {
+                inherited_directories
+            };
+            if let Some(directory) = launch_directory(candidates) {
                 command.working_directory = directory;
             }
             let spawned =
@@ -9472,6 +9585,7 @@ impl WorkspaceView {
             session,
             id,
         );
+        follow_bells(cx);
         let tab_id = opened.tab.id;
         // A viewer revoked already leaves the tab without a view, which
         // reconcile installs again if the window still shows its workspace.
@@ -11145,7 +11259,7 @@ impl WorkspaceView {
                 self.request_close(target, window, cx);
                 Ok(CommandOutcome::Accepted)
             }
-            ids::CLEAR_WORKSPACE_NAME => {
+            ids::CLEAR_WORKSPACE_NAME | ids::TOGGLE_WORKSPACE_PIN => {
                 let workspace = invocation
                     .workspace("workspace")
                     .or_else(|| self.workspace_id(cx))
@@ -11155,7 +11269,7 @@ impl WorkspaceView {
                         )
                     })?;
                 let invocation = CommandInvocation::new(
-                    ids::CLEAR_WORKSPACE_NAME,
+                    invocation.id,
                     vec![CommandArgument::new(
                         "workspace",
                         CommandValue::Workspace(workspace),
@@ -12388,7 +12502,8 @@ impl WorkspaceView {
     ///   and nothing is left to close. An emptied one applies the
     ///   last-window rule first ([`Self::close_gone_emptied`]).
     /// - A refused emptied close keeps the window, as
-    ///   [`Self::emptied_close_refused`] describes.
+    ///   [`Self::emptied_close_refused`] and, for a pinned workspace,
+    ///   [`Self::emptied_close_pinned`] describe.
     /// - Another emptied failure raises one notice and clears the mark;
     ///   queued closes, including Quit, run next.
     /// - Any other failure raises one notice and cancels the close.
@@ -12408,6 +12523,9 @@ impl WorkspaceView {
             }
             (CloseTarget::Emptied, MuxError::ViewNotEmpty(_)) => {
                 self.emptied_close_refused(window, cx);
+            }
+            (CloseTarget::Emptied, MuxError::PinnedWorkspace(_)) => {
+                self.emptied_close_pinned(window, cx);
             }
             // The pane moved to another tab of this window between the
             // close's request and its assessment; assess it there.
@@ -12456,6 +12574,36 @@ impl WorkspaceView {
                 self.cancel_close(window, cx);
             }
         }
+    }
+
+    /// Settles an emptied close the runtime refused because the window's
+    /// workspace is pinned, once the projection reached the hierarchy it was
+    /// refused at: the workspace stays, and the window shows its empty
+    /// state, even for its session's only workspace. A session closed
+    /// meanwhile takes the session-gone path, and a workspace closed or
+    /// moved away meanwhile owes the emptied close again, since the batch
+    /// that removed it found the close already owed. Queued closes run
+    /// first.
+    fn emptied_close_pinned(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.close.current = None;
+        if self.attached_session_gone(cx) {
+            self.close_gone_emptied(window, cx);
+            return;
+        }
+        let emptied = if self.shown_workspace_gone(cx) {
+            EmptiedClose::Owed
+        } else {
+            EmptiedClose::None
+        };
+        self.set_emptied(emptied, cx);
+        if !self.resume_close(window, cx) && emptied == EmptiedClose::None {
+            self.focus_empty_state(window, cx);
+        }
+        cx.notify();
     }
 
     /// Settles an emptied close the runtime refused while the window's
@@ -15151,8 +15299,10 @@ impl Render for WorkspaceView {
             window,
             cx,
         ));
+        self.keep_empty_state_focus(window, cx);
         root = root.children(self.empty_state_element(
             layout.terminal,
+            colors.terminal,
             swatch,
             window,
             cx,

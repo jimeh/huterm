@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 45] = [
+const ASSETS: [(&str, &[u8]); 47] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -158,6 +158,11 @@ const ASSETS: [(&str, &[u8]); 45] = [
         "icons/ellipsis.svg",
         include_bytes!("../assets/icons/ellipsis.svg"),
     ),
+    ("icons/pin.svg", include_bytes!("../assets/icons/pin.svg")),
+    (
+        "icons/pin-off.svg",
+        include_bytes!("../assets/icons/pin-off.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -210,11 +215,14 @@ pub(crate) enum Icon {
     /// The session switcher row's chevron.
     ChevronsUpDown,
     Ellipsis,
+    /// A pinned workspace's mark, and Unpin's opposite.
+    Pin,
+    PinOff,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 44] = [
+    const ALL: [Self; 46] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -259,6 +267,8 @@ impl Icon {
         Self::PanelRight,
         Self::ChevronsUpDown,
         Self::Ellipsis,
+        Self::Pin,
+        Self::PinOff,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -307,6 +317,8 @@ impl Icon {
             Self::PanelRight => "icons/panel-right.svg",
             Self::ChevronsUpDown => "icons/chevrons-up-down.svg",
             Self::Ellipsis => "icons/ellipsis.svg",
+            Self::Pin => "icons/pin.svg",
+            Self::PinOff => "icons/pin-off.svg",
         }
     }
 }

@@ -304,6 +304,7 @@ fn encode_workspace_info(
         id,
         custom_name,
         automatic_name,
+        pinned,
     } = workspace;
     w.record(|w| {
         w.id(scope, *id)?;
@@ -312,7 +313,9 @@ fn encode_workspace_info(
             MAX_NAME_BYTES,
             "workspace name",
         )?;
-        w.str(automatic_name, MAX_NAME_BYTES, "automatic name")
+        w.str(automatic_name, MAX_NAME_BYTES, "automatic name")?;
+        w.bool(*pinned);
+        Ok(())
     })
 }
 
@@ -327,6 +330,7 @@ fn decode_workspace_info(
             id: r.id(scope)?,
             custom_name: r.optional_string(MAX_NAME_BYTES, "workspace name")?,
             automatic_name: r.string(MAX_NAME_BYTES, "automatic name")?,
+            pinned: r.bool()?,
         })
     })
 }
@@ -791,6 +795,14 @@ pub fn encode_event(
                 Ok(())
             })
         }
+        HierarchyEvent::WorkspacePinned { workspace, pinned } => {
+            w.tag(22);
+            w.record(|w| {
+                w.id(scope, *workspace)?;
+                w.bool(*pinned);
+                Ok(())
+            })
+        }
         // A variant added to the protocol without a wire form; give it a
         // tag, an encoding, and vectors before any peer can send it.
         _ => Err(EncodeError::Unsupported),
@@ -802,6 +814,7 @@ pub fn encode_event(
 /// # Errors
 /// Returns the first decode failure, or [`DecodeError::UnknownTag`] for a
 /// variant this version does not define.
+#[expect(clippy::too_many_lines, reason = "one short arm per event tag")]
 pub fn decode_event(
     r: &mut Reader<'_>,
     scope: IdScope,
@@ -894,6 +907,10 @@ pub fn decode_event(
             21 => HierarchyEvent::SessionMoved {
                 session: r.id(scope)?,
                 index: r.u32()?,
+            },
+            22 => HierarchyEvent::WorkspacePinned {
+                workspace: r.id(scope)?,
+                pinned: r.bool()?,
             },
             tag => {
                 return Err(DecodeError::UnknownTag {

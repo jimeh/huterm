@@ -95,7 +95,8 @@ impl EmptyState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct EmptyStateModel {
     pub(super) name: String,
-    /// The session has other workspaces to switch to.
+    /// The session has other workspaces to switch to, and no docked
+    /// sidebar lists them.
     pub(super) switch: bool,
     /// The workspace is not the session's only one.
     pub(super) close: bool,
@@ -151,7 +152,9 @@ impl WorkspaceView {
         let siblings = state.session_workspaces(session).unwrap_or_default();
         Some(EmptyStateModel {
             name: state.workspace(workspace)?.display_name().to_owned(),
-            switch: siblings.len() > 1,
+            // A docked sidebar already lists the workspaces beside it.
+            switch: siblings.len() > 1
+                && !self.workspace_chrome_now.get().docked(),
             close: siblings.len() > 1,
         })
     }
@@ -187,6 +190,24 @@ impl WorkspaceView {
             .unwrap_or(Control::NewTab);
         self.empty_state.handle(control).clone().focus(window, cx);
         true
+    }
+
+    /// Moves focus to New Tab when the empty state's focused button is no
+    /// longer drawn, as Switch Workspace… goes once the sidebar docks.
+    pub(super) fn keep_empty_state_focus(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(focused) = self.empty_state.focused(window) else {
+            return;
+        };
+        let drawn = self
+            .empty_state_model(cx)
+            .is_some_and(|model| model.controls().contains(&focused));
+        if !drawn {
+            self.empty_state.new_tab.clone().focus(window, cx);
+        }
     }
 
     /// Runs a `panel_*` command on the empty state when one of its
@@ -302,6 +323,7 @@ impl WorkspaceView {
     pub(super) fn empty_state_element(
         &self,
         bounds: Bounds<Pixels>,
+        background: gpui::Hsla,
         swatch: Swatch,
         window: &Window,
         cx: &mut Context<'_, Self>,
@@ -397,6 +419,9 @@ impl WorkspaceView {
                 .top(bounds.origin.y)
                 .w(bounds.size.width)
                 .h(bounds.size.height)
+                // No terminal view paints the default background here, so
+                // the empty state does, at the window's background opacity.
+                .bg(background)
                 .flex()
                 .items_center()
                 .justify_center()

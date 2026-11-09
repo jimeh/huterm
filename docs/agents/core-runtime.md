@@ -221,6 +221,15 @@ Terminal clears it through `EngineEffect::Progress(None)`, because Ghostty's C
 reset reports no removal. See
 [the notifications and progress plan](../plans/terminal-notifications-progress.md).
 
+Clients that show terminals they do not view, such as the workspace rows'
+status dots, follow `Mux::subscribe_status` and read `Mux::terminal_statuses`
+instead of registering viewers. `Registry::publish_status` signals that feed
+only when a change shows in a summary (exit, a new failure, a bell, progress
+starting or ending, the foreground program), never for titles, directories,
+or command records, and each terminal joins the feed when Mux takes it
+(`insert_terminal`), which signals once. Insert every owned terminal through
+`insert_terminal`, restore included, or the feed never hears from it.
+
 Reconcile only through `Owner::reconcile`, which runs when the registry changed
 and waits while writes are backed up: freed slots would let subscribe-and-drop
 churn queue focus reports without bound. Call it at the top of each turn and
@@ -430,11 +439,11 @@ opens, is removed, or changes workspace or position, and emits
 `PaneLayoutChanged`.
 Session restore (`mux/capture.rs`, unrelated to `restore_tabs`) captures
 and recreates structure, never processes. `Mux::capture_runtime` records
-sessions that hold a tab, and the tabless sessions the caller's `shown`
-set names (the client's saved windows), in order, with unscoped numeric
-IDs, the
-allocator watermark, the session creation ordinal, and each session's
-workspace ordinal, plus up to three
+sessions that hold a tab or a pinned workspace, and the tabless sessions
+the caller's `shown` set names (the client's saved windows), in order,
+with unscoped numeric IDs, the allocator watermark, the session creation
+ordinal, each session's workspace ordinal, and each workspace's pin and
+remembered directory, plus up to three
 directory candidates per shown terminal, read from registry status
 without waiting on its thread: the local effective directory, the root
 shell directory, and the launch directory `TerminalRuntime` keeps,
@@ -524,12 +533,18 @@ and retarget preserve zero-view sessions; an assessed last-window close deletes
 its session. `CloseRequest::EmptiedWindow` closes a window whose last view went
 away without stopping a terminal, resolved under the Mux lock in this order: an
 invalidated attachment fails with `UnknownAttachment`; a workspace that still
-holds tabs in the attachment's session fails with `ViewNotEmpty`; any other
-workspace in that session, with tabs or empty, gives LeaveWorkspace, which
-keeps the attachment and closes the emptied workspace; otherwise another
+holds tabs in the attachment's session fails with `ViewNotEmpty`, and a
+pinned one with `PinnedWorkspace`, so a pinned workspace outlives its last
+tab even as its session's only one; any other workspace in that session,
+with tabs or empty, gives LeaveWorkspace, which keeps the attachment and
+closes the emptied workspace unless it is pinned; otherwise another
 attachment on the session gives Detach, and else Session deletes the empty
 session. No resolution needs consent, and the revision check turns a tab
-opened or a workspace created or closed after assessment into `StaleClose`.
+opened, a workspace created or closed, or a pin changed after assessment
+into `StaleClose`, so `set_workspace_pinned` advances the revision. Every
+path that removes a workspace's last tab (`close_tab`, `move_tab`,
+`remove_tab_record`) calls `remember_directory` before the terminal stops,
+so New Tab in the empty workspace can start there.
 Desktop close uses prepare/check/commit and request generations.
 
 A runtime can stop while Mux still owns its tab: its owner panicked or a fatal

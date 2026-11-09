@@ -469,6 +469,61 @@ fn a_tabless_session_a_window_shows_is_captured_and_restored_empty() {
 }
 
 #[test]
+fn a_pinned_tabless_session_is_captured_and_restored_empty_with_its_directory()
+{
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let pinned = mux.create_workspace(session, Some("notes")).unwrap();
+    let unpinned = mux.create_workspace(session, None).unwrap();
+    let opened = mux
+        .open_test_tab(
+            pinned,
+            &command(
+                "printf '\\033]7;file://localhost/remembered\\007READY'; read value",
+            ),
+        )
+        .unwrap();
+    crate::test_support::wait_until("the reported directory", || {
+        let status = opened.client.status();
+        match status.metadata.directory() {
+            Some(directory) if directory.path() == "/remembered" => Ok(()),
+            other => Err(other.map(|directory| directory.path().to_owned())),
+        }
+    });
+    mux.set_workspace_pinned(pinned, true).unwrap();
+    // The last tab leaves its directory behind for the next new tab.
+    mux.close_tab(pinned, opened.tab.id).unwrap();
+    let remembered = std::path::Path::new("/remembered");
+    assert_eq!(mux.workspace(pinned).unwrap().directory(), Some(remembered));
+    assert_eq!(mux.workspace(unpinned).unwrap().directory(), None);
+
+    // No saved window shows the session; its pin keeps it anyway, with
+    // both of its empty workspaces.
+    let capture = mux.capture_runtime(&HashSet::new());
+    assert_eq!(capture.sessions.len(), 1);
+    let workspaces = &capture.sessions[0].workspaces;
+    assert_eq!(workspaces.len(), 2);
+    assert!(workspaces[0].info.pinned && !workspaces[1].info.pinned);
+    assert_eq!(workspaces[0].directory.as_deref(), Some(remembered));
+    assert_eq!(capture.terminals, []);
+
+    // A restore keeps it empty: the pin asks for no fresh tab.
+    let mut restored = Mux::default();
+    let spawned = spawn_all(&restored, &capture);
+    let report = restored.restore(&capture, spawned).unwrap();
+    assert_eq!(report.empty_sessions, []);
+    let runtime = restored.runtime_id();
+    let workspace = restored
+        .workspace(WorkspaceId::in_runtime(runtime, pinned.get()))
+        .unwrap();
+    assert!(workspace.pinned());
+    assert_eq!(workspace.tabs, []);
+    assert_eq!(workspace.directory(), Some(remembered));
+    restored.shutdown().unwrap();
+    mux.shutdown().unwrap();
+}
+
+#[test]
 fn capture_lists_local_directories_in_preference_order_without_repeats() {
     let mut mux = Mux::default();
     let session = mux.create_session(None).unwrap();

@@ -91,6 +91,19 @@ impl DesktopHarness {
                     .is_some_and(|snapshot| snapshot.geometry_revision > 0)
             })
         });
+        // A frame still owed can lay the window out again; draw it now and
+        // wait for its grid, so no later resize clears a selection.
+        let mut visual = VisualTestContext::from_window(window, &self.cx);
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        self.wait_for("the drawn grid to reach the view", |cx| {
+            terminal(cx, window, tab).is_some_and(|view| {
+                let view = view.read(cx);
+                view.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.size == view.requested_grid
+                })
+            })
+        });
         (window, tab)
     }
 

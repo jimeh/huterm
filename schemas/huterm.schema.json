@@ -1459,6 +1459,7 @@
                 "next_workspace",
                 "previous_workspace",
                 "clear_workspace_name",
+                "toggle_workspace_pin",
                 "close_workspace",
                 "rename_pane",
                 "select_recent_tab",
@@ -4043,6 +4044,57 @@
               "command": {
                 "const": "clear_workspace_name",
                 "description": "Remove a workspace's custom name, restoring its automatic one.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_workspace_pin"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Keep a workspace when its last tab closes, or stop keeping it.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_workspace_pin",
+                "description": "Keep a workspace when its last tab closes, or stop keeping it.",
                 "type": "string"
               },
               "description": {

@@ -84,11 +84,11 @@ impl DesktopHarness {
         });
     }
 
-    fn workspace_exists(&self, workspace: WorkspaceId) -> bool {
+    pub(super) fn workspace_exists(&self, workspace: WorkspaceId) -> bool {
         self.runtime.lock().workspace(workspace).is_some()
     }
 
-    fn workspaces(&self) -> Vec<WorkspaceId> {
+    pub(super) fn workspaces(&self) -> Vec<WorkspaceId> {
         self.runtime
             .lock()
             .session(self.session)
@@ -101,7 +101,7 @@ impl DesktopHarness {
     }
 }
 
-fn workspace_pick(
+pub(super) fn workspace_pick(
     command: huterm_protocol::CommandId,
     workspace: WorkspaceId,
 ) -> CommandInvocation {
@@ -126,7 +126,7 @@ pub(super) fn shown_workspace(
 }
 
 /// The attachment `window`'s record holds.
-fn attachment_of(
+pub(super) fn attachment_of(
     cx: &mut App,
     window: AnyWindowHandle,
 ) -> Option<AttachmentId> {
@@ -157,7 +157,7 @@ fn focused_pane(
 }
 
 /// The empty state `window` shows, if any.
-fn empty_state(
+pub(super) fn empty_state(
     cx: &mut App,
     window: AnyWindowHandle,
 ) -> Option<EmptyStateModel> {
@@ -743,7 +743,7 @@ fn an_emptied_window_on_its_sessions_only_workspace_closes_with_the_session(
 
 /// How a window's last tab goes away.
 #[derive(Clone, Copy)]
-enum LastTabGoes {
+pub(super) enum LastTabGoes {
     Closed,
     ExitCloses,
     LonePaneClosed,
@@ -1794,7 +1794,7 @@ fn selecting_an_empty_workspace_shows_the_empty_state(cx: &mut TestAppContext) {
 }
 
 /// The empty-state button holding focus in `window`, by element id.
-fn empty_state_focus(
+pub(super) fn empty_state_focus(
     harness: &mut DesktopHarness,
     window: AnyWindowHandle,
 ) -> Option<&'static str> {

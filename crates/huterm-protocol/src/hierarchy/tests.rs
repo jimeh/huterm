@@ -32,6 +32,7 @@ fn workspace(value: u64) -> WorkspaceInfo {
         id: workspace_id(value),
         custom_name: None,
         automatic_name: format!("Workspace {value}"),
+        pinned: false,
     }
 }
 
@@ -389,6 +390,25 @@ fn a_session_move_reorders_sessions_and_touches_every_session_list() {
 }
 
 #[test]
+fn a_workspace_pin_touches_its_sessions_chrome_only_when_it_changes() {
+    let mut state = seeded(1);
+    let pin = |pinned| HierarchyEvent::WorkspacePinned {
+        workspace: workspace_id(11),
+        pinned,
+    };
+    let ApplyOutcome::Applied(changed) = apply(&mut state, pin(true)) else {
+        panic!("a pin applies");
+    };
+    assert!(changed.contains_chrome(session_id(1)));
+    assert!(!changed.contains_chrome(session_id(2)));
+    assert!(state.workspace(workspace_id(11)).unwrap().pinned);
+    // Pinning again changes nothing a client draws.
+    assert_eq!(apply(&mut state, pin(true)), touched(false, &[], &[]));
+    apply(&mut state, pin(false));
+    assert!(!state.workspace(workspace_id(11)).unwrap().pinned);
+}
+
+#[test]
 fn stale_and_duplicate_sequences_change_nothing() {
     let mut state = seeded(5);
     let rename = HierarchyEnvelope {
@@ -465,6 +485,10 @@ fn gaps_foreign_streams_and_contradictions_require_resync() {
         HierarchyEvent::SessionMoved {
             session: session_id(1),
             index: 2,
+        },
+        HierarchyEvent::WorkspacePinned {
+            workspace: workspace_id(99),
+            pinned: true,
         },
         HierarchyEvent::WorkspaceCreated {
             session: session_id(9),
@@ -911,7 +935,7 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
     let state = seeded(1);
     // Fixed value, cross-checked against an independent implementation of
     // the documented encoding: the digest must not vary by process.
-    assert_eq!(state.digest(), 0x19d9_e102_069d_102e);
+    assert_eq!(state.digest(), 0x21ba_146d_7e57_9452);
     assert_eq!(seeded(9).digest(), state.digest());
     assert_eq!(HierarchyState::new(STREAM).digest(), FNV_OFFSET);
     assert_eq!(state.digest_for(DigestProfile::Base), state.digest());
@@ -931,6 +955,10 @@ fn digest_is_stable_and_sensitive_to_every_structural_difference() {
         variant(HierarchyEvent::WorkspaceRenamed {
             workspace: workspace_id(10),
             custom_name: Some("Workspace 10".into()),
+        }),
+        variant(HierarchyEvent::WorkspacePinned {
+            workspace: workspace_id(10),
+            pinned: true,
         }),
         variant(HierarchyEvent::PaneRenamed {
             pane: pane_id(120),

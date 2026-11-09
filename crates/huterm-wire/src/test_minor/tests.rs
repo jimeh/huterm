@@ -125,6 +125,7 @@ fn full() -> TestHierarchy {
                     id: WorkspaceId::in_runtime(RUNTIME, u64::MAX),
                     custom_name: Some(name('w')),
                     automatic_name: name('a'),
+                    pinned: false,
                 },
                 tabs,
             )],
@@ -299,7 +300,7 @@ fn a_test_minor_server_converges_with_older_and_newer_clients_through_every_down
     let bytes = w.into_bytes();
     assert!(matches!(
         decode_event(&mut Reader::new(&bytes), scope),
-        Err(DecodeError::UnknownTag { tag: 22, .. })
+        Err(DecodeError::UnknownTag { tag: 23, .. })
     ));
 }
 

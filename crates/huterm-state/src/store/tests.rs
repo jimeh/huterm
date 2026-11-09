@@ -167,8 +167,10 @@ pub(crate) fn capture(
                     id: workspace,
                     custom_name: None,
                     automatic_name: format!("Workspace {}", workspace.get()),
+                    pinned: false,
                 },
                 tabs,
+                directory: None,
             });
         }
         captured.push(SessionCapture {

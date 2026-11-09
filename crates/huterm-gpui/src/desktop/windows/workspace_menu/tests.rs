@@ -8,6 +8,7 @@ fn row(raw: u64, name: &str, automatic: bool, tabs: usize) -> WorkspaceRow {
         name: name.to_owned(),
         automatic,
         tabs,
+        pinned: false,
     }
 }
 
@@ -31,14 +32,23 @@ fn a_row_menu_acts_on_its_own_workspace() {
         [
             "workspace-rename:2 Rename Workspace…",
             "workspace-clear:2 Clear Name",
+            "workspace-pin:2 Pin Workspace",
             "-",
             "workspace-close:2 Close Workspace…",
         ]
     );
-    // An automatic name has nothing to clear; a lone workspace cannot close.
+    // An automatic name has nothing to clear; a lone workspace cannot close
+    // but can be pinned, and a pinned one offers Unpin.
+    let pinned = WorkspaceRow {
+        pinned: true,
+        ..row(1, "Workspace 1", true, 1)
+    };
     assert_eq!(
-        drawn(&row_menu(&row(1, "Workspace 1", true, 1), 1)),
-        ["workspace-rename:1 Rename Workspace…"]
+        drawn(&row_menu(&pinned, 1)),
+        [
+            "workspace-rename:1 Rename Workspace…",
+            "workspace-pin:1 Unpin Workspace",
+        ]
     );
 }
 
@@ -51,6 +61,10 @@ fn picks_round_trip_through_their_ids() {
     assert_eq!(
         parse_pick("workspace-clear:7"),
         Some(WorkspacePick::ClearName(7))
+    );
+    assert_eq!(
+        parse_pick("workspace-pin:7"),
+        Some(WorkspacePick::TogglePin(7))
     );
     assert_eq!(
         parse_pick("workspace-close:7"),
@@ -71,4 +85,9 @@ fn rows_name_their_workspace_and_tab_count() {
         row(1, "dev", false, 1).accessible_name(),
         "Workspace: dev, 1 tab"
     );
+    let pinned = WorkspaceRow {
+        pinned: true,
+        ..row(3, "notes", false, 0)
+    };
+    assert_eq!(pinned.accessible_name(), "Workspace: notes, pinned, 0 tabs");
 }

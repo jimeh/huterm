@@ -119,6 +119,49 @@ fn workspace_counters_round_trip_per_session_and_older_files_load() {
     );
 }
 
+#[test]
+fn a_workspace_pin_and_directory_round_trip_and_older_files_load_unpinned() {
+    let mut capture = rich_capture();
+    let pinned = &mut capture.sessions[0].workspaces[0];
+    pinned.info.pinned = true;
+    pinned.directory = Some(PathBuf::from("/srv/project"));
+    // A directory a restore could not use is left out, as a terminal's is.
+    capture.sessions[1].workspaces[0].directory =
+        Some(PathBuf::from("relative"));
+    let bytes = encode_runtime(&capture, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_runtime(&bytes) else {
+        panic!("the file did not decode");
+    };
+    capture.sessions[1].workspaces[0].directory = None;
+    assert_eq!(file.content, capture);
+    // Only the pinned workspace writes the field.
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert_eq!(text.matches("\"pinned\"").count(), 1, "{text}");
+
+    // A file from before pins has no field and loads every workspace
+    // unpinned, without a directory.
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    for session in json["sessions"].as_array_mut().unwrap() {
+        for workspace in session["workspaces"].as_array_mut().unwrap() {
+            let workspace = workspace.as_object_mut().unwrap();
+            workspace.remove("pinned");
+            workspace.remove("directory");
+        }
+    }
+    let older = serde_json::to_vec(&json).unwrap();
+    let Decoded::Ok(file) = decode_runtime(&older) else {
+        panic!("an older file did not load");
+    };
+    assert!(
+        file.content
+            .sessions
+            .iter()
+            .flat_map(|s| &s.workspaces)
+            .all(|workspace| !workspace.info.pinned
+                && workspace.directory.is_none())
+    );
+}
+
 const DISPLAY: &str = "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b";
 
 #[test]

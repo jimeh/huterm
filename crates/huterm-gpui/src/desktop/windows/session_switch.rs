@@ -822,11 +822,22 @@ impl WorkspaceView {
         if let Some(terminal) = switched.spawned {
             desktop.fresh_terminals.insert(terminal);
         }
+        // Bells the left workspace rang while shown were seen there.
+        desktop.windows.see_shown_bells(
+            self.window,
+            desktop.hierarchy.state(),
+            &desktop.statuses,
+        );
         let memory = desktop.windows.switch_to(
             self.window,
             switched.session,
             switched.workspace,
         );
+        // A session or workspace it sees for the first time counts what
+        // rang before as seen.
+        desktop
+            .windows
+            .follow_bells(desktop.hierarchy.state(), &mut desktop.statuses);
         if let Some(attachment) = attachment {
             desktop.windows.set_attachment(self.window, attachment);
         }

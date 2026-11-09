@@ -1567,3 +1567,104 @@ fn held_emptied_tickets_go_stale_when_a_sibling_appears_or_goes() {
         Err(MuxError::StaleClose)
     ));
 }
+
+#[test]
+fn an_emptied_pinned_workspace_stays_even_as_its_sessions_only_one() {
+    for emptying in [
+        Emptying::TabClosed,
+        Emptying::LonePaneClosed,
+        Emptying::TabMovedAway,
+    ] {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let pinned = mux.create_workspace(session, None).unwrap();
+        let elsewhere = mux.create_session(None).unwrap();
+        let destination = mux.create_workspace(elsewhere, None).unwrap();
+        let tab = open_idle_tabs(&mut mux, pinned, 1).remove(0);
+        mux.set_workspace_pinned(pinned, true).unwrap();
+        let attachment = mux.attach_session(session).unwrap();
+        empty_workspace(&mut mux, emptying, pinned, &tab, destination);
+        // Each way out leaves the tab's directory behind for a new tab.
+        assert!(
+            mux.workspace(pinned).unwrap().directory().is_some(),
+            "{emptying:?}"
+        );
+        let request = CloseRequest::EmptiedWindow {
+            attachment,
+            workspace: pinned,
+        };
+        // The session's only workspace: neither the session nor the
+        // window's attachment ends.
+        let before = mux.structure();
+        assert!(
+            matches!(
+                mux.prepare_close(request.clone()),
+                Err(MuxError::PinnedWorkspace(refused)) if refused == pinned
+            ),
+            "{emptying:?}"
+        );
+        assert_eq!(mux.structure(), before);
+        // Beside a sibling it still stays rather than closing.
+        let sibling = mux.create_workspace(session, None).unwrap();
+        assert!(matches!(
+            mux.prepare_close(request),
+            Err(MuxError::PinnedWorkspace(_))
+        ));
+        // An explicit Close Workspace still closes it.
+        commit_idle(&mut mux, CloseRequest::Workspace(pinned)).unwrap();
+        assert_eq!(mux.session(session).unwrap().workspaces, [sibling]);
+        assert_eq!(mux.attachment_session(attachment).unwrap(), session);
+        mux.shutdown().unwrap();
+    }
+}
+
+#[test]
+fn pinning_or_unpinning_turns_a_held_emptied_close_stale() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let shown = mux.create_workspace(session, None).unwrap();
+    let attachment = mux.attach_session(session).unwrap();
+    let request = CloseRequest::EmptiedWindow {
+        attachment,
+        workspace: shown,
+    };
+    let stale = |mux: &mut Mux, held: &CloseAssessment| {
+        assert!(matches!(
+            mux.validate_close_scope(held),
+            Err(MuxError::StaleClose)
+        ));
+        assert!(matches!(
+            mux.commit_close(held, &held.recheck(), false),
+            Err(MuxError::StaleClose)
+        ));
+    };
+    // A session close held while the user pins the workspace never commits.
+    let held = mux.prepare_close(request.clone()).unwrap().check_jobs();
+    assert_eq!(held.effect(), &CloseEffect::Session(session));
+    mux.set_workspace_pinned(shown, true).unwrap();
+    stale(&mut mux, &held);
+    assert!(matches!(
+        mux.prepare_close(request.clone()),
+        Err(MuxError::PinnedWorkspace(_))
+    ));
+    // So does a leave held beside a sibling: the pinned workspace stays.
+    mux.set_workspace_pinned(shown, false).unwrap();
+    mux.create_workspace(session, None).unwrap();
+    let held = mux.prepare_close(request.clone()).unwrap().check_jobs();
+    assert_eq!(
+        held.effect(),
+        &CloseEffect::LeaveWorkspace {
+            attachment,
+            workspace: shown,
+        }
+    );
+    mux.set_workspace_pinned(shown, true).unwrap();
+    stale(&mut mux, &held);
+    assert!(mux.workspace(shown).is_some());
+    // Setting the same pin again changes nothing a ticket checks.
+    mux.set_workspace_pinned(shown, false).unwrap();
+    let held = mux.prepare_close(request).unwrap().check_jobs();
+    mux.set_workspace_pinned(shown, false).unwrap();
+    assert!(mux.validate_close_scope(&held).is_ok());
+    mux.shutdown().unwrap();
+}
