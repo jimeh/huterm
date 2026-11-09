@@ -411,7 +411,8 @@ covers that.
 A window whose shown workspace holds no tab hides its tab bar and draws,
 in the pane area, the workspace icon, "No tabs in `name`", a primary New
 Tab button with its shortcut hint, Switch Workspace… (opens the workspace
-menu anchored to it; absent with one workspace; in PR A it opens the
+menu anchored to it; absent with one workspace, and from PR C while the
+sidebar is docked; in PR A it opens the
 `select_workspace` palette prompt until PR B adds the workspace menu, see
 [Deviations](#deviations)), and Close Workspace (absent for the session's
 only workspace). Switch Workspace… keeps
@@ -907,6 +908,10 @@ Recorded while implementing PR C:
 - Program notifications from terminals no window views stay unshown: the
   status feed carries status, not host effects, so it closes the bell
   attention gap through the dot but not the notification one.
+- The empty state's Switch Workspace… shows only while the sidebar is not
+  docked (Jim, 2026-11-09): a docked sidebar lists the workspaces beside it,
+  and the button there only moved keyboard focus to the sidebar, which a
+  click did not show. Focus on it moves to New Tab when it goes.
 - The empty state paints the terminal background at the window's background
   opacity: no terminal view draws there, and a translucent window's root
   paints none, so any opacity below 1 showed the desktop through it. Pinned

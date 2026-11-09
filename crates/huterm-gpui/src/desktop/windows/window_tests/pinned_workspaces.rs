@@ -8,7 +8,8 @@
 use super::super::workspace_status::Dot;
 use super::worker_hooks::Stage;
 use super::workspaces::{
-    LastTabGoes, attachment_of, empty_state, shown_workspace, workspace_pick,
+    LastTabGoes, attachment_of, empty_state, empty_state_focus,
+    shown_workspace, workspace_pick,
 };
 use super::*;
 
@@ -689,4 +690,38 @@ fn projected_pin(cx: &mut App, workspace: WorkspaceId) -> Option<bool> {
         .state()
         .workspace(workspace)
         .map(|info| info.pinned)
+}
+
+/// Switch Workspace… shows on the empty state only while the sidebar is
+/// hidden: a docked sidebar lists the workspaces beside it. Focus on the
+/// button moves to New Tab when it goes.
+#[gpui::test]
+fn the_empty_states_switch_button_shows_only_without_a_docked_sidebar(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let (empty, _) = harness.add_workspace(0);
+    harness.activate_window(window);
+    harness.show_workspace(window, empty, &[]);
+    harness.wait_for("the switch button", |cx| {
+        empty_state(cx, window).is_some_and(|model| model.switch)
+    });
+    harness.update_view(window, |view, window, cx| {
+        view.empty_state_handles().1.clone().focus(window, cx);
+    });
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_for("the docked sidebar to drop the button", |cx| {
+        empty_state(cx, window)
+            .is_some_and(|model| !model.switch && model.close)
+    });
+    assert_eq!(
+        empty_state_focus(&mut harness, window),
+        Some("empty-new-tab")
+    );
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.wait_for("the hidden sidebar to bring it back", |cx| {
+        empty_state(cx, window).is_some_and(|model| model.switch)
+    });
 }

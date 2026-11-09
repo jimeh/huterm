@@ -15299,6 +15299,7 @@ impl Render for WorkspaceView {
             window,
             cx,
         ));
+        self.keep_empty_state_focus(window, cx);
         root = root.children(self.empty_state_element(
             layout.terminal,
             colors.terminal,

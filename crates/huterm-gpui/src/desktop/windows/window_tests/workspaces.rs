@@ -1794,7 +1794,7 @@ fn selecting_an_empty_workspace_shows_the_empty_state(cx: &mut TestAppContext) {
 }
 
 /// The empty-state button holding focus in `window`, by element id.
-fn empty_state_focus(
+pub(super) fn empty_state_focus(
     harness: &mut DesktopHarness,
     window: AnyWindowHandle,
 ) -> Option<&'static str> {
