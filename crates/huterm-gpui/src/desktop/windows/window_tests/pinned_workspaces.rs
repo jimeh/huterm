@@ -1,7 +1,7 @@
 //! Tier 2 tests for #27 PR C: pinned workspaces, which stay and show the
 //! empty state when their last tab goes, the directory a workspace's last
 //! tab leaves for its next new tab, and the workspace rows' status dots
-//! with per-window bell baselines. Interleavings W45 to W56 of
+//! with per-window bell baselines. Interleavings W45 to W57 of
 //! `docs/plans/workspace-panels.md`. Ordering comes from worker hooks and
 //! sequence waits, never sleeps.
 
@@ -477,6 +477,43 @@ fn a_hidden_workspaces_bell_marks_its_row_until_the_window_shows_it(
     harness.show_workspace(one, bells, &[rung]);
     harness.show_workspace(one, harness.workspace, &[tab]);
     harness.wait_for_dot(one, bells, None);
+}
+
+/// W57: a window that opens on a session the desktop already read counts
+/// the bells rung before it opened as seen, and the next one as unseen,
+/// though no hierarchy batch follows its opening.
+#[gpui::test]
+fn a_window_opened_between_reads_marks_the_next_bell(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let one = harness.attach_showing(&[tab]);
+    let (bells, rung) = harness.add_workspace_running(BELLS, 1);
+    let rung = rung[0];
+    // Another client rings once, before the second window opens.
+    let viewer = harness.send_line(rung, "a");
+    let terminal = harness.cx.update(|cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .tab(rung)
+            .unwrap()
+            .layout
+            .first_pane()
+            .terminal_id
+    });
+    harness.wait_for("the desktop to read the bell", |cx| {
+        cx.global::<Desktop>()
+            .statuses
+            .get(terminal)
+            .is_some_and(|status| status.bells == 1)
+    });
+    harness.wait_for_dot(one, bells, Some(Dot::Bell));
+    let two = harness.attach_showing(&[tab]);
+    assert_eq!(harness.dot(two, bells), None, "rung before it opened");
+    viewer
+        .send_input(huterm_protocol::TerminalInput::Text("b\r".into()))
+        .unwrap();
+    harness.wait_for_dot(two, bells, Some(Dot::Bell));
 }
 
 /// W54: a shell that exits in a workspace no window shows marks its row,

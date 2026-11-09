@@ -151,73 +151,111 @@ fn a_workspace_rolls_up_to_its_most_urgent_tab_and_names_tabs_by_state() {
     );
 }
 
+/// Follows `windows`, each with the session and workspace it shows, as one
+/// baseline pass does.
+fn pass(
+    state: &HierarchyState,
+    statuses: &mut Statuses,
+    windows: &mut [(&mut BellBaselines, SessionId, u64)],
+) {
+    for (bells, session, shown) in windows.iter_mut() {
+        bells.follow(state, Some(*session), Some(workspace(*shown)), statuses);
+    }
+    statuses.note_followed(state);
+}
+
+fn rung(bells: u64) -> TerminalStatus {
+    TerminalStatus { bells, ..idle() }
+}
+
+fn dot(
+    state: &HierarchyState,
+    bells: &BellBaselines,
+    statuses: &Statuses,
+    value: u64,
+) -> Option<Dot> {
+    workspace_status(state, workspace(value), statuses, Some(bells))
+        .map(|status| status.dot)
+}
+
 #[test]
 fn a_bell_marks_a_workspace_until_the_window_shows_it() {
     let state = state(true);
     let mut statuses = Statuses::default();
-    let rung = |bells| TerminalStatus { bells, ..idle() };
     let mut window = BellBaselines::default();
     let mut other = BellBaselines::default();
-    let follow = |bells: &mut BellBaselines, statuses: &Statuses, shown| {
-        bells.follow(&state, Some(session()), Some(workspace(shown)), statuses);
-    };
-    let dot = |bells: &BellBaselines, statuses: &Statuses, value| {
-        workspace_status(&state, workspace(value), statuses, Some(bells))
-            .map(|status| status.dot)
-    };
     // Bells rung before the desktop first looked count as seen.
     assert!(statuses.apply(read(1, &[(120, rung(0)), (122, rung(2))])));
-    follow(&mut window, &statuses, 10);
-    follow(&mut other, &statuses, 11);
-    assert_eq!(dot(&window, &statuses, 11), None);
+    pass(
+        &state,
+        &mut statuses,
+        &mut [(&mut window, session(), 10), (&mut other, session(), 11)],
+    );
+    assert_eq!(dot(&state, &window, &statuses, 11), None);
 
     // A later bell marks the workspace a window does not show, and only in
     // that window.
     assert!(statuses.apply(read(2, &[(120, rung(1)), (122, rung(2))])));
-    follow(&mut window, &statuses, 10);
-    follow(&mut other, &statuses, 11);
-    assert_eq!(dot(&other, &statuses, 10), Some(Dot::Bell));
-    assert_eq!(dot(&window, &statuses, 10), None, "the shown workspace");
+    pass(
+        &state,
+        &mut statuses,
+        &mut [(&mut window, session(), 10), (&mut other, session(), 11)],
+    );
+    assert_eq!(dot(&state, &other, &statuses, 10), Some(Dot::Bell));
+    assert_eq!(dot(&state, &window, &statuses, 10), None, "the shown one");
 
     // Showing it sees the bell; leaving keeps it seen.
     other.see(&state, workspace(11), &statuses);
-    follow(&mut other, &statuses, 10);
-    follow(&mut other, &statuses, 11);
-    assert_eq!(dot(&other, &statuses, 10), None);
+    pass(&state, &mut statuses, &mut [(&mut other, session(), 10)]);
+    pass(&state, &mut statuses, &mut [(&mut other, session(), 11)]);
+    assert_eq!(dot(&state, &other, &statuses, 10), None);
 
     // A terminal that went drops its count.
     assert!(statuses.apply(read(3, &[(122, rung(2))])));
-    follow(&mut other, &statuses, 11);
+    pass(&state, &mut statuses, &mut [(&mut other, session(), 11)]);
     assert!(!other.seen.contains_key(&terminal(120)));
 }
 
 #[test]
 fn a_bell_rung_before_the_projection_lists_its_terminal_still_counts() {
     let mut statuses = Statuses::default();
-    let rung = |bells| TerminalStatus { bells, ..idle() };
     let mut window = BellBaselines::default();
     // Workspace 11's tab is not projected yet when its new terminal, 122,
     // rings and the status read lists it.
     let lagging = state(false);
     assert!(statuses.apply(read(1, &[(120, rung(0))])));
-    window.follow(&lagging, Some(session()), Some(workspace(10)), &statuses);
+    pass(&lagging, &mut statuses, &mut [(&mut window, session(), 10)]);
     assert!(statuses.apply(read(2, &[(120, rung(0)), (122, rung(1))])));
-    window.follow(&lagging, Some(session()), Some(workspace(10)), &statuses);
+    pass(&lagging, &mut statuses, &mut [(&mut window, session(), 10)]);
     // The projection catches up with no further read.
     let state = state(true);
-    window.follow(&state, Some(session()), Some(workspace(10)), &statuses);
-    assert_eq!(
-        workspace_status(&state, workspace(11), &statuses, Some(&window))
-            .map(|status| status.dot),
-        Some(Dot::Bell)
-    );
+    pass(&state, &mut statuses, &mut [(&mut window, session(), 10)]);
+    assert_eq!(dot(&state, &window, &statuses, 11), Some(Dot::Bell));
     // A window that starts following later sees the bell as already rung.
     let mut later = BellBaselines::default();
-    later.follow(&state, Some(session()), Some(workspace(10)), &statuses);
-    assert_eq!(
-        workspace_status(&state, workspace(11), &statuses, Some(&later)),
-        None
-    );
+    pass(&state, &mut statuses, &mut [(&mut later, session(), 10)]);
+    assert_eq!(dot(&state, &later, &statuses, 11), None);
+}
+
+#[test]
+fn a_window_first_seeing_a_terminal_counts_its_earlier_bells_as_seen() {
+    // Terminal 122 starts after the window began following, in a session
+    // the window does not show, and rings twice there.
+    let mut statuses = Statuses::default();
+    let mut window = BellBaselines::default();
+    let elsewhere = SessionId::in_runtime(RUNTIME, 2);
+    let state = state(true);
+    assert!(statuses.apply(read(1, &[(120, rung(0))])));
+    pass(&state, &mut statuses, &mut [(&mut window, elsewhere, 99)]);
+    assert!(statuses.apply(read(2, &[(120, rung(0)), (122, rung(2))])));
+    pass(&state, &mut statuses, &mut [(&mut window, elsewhere, 99)]);
+    // The window switches to that session: what rang before is seen.
+    pass(&state, &mut statuses, &mut [(&mut window, session(), 10)]);
+    assert_eq!(dot(&state, &window, &statuses, 11), None);
+    // The next bell is not.
+    assert!(statuses.apply(read(3, &[(120, rung(0)), (122, rung(3))])));
+    pass(&state, &mut statuses, &mut [(&mut window, session(), 10)]);
+    assert_eq!(dot(&state, &window, &statuses, 11), Some(Dot::Bell));
 }
 
 #[test]

@@ -1991,8 +1991,11 @@ land before, by ID, on a worker. Workspace rows draw a pin mark and a status
 dot (`workspace_status.rs`). One application task (`start_status_feed`)
 follows core's viewer-free status feed, reading on a worker one read at a
 time into `Desktop::statuses`, and moves every window record's
-`BellBaselines` after each read and each hierarchy batch, since a terminal
-can ring before the projection lists it; `install_session` marks the left
+`BellBaselines` after each read, each hierarchy batch, and a window's
+attach and switch, since a terminal can ring before the projection lists
+it and a window can open between reads; `Statuses::note_followed` records
+which terminals a pass already saw, so only a terminal the projection lists
+for the first time counts its earlier bells; `install_session` marks the left
 workspace's bells seen before `switch_to`, so a bell seen while shown never
 marks the row after the window leaves. Rows read the dot at render from
 the projection, the statuses, and the record, and the shown workspace's row

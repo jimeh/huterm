@@ -920,7 +920,7 @@ impl WindowModel {
     pub(super) fn follow_bells(
         &mut self,
         state: &HierarchyState,
-        statuses: &super::workspace_status::Statuses,
+        statuses: &mut super::workspace_status::Statuses,
     ) {
         for record in &mut self.records {
             record.bells.follow(
@@ -930,6 +930,7 @@ impl WindowModel {
                 statuses,
             );
         }
+        statuses.note_followed(state);
     }
 
     /// Marks the bells of the workspace a window shows as seen, before it

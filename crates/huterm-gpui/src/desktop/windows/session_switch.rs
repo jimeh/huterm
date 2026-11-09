@@ -833,6 +833,11 @@ impl WorkspaceView {
             switched.session,
             switched.workspace,
         );
+        // A session or workspace it sees for the first time counts what
+        // rang before as seen.
+        desktop
+            .windows
+            .follow_bells(desktop.hierarchy.state(), &mut desktop.statuses);
         if let Some(attachment) = attachment {
             desktop.windows.set_attachment(self.window, attachment);
         }

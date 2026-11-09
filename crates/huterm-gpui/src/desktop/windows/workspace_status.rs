@@ -7,7 +7,7 @@
 //! window until that window shows it, and two windows can differ. Rows of
 //! the shown workspace show no bell: its tabs already do.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use huterm_core::TerminalStatuses;
@@ -21,15 +21,17 @@ use huterm_protocol::{
 pub(super) struct Statuses {
     /// The feed revision of the read applied last.
     revision: Option<u64>,
-    /// Counts the reads applied, so a window can tell which terminals came
-    /// after it started following.
-    reads: u64,
     terminals: HashMap<TerminalId, Arc<TerminalStatus>>,
-    /// For each terminal, the read that first listed it and the bells
-    /// counted as seen then: all of them in the first read, which lists the
-    /// terminals that ran before the desktop looked, else none, since the
-    /// terminal started after the previous read.
-    introduced: HashMap<TerminalId, (u64, u64)>,
+    /// For each terminal, the bells counted as seen when a read first
+    /// listed it: all of them in the first read, which lists the terminals
+    /// that ran before the desktop looked, else none, since the terminal
+    /// started after the previous read.
+    introduced: HashMap<TerminalId, u64>,
+    /// Terminals a baseline pass already found in the projection with a
+    /// status. A window seeing one of them for the first time counts its
+    /// bells so far as seen; only a terminal the projection lists for the
+    /// first time, possibly after it rang, takes its introduced count.
+    followed: HashSet<TerminalId>,
 }
 
 impl Statuses {
@@ -41,17 +43,35 @@ impl Statuses {
         }
         let first = self.revision.is_none();
         self.revision = Some(read.revision);
-        self.reads += 1;
         self.terminals = read.statuses.into_iter().collect();
-        let reads = self.reads;
         self.introduced
             .retain(|terminal, _| self.terminals.contains_key(terminal));
+        self.followed
+            .retain(|terminal| self.terminals.contains_key(terminal));
         for (terminal, status) in &self.terminals {
-            self.introduced.entry(*terminal).or_insert_with(|| {
-                (reads, if first { status.bells } else { 0 })
+            self.introduced.entry(*terminal).or_insert(if first {
+                status.bells
+            } else {
+                0
             });
         }
         true
+    }
+
+    /// Records the terminals the projection lists with a status, after
+    /// every window followed them.
+    pub(super) fn note_followed(&mut self, state: &HierarchyState) {
+        for &session in state.sessions() {
+            for &workspace in
+                state.session_workspaces(session).unwrap_or_default()
+            {
+                for terminal in workspace_terminals(state, workspace) {
+                    if self.terminals.contains_key(&terminal) {
+                        self.followed.insert(terminal);
+                    }
+                }
+            }
+        }
     }
 
     pub(super) fn get(&self, terminal: TerminalId) -> Option<&TerminalStatus> {
@@ -82,18 +102,17 @@ impl Statuses {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct BellBaselines {
     seen: HashMap<TerminalId, u64>,
-    /// The read the window first followed.
-    since: Option<u64>,
 }
 
 impl BellBaselines {
     /// Follows the statuses and the projection for a window showing `shown`
     /// of `session`, after a read or a hierarchy change: the shown
     /// workspace's terminals are seen now. Another workspace's terminal the
-    /// window has no count for takes the count seen when it started, if it
-    /// started after the window began following, so a bell it rang before
-    /// the projection listed it still counts; else its current count, as a
-    /// first sight. Terminals that went are dropped.
+    /// window has no count for takes its current count, as a first sight,
+    /// unless the projection lists it for the first time: then the count
+    /// seen when it started, so a bell it rang before the projection listed
+    /// it still counts. Terminals that went are dropped. Call
+    /// [`Statuses::note_followed`] after following every window.
     pub(super) fn follow(
         &mut self,
         state: &HierarchyState,
@@ -101,10 +120,6 @@ impl BellBaselines {
         shown: Option<WorkspaceId>,
         statuses: &Statuses,
     ) {
-        if statuses.reads == 0 {
-            return;
-        }
-        let since = *self.since.get_or_insert(statuses.reads);
         self.seen
             .retain(|terminal, _| statuses.get(*terminal).is_some());
         let workspaces = session
@@ -119,11 +134,12 @@ impl BellBaselines {
                     self.seen.insert(terminal, status.bells);
                     continue;
                 }
+                let first_listed = !statuses.followed.contains(&terminal);
                 let introduced = statuses
                     .introduced
                     .get(&terminal)
-                    .filter(|(read, _)| *read > since)
-                    .map(|(_, bells)| *bells);
+                    .copied()
+                    .filter(|_| first_listed);
                 self.seen
                     .entry(terminal)
                     .or_insert(introduced.unwrap_or(status.bells));

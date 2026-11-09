@@ -2013,6 +2013,16 @@ fn start_status_feed(cx: &mut App) {
     .detach();
 }
 
+/// Moves every window's bell baselines to the statuses already read, as a
+/// window attaches or switches, so a bell rung before the next read still
+/// counts.
+fn follow_bells(cx: &mut App) {
+    let desktop = cx.global_mut::<Desktop>();
+    desktop
+        .windows
+        .follow_bells(desktop.hierarchy.state(), &mut desktop.statuses);
+}
+
 /// Applies a status read: every window follows it with its bell
 /// baselines, and windows on a session whose terminals changed redraw
 /// their workspace rows, when they draw any: a shown sidebar, the
@@ -2043,7 +2053,7 @@ fn apply_statuses(cx: &mut App, read: huterm_core::TerminalStatuses) {
                 .any(|pane| statuses.changed_since(&before, pane.terminal_id))
         })
         .collect();
-    desktop.windows.follow_bells(state, statuses);
+    desktop.windows.follow_bells(state, &mut desktop.statuses);
     let windows: Vec<gpui::WindowId> = desktop
         .windows
         .records()
@@ -2167,7 +2177,7 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     let pruned = desktop.windows.prune_layout_histories(state);
     desktop.windows.prune_sessions(state);
     // A terminal the projection lists only now may have rung already.
-    desktop.windows.follow_bells(state, &desktop.statuses);
+    desktop.windows.follow_bells(state, &mut desktop.statuses);
     // A Quake stash whose session closed before its first summon goes; the
     // summon opens a fresh profile session instead. One whose workspace
     // went shows another of its session.
@@ -6057,6 +6067,7 @@ impl WorkspaceView {
             session,
             workspace,
         );
+        follow_bells(cx);
         if self
             .reconcile(&Touched::everything(), terminating(cx), cx)
             .changed
@@ -9574,6 +9585,7 @@ impl WorkspaceView {
             session,
             id,
         );
+        follow_bells(cx);
         let tab_id = opened.tab.id;
         // A viewer revoked already leaves the tab without a view, which
         // reconcile installs again if the window still shows its workspace.
