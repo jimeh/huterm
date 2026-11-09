@@ -247,16 +247,19 @@ fn a_workspace_closed_after_its_pinned_refusal_still_moves_its_window(
     assert_eq!(harness.close_failures(), 0);
 }
 
-/// W56: as W55, but the session closes instead; the window goes with it.
-#[gpui::test]
-fn a_session_closed_after_its_pinned_refusal_closes_its_window(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
+/// W56: as W55, but the session closes instead: the session-gone path
+/// applies the last-window rule. Returns the unviewed session that keeps
+/// the application, or on Linux the Quit, going.
+fn close_the_session_after_a_pinned_refusal(
+    harness: &mut DesktopHarness,
+    platform: Platform,
+) -> (AnyWindowHandle, SessionId) {
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    // Keep the application running once the window goes.
-    let _unviewed = harness.unviewed_session();
+    harness.update_view(window, |view, _, _| {
+        view.test_platform = Some(platform);
+    });
+    let unviewed = harness.unviewed_session();
     harness.pin(harness.workspace, true);
     harness.wait_projection();
     let runtime = Arc::clone(&harness.runtime);
@@ -268,7 +271,31 @@ fn a_session_closed_after_its_pinned_refusal_closes_its_window(
     runtime.lock().close_session(harness.session).unwrap();
     harness.wait_projection();
     runtime.worker_hooks.release(Stage::Assessed);
+    (window, unviewed)
+}
+
+#[gpui::test]
+fn a_session_closed_after_its_pinned_refusal_closes_its_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, _) =
+        close_the_session_after_a_pinned_refusal(&mut harness, Platform::MacOs);
     harness.wait_closed(window);
+    harness.cx.update(|cx| assert!(!quitting(cx)));
+}
+
+/// On Linux the last window quits rather than strand the unviewed
+/// session.
+#[gpui::test]
+fn a_session_closed_after_its_pinned_refusal_on_linux_quits(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (_, unviewed) =
+        close_the_session_after_a_pinned_refusal(&mut harness, Platform::Linux);
+    harness.wait_quit(unviewed);
+    assert_eq!(harness.close_failures(), 0);
 }
 
 /// W48: unpinning the empty workspace a window shows closes nothing; it
