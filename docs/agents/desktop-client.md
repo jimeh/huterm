@@ -621,7 +621,8 @@ workspace, unless its workspace is pinned, since core refuses that close.
 A refused emptied close is not owed: the runtime kept the
 window, which stays saved while its tabs install. Both runtime captures
 keep a tabless session only when the layout's windows or stashes show it
-(`shown_sessions`), so Quit and checkpoints never save a session a close
+(`shown_sessions`) or it holds a pinned workspace, so Quit and checkpoints
+never save a session a close
 already ended, while a window settled on an empty workspace keeps its
 session.
 A reload (`quake_windows::reconcile`, through
@@ -1990,10 +1991,14 @@ land before, by ID, on a worker. Workspace rows draw a pin mark and a status
 dot (`workspace_status.rs`). One application task (`start_status_feed`)
 follows core's viewer-free status feed, reading on a worker one read at a
 time into `Desktop::statuses`, and moves every window record's
-`BellBaselines`; `install_session` marks the left workspace's bells seen
-before `switch_to`, so a bell seen while shown never marks the row after the
-window leaves. Rows read the dot at render from the projection, the
-statuses, and the record, and the shown workspace's row never shows a bell.
+`BellBaselines` after each read and each hierarchy batch, since a terminal
+can ring before the projection lists it; `install_session` marks the left
+workspace's bells seen before `switch_to`, so a bell seen while shown never
+marks the row after the window leaves. Rows read the dot at render from
+the projection, the statuses, and the record, and the shown workspace's row
+never shows a bell.
+A pinned refusal of an emptied close waits for the projection, as a
+`ViewNotEmpty` one does, and owes the close again when the workspace went.
 Row menus (`MenuKind::WorkspaceRow`,
 `MenuKind::SessionRow`) are ordinary menus and may open natively. A sidebar
 change relays out every terminal as a window resize does, so a selection

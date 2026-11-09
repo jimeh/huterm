@@ -1164,6 +1164,49 @@ fn a_session_whose_panes_and_fresh_tab_all_fail_is_closed_with_a_warning(
     });
 }
 
+/// A session whose only workspace is pinned and empty comes back empty:
+/// the restore starts no fresh tab, and its window shows the empty state
+/// without owing an emptied close (W50).
+#[gpui::test]
+fn an_empty_pinned_session_comes_back_on_its_empty_state(
+    cx: &mut TestAppContext,
+) {
+    let scratch = Scratch::new();
+    let mut saved = capture(&scratch);
+    let pinned = &mut saved.sessions[1].workspaces[0];
+    pinned.info.pinned = true;
+    pinned.tabs.clear();
+    saved.terminals.retain(|terminal| terminal.id.get() != 16);
+    // A second saved window showed it.
+    let mut layout = layout();
+    let mut second = layout.windows[0].clone();
+    second.session = SessionId::new(12);
+    second.workspace = WorkspaceId::new(13);
+    second.active_tab = None;
+    second.tab_history = Vec::new();
+    second.focused_panes = Vec::new();
+    layout.windows.push(second);
+    let mut harness =
+        DesktopHarness::restoring(cx, |_| {}, saved, Some(layout), ECHO);
+    harness.wait_settled();
+    let runtime = harness.runtime_id();
+    let session = SessionId::in_runtime(runtime, 12);
+    let workspace = WorkspaceId::in_runtime(runtime, 13);
+    let window = harness.window_of(session);
+    harness.wait_for("the empty state", |cx| {
+        super::workspaces::empty_state(cx, window).is_some()
+    });
+    {
+        let mux = harness.runtime.lock();
+        let restored = mux.workspace(workspace).unwrap();
+        assert!(restored.pinned());
+        assert_eq!(restored.tabs, []);
+    }
+    harness.update_view(window, |view, _, _| {
+        assert_eq!(view.close.emptied, EmptiedClose::None);
+    });
+}
+
 /// [`layout`] with a second window on session 1, which last showed tab 9
 /// and is the one to activate.
 fn shared_layout() -> huterm_state::DesktopLayout {

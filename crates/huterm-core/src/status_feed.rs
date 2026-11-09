@@ -79,7 +79,8 @@ pub struct StatusSubscription {
 }
 
 impl StatusSubscription {
-    /// Waits for the next change. Returns false once the Mux is gone.
+    /// Waits for the next change. Returns false only once the feed is
+    /// gone: the Mux and every terminal it owned dropped.
     pub async fn changed(&self) -> bool {
         self.wake.recv().await.is_ok()
     }

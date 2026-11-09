@@ -19,30 +19,39 @@ use huterm_protocol::{
 /// The latest statuses read from the feed.
 #[derive(Debug, Default)]
 pub(super) struct Statuses {
-    /// The revision of the read applied last.
+    /// The feed revision of the read applied last.
     revision: Option<u64>,
+    /// Counts the reads applied, so a window can tell which terminals came
+    /// after it started following.
+    reads: u64,
     terminals: HashMap<TerminalId, Arc<TerminalStatus>>,
+    /// For each terminal, the read that first listed it and the bells
+    /// counted as seen then: all of them in the first read, which lists the
+    /// terminals that ran before the desktop looked, else none, since the
+    /// terminal started after the previous read.
+    introduced: HashMap<TerminalId, (u64, u64)>,
 }
 
 impl Statuses {
-    /// Applies `read` unless one at least as new already applied, and
-    /// returns the bell counts the previous read held, for baselines. A
-    /// read from before one already applied changes nothing.
-    pub(super) fn apply(
-        &mut self,
-        read: TerminalStatuses,
-    ) -> Option<HashMap<TerminalId, u64>> {
+    /// Applies `read` unless one newer already applied, and returns whether
+    /// it did.
+    pub(super) fn apply(&mut self, read: TerminalStatuses) -> bool {
         if self.revision.is_some_and(|applied| read.revision < applied) {
-            return None;
+            return false;
         }
+        let first = self.revision.is_none();
         self.revision = Some(read.revision);
-        let previous = self
-            .terminals
-            .iter()
-            .map(|(id, status)| (*id, status.bells))
-            .collect();
+        self.reads += 1;
         self.terminals = read.statuses.into_iter().collect();
-        Some(previous)
+        let reads = self.reads;
+        self.introduced
+            .retain(|terminal, _| self.terminals.contains_key(terminal));
+        for (terminal, status) in &self.terminals {
+            self.introduced.entry(*terminal).or_insert_with(|| {
+                (reads, if first { status.bells } else { 0 })
+            });
+        }
+        true
     }
 
     pub(super) fn get(&self, terminal: TerminalId) -> Option<&TerminalStatus> {
@@ -69,25 +78,34 @@ impl Statuses {
 }
 
 /// A window's bell count per terminal: the count when it last showed the
-/// terminal's workspace, or when the desktop first saw the terminal.
+/// terminal's workspace, or when it first saw the terminal.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct BellBaselines(HashMap<TerminalId, u64>);
+pub(super) struct BellBaselines {
+    seen: HashMap<TerminalId, u64>,
+    /// The read the window first followed.
+    since: Option<u64>,
+}
 
 impl BellBaselines {
-    /// Follows a new read for a window showing `shown` of `session`: the
-    /// shown workspace's terminals are seen now; another workspace's
-    /// terminal seen for the first time takes the count `previous` held
-    /// for it, the count before this read, else zero, since it is new.
-    /// Terminals that went are dropped.
+    /// Follows the statuses and the projection for a window showing `shown`
+    /// of `session`, after a read or a hierarchy change: the shown
+    /// workspace's terminals are seen now. Another workspace's terminal the
+    /// window has no count for takes the count seen when it started, if it
+    /// started after the window began following, so a bell it rang before
+    /// the projection listed it still counts; else its current count, as a
+    /// first sight. Terminals that went are dropped.
     pub(super) fn follow(
         &mut self,
         state: &HierarchyState,
         session: Option<SessionId>,
         shown: Option<WorkspaceId>,
         statuses: &Statuses,
-        previous: &HashMap<TerminalId, u64>,
     ) {
-        self.0
+        if statuses.reads == 0 {
+            return;
+        }
+        let since = *self.since.get_or_insert(statuses.reads);
+        self.seen
             .retain(|terminal, _| statuses.get(*terminal).is_some());
         let workspaces = session
             .and_then(|session| state.session_workspaces(session))
@@ -98,12 +116,17 @@ impl BellBaselines {
                     continue;
                 };
                 if Some(workspace) == shown {
-                    self.0.insert(terminal, status.bells);
-                } else {
-                    self.0.entry(terminal).or_insert_with(|| {
-                        previous.get(&terminal).copied().unwrap_or(0)
-                    });
+                    self.seen.insert(terminal, status.bells);
+                    continue;
                 }
+                let introduced = statuses
+                    .introduced
+                    .get(&terminal)
+                    .filter(|(read, _)| *read > since)
+                    .map(|(_, bells)| *bells);
+                self.seen
+                    .entry(terminal)
+                    .or_insert(introduced.unwrap_or(status.bells));
             }
         }
     }
@@ -118,7 +141,7 @@ impl BellBaselines {
     ) {
         for terminal in workspace_terminals(state, workspace) {
             if let Some(status) = statuses.get(terminal) {
-                self.0.insert(terminal, status.bells);
+                self.seen.insert(terminal, status.bells);
             }
         }
     }
@@ -126,7 +149,7 @@ impl BellBaselines {
     /// Whether `terminal` rang a bell this window has not seen. A terminal
     /// without a baseline yet has none.
     pub(super) fn unseen(&self, terminal: TerminalId, bells: u64) -> bool {
-        self.0.get(&terminal).is_some_and(|seen| bells > *seen)
+        self.seen.get(&terminal).is_some_and(|seen| bells > *seen)
     }
 }
 

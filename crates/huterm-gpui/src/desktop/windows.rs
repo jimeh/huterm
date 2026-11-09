@@ -127,20 +127,23 @@ fn keeps_minimum(
 }
 
 /// Whether a close decides only once the projection reaches the hierarchy
-/// core assessed it at: a refused emptied close decides from batches up to
-/// that hierarchy, so none that arrived during the assessment is lost, and a
-/// pane close whose pane moved finds the pane's new tab.
+/// core assessed it at: a refused emptied close, whether its workspace held
+/// tabs or is pinned, decides from batches up to that hierarchy, so none
+/// that arrived during the assessment is lost, and a pane close whose pane
+/// moved finds the pane's new tab.
 fn close_waits_for_projection<T>(
     checking: &CloseTarget,
     result: &Result<T, MuxError>,
 ) -> bool {
     matches!(
         (checking, result),
-        (CloseTarget::Emptied, Err(MuxError::ViewNotEmpty(_)))
-            | (
-                CloseTarget::Pane { .. },
-                Err(MuxError::UnknownPane(_) | MuxError::UnknownTab(_))
-            )
+        (
+            CloseTarget::Emptied,
+            Err(MuxError::ViewNotEmpty(_) | MuxError::PinnedWorkspace(_))
+        ) | (
+            CloseTarget::Pane { .. },
+            Err(MuxError::UnknownPane(_) | MuxError::UnknownTab(_))
+        )
     )
 }
 
@@ -2018,9 +2021,9 @@ fn start_status_feed(cx: &mut App) {
 fn apply_statuses(cx: &mut App, read: huterm_core::TerminalStatuses) {
     let desktop = cx.global_mut::<Desktop>();
     let before = desktop.statuses.snapshot();
-    let Some(previous) = desktop.statuses.apply(read) else {
+    if !desktop.statuses.apply(read) {
         return;
-    };
+    }
     let state = desktop.hierarchy.state();
     let statuses = &desktop.statuses;
     let changed: HashSet<SessionId> = state
@@ -2040,7 +2043,7 @@ fn apply_statuses(cx: &mut App, read: huterm_core::TerminalStatuses) {
                 .any(|pane| statuses.changed_since(&before, pane.terminal_id))
         })
         .collect();
-    desktop.windows.follow_bells(state, statuses, &previous);
+    desktop.windows.follow_bells(state, statuses);
     let windows: Vec<gpui::WindowId> = desktop
         .windows
         .records()
@@ -2163,6 +2166,8 @@ fn reconcile(cx: &mut App, touched: &Touched) {
         .retain(|pane| state.pane_tab(pane).is_some());
     let pruned = desktop.windows.prune_layout_histories(state);
     desktop.windows.prune_sessions(state);
+    // A terminal the projection lists only now may have rung already.
+    desktop.windows.follow_bells(state, &desktop.statuses);
     // A Quake stash whose session closed before its first summon goes; the
     // summon opens a fresh profile session instead. One whose workspace
     // went shows another of its session.
@@ -12560,17 +12565,30 @@ impl WorkspaceView {
     }
 
     /// Settles an emptied close the runtime refused because the window's
-    /// workspace is pinned: the workspace stays, and the window shows its
-    /// empty state, even for its session's only workspace. Queued closes
-    /// run first.
+    /// workspace is pinned, once the projection reached the hierarchy it was
+    /// refused at: the workspace stays, and the window shows its empty
+    /// state, even for its session's only workspace. A session closed
+    /// meanwhile takes the session-gone path, and a workspace closed or
+    /// moved away meanwhile owes the emptied close again, since the batch
+    /// that removed it found the close already owed. Queued closes run
+    /// first.
     fn emptied_close_pinned(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         self.close.current = None;
-        self.set_emptied(EmptiedClose::None, cx);
-        if !self.resume_close(window, cx) {
+        if self.attached_session_gone(cx) {
+            self.close_gone_emptied(window, cx);
+            return;
+        }
+        let emptied = if self.shown_workspace_gone(cx) {
+            EmptiedClose::Owed
+        } else {
+            EmptiedClose::None
+        };
+        self.set_emptied(emptied, cx);
+        if !self.resume_close(window, cx) && emptied == EmptiedClose::None {
             self.focus_empty_state(window, cx);
         }
         cx.notify();

@@ -1,7 +1,7 @@
 //! Tier 2 tests for #27 PR C: pinned workspaces, which stay and show the
 //! empty state when their last tab goes, the directory a workspace's last
 //! tab leaves for its next new tab, and the workspace rows' status dots
-//! with per-window bell baselines. Interleavings W45 to W54 of
+//! with per-window bell baselines. Interleavings W45 to W56 of
 //! `docs/plans/workspace-panels.md`. Ordering comes from worker hooks and
 //! sequence waits, never sleeps.
 
@@ -220,6 +220,57 @@ fn pinning_while_an_emptied_close_is_held_keeps_the_workspace(
     assert!(other_client.is_ok());
 }
 
+/// W55: core refuses the emptied close as pinned, and another client
+/// closes the workspace before the window handles the refusal; the window
+/// still follows to its sibling.
+#[gpui::test]
+fn a_workspace_closed_after_its_pinned_refusal_still_moves_its_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let (sibling, siblings) = harness.add_workspace(1);
+    harness.pin(harness.workspace, true);
+    harness.wait_projection();
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Assessed);
+    harness.close_tab(tab);
+    harness.wait_for("the pinned refusal", |_| {
+        runtime.worker_hooks.held(Stage::Assessed) == 1
+    });
+    runtime.lock().close_workspace(harness.workspace).unwrap();
+    harness.wait_projection();
+    runtime.worker_hooks.release(Stage::Assessed);
+    harness.wait_workspace(window, sibling, &siblings);
+    assert_eq!(harness.workspaces(), [sibling]);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+/// W56: as W55, but the session closes instead; the window goes with it.
+#[gpui::test]
+fn a_session_closed_after_its_pinned_refusal_closes_its_window(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    // Keep the application running once the window goes.
+    let _unviewed = harness.unviewed_session();
+    harness.pin(harness.workspace, true);
+    harness.wait_projection();
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Assessed);
+    harness.close_tab(tab);
+    harness.wait_for("the pinned refusal", |_| {
+        runtime.worker_hooks.held(Stage::Assessed) == 1
+    });
+    runtime.lock().close_session(harness.session).unwrap();
+    harness.wait_projection();
+    runtime.worker_hooks.release(Stage::Assessed);
+    harness.wait_closed(window);
+}
+
 /// W48: unpinning the empty workspace a window shows closes nothing; it
 /// stays as a selected empty workspace would.
 #[gpui::test]
@@ -428,10 +479,10 @@ fn a_hidden_workspaces_bell_marks_its_row_until_the_window_shows_it(
     harness.wait_for_dot(one, bells, None);
 }
 
-/// W54: a running program in a workspace no window shows marks its row,
-/// whose status names the tab, and the mark goes when the program ends.
+/// W54: a shell that exits in a workspace no window shows marks its row,
+/// whose status names the tab: with no view, nothing closes the tab.
 #[gpui::test]
-fn a_running_program_in_an_unviewed_workspace_marks_its_row(
+fn an_exited_shell_in_an_unviewed_workspace_marks_its_row(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);

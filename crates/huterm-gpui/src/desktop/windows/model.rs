@@ -915,12 +915,12 @@ impl WindowModel {
             .collect()
     }
 
-    /// Moves every window's bell baselines along with a status read.
+    /// Moves every window's bell baselines along with a status read or a
+    /// hierarchy change.
     pub(super) fn follow_bells(
         &mut self,
         state: &HierarchyState,
         statuses: &super::workspace_status::Statuses,
-        previous: &std::collections::HashMap<TerminalId, u64>,
     ) {
         for record in &mut self.records {
             record.bells.follow(
@@ -928,7 +928,6 @@ impl WindowModel {
                 record.session,
                 record.workspace,
                 statuses,
-                previous,
             );
         }
     }

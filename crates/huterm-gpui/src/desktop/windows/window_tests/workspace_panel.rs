@@ -399,6 +399,60 @@ fn a_row_menu_opened_before_the_more_tooltip_keeps_it_hidden(
     });
 }
 
+/// A row with a status dot shows its status text as a tooltip while the
+/// pointer rests on it, and a right press before the tooltip's delay opens
+/// the row's menu with no tooltip over it.
+#[gpui::test]
+fn a_row_menu_opened_before_the_status_tooltip_keeps_it_hidden(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.macos_native_menus = false;
+        config.tabs.always_show = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let (second, exits) = harness.add_workspace_running(EXITS, 1);
+    // No window views the tab, so its exit leaves it, exited, in place.
+    let _viewer = harness.send_line(exits[0], "done");
+    harness.wait_for("the row's status", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx).workspace_row_status(second, cx).is_some()
+                })
+            })
+            .unwrap_or(false)
+    });
+    let switcher = harness.switcher_bounds(window);
+    harness.click_at(window, switcher.center());
+    let row = harness.row_bounds(window, second);
+    let rest = point(row.left() + px(40.0), row.center().y);
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.simulate_mouse_move(rest, None, Modifiers::none());
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("tooltip").is_some(),
+        "the status tooltip"
+    );
+    let away = point(row.left() + px(40.0), row.top() - px(30.0));
+    visual.simulate_mouse_move(away, None, Modifiers::none());
+    visual.run_until_parked();
+    visual.simulate_mouse_move(rest, None, Modifiers::none());
+    visual.simulate_event(MouseDownEvent {
+        button: MouseButton::Right,
+        position: rest,
+        modifiers: Modifiers::none(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    harness.wait_for("the row menu", |cx| open_kind(cx, window).is_some());
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("tooltip").is_none(), "over the menu");
+}
+
 impl DesktopHarness {
     /// Opens the workspace switcher's popover and checks `workspace`'s row
     /// "⋯" button: resting on it shows its tooltip, and a click before the

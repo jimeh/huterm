@@ -141,8 +141,12 @@ pub(super) fn list_row(
         .aria_label(accessible)
         .when_some(description, |row, text| {
             let tooltip = text.clone();
-            row.aria_description(text).tooltip(move |_, cx| {
-                Tooltip::view(tooltip.clone(), swatch, cx)
+            // While the row's menu is open, the tooltip goes, and one still
+            // waiting for its delay never shows over the menu.
+            row.aria_description(text).when(!targeted, |row| {
+                row.tooltip(move |_, cx| {
+                    Tooltip::view(tooltip.clone(), swatch, cx)
+                })
             })
         })
         .aria_selected(selected)
