@@ -909,8 +909,11 @@ Recorded while implementing PR C:
   attention gap through the dot but not the notification one.
 - The row's tooltip is one line, since `huterm-ui`'s tooltip does not wrap,
   and it hides while the row's menu is open.
-- The feed does not wake for titles, so a tooltip can name a tab by a title
-  that changed since the last summarized change, until the next one.
+- The status names each tab as the tab bar labels it (the tab's custom
+  name, else its pane's, else the `[tabs] label`), from the pane whose state
+  set the tab's dot; equally urgent panes name the shared zoom's pane, else
+  the first. The feed does not wake for titles or directories, so a name can
+  lag such a change until the next summarized change.
 - Bell baselines follow every status read, every hierarchy batch, and a
   window's attach and switch. A window seeing a terminal for the first time
   counts its bells so far as seen, unless the projection lists that
