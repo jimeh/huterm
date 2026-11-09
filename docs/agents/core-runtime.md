@@ -425,7 +425,9 @@ opens, is removed, or changes workspace or position, and emits
 `PaneLayoutChanged`.
 Session restore (`mux/capture.rs`, unrelated to `restore_tabs`) captures
 and recreates structure, never processes. `Mux::capture_runtime` records
-sessions that hold a tab, in order, with unscoped numeric IDs, the
+sessions that hold a tab, and the tabless sessions the caller's `shown`
+set names (the client's saved windows), in order, with unscoped numeric
+IDs, the
 allocator watermark, and both creation ordinals, plus up to three
 directory candidates per shown terminal, read from registry status
 without waiting on its thread: the local effective directory, the root
@@ -511,10 +513,12 @@ and retarget preserve zero-view sessions; an assessed last-window close deletes
 its session. `CloseRequest::EmptiedWindow` closes a window whose last view went
 away without stopping a terminal, resolved under the Mux lock in this order: an
 invalidated attachment fails with `UnknownAttachment`; a workspace that still
-holds tabs in the attachment's session fails with `ViewNotEmpty`; another
-attachment on the session, or tabs in its other workspaces, give Detach;
-otherwise Session deletes the empty session. No resolution needs consent, and
-the revision check turns a tab opened after assessment into `StaleClose`.
+holds tabs in the attachment's session fails with `ViewNotEmpty`; any other
+workspace in that session, with tabs or empty, gives LeaveWorkspace, which
+keeps the attachment and closes the emptied workspace; otherwise another
+attachment on the session gives Detach, and else Session deletes the empty
+session. No resolution needs consent, and the revision check turns a tab
+opened or a workspace created or closed after assessment into `StaleClose`.
 Desktop close uses prepare/check/commit and request generations.
 
 A runtime can stop while Mux still owns its tab: its owner panicked or a fatal

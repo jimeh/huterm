@@ -108,6 +108,12 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::RENAME_SESSION,
             ids::CLEAR_SESSION_NAME,
             ids::CLOSE_SESSION,
+            ids::NEW_WORKSPACE,
+            ids::SELECT_WORKSPACE,
+            ids::NEXT_WORKSPACE,
+            ids::PREVIOUS_WORKSPACE,
+            ids::CLEAR_WORKSPACE_NAME,
+            ids::CLOSE_WORKSPACE,
         ],
     ),
     (

@@ -169,7 +169,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `Workspace` | Always, on the window's root. |
 | `confirming` | A close confirmation, the About panel, or a Settings dialog such as Delete profile's is open. |
 | `menu` | The window menu has keyboard focus. |
-| `Panel` | A control in the Window Transparency panel has focus. |
+| `Panel` | A control in the Window Transparency panel, or a button of a window's empty state, has focus. |
 | `notices` | A notice has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
@@ -321,6 +321,11 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `close_session` | Runtime | Optional `session`, defaulting to the window's; the palette asks for it, so it can close a session no window shows. Closes the session and every tab in it, asking first when jobs run. Windows that show it close. When it is the window's own session, the window switches to the session it showed most recently instead, else to the session viewed most recently that no window shows, passing over any it cannot show, else, when one could not be shown, to a new session. It closes when no session remains, or when that new session fails too; on Linux the last window quits instead while sessions no window shows remain. Closing the window's own session is refused while Quit runs, and Quit cancels such a close that has not started committing. No default binding. |
 | `new_session` | Window | Optional `name`, which the palette does not ask for. Creates a session with one tab and switches the window to it; the previous session keeps running. No default binding. |
 | `select_session` | Window | `session`, which the palette prompts for. Switches the window to that session; both sessions keep running, and the window comes back to the tab and pane it last showed there, with its own undo. Two windows can show one session and switch independently. Quake windows can switch and keep their profile. No default binding. |
+| `new_workspace` | Window | Optional `name`, which the palette does not ask for. Creates a workspace with one tab in the window's session and switches the window to it; a shell that fails to start leaves no workspace behind. The session menu lists it. No default binding. |
+| `select_workspace` | Window | `workspace`, which the palette prompts for, listing only the window's session's workspaces by name. Switches the window to that workspace; the others keep running, and the window comes back to the tab, pane, and undo history it last had there. Two windows on one session switch independently. A workspace that closed or moved to another session is refused with "Workspace no longer exists". No default binding. |
+| `next_workspace` / `previous_workspace` | Window | Switches to the next or previous workspace of the window's session, in session order, wrapping. Unavailable with one workspace. No default binding. |
+| `clear_workspace_name` | Runtime | Optional `workspace`, defaulting to the window's. Restores the automatic name; unavailable while the workspace has no custom name. No default binding. |
+| `close_workspace` | Runtime | Optional `workspace`, defaulting to the window's. Closes the workspace and every tab in it, asking first when jobs run; unavailable for a session's only workspace, which Close Session covers. A window showing the workspace moves to the workspace it showed most recently, else the first in session order that holds tabs, else the first, which shows the empty state. Closing the window's own workspace is refused while Quit runs, and Quit cancels such a close that has not started committing. No default binding. |
 | `rename_pane` | Runtime | `name`; `pane` defaults to the active tab's focused pane. |
 | `dialog_confirm` | Window | Bound only while `confirming`. |
 | `dialog_cancel` | Window | Bound only while `confirming`. |

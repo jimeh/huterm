@@ -96,10 +96,17 @@ Client layouts are built from window records; pane layouts and panel placement
 are not part of them yet.
 
 **Navigation memory**:
-Where a window was in each session it showed and left: the workspace, active
-tab, activation history, each tab's focused pane, and its layout history.
-Switching back applies it. It belongs to its window, is saved without the
-layout history, and goes when its session closes.
+Where a window was in each workspace it showed and left: the active tab,
+activation history, each tab's focused pane, and its layout history, most
+recently left first. Switching back to the workspace applies it, and a
+session switch returns to the workspace the window left last there. It
+belongs to its window, is saved without the layout history, and goes when
+its workspace closes or moves to another session.
+
+**Empty state**:
+What a window draws while the workspace it shows holds no tab: the
+workspace's name with New Tab, Switch Workspace…, and Close Workspace.
+_Avoid_: Blank workspace.
 
 **Session control**:
 The control that names a window's session and opens the session menu, which

@@ -40,7 +40,8 @@
 //! Accessibility: a `Menu` of `MenuItem` rows, or with [`Role::ListBox`] a
 //! `ListBox` of selectable `ListBoxOption` rows, named by its label. The
 //! selected row is the active descendant; disabled rows report it, rows
-//! with shortcuts report them, a submenu row reports itself collapsed, and
+//! with shortcuts report them, rows with a detail report it as their
+//! description, a submenu row reports itself collapsed, and
 //! the back row is named "Back from" and the submenu's label. Tags report
 //! `Label` nodes named by their words, and an alternate action's button a
 //! `Button` with its shortcut. Checkable rows
@@ -804,6 +805,11 @@ impl Menu {
                 },
             )
             .aria_label(aria_label)
+            // The visible detail, which the selected row's action button
+            // may cover.
+            .when_some(item.detail.clone(), |row, detail| {
+                row.aria_description(detail)
+            })
             .aria_position_in_set(position)
             .when(kind == ItemKind::Submenu, |row| row.aria_expanded(false))
             .when(self.role == Role::ListBox, |row| {

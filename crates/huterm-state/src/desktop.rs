@@ -43,18 +43,19 @@ pub struct WindowLayout {
     pub quake_profile: Option<String>,
     /// Per-window appearance overrides, if any.
     pub appearance: Option<WindowAppearance>,
-    /// Where the window last was in each other session it showed, so
-    /// switching back returns there.
+    /// Where the window last was in each other workspace it showed, most
+    /// recently left first, so switching back returns there. A session
+    /// appears once per remembered workspace.
     pub remembered: Vec<SessionNavigation>,
 }
 
-/// A window's place in a session it showed and left: the same navigation
-/// a [`WindowLayout`] saves for the session it shows.
+/// A window's place in a workspace it showed and left: the same navigation
+/// a [`WindowLayout`] saves for the workspace it shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionNavigation {
     /// The session.
     pub session: SessionId,
-    /// The workspace the window showed in it.
+    /// The workspace the window showed.
     pub workspace: WorkspaceId,
     /// The active tab.
     pub active_tab: Option<TabId>,
@@ -113,9 +114,9 @@ pub struct WindowAppearance {
 
 impl DesktopLayout {
     /// Checks the bounds and rules a saved layout meets: at most
-    /// [`MAX_WINDOWS`] windows, [`MAX_SESSIONS`] remembered sessions per
+    /// [`MAX_WINDOWS`] windows, [`MAX_SESSIONS`] remembered workspaces per
     /// window, and [`MAX_TABS`] history and focus entries per window and
-    /// per remembered session, nonzero identities, an active window that
+    /// per remembered workspace, nonzero identities, an active window that
     /// exists, finite geometry with a positive size, display UUIDs in
     /// hyphenated form, and non-blank profile names.
     ///
@@ -148,7 +149,7 @@ impl WindowLayout {
         )?;
         if self.remembered.len() > MAX_SESSIONS {
             return Err(InvalidState::new(format!(
-                "a window remembers more than {MAX_SESSIONS} sessions"
+                "a window remembers more than {MAX_SESSIONS} workspaces"
             )));
         }
         self.remembered.iter().try_for_each(|memory| {

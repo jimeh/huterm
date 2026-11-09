@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 40] = [
+const ASSETS: [(&str, &[u8]); 41] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -138,6 +138,10 @@ const ASSETS: [(&str, &[u8]); 40] = [
         "icons/trash-2.svg",
         include_bytes!("../assets/icons/trash-2.svg"),
     ),
+    (
+        "icons/layout-grid.svg",
+        include_bytes!("../assets/icons/layout-grid.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -182,11 +186,13 @@ pub(crate) enum Icon {
     Pencil,
     Eraser,
     Trash,
+    /// A workspace.
+    LayoutGrid,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 39] = [
+    const ALL: [Self; 40] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -226,6 +232,7 @@ impl Icon {
         Self::Pencil,
         Self::Eraser,
         Self::Trash,
+        Self::LayoutGrid,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -269,6 +276,7 @@ impl Icon {
             Self::Pencil => "icons/pencil.svg",
             Self::Eraser => "icons/eraser.svg",
             Self::Trash => "icons/trash-2.svg",
+            Self::LayoutGrid => "icons/layout-grid.svg",
         }
     }
 }

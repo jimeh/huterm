@@ -4,7 +4,7 @@ mod holder_fixture;
 
 use super::{
     AttachmentId, HierarchyEvent, Mux, MuxError, PaneId, RuntimeClient,
-    RuntimeId, SessionId, Tab, TabId, TerminalId, Workspace, WorkspaceId,
+    RuntimeId, SessionId, Tab, TabId, TerminalId, WorkspaceId,
 };
 use crate::JobState;
 use std::time::{Duration, Instant};
@@ -18,6 +18,9 @@ pub enum CloseRequest {
     Window(AttachmentId),
     /// Explicitly terminate a session and invalidate every attachment.
     Session(SessionId),
+    /// Explicitly terminate a workspace and every tab in it. Refused for a
+    /// session's only workspace, which only a session close ends.
+    Workspace(WorkspaceId),
     /// Close a tab in its current workspace.
     Tab {
         /// Expected owning workspace.
@@ -46,7 +49,9 @@ pub enum CloseRequest {
     Application,
     /// Close a window whose last tab view went away without stopping any
     /// terminal. Refused while `workspace` still holds tabs in the
-    /// attachment's session; otherwise detaches, or deletes the session
+    /// attachment's session; leaves the workspace while that session holds
+    /// any other workspace, empty or not, including when `workspace` no
+    /// longer belongs to it; otherwise detaches, or deletes the session
     /// once it holds no terminal and no other attachment.
     EmptiedWindow {
         /// The window's attachment.
@@ -63,6 +68,17 @@ pub enum CloseEffect {
     Detach(AttachmentId),
     /// Terminate this session and invalidate its attachments.
     Session(SessionId),
+    /// Terminate this workspace; its session keeps its other workspaces.
+    Workspace(WorkspaceId),
+    /// Keep the attachment and move its window off `workspace`, closing
+    /// the workspace if it still belongs to the attachment's session and
+    /// holds no tab. Stops no terminal.
+    LeaveWorkspace {
+        /// The window's attachment, which stays.
+        attachment: AttachmentId,
+        /// The workspace the window showed.
+        workspace: WorkspaceId,
+    },
     /// Terminate one tab.
     Tab {
         /// Expected owning workspace.
@@ -152,6 +168,11 @@ impl CloseTicket {
     }
 }
 impl CloseAssessment {
+    /// Returns the exact resolved effect this evidence was gathered for.
+    #[must_use]
+    pub fn effect(&self) -> &CloseEffect {
+        &self.ticket.effect
+    }
     /// Whether any running job or unknown process state needs consent.
     #[must_use]
     pub fn needs_confirmation(&self) -> bool {
@@ -322,6 +343,16 @@ impl Mux {
                 self.select_session(*session)?;
                 CloseEffect::Session(*session)
             }
+            CloseRequest::Workspace(workspace) => {
+                let session = self.select_workspace(*workspace)?.session;
+                let only = self
+                    .session(session)
+                    .is_none_or(|record| record.workspaces.len() < 2);
+                if only {
+                    return Err(MuxError::LastWorkspace(*workspace));
+                }
+                CloseEffect::Workspace(*workspace)
+            }
             CloseRequest::Tab { workspace, tab } => {
                 self.select_workspace_tab(*workspace, *tab)?;
                 CloseEffect::Tab {
@@ -384,7 +415,17 @@ impl Mux {
                 .ok_or(MuxError::UnknownTab(*tab))
         };
         Ok(match effect {
-            CloseEffect::Detach(_) => Vec::new(),
+            CloseEffect::Detach(_) | CloseEffect::LeaveWorkspace { .. } => {
+                Vec::new()
+            }
+            CloseEffect::Workspace(workspace) => self
+                .workspaces
+                .get(workspace)
+                .ok_or(MuxError::UnknownWorkspace(*workspace))?
+                .tabs
+                .iter()
+                .flat_map(Tab::terminals)
+                .collect(),
             CloseEffect::Session(session) => self
                 .workspaces
                 .values()
@@ -466,6 +507,13 @@ impl Mux {
         match &current.ticket.effect {
             CloseEffect::Detach(attachment) => self.detach_session(*attachment),
             CloseEffect::Session(session) => self.close_session(*session),
+            CloseEffect::Workspace(workspace) => {
+                self.close_workspace(*workspace)
+            }
+            CloseEffect::LeaveWorkspace {
+                attachment,
+                workspace,
+            } => self.leave_workspace(*attachment, *workspace),
             CloseEffect::Tab { workspace, tab } => {
                 self.close_tab(*workspace, *tab)
             }
@@ -480,11 +528,16 @@ impl Mux {
             CloseEffect::Application => self.shutdown(),
         }
     }
-    /// Resolves an emptied window's close so that it stops no terminal:
-    /// refused while its workspace still holds tabs in the attachment's
-    /// session; a detach while another attachment holds the session or the
-    /// session keeps terminals in other workspaces; otherwise deletes the
-    /// empty session.
+    /// Resolves an emptied window's close so that it stops no terminal,
+    /// deciding under the lock and scoped to the attachment's session:
+    /// refused while its workspace belongs to that session and holds
+    /// tabs; a [`CloseEffect::LeaveWorkspace`] while the session holds
+    /// another workspace, with or without tabs, including when the
+    /// workspace no longer belongs to the session (closed, or moved to
+    /// another) and the session keeps one; otherwise, when it was the
+    /// session's only workspace, a detach while another attachment holds
+    /// the session, else the deletion of the empty session. So an emptied
+    /// window never ends a session that still holds another workspace.
     fn resolve_emptied_window(
         &self,
         attachment: AttachmentId,
@@ -492,23 +545,47 @@ impl Mux {
     ) -> Result<CloseEffect, MuxError> {
         let session = self.attachment_session(attachment)?;
         self.validate_scope(workspace.runtime())?;
-        let workspaces: Vec<&Workspace> = self
-            .workspaces
-            .values()
-            .filter(|w| w.session_id == session)
-            .collect();
-        if workspaces
-            .iter()
-            .any(|w| w.id == workspace && !w.tabs.is_empty())
-        {
+        let members = || {
+            self.workspaces
+                .values()
+                .filter(move |w| w.session_id == session)
+        };
+        if members().any(|w| w.id == workspace && !w.tabs.is_empty()) {
             return Err(MuxError::ViewNotEmpty(workspace));
+        }
+        // Also true when `workspace` left the session that keeps one.
+        if members().any(|w| w.id != workspace) {
+            return Ok(CloseEffect::LeaveWorkspace {
+                attachment,
+                workspace,
+            });
         }
         let shared =
             self.attachments.values().filter(|s| **s == session).count() > 1;
-        if shared || workspaces.iter().any(|w| !w.tabs.is_empty()) {
+        if shared {
             Ok(CloseEffect::Detach(attachment))
         } else {
             Ok(CloseEffect::Session(session))
+        }
+    }
+    /// Commits [`CloseEffect::LeaveWorkspace`]: closes `workspace` only if
+    /// it still belongs to the attachment's session and holds no tab, and
+    /// leaves a missing or moved-away workspace alone. The attachment
+    /// stays.
+    fn leave_workspace(
+        &mut self,
+        attachment: AttachmentId,
+        workspace: WorkspaceId,
+    ) -> Result<(), MuxError> {
+        let session = self.attachment_session(attachment)?;
+        let empty_member = self
+            .workspaces
+            .get(&workspace)
+            .is_some_and(|w| w.session_id == session && w.tabs.is_empty());
+        if empty_member {
+            self.close_workspace(workspace)
+        } else {
+            Ok(())
         }
     }
     /// Validates that a tab currently belongs to the workspace.
@@ -552,6 +629,24 @@ impl Mux {
         confirmed: bool,
     ) -> Result<(), MuxError> {
         self.validate_close_at(consent, current, confirmed, Instant::now())
+    }
+    /// Checks only that `assessment`'s ticket still matches the current
+    /// structure, without job evidence or consent, so a client can decide
+    /// on the ticket's effect, such as turning an emptied window's close
+    /// into Quit, knowing a commit would not go stale.
+    /// # Errors
+    /// Returns `StaleClose` when the structure changed since assessment.
+    pub fn validate_close_scope(
+        &self,
+        assessment: &CloseAssessment,
+    ) -> Result<(), MuxError> {
+        let ticket = &assessment.ticket;
+        if ticket.runtime == self.runtime_id && ticket.revision == self.revision
+        {
+            Ok(())
+        } else {
+            Err(MuxError::StaleClose)
+        }
     }
     fn validate_close_at(
         &self,

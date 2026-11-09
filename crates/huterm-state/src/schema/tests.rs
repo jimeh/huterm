@@ -159,6 +159,30 @@ fn remembered_sessions_round_trip_and_files_without_them_load() {
 }
 
 #[test]
+fn remembered_workspaces_of_one_session_round_trip_in_order() {
+    let mut layout = remembering();
+    let first = layout.windows[0].remembered[0].clone();
+    let second = SessionNavigation {
+        workspace: WorkspaceId::new(first.workspace.get() + 1000),
+        active_tab: None,
+        tab_history: Vec::new(),
+        focused_panes: Vec::new(),
+        ..first.clone()
+    };
+    // One entry per workspace, so the session appears twice, most recent
+    // first, as an older build's validation already accepts.
+    layout.windows[0].remembered = vec![second, first];
+    let bytes = encode_desktop(&layout, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_desktop(&bytes) else {
+        panic!("the layout did not decode");
+    };
+    assert_eq!(file.content, layout);
+    let remembered = &file.content.windows[0].remembered;
+    assert_eq!(remembered[0].session, remembered[1].session);
+    assert_ne!(remembered[0].workspace, remembered[1].workspace);
+}
+
+#[test]
 fn remembered_sessions_breaking_a_window_rule_are_refused() {
     let valid = remembering();
     let mut breaks: Vec<(DesktopLayout, &str)> = Vec::new();

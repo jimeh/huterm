@@ -722,7 +722,8 @@ fn report_terminal_failure(
 /// `invoke\t<command id>` runs any argument-free catalog command through
 /// the production router, as a binding or menu pick would.
 /// Runs `<id>[\t<name>=<text>…]`, each argument carried as text, except a
-/// session argument, which names a session by its number in this runtime.
+/// session or workspace argument, which names one by its number in this
+/// runtime.
 fn invoke_catalog(
     cx: &mut App,
     handle: gpui::AnyWindowHandle,
@@ -757,6 +758,19 @@ fn invoke_catalog(
                     .find(|session| session.get() == number)
                     .with_context(|| format!("no session {number}"))?;
                 huterm_protocol::CommandValue::Session(session)
+            } else if kind == Some(huterm_protocol::ArgumentKind::Workspace) {
+                let number: u64 = value.parse().context("workspace number")?;
+                let state = cx.global::<Desktop>().hierarchy.state();
+                let workspace = state
+                    .sessions()
+                    .iter()
+                    .flat_map(|session| {
+                        state.session_workspaces(*session).unwrap_or_default()
+                    })
+                    .copied()
+                    .find(|workspace| workspace.get() == number)
+                    .with_context(|| format!("no workspace {number}"))?;
+                huterm_protocol::CommandValue::Workspace(workspace)
             } else {
                 huterm_protocol::CommandValue::Text(value.to_owned())
             };
@@ -858,6 +872,16 @@ fn smoke_notices<'a>(
     output
 }
 
+/// The workspace a smoke window shows, by number, and how many workspaces
+/// its session has.
+fn smoke_workspace(view: &WorkspaceView, cx: &App) -> (String, usize) {
+    let workspace = view.workspace_id(cx).map_or_else(
+        || "none".to_owned(),
+        |workspace| workspace.get().to_string(),
+    );
+    (workspace, view.session_workspaces(cx).len())
+}
+
 fn read_state(cx: &mut App) -> String {
     // Desktop notices new windows raise (diagnostics, then latched
     // failures) as `desktop.notices=<n>` and Debug-quoted
@@ -933,9 +957,10 @@ fn read_state(cx: &mut App) -> String {
             let session = view
                 .attached_session(cx)
                 .map_or_else(|| "none".to_owned(), |session| session.get().to_string());
+            let (workspace, workspaces) = smoke_workspace(view, cx);
             writeln!(
                 output,
-                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.session={session} w{index}.mouse={terminal_mouse} w{index}.snapshots={builds},{reuses} w{index}.clipboard_writes={clipboard_writes} {} w{index}.text={:?}",
+                "w{index}.palette={} w{index}.palette_focused={palette_focused} w{index}.terminal_focused={terminal_focused} w{index}.active={} w{index}.tabs={} w{index}.active_index={active_index} w{index}.busy={} w{index}.session={session} w{index}.workspace={workspace} w{index}.workspaces={workspaces} w{index}.mouse={terminal_mouse} w{index}.snapshots={builds},{reuses} w{index}.clipboard_writes={clipboard_writes} {} w{index}.text={:?}",
                 palette.is_some(),
                 window.is_window_active(),
                 view.tabs.len(),

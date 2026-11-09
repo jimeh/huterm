@@ -23,7 +23,7 @@
 //! closed) and moves a window off a session Close Session closes, or off
 //! the emptied session of a last window whose Quit was cancelled.
 
-use super::model::SessionMemory;
+use super::model::NavigationMemory;
 use super::*;
 
 /// Where a window's session switch is.
@@ -94,18 +94,31 @@ pub(super) struct FollowUp {
     pub(super) skipped: Option<(String, SwitchError)>,
 }
 
+/// What a close commit's worker did.
+pub(super) struct CloseCommitted {
+    pub(super) committed: Committed<Result<(), MuxError>>,
+    /// Where an own-session close moved its window.
+    pub(super) followed: Option<Committed<FollowUp>>,
+    /// An emptied close that would become Quit found its ticket still
+    /// fresh under the Mux lock, so it committed nothing and becomes Quit.
+    pub(super) becomes_quit: bool,
+}
+
 /// Commits a close on its worker, then, for an own-session close whose
 /// session is gone, moves the window to the first candidate it can show,
 /// or to a fresh session. Core removes the session before it tears down
 /// the session's terminals, so a commit that reports a teardown failure
-/// still moved on.
+/// still moved on. With `quit_check`, an emptied close that would become
+/// Quit only checks its ticket under the lock: a fresh one commits nothing
+/// and becomes Quit, and a stale one is refused for assessment again.
 pub(super) async fn commit_close(
     runtime: Arc<DesktopRuntime>,
     assessment: CloseAssessment,
     confirmed: bool,
     windows: Option<huterm_state::DesktopLayout>,
     follow: Option<CloseFollow>,
-) -> (Committed<Result<(), MuxError>>, Option<Committed<FollowUp>>) {
+    quit_check: bool,
+) -> CloseCommitted {
     #[cfg(all(test, feature = "test-support"))]
     let fail = runtime
         .worker_hooks
@@ -113,6 +126,19 @@ pub(super) async fn commit_close(
         .await;
     #[cfg(not(all(test, feature = "test-support")))]
     let fail = false;
+    if quit_check {
+        let mux = runtime.lock();
+        let result = mux.validate_close_scope(&assessment);
+        let becomes_quit = result.is_ok();
+        return CloseCommitted {
+            committed: Committed {
+                result,
+                seq: mux.hierarchy_seq(),
+            },
+            followed: None,
+            becomes_quit,
+        };
+    }
     let mut committed = runtime.commit(&assessment, confirmed, windows);
     if fail {
         // A teardown failure after the runtime accepted the close.
@@ -122,7 +148,11 @@ pub(super) async fn commit_close(
         committed.result.is_ok()
             || runtime.lock().session(follow.closing).is_none()
     }) else {
-        return (committed, None);
+        return CloseCommitted {
+            committed,
+            followed: None,
+            becomes_quit: false,
+        };
     };
     let followed = follow_up(
         &runtime,
@@ -132,7 +162,11 @@ pub(super) async fn commit_close(
         Fresh::AfterFailure,
     )
     .await;
-    (committed, Some(followed))
+    CloseCommitted {
+        committed,
+        followed: Some(followed),
+        becomes_quit: false,
+    }
 }
 
 /// Runs [`DesktopRuntime::follow_up`] on its worker; tier 2 tests hold it
@@ -523,7 +557,7 @@ impl DesktopRuntime {
 }
 
 /// The saved focus a remembered session's install applies.
-fn remembered_focus(memory: Option<SessionMemory>) -> restore::Focus {
+fn remembered_focus(memory: Option<NavigationMemory>) -> restore::Focus {
     memory.map_or_else(restore::Focus::default, |memory| restore::Focus {
         active: memory.active,
         history: memory.history,
@@ -555,12 +589,26 @@ fn fresh_session_notice(name: &str, error: &SwitchError) -> NoticeContent {
     )
 }
 
+/// What a switch that runs on a worker makes the window show.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SwitchKind {
+    /// A new session.
+    NewSession,
+    /// An existing session.
+    Session,
+    /// A new workspace of the window's session.
+    NewWorkspace,
+}
+
 /// The notice for a switch that changed nothing.
-fn switch_failure(new: bool, error: &SwitchError) -> Option<NoticeContent> {
-    let title = if new {
-        "Cannot create session"
-    } else {
-        "Cannot switch session"
+pub(super) fn switch_failure(
+    kind: SwitchKind,
+    error: &SwitchError,
+) -> Option<NoticeContent> {
+    let title = match kind {
+        SwitchKind::NewSession => "Cannot create session",
+        SwitchKind::Session => "Cannot switch session",
+        SwitchKind::NewWorkspace => "Cannot create workspace",
     };
     let message = match error {
         SwitchError::SourceGone => return None,
@@ -649,19 +697,18 @@ impl WorkspaceView {
             CommandError::Unavailable("window has no session".to_owned())
         })?;
         let remembered = match &target {
-            SwitchTarget::Existing(session) => {
-                self.record(cx).and_then(|record| {
-                    record
-                        .memory
-                        .iter()
-                        .find(|memory| memory.session == *session)
-                        .map(|memory| memory.workspace)
-                })
-            }
+            SwitchTarget::Existing(session) => cx
+                .global::<Desktop>()
+                .windows
+                .remembered_workspace(self.window, *session),
             SwitchTarget::New(_) => None,
         };
         let command = self.session_shell(window, cx)?;
-        let new = matches!(target, SwitchTarget::New(_));
+        let kind = if matches!(target, SwitchTarget::New(_)) {
+            SwitchKind::NewSession
+        } else {
+            SwitchKind::Session
+        };
         self.busy = true;
         self.switch = Some(SwitchPhase::Preparing);
         hold_switch_spawn(cx, self.window);
@@ -693,7 +740,7 @@ impl WorkspaceView {
             let mut result = Some(result);
             let _ = view.update_in(cx, |view, window, cx| {
                 if let Some(result) = result.take() {
-                    view.finish_switch(new, result, resolution, window, cx);
+                    view.finish_switch(kind, result, resolution, window, cx);
                 }
             });
             // A window removed before its completion never ended the switch
@@ -720,9 +767,9 @@ impl WorkspaceView {
     }
 
     /// Phase 3, or the end of a switch that failed or met teardown.
-    fn finish_switch(
+    pub(super) fn finish_switch(
         &mut self,
-        new: bool,
+        kind: SwitchKind,
         result: Result<Switched, SwitchError>,
         resolution: Resolution,
         window: &mut Window,
@@ -735,11 +782,11 @@ impl WorkspaceView {
         }
         match result {
             Ok(switched) => {
-                self.install_session(switched, None, window, cx);
+                self.install_session(switched, None, true, window, cx);
             }
             Err(error) => {
                 self.end_switch(cx);
-                if let Some(notice) = switch_failure(new, &error) {
+                if let Some(notice) = switch_failure(kind, &error) {
                     self.notify(notice, cx);
                 }
                 self.reconcile_own(window, cx);
@@ -755,14 +802,19 @@ impl WorkspaceView {
     }
 
     /// Adopts `switched` and installs its views: remembers where the
-    /// window was in the session it leaves, takes the target's memory, and
-    /// reconciles with removals allowed and the emptied edge suppressed.
-    /// `attachment` replaces the window's own, as when Close Session took
-    /// it away.
+    /// window was in the workspace it leaves, takes the target's memory,
+    /// and reconciles with removals allowed and the emptied edge
+    /// suppressed. `switched` names a session, or another workspace of the
+    /// session the window shows. `attachment` replaces the window's own,
+    /// as when Close Session took it away. `recovers` says the target was
+    /// chosen because it held tabs, so a target left empty or gone at the
+    /// settle owes the emptied close again; a workspace the user selected
+    /// stays shown empty.
     pub(super) fn install_session(
         &mut self,
         switched: Switched,
         attachment: Option<AttachmentId>,
+        recovers: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -770,7 +822,7 @@ impl WorkspaceView {
         if let Some(terminal) = switched.spawned {
             desktop.fresh_terminals.insert(terminal);
         }
-        let memory = desktop.windows.switch_session(
+        let memory = desktop.windows.switch_to(
             self.window,
             switched.session,
             switched.workspace,
@@ -778,12 +830,14 @@ impl WorkspaceView {
         if let Some(attachment) = attachment {
             desktop.windows.set_attachment(self.window, attachment);
         }
-        // A session the window leaves because it closed has nothing left
-        // to return to.
+        // A workspace or session the window leaves because it closed has
+        // nothing left to return to.
         let state = desktop.hierarchy.state();
         desktop.windows.prune_sessions(state);
         self.switch = Some(SwitchPhase::Installing);
+        self.switch_recovers = recovers;
         self.close.emptied = EmptiedClose::None;
+        desktop.windows.set_emptied_close(self.window, false);
         self.restore_focus = None;
         self.reopen = Some(remembered_focus(memory));
         if !self.overlay_holds_focus() {
@@ -797,8 +851,10 @@ impl WorkspaceView {
     }
 
     /// Phase 4: the remembered focus applied, so the switch ends and the
-    /// closes that waited run. A window left with nothing to show takes its
-    /// emptied close now.
+    /// closes that waited run. A window whose session or workspace went
+    /// takes its emptied close now, and so does one whose target was
+    /// chosen for its tabs and holds none now; a workspace the user
+    /// selected stays shown empty.
     pub(super) fn settle_switch(
         &mut self,
         window: &mut Window,
@@ -807,13 +863,18 @@ impl WorkspaceView {
         if self.switch != Some(SwitchPhase::Installing) {
             return;
         }
+        let recovers = std::mem::take(&mut self.switch_recovers);
         self.end_switch(cx);
         self.reconcile_own(window, cx);
         if self.tabs.is_empty()
             && (self.attached_session_gone(cx)
-                || self.has_nothing_to_install(cx))
+                || self.shown_workspace_gone(cx)
+                || (recovers && self.has_nothing_to_install(cx)))
         {
             self.owe_emptied_close(cx);
+        }
+        if self.tabs.is_empty() {
+            self.focus_empty_state(window, cx);
         }
         self.resume_close(window, cx);
         cx.notify();
@@ -840,15 +901,19 @@ impl WorkspaceView {
         let Some(record) = self.record(cx) else {
             return Vec::new();
         };
-        let mut candidates: Vec<(SessionId, Option<WorkspaceId>)> = record
-            .memory
-            .iter()
-            .filter(|memory| {
-                memory.session != closing
-                    && state.session(memory.session).is_some()
-            })
-            .map(|memory| (memory.session, Some(memory.workspace)))
-            .collect();
+        let mut candidates: Vec<(SessionId, Option<WorkspaceId>)> = Vec::new();
+        // Memory lists workspaces, most recent first: a session's first
+        // entry is the workspace the window left last there.
+        for memory in &record.memory {
+            if memory.session != closing
+                && state.session(memory.session).is_some()
+                && !candidates
+                    .iter()
+                    .any(|(listed, _)| *listed == memory.session)
+            {
+                candidates.push((memory.session, Some(memory.workspace)));
+            }
+        }
         let stashed = stashed_sessions(desktop);
         let unviewed = desktop.windows.unviewed_sessions(
             state,
@@ -863,38 +928,51 @@ impl WorkspaceView {
         candidates
     }
 
-    /// As the commit of `target` starts: whether it closes this window's
-    /// own session, and then what the commit's worker needs to attach the
-    /// window elsewhere right after it. A shell command that cannot be
-    /// built fails only the attempts that need a shell. Such a close takes
-    /// the window's switch hold and defers checkpoints here.
+    /// As the commit of `target` with `effect` starts: whether it closes
+    /// this window's own session or workspace, and then what an own-session
+    /// close's worker needs to attach the window elsewhere right after it.
+    /// A shell command that cannot be built fails only the attempts that
+    /// need a shell. Such a close, an own-workspace close, and an emptied
+    /// close that leaves its workspace take the window's switch hold and
+    /// defer checkpoints here, until the follow-up settles.
     pub(super) fn commit_follow(
         &mut self,
         target: &CloseTarget,
+        effect: &CloseEffect,
         window: &Window,
         cx: &mut App,
     ) -> (bool, Option<CloseFollow>) {
-        let CloseTarget::Session(session) = target else {
-            return (false, None);
-        };
-        if !self.closes_own_session(target, cx) {
-            return (false, None);
+        match target {
+            CloseTarget::Session(session) if self.closes_own(target, cx) => {
+                self.hold_for_close_commit(cx);
+                let follow = CloseFollow {
+                    closing: *session,
+                    candidates: self.next_sessions(*session, cx),
+                    shell: self
+                        .session_shell(window, cx)
+                        .map_err(|error| error.to_string()),
+                };
+                (true, Some(follow))
+            }
+            CloseTarget::Workspace(_) if self.closes_own(target, cx) => {
+                self.hold_for_close_commit(cx);
+                (true, None)
+            }
+            CloseTarget::Emptied
+                if matches!(effect, CloseEffect::LeaveWorkspace { .. }) =>
+            {
+                self.hold_for_close_commit(cx);
+                (false, None)
+            }
+            _ => (false, None),
         }
-        self.hold_for_close_commit(cx);
-        let follow = CloseFollow {
-            closing: *session,
-            candidates: self.next_sessions(*session, cx),
-            shell: self
-                .session_shell(window, cx)
-                .map_err(|error| error.to_string()),
-        };
-        (true, Some(follow))
     }
 
     /// Whether the close pipeline takes `target` at all: an own-session
-    /// Close Session is dropped while a Quit is under way, with what it
-    /// held, as when a stale commit retries or a check merges into it. A
-    /// Quit marks the application quitting from its request on.
+    /// Close Session or own-workspace Close Workspace is dropped while a
+    /// Quit is under way, with what it held, as when a stale commit retries
+    /// or a check merges into it. A Quit marks the application quitting
+    /// from its request on.
     pub(super) fn admit_close(
         &mut self,
         target: &CloseTarget,
@@ -928,21 +1006,41 @@ impl WorkspaceView {
         }
     }
 
-    /// Whether `target` is a Close Session of this window's own session.
-    pub(super) fn closes_own_session(
+    /// Refuses Close Workspace of this window's own workspace while a Quit
+    /// is requested or runs, as for its own session.
+    pub(super) fn check_close_workspace_available(
         &self,
-        target: &CloseTarget,
+        workspace: WorkspaceId,
         cx: &App,
-    ) -> bool {
-        matches!(target, CloseTarget::Session(session)
-            if Some(*session) == self.attached_session(cx))
+    ) -> Result<(), CommandError> {
+        if quit_underway(cx) && Some(workspace) == self.workspace_id(cx) {
+            Err(CommandError::Unavailable(
+                "application is quitting".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
-    /// Whether `target` is an own-session Close Session that a Quit under
-    /// way refuses, as it refuses the command: such a close could move the
-    /// window to another session while the Quit captures it.
+    /// Whether `target` is a Close Session of this window's own session or
+    /// a Close Workspace of the workspace it shows.
+    pub(super) fn closes_own(&self, target: &CloseTarget, cx: &App) -> bool {
+        match target {
+            CloseTarget::Session(session) => {
+                Some(*session) == self.attached_session(cx)
+            }
+            CloseTarget::Workspace(workspace) => {
+                Some(*workspace) == self.workspace_id(cx)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `target` is an own-session or own-workspace close that a
+    /// Quit under way refuses, as it refuses the command: such a close
+    /// could move the window elsewhere while the Quit captures it.
     pub(super) fn quit_refuses(&self, target: &CloseTarget, cx: &App) -> bool {
-        quit_underway(cx) && self.closes_own_session(target, cx)
+        quit_underway(cx) && self.closes_own(target, cx)
     }
 
     /// Takes this window's switch hold as an own-session Close Session
@@ -969,36 +1067,39 @@ impl WorkspaceView {
         }
     }
 
-    /// Cancels this window's own-session Close Session that has not
-    /// started committing, for a Quit: a check still assessing, whose
-    /// answer then finds a moved generation, a confirmation showing, or one
-    /// queued behind other work. Its session was never closed, so the
-    /// Quit saves it. A committing close keeps its hold, which the Quit
-    /// waits for. Queued closes of other targets stay.
+    /// Cancels this window's own-session Close Session or own-workspace
+    /// Close Workspace that has not started committing, for a Quit: a
+    /// check still assessing, whose answer then finds a moved generation, a
+    /// confirmation showing, or one queued behind other work. Its session
+    /// or workspace was never closed, so the Quit saves it. A committing
+    /// close keeps its hold, which the Quit waits for. Queued closes of
+    /// other targets stay.
     pub(super) fn cancel_own_session_close(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(own) = self.attached_session(cx).map(CloseTarget::Session)
-        else {
-            return;
+        let own = |target: &Option<CloseTarget>| {
+            target.as_ref().is_some_and(|target| {
+                matches!(
+                    target,
+                    CloseTarget::Session(_) | CloseTarget::Workspace(_)
+                ) && self.closes_own(target, cx)
+            })
         };
-        let mut cancelled = false;
-        if self.close.pending.as_ref() == Some(&own) {
+        let pending = own(&self.close.pending);
+        let assessing = !self.close_hold && own(&self.close.current);
+        let confirming = own(&self.close.confirmation);
+        if pending {
             self.close.pending = None;
-            cancelled = true;
         }
-        let assessing =
-            !self.close_hold && self.close.current.as_ref() == Some(&own);
-        if assessing || self.close.confirmation.as_ref() == Some(&own) {
+        if assessing || confirming {
             self.close.dismiss_confirmation();
             if assessing {
                 self.busy = false;
             }
-            cancelled = true;
         }
-        if !cancelled {
+        if !(pending || assessing || confirming) {
             return;
         }
         self.sync_dialog(window, cx);
@@ -1056,7 +1157,13 @@ impl WorkspaceView {
                 // checkpoint deferral.
                 self.close_hold = false;
                 self.busy = true;
-                self.install_session(switched, Some(attachment), window, cx);
+                self.install_session(
+                    switched,
+                    Some(attachment),
+                    true,
+                    window,
+                    cx,
+                );
             }
             // No session was left to follow: the window closes.
             FollowUp {
@@ -1092,12 +1199,15 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.window_close_target(Platform::current(), cx)
+        if self.window_close_target(self.close_platform(), cx)
             == CloseTarget::Application
         {
             if let Some(message) = failure {
                 self.report_failure("Cannot show a session", message, cx);
             }
+            // The Quit takes the place of the emptied close the gone
+            // session owed; run first, that close would remove the window.
+            self.set_emptied(EmptiedClose::None, cx);
             cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
             cx.defer(request_quit);
         } else {
@@ -1206,6 +1316,7 @@ impl WorkspaceView {
                         view.install_session(
                             switched,
                             Some(attachment),
+                            true,
                             window,
                             cx,
                         );
@@ -1285,53 +1396,120 @@ impl WorkspaceView {
         }
     }
 
-    /// At the commit of a Window or emptied close: whether it became Quit
-    /// because this window would now be the last one and strand sessions
-    /// no window shows. Another window's close may have started committing
-    /// since this one was requested, so the rule applies again here. The
-    /// close ends without committing, and Quit runs through
-    /// [`request_quit`].
+    /// At the commit of a Window close: whether it became Quit because this
+    /// window would now be the last one and strand sessions no window
+    /// shows. Another window's close may have started committing since
+    /// this one was requested, so the rule applies again here. The close
+    /// ends without committing, and Quit runs through [`request_quit`]. An
+    /// emptied close converts only after its assessment
+    /// ([`Self::emptied_quit_check`]).
     pub(super) fn close_becomes_quit(
         &mut self,
         target: &CloseTarget,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let platform = Platform::current();
-        let quit = match target {
-            CloseTarget::Window => self.window_close_target(platform, cx),
-            CloseTarget::Emptied => self.emptied_close_target(platform, cx),
-            _ => return false,
-        };
-        if quit != CloseTarget::Application {
+        if *target != CloseTarget::Window
+            || self.window_close_target(self.close_platform(), cx)
+                != CloseTarget::Application
+        {
             return false;
         }
-        if *target == CloseTarget::Emptied {
-            // As when the emptied close starts: a cancelled Quit shows the
-            // session left last.
-            self.close.emptied = EmptiedClose::None;
-            cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
-        }
         self.close.dismiss_confirmation();
+        self.end_close_as_quit(window, cx);
+        true
+    }
+
+    /// Whether an emptied close assessed as `effect` must check its ticket
+    /// under the Mux lock before turning into Quit: only a close that
+    /// removes the window does, and only when the last-window rule asks
+    /// for Quit. Leaving a workspace never becomes Quit.
+    pub(super) fn emptied_quit_check(
+        &self,
+        target: &CloseTarget,
+        effect: &CloseEffect,
+        cx: &App,
+    ) -> bool {
+        *target == CloseTarget::Emptied
+            && closes_window(effect)
+            && self.emptied_close_target(self.close_platform(), cx)
+                == CloseTarget::Application
+    }
+
+    /// Ends an emptied close whose fresh ticket made it Quit: the close is
+    /// no longer owed, and a cancelled Quit shows the session left last.
+    pub(super) fn emptied_becomes_quit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.set_emptied(EmptiedClose::None, cx);
+        cx.global_mut::<Desktop>().emptied_quit = Some(self.window);
+        self.end_close_as_quit(window, cx);
+    }
+
+    /// Ends an emptied close whose session closed elsewhere, so core can
+    /// no longer assess it, the session-gone path: on Linux the last window
+    /// quits rather than strand sessions no window shows; otherwise the
+    /// window goes without a notice.
+    pub(super) fn close_gone_emptied(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.emptied_close_target(self.close_platform(), cx)
+            == CloseTarget::Application
+        {
+            self.close.current = None;
+            self.emptied_becomes_quit(window, cx);
+        } else {
+            self.remove_detached_window(window, cx);
+        }
+    }
+
+    fn end_close_as_quit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         self.busy = false;
         self.sync_dialog(window, cx);
         self.release_exit_close_if_idle(cx);
         self.restore_tab_focus(window, cx);
         cx.defer(request_quit);
         cx.notify();
-        true
     }
 
-    /// Notes that this window's `target` close started, or ended,
-    /// committing. Another window's last-window rule counts a window whose
-    /// Window or emptied close is committing as going.
+    /// The platform the last-window rule applies; tests may name another.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "only tests name a platform")
+    )]
+    pub(super) fn close_platform(&self) -> Platform {
+        #[cfg(test)]
+        if let Some(platform) = self.test_platform {
+            return platform;
+        }
+        Platform::current()
+    }
+
+    /// Notes that this window's `target` close, with `effect`, started or
+    /// ended committing. Another window's last-window rule counts a window
+    /// whose Window close, or emptied close that removes it, is committing
+    /// as going; one that only leaves a workspace stays.
     pub(super) fn note_close_commit(
         &self,
         target: &CloseTarget,
+        effect: &CloseEffect,
         committing: bool,
         cx: &mut App,
     ) {
-        if matches!(target, CloseTarget::Window | CloseTarget::Emptied) {
+        let removes = match target {
+            CloseTarget::Window => true,
+            CloseTarget::Emptied => closes_window(effect),
+            _ => false,
+        };
+        if removes {
             cx.global_mut::<Desktop>()
                 .windows
                 .set_close_committing(self.window, committing);
@@ -1370,6 +1548,12 @@ impl WorkspaceView {
             .into_iter()
             .any(|session| Some(session) != own)
     }
+}
+
+/// Whether a committed emptied close with `effect` removes its window: a
+/// detach or session close does, leaving a workspace does not.
+pub(super) fn closes_window(effect: &CloseEffect) -> bool {
+    matches!(effect, CloseEffect::Detach(_) | CloseEffect::Session(_))
 }
 
 /// Whether a Quit is requested or runs: it waits for pending spawns, or
@@ -1495,7 +1679,9 @@ pub(super) fn open_session_window(
                     open_attached(cx, attachment, switched, reporter)
                 }
                 Err(error) => {
-                    if let Some(notice) = switch_failure(false, &error) {
+                    if let Some(notice) =
+                        switch_failure(SwitchKind::Session, &error)
+                    {
                         report_deferred_failure(cx, reporter, notice.message);
                     }
                     false

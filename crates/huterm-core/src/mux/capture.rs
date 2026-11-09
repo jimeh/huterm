@@ -254,15 +254,22 @@ fn pane_terminals(capture: &RuntimeCapture) -> Vec<TerminalId> {
 }
 
 impl Mux {
-    /// Captures every session that holds a tab, with its workspaces, tabs,
-    /// and layouts in order, the allocator watermark, the creation
-    /// ordinals, and each shown terminal's directory candidates, read from
-    /// its published status without waiting on its runtime. Sessions that
-    /// hold no tab, which only transfers create in flight, are left out.
+    /// Captures every session that holds a tab, and each tabless session
+    /// `shown` names, with its workspaces, tabs, and layouts in order, the
+    /// allocator watermark, the creation ordinals, and each shown
+    /// terminal's directory candidates, read from its published status
+    /// without waiting on its runtime. `shown` holds the unscoped sessions
+    /// the client's saved windows show, so a tabless session a staying
+    /// window shows, such as one whose last tab closed beside an empty
+    /// workspace, is kept, while one whose close already decided to end it,
+    /// or that a transfer leaves in flight, is left out.
     /// Attachments, viewers, layout history, and process state are never
     /// captured. Identities come out unscoped.
     #[must_use]
-    pub fn capture_runtime(&self) -> RuntimeCapture {
+    pub fn capture_runtime(
+        &self,
+        shown: &HashSet<SessionId>,
+    ) -> RuntimeCapture {
         let mut sessions = Vec::new();
         let mut terminals = Vec::new();
         for session in &self.sessions {
@@ -271,7 +278,9 @@ impl Mux {
                 .iter()
                 .map(|id| &self.workspaces[id])
                 .collect();
-            if workspaces.iter().all(|workspace| workspace.tabs.is_empty()) {
+            if workspaces.iter().all(|workspace| workspace.tabs.is_empty())
+                && !shown.contains(&SessionId::new(session.id.get()))
+            {
                 continue;
             }
             let mut captured = Vec::new();

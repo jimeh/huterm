@@ -205,6 +205,9 @@ struct IdentityRow {
     position: Option<i64>,
     /// Owning workspace, so window-scoped commands list only their own tabs.
     workspace: Option<WorkspaceId>,
+    /// A workspace's session, so Switch Workspace lists only the window's
+    /// session's workspaces.
+    session: Option<SessionId>,
     /// A pane's terminal, so a move's pane picker can leave out the pane
     /// being moved.
     terminal: Option<TerminalId>,
@@ -223,6 +226,7 @@ fn profile_rows(profiles: Vec<QuakeProfileRow>) -> Vec<IdentityRow> {
             detail: row.detail,
             position: None,
             workspace: None,
+            session: None,
             terminal: None,
             tab: None,
             custom_name: false,
@@ -243,6 +247,7 @@ fn side_rows() -> Vec<IdentityRow> {
             detail: "side".to_owned(),
             position: None,
             workspace: None,
+            session: None,
             terminal: None,
             tab: None,
             custom_name: false,
@@ -261,6 +266,7 @@ fn layout_rows(layouts: &[NamedLayout]) -> Vec<IdentityRow> {
             detail: layout.template.to_string(),
             position: None,
             workspace: None,
+            session: None,
             terminal: None,
             tab: None,
             custom_name: false,
@@ -321,6 +327,7 @@ impl PaletteHierarchy {
                 detail: "session".to_owned(),
                 position: None,
                 workspace: None,
+                session: None,
                 terminal: None,
                 tab: None,
                 custom_name: session.custom_name.is_some(),
@@ -337,6 +344,7 @@ impl PaletteHierarchy {
                     detail: session.display_name().to_owned(),
                     position: None,
                     workspace: Some(workspace_id),
+                    session: Some(session_id),
                     terminal: None,
                     tab: None,
                     custom_name: workspace.custom_name.is_some(),
@@ -362,6 +370,7 @@ impl PaletteHierarchy {
                         ),
                         position: i64::try_from(index + 1).ok(),
                         workspace: Some(workspace_id),
+                        session: Some(session_id),
                         terminal: None,
                         tab: None,
                         custom_name: tab.custom_name.is_some(),
@@ -384,6 +393,7 @@ impl PaletteHierarchy {
                             ),
                             position: None,
                             workspace: Some(workspace_id),
+                            session: Some(session_id),
                             terminal: Some(pane.terminal_id),
                             tab: Some(tab_id),
                             custom_name: pane.custom_name.is_some(),
@@ -444,6 +454,9 @@ struct DomainView<'a> {
     window_only: bool,
     /// The panes a pane picker leaves out.
     pane_exclusion: PaneExclusion,
+    /// The workspace picker lists only the target session's workspaces, as
+    /// Switch Workspace needs; other commands may name any workspace.
+    own_session_workspaces: bool,
 }
 
 /// Which panes a pane picker leaves out.
@@ -487,6 +500,11 @@ impl DomainView<'_> {
                 .filter(|row| {
                     !(self.window_only && kind == ArgumentKind::Tab)
                         || row.workspace == self.target.workspace
+                })
+                .filter(|row| {
+                    !(self.own_session_workspaces
+                        && kind == ArgumentKind::Workspace)
+                        || row.session == self.target.session
                 })
                 .collect(),
             ArgumentKind::Bool
@@ -882,6 +900,7 @@ impl CommandPalette {
             target: &self.target,
             window_only: spec.scope == CommandScope::Window,
             pane_exclusion: self.pane_exclusion(spec, tab),
+            own_session_workspaces: spec.id == ids::SELECT_WORKSPACE,
         }
     }
 
@@ -934,6 +953,10 @@ impl CommandPalette {
             target: &self.target,
             window_only: self.window_only(),
             pane_exclusion,
+            own_session_workspaces: matches!(
+                &self.stage,
+                Stage::Slots(editor) if editor.spec().id == ids::SELECT_WORKSPACE
+            ),
         }
     }
 

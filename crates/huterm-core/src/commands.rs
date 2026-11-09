@@ -67,6 +67,12 @@ pub fn execute(
                 .ok_or_else(|| missing("session"))?;
             mux.rename_session(session, None)
         }
+        ids::CLEAR_WORKSPACE_NAME => {
+            let workspace = invocation
+                .workspace("workspace")
+                .ok_or_else(|| missing("workspace"))?;
+            mux.rename_workspace(workspace, None)
+        }
         other => {
             return Err(CommandError::Unavailable(format!(
                 "runtime command `{other}` has no executor"
@@ -246,6 +252,44 @@ mod tests {
         mux.close_session(session).unwrap();
         assert_eq!(
             execute(&mut mux, &clear(session)),
+            Err(CommandError::StaleTarget)
+        );
+    }
+
+    #[test]
+    fn clear_workspace_name_restores_the_automatic_name() {
+        let mut mux = Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, Some("build")).unwrap();
+        let clear = |workspace| {
+            CommandInvocation::new(
+                ids::CLEAR_WORKSPACE_NAME,
+                vec![CommandArgument::new(
+                    "workspace",
+                    CommandValue::Workspace(workspace),
+                )],
+            )
+        };
+        assert_eq!(
+            execute(&mut mux, &clear(workspace)),
+            Ok(CommandOutcome::Completed)
+        );
+        let record = mux.workspace(workspace).unwrap();
+        assert_eq!(record.custom_name(), None);
+        assert_eq!(record.display_name(), "Workspace 1");
+        assert_eq!(
+            execute(
+                &mut mux,
+                &CommandInvocation::new(ids::CLEAR_WORKSPACE_NAME, Vec::new())
+            ),
+            Err(CommandError::MissingArgument {
+                command: ids::CLEAR_WORKSPACE_NAME,
+                name: "workspace",
+            })
+        );
+        mux.close_session(session).unwrap();
+        assert_eq!(
+            execute(&mut mux, &clear(workspace)),
             Err(CommandError::StaleTarget)
         );
     }

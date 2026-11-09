@@ -24,7 +24,7 @@ impl DesktopHarness {
     }
 
     /// [`Self::other_session`] with tabs that run `command`.
-    fn other_session_running(
+    pub(super) fn other_session_running(
         &self,
         name: &str,
         command: &str,
@@ -44,7 +44,7 @@ impl DesktopHarness {
     }
 
     /// Runs `select_session` for `session` in `window`.
-    fn select_session(
+    pub(super) fn select_session(
         &mut self,
         window: AnyWindowHandle,
         session: SessionId,
@@ -85,7 +85,7 @@ impl DesktopHarness {
 
     /// Registers the application action a Quit that waited resumes
     /// through, as the production startup does.
-    fn resume_quits(&mut self) {
+    pub(super) fn resume_quits(&mut self) {
         self.cx.update(|cx| {
             cx.on_action(|action: &InvokeApp, cx| {
                 let _ = Desktop::invoke(cx, &action.0, None);
@@ -93,7 +93,7 @@ impl DesktopHarness {
         });
     }
 
-    fn activate_window(&mut self, window: AnyWindowHandle) {
+    pub(super) fn activate_window(&mut self, window: AnyWindowHandle) {
         self.cx.update(|cx| {
             window
                 .update(cx, |_, window, _| window.activate_window())
@@ -102,7 +102,7 @@ impl DesktopHarness {
     }
 
     /// The session's attachments, as the projection holds them.
-    fn attachments_of(&mut self, session: SessionId) -> usize {
+    pub(super) fn attachments_of(&mut self, session: SessionId) -> usize {
         self.cx.update(|cx| {
             cx.global::<Desktop>()
                 .hierarchy
@@ -113,7 +113,7 @@ impl DesktopHarness {
     }
 }
 
-fn pick(
+pub(super) fn pick(
     command: huterm_protocol::CommandId,
     session: SessionId,
 ) -> CommandInvocation {
@@ -138,7 +138,7 @@ pub(super) fn shown_session(
 }
 
 /// Whether `window` is between a switch's guard and its settle.
-fn switching(cx: &mut App, window: AnyWindowHandle) -> bool {
+pub(super) fn switching(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>()
@@ -148,7 +148,7 @@ fn switching(cx: &mut App, window: AnyWindowHandle) -> bool {
 }
 
 /// The tabs `window` has views for, in order.
-fn shown_tabs(cx: &mut App, window: AnyWindowHandle) -> Vec<TabId> {
+pub(super) fn shown_tabs(cx: &mut App, window: AnyWindowHandle) -> Vec<TabId> {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>()
@@ -161,7 +161,7 @@ fn shown_tabs(cx: &mut App, window: AnyWindowHandle) -> Vec<TabId> {
 }
 
 /// What `window` would undo next.
-fn undo_label(
+pub(super) fn undo_label(
     cx: &mut App,
     window: AnyWindowHandle,
 ) -> Option<gpui::SharedString> {
@@ -448,6 +448,73 @@ fn a_target_closed_after_the_commit_removes_the_window_and_keeps_its_old_session
         harness.wait_closed(window);
         assert!(session_exists(&harness));
     }
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_target_closed_after_the_commit_on_linux_quits_and_keeps_its_old_session(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.as_linux(window);
+    let other = harness.other_session("other", 1);
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Switched);
+    harness.select_session(window, other.session).unwrap();
+    harness.wait_for("the switch to commit", |_| {
+        runtime.worker_hooks.held(Stage::Switched) == 1
+    });
+    runtime.lock().close_session(other.session).unwrap();
+    runtime.worker_hooks.release(Stage::Switched);
+    // The session-gone path cannot assess its emptied close, whose
+    // attachment went with the session, yet the last window still quits
+    // rather than leave its old session running with no window.
+    let session = harness.session;
+    harness.wait_quit(session);
+    harness.cx.update(|cx| {
+        assert_eq!(
+            cx.global::<Desktop>().emptied_quit,
+            Some(window.window_id())
+        );
+    });
+    assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 1);
+    assert_eq!(harness.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_refused_emptied_close_whose_session_then_closes_on_linux_quits(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    harness.as_linux(window);
+    let unviewed = harness.unviewed_session();
+    harness.wait_projection();
+    let runtime = Arc::clone(&harness.runtime);
+    let hooks = &runtime.worker_hooks;
+    hooks.hold(Stage::Assess);
+    harness.close_tab(tab);
+    harness.wait_for("the emptied close to assess", |_| {
+        hooks.held(Stage::Assess) == 1
+    });
+    // A tab another client opens makes the runtime refuse the close, and
+    // the session closes before the window settles the refusal.
+    harness.open_tab(ECHO);
+    hooks.hold(Stage::Assessed);
+    hooks.release(Stage::Assess);
+    harness
+        .wait_for("the refusal to hold", |_| hooks.held(Stage::Assessed) == 1);
+    harness.close_session();
+    // The window settles the refusal only after it sees the session gone,
+    // so the refused branch, not a later assessment, takes the close.
+    harness.wait_projection();
+    hooks.release(Stage::Assessed);
+    // The window still quits rather than strand the unviewed session.
+    harness.wait_quit(unviewed);
+    assert_eq!(hooks.entered(Stage::Commit), 1);
     assert_eq!(harness.close_failures(), 0);
 }
 
@@ -1225,7 +1292,7 @@ fn own_session_close_windows(
 }
 
 /// The confirmation `window` shows, if any.
-fn confirmation(
+pub(super) fn confirmation(
     harness: &mut DesktopHarness,
     window: AnyWindowHandle,
 ) -> Option<CloseTarget> {
@@ -1233,7 +1300,10 @@ fn confirmation(
 }
 
 /// Waits until `window` shows Quit's confirmation.
-fn wait_quit_dialog(harness: &mut DesktopHarness, window: AnyWindowHandle) {
+pub(super) fn wait_quit_dialog(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) {
     harness.wait_for("the Quit dialog", |cx| {
         window
             .update(cx, |root, _, cx| {
@@ -2117,7 +2187,7 @@ fn memory_is_pruned_when_its_session_closes_and_counts_other_windows(
 }
 
 /// Whether `window` is installing a switch or follow-up.
-fn installing(cx: &mut App, window: AnyWindowHandle) -> bool {
+pub(super) fn installing(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>()
@@ -2141,7 +2211,10 @@ fn any_confirmation(cx: &mut App) -> Option<(AnyWindowHandle, CloseTarget)> {
 }
 
 /// Confirms the Quit `window` asks about.
-fn confirm_quit(harness: &mut DesktopHarness, window: AnyWindowHandle) {
+pub(super) fn confirm_quit(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) {
     harness.update_view(window, |view, window, cx| {
         let generation = view.close.generation;
         view.confirm_confirmation(
@@ -2413,13 +2486,20 @@ fn a_cancelled_emptied_quit_that_can_show_nothing_follows_the_last_window_rule(
     harness.wait_switched(window, left.session, &left.tabs);
 }
 
-#[gpui::test]
-fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
+/// Closes the window's own session twice while no shell command can be
+/// built, with the last-window rule of `platform`: the first follow-up
+/// passes over a session that needs a shell, and the second has nothing
+/// left it can show.
+fn close_session_follow_ups_without_a_shell(
     cx: &mut TestAppContext,
+    platform: Platform,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
+    harness.update_view(window, |view, _, _| {
+        view.test_platform = Some(platform);
+    });
     // Two sessions no window shows: the first has no tab, so showing it
     // needs a shell; the second has one.
     let bare = {
@@ -2442,7 +2522,10 @@ fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
     // Only the bare session is left, and the fresh session needs a shell
     // too: the window says why and closes by the last-window rule.
     harness.invoke(window, ids::CLOSE_SESSION).unwrap();
-    if Platform::current() == Platform::Linux {
+    if platform == Platform::Linux {
+        // The bare session would be stranded, so the window quits, keeping
+        // the notice: the emptied close its gone session owed does not run
+        // first and remove it.
         let runtime = Arc::clone(&harness.runtime);
         harness.wait_for("the application to quit", |_| {
             runtime.terminating.load(Ordering::Acquire)
@@ -2454,6 +2537,10 @@ fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
                     .iter()
                     .any(|notice| notice.contains("Cannot open a new session")),
                 "{shown:?}"
+            );
+            assert_eq!(
+                cx.global::<Desktop>().emptied_quit,
+                Some(window.window_id())
             );
         });
     } else {
@@ -2476,6 +2563,20 @@ fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
             0
         );
     }
+}
+
+#[gpui::test]
+fn a_close_session_follow_up_without_a_shell_shows_a_session_that_needs_none(
+    cx: &mut TestAppContext,
+) {
+    close_session_follow_ups_without_a_shell(cx, Platform::MacOs);
+}
+
+#[gpui::test]
+fn a_close_session_follow_up_without_a_shell_on_linux_quits_with_its_notice(
+    cx: &mut TestAppContext,
+) {
+    close_session_follow_ups_without_a_shell(cx, Platform::Linux);
 }
 
 #[gpui::test]

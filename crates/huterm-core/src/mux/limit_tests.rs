@@ -314,7 +314,7 @@ fn a_capture_past_the_name_or_item_limits_is_refused_before_anything_spawns() {
     let workspace = mux.create_workspace(session, None).unwrap();
     mux.open_test_tab(workspace, &command("read value"))
         .unwrap();
-    let capture = mux.capture_runtime();
+    let capture = mux.capture_runtime(&std::collections::HashSet::new());
     mux.shutdown().unwrap();
     let mut long = capture.clone();
     long.sessions[0].workspaces[0].tabs[0].custom_name =
@@ -450,5 +450,32 @@ fn a_pane_moved_into_another_tab_refuses_to_grow_past_the_limit() {
         )
         .unwrap();
     assert_eq!(full.mux.hierarchy_items(), MAX_HIERARCHY_ITEMS - 1);
+    full.mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_workspace_with_a_tab_that_would_pass_the_limit_changes_nothing() {
+    let script = command("read value");
+    for free in [1, 2] {
+        let mut full = Full::new(free);
+        let (session, workspace, tab) =
+            (full.session, full.workspace, full.tab);
+        let ticket = full
+            .mux
+            .prepare_close(CloseRequest::Tab { workspace, tab })
+            .unwrap()
+            .check_jobs();
+        full.refuses(|mux| {
+            mux.create_workspace_with_tab(session, None, &script)
+        });
+        assert!(full.mux.validate_close_scope(&ticket).is_ok(), "{free}");
+        full.mux.shutdown().unwrap();
+    }
+    // Three free items hold the workspace, its tab, and the tab's pane.
+    let mut full = Full::new(3);
+    full.mux
+        .create_workspace_with_tab(full.session, None, &script)
+        .unwrap();
+    assert_eq!(full.mux.hierarchy_items(), MAX_HIERARCHY_ITEMS);
     full.mux.shutdown().unwrap();
 }

@@ -2106,6 +2106,14 @@ impl DesktopHarness {
         self.runtime.lock().close_session(self.session).unwrap();
     }
 
+    /// Makes `window`'s close pipeline apply the last-window rule as on
+    /// Linux.
+    fn as_linux(&mut self, window: AnyWindowHandle) {
+        self.update_view(window, |view, _, _| {
+            view.test_platform = Some(Platform::Linux);
+        });
+    }
+
     /// Closes `tab` through Mux, as another client would.
     fn close_tab(&self, tab: TabId) {
         self.runtime.lock().close_tab(self.workspace, tab).unwrap();
@@ -2456,29 +2464,33 @@ fn a_refused_emptied_close_runs_again_once_the_installing_tab_goes(
 }
 
 #[gpui::test]
-fn moving_the_last_tab_to_a_sibling_workspace_detaches_the_window(
+fn moving_the_last_tab_to_a_sibling_workspace_moves_the_window_with_it(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    {
+    let sibling = {
         let mut mux = harness.runtime.lock();
         let sibling = mux.create_workspace(harness.session, None).unwrap();
         mux.move_tab(harness.workspace, tab, sibling, None).unwrap();
-    }
-    harness.wait_closed(window);
+        sibling
+    };
+    // The window leaves the emptied workspace, which closes, and shows
+    // the tab in its new workspace on the same attachment.
+    harness.wait_for("the window to follow its tab", |cx| {
+        cx.global::<Desktop>()
+            .windows
+            .record(window.window_id())
+            .is_some_and(|record| record.workspace == Some(sibling))
+            && terminal(cx, window, tab).is_some()
+    });
     {
         let mux = harness.runtime.lock();
-        assert!(mux.session(harness.session).is_some());
-        assert!(!mux.session_attached(harness.session));
+        assert_eq!(mux.session(harness.session).unwrap().workspaces, [sibling]);
+        assert!(mux.session_attached(harness.session));
     }
-    let _client = harness.send_line(tab, "moved");
-    harness.wait_canonical(tab, "the moved child to answer", |snapshot| {
-        let text: String =
-            snapshot.cells().map(|cell| cell.text.displayed()).collect();
-        text.contains("got:moved")
-    });
+    harness.answers(window, tab, "moved");
 }
 
 #[gpui::test]
@@ -3006,11 +3018,12 @@ fn a_quit_queued_behind_a_committing_emptied_close_still_quits(
         Stage::Commit,
     );
     if Platform::current() == Platform::Linux {
-        // The last window would strand the session, so the close became
-        // Quit as it began committing; that Quit's commit is what waits.
+        // The last window would strand the session, so what waits is the
+        // emptied close's check under the Mux lock, which commits nothing
+        // and turns the close into Quit; the Quit's own commit follows.
         harness.runtime.worker_hooks.release(Stage::Commit);
         harness.wait_quit(unviewed);
-        assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 1);
+        assert_eq!(harness.runtime.worker_hooks.entered(Stage::Commit), 2);
         return;
     }
     harness.queue_quit(window);
@@ -5472,3 +5485,4 @@ mod terminal_notifications;
 
 mod transparency;
 mod transparency_panel;
+mod workspaces;

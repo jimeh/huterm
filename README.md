@@ -61,8 +61,8 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
 These are not available yet:
 
 - Pane layout presets, and undoing a layout change.
-- Switching workspaces in a window. Each window gets a private session
-  with one workspace, and can switch to another session.
+- A workspace panel or dropdown. Workspaces are reached from the command
+  palette and the session menu for now.
 - A background server, local IPC, a command-line client, a TUI, or a browser
   client.
 - Saving and restoring sessions or terminal history across restarts.
@@ -142,7 +142,11 @@ shows an error.
 ## Windows, sessions, and tabs
 
 Each window creates and attaches to a private session with one workspace of
-ordered tabs. Each tab holds one or more panes, each with its own terminal and
+ordered tabs. A session can hold more workspaces: New Workspace, in the
+session menu and the palette, adds one with a fresh shell, and Switch
+Workspace, Next Workspace, and Previous Workspace move a window between
+them, each window on its own and back to the tab and pane it left there.
+Each tab holds one or more panes, each with its own terminal and
 shell. Hidden tabs keep processing output without building snapshots or
 painting. A pane closes when its shell exits, and its tab closes with its last
 pane, unless `close_on_exit = false` keeps them for their history;
@@ -156,7 +160,12 @@ see [Shells](docs/configuration.md#shells). The configuration guide also covers
 Closing a pane stops its terminal, and closing a tab stops the terminals of
 all its panes. Closing a window closes its session and stops its terminals. A
 window closes on its own when its last tab goes away, for example when its
-shell exits; that close stops no other terminal and never asks.
+shell exits; that close stops no other terminal and never asks. When its
+session has another workspace, the window instead closes the emptied
+workspace and moves to the workspace it showed before, else to one that holds
+tabs, else to an empty one's empty state. Close
+Workspace closes a workspace and its tabs, asking first when jobs run; a
+window left on a workspace without tabs shows an empty state with New Tab.
 
 Close and Quit warn about foreground or background jobs, or when Huterm cannot
 determine a terminal's process state. Idle shells need no confirmation. Huterm

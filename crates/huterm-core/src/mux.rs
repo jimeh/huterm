@@ -479,6 +479,33 @@ impl Mux {
         });
         Ok(id)
     }
+    /// Appends a workspace to a session with one tab running `command`,
+    /// as one step: when the tab fails to open, the workspace closes again
+    /// and the error is returned, so a failure leaves no empty workspace.
+    /// The whole addition is admitted first, so a limit refusal changes
+    /// nothing.
+    /// # Errors
+    /// Rejects what [`Self::create_workspace`] and [`Self::open_tab`]
+    /// reject.
+    pub fn create_workspace_with_tab(
+        &mut self,
+        session: SessionId,
+        name: Option<&str>,
+        command: &TerminalCommand,
+    ) -> Result<(WorkspaceId, OpenedTab), MuxError> {
+        self.select_session(session)?;
+        validate_name(name)?;
+        // A workspace, its tab, and the tab's pane.
+        self.admit_items(0, 3)?;
+        let workspace = self.create_workspace(session, name)?;
+        match self.open_tab(workspace, command) {
+            Ok(opened) => Ok((workspace, opened)),
+            Err(error) => {
+                let _ = self.close_workspace(workspace);
+                Err(error)
+            }
+        }
+    }
     /// Sets a session's custom name; `None` resumes automatic naming.
     /// # Errors
     /// Rejects blank names and foreign/missing targets.
@@ -1431,6 +1458,10 @@ pub enum MuxError {
     /// An emptied window's workspace still holds tabs it has not shown yet.
     #[error("workspace {0:?} still holds tabs")]
     ViewNotEmpty(WorkspaceId),
+    /// A workspace close named its session's only workspace, which only a
+    /// session close ends.
+    #[error("workspace {0:?} is its session's only workspace")]
+    LastWorkspace(WorkspaceId),
     /// A multi-tab close request named no tabs.
     #[error("close request names no tabs")]
     EmptyClose,

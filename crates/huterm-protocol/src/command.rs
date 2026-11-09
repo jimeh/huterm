@@ -744,6 +744,21 @@ pub mod ids {
         CommandId::new("open_session_in_new_window");
     /// Closes a session after assessment.
     pub const CLOSE_SESSION: CommandId = CommandId::new("close_session");
+    /// Creates a workspace with a new tab in the window's session and
+    /// switches the window to it.
+    pub const NEW_WORKSPACE: CommandId = CommandId::new("new_workspace");
+    /// Switches the window to another workspace of its session.
+    pub const SELECT_WORKSPACE: CommandId = CommandId::new("select_workspace");
+    /// Switches the window to the next workspace of its session.
+    pub const NEXT_WORKSPACE: CommandId = CommandId::new("next_workspace");
+    /// Switches the window to the previous workspace of its session.
+    pub const PREVIOUS_WORKSPACE: CommandId =
+        CommandId::new("previous_workspace");
+    /// Clears a workspace's custom name.
+    pub const CLEAR_WORKSPACE_NAME: CommandId =
+        CommandId::new("clear_workspace_name");
+    /// Closes a workspace after assessment.
+    pub const CLOSE_WORKSPACE: CommandId = CommandId::new("close_workspace");
     /// Renames a pane.
     pub const RENAME_PANE: CommandId = CommandId::new("rename_pane");
     /// Activates the most recently used tab.
@@ -1144,6 +1159,16 @@ const OWN_SESSION: &[ArgumentSpec] = &[ArgumentSpec {
     prompt: false,
 }];
 
+/// Workspace-targeted commands default to the window's workspace. The
+/// argument is not prompted so the palette runs them at once; menus and
+/// programmatic callers supply another workspace.
+const OWN_WORKSPACE: &[ArgumentSpec] = &[ArgumentSpec {
+    name: "workspace",
+    kind: ArgumentKind::Workspace,
+    required: Requirement::Optional,
+    prompt: false,
+}];
+
 /// Close Session's target: the window's session by default, prompted so
 /// the palette can pick a session no window shows.
 const PICKED_SESSION: &[ArgumentSpec] = &[ArgumentSpec {
@@ -1504,6 +1529,59 @@ const CATALOG: &[CommandSpec] = &[
         "Close Session",
         "Close a session and every tab in it after assessing its terminals.",
         PICKED_SESSION,
+    ),
+    spec(
+        ids::NEW_WORKSPACE,
+        CommandScope::Window,
+        "New Workspace",
+        "Create a workspace with a new tab in this window's session and \
+         switch this window to it.",
+        &[ArgumentSpec {
+            name: "name",
+            kind: ArgumentKind::Text,
+            required: Requirement::Optional,
+            prompt: false,
+        }],
+    ),
+    spec(
+        ids::SELECT_WORKSPACE,
+        CommandScope::Window,
+        "Switch Workspace",
+        "Show another workspace of this window's session in this window.",
+        &[ArgumentSpec {
+            name: "workspace",
+            kind: ArgumentKind::Workspace,
+            required: Requirement::Always,
+            prompt: true,
+        }],
+    ),
+    spec(
+        ids::NEXT_WORKSPACE,
+        CommandScope::Window,
+        "Next Workspace",
+        "Show the next workspace of this window's session, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::PREVIOUS_WORKSPACE,
+        CommandScope::Window,
+        "Previous Workspace",
+        "Show the previous workspace of this window's session, wrapping.",
+        &[],
+    ),
+    spec(
+        ids::CLEAR_WORKSPACE_NAME,
+        CommandScope::Runtime,
+        "Clear Workspace Name",
+        "Remove a workspace's custom name, restoring its automatic one.",
+        OWN_WORKSPACE,
+    ),
+    spec(
+        ids::CLOSE_WORKSPACE,
+        CommandScope::Runtime,
+        "Close Workspace",
+        "Close a workspace and every tab in it after assessing its terminals.",
+        OWN_WORKSPACE,
     ),
     spec(
         ids::RENAME_PANE,

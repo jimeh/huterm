@@ -15,11 +15,13 @@
 //! runtime state on the projection. [`WindowModel::desktop_layout`] turns the
 //! records into the saved layout that session restore reopens.
 //!
-//! A window that switches sessions keeps a [`SessionMemory`] for each
-//! session it showed and left, so switching back returns to the same
-//! workspace, tab, panes, and layout history. The model also keeps the order
-//! sessions were last viewed in, across window removal, so a reopen can
-//! return to the session the user left most recently.
+//! A window that switches sessions or workspaces keeps a
+//! [`NavigationMemory`] for each workspace it showed and left, so switching
+//! back returns to the same tab, panes, and layout history there, and a
+//! session switch returns to the workspace the window left last in that
+//! session. The model also keeps the order sessions were last viewed in,
+//! across window removal, so a reopen can return to the session the user
+//! left most recently.
 //!
 //! Every change to a saved fact moves [`WindowModel::revision`], which
 //! schedules a checkpoint.
@@ -76,10 +78,11 @@ pub(super) struct WindowLayout {
     pub(super) fullscreen: bool,
 }
 
-/// Where a window was in a session it showed and left. View state: never
-/// shared with other windows, and pruned when the session closes.
+/// Where a window was in a workspace it showed and left. View state: never
+/// shared with other windows, and pruned when the workspace closes or moves
+/// to another session.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct SessionMemory {
+pub(super) struct NavigationMemory {
     pub(super) session: SessionId,
     pub(super) workspace: WorkspaceId,
     pub(super) active: Option<TabId>,
@@ -87,12 +90,17 @@ pub(super) struct SessionMemory {
     pub(super) history: Vec<TabId>,
     /// Each tab's focused pane.
     pub(super) panes: Vec<(TabId, PaneId)>,
-    /// The window's layout history for the session, so undo never reaches a
-    /// session the window no longer shows. Not saved.
+    /// The window's layout history for the workspace, so undo never
+    /// reaches a workspace the window no longer shows. Not saved.
     pub(super) layout_history: LayoutHistory,
 }
 
-impl SessionMemory {
+impl NavigationMemory {
+    /// Whether the projection still holds the workspace in the session.
+    fn current(&self, state: &HierarchyState) -> bool {
+        state.workspace_session(self.workspace) == Some(self.session)
+    }
+
     /// Drops the tabs and panes the projection no longer holds in the
     /// remembered workspace; returns whether anything went.
     fn prune(&mut self, state: &HierarchyState) -> bool {
@@ -126,10 +134,11 @@ pub(super) struct WindowRecord {
     pub(super) quake: Option<QuakeRecord>,
     pub(super) layout: WindowLayout,
     /// The window's own layout changes that undo and redo restore, for the
-    /// session it shows.
+    /// workspace it shows.
     pub(super) layout_history: LayoutHistory,
-    /// The sessions the window showed and left, most recently left first.
-    pub(super) memory: Vec<SessionMemory>,
+    /// The workspaces the window showed and left, most recently left
+    /// first; a session may appear more than once.
+    pub(super) memory: Vec<NavigationMemory>,
     /// The window is being removed. Its own view can still read the record,
     /// but profile rows, Quit dialog titles, and Quit capture skip it.
     pub(super) closing: bool,
@@ -137,6 +146,11 @@ pub(super) struct WindowRecord {
     /// last-window rule counts the window as going, though it becomes
     /// `closing` only once the commit's completion removes it.
     pub(super) close_committing: bool,
+    /// The window owes an emptied close: still to be assessed, assessing,
+    /// or committing. Captures leave out such a window when it shows no tab
+    /// and its session holds no other workspace: the close ends it. A
+    /// refused close leaves it clear, since the runtime kept the window.
+    pub(super) emptied_close: bool,
     /// The window's own transparency overrides, runtime state over the
     /// configured defaults and its Quake profile.
     pub(super) transparency: crate::transparency::Layer,
@@ -242,6 +256,7 @@ impl WindowModel {
             memory: Vec::new(),
             closing: false,
             close_committing: false,
+            emptied_close: false,
             transparency: crate::transparency::Layer::default(),
         });
     }
@@ -272,24 +287,24 @@ impl WindowModel {
         self.viewed.insert(0, session);
     }
 
-    /// Switches a window to `session` in `workspace`: remembers where it
-    /// was in the session it leaves, starts the target's layout history
+    /// Switches a window to `workspace` of `session`: remembers where it
+    /// was in the workspace it leaves, starts the target's layout history
     /// from its memory, and returns that memory, which the window applies
     /// once its views install. The window's tab entries stay until
     /// reconcile drops their views. Returns `None` when the window had no
-    /// memory of the target.
-    pub(super) fn switch_session(
+    /// memory of the target workspace.
+    pub(super) fn switch_to(
         &mut self,
         id: WindowId,
         session: SessionId,
         workspace: WorkspaceId,
-    ) -> Option<SessionMemory> {
+    ) -> Option<NavigationMemory> {
         let record = self.saved_mut(id)?;
         let left = record.session.zip(record.workspace);
         if let Some((left, left_workspace)) = left
-            && left != session
+            && (left, left_workspace) != (session, workspace)
         {
-            let memory = SessionMemory {
+            let memory = NavigationMemory {
                 session: left,
                 workspace: left_workspace,
                 active: record.active,
@@ -301,14 +316,18 @@ impl WindowModel {
                     .collect(),
                 layout_history: std::mem::take(&mut record.layout_history),
             };
-            record.memory.retain(|memory| memory.session != left);
+            record
+                .memory
+                .retain(|memory| memory.workspace != left_workspace);
             record.memory.insert(0, memory);
             record.memory.truncate(huterm_state::bounds::MAX_SESSIONS);
         }
         let target = record
             .memory
             .iter()
-            .position(|memory| memory.session == session)
+            .position(|memory| {
+                memory.session == session && memory.workspace == workspace
+            })
             .map(|index| record.memory.remove(index));
         record.layout_history = target
             .as_ref()
@@ -323,6 +342,19 @@ impl WindowModel {
         target
     }
 
+    /// The workspace a window left last in `session`, if it remembers one.
+    pub(super) fn remembered_workspace(
+        &self,
+        id: WindowId,
+        session: SessionId,
+    ) -> Option<WorkspaceId> {
+        self.record(id)?
+            .memory
+            .iter()
+            .find(|memory| memory.session == session)
+            .map(|memory| memory.workspace)
+    }
+
     /// Records the attachment that replaced a window's own, after the
     /// runtime invalidated the old one.
     pub(super) fn set_attachment(
@@ -335,27 +367,26 @@ impl WindowModel {
         }
     }
 
-    /// Replaces a restored window's memory of the sessions it left.
+    /// Replaces a restored window's memory of the workspaces it left.
     pub(super) fn restore_memory(
         &mut self,
         id: WindowId,
-        memory: Vec<SessionMemory>,
+        memory: Vec<NavigationMemory>,
     ) {
         if let Some(record) = self.saved_mut(id) {
             record.memory = memory;
         }
     }
 
-    /// Forgets the sessions the projection no longer holds, in every
-    /// window's memory and in the viewed order, and the tabs and panes a
-    /// remembered workspace lost.
+    /// Forgets the sessions the projection no longer holds, in the viewed
+    /// order, and in every window's memory the workspaces that closed or
+    /// moved to another session and the tabs and panes a remembered
+    /// workspace lost.
     pub(super) fn prune_sessions(&mut self, state: &HierarchyState) {
         let mut changed = false;
         for record in &mut self.records {
             let before = record.memory.len();
-            record
-                .memory
-                .retain(|memory| state.session(memory.session).is_some());
+            record.memory.retain(|memory| memory.current(state));
             changed |= record.memory.len() != before;
             for memory in &mut record.memory {
                 changed |= memory.prune(state);
@@ -797,6 +828,13 @@ impl WindowModel {
         }
     }
 
+    /// Notes whether `id` owes an emptied close.
+    pub(super) fn set_emptied_close(&mut self, id: WindowId, emptied: bool) {
+        if let Some(record) = self.record_mut(id) {
+            record.emptied_close = emptied;
+        }
+    }
+
     /// Marks a window as being removed and ends its profile association.
     pub(super) fn begin_close(&mut self, id: WindowId) {
         let Some(record) = self.saved_mut(id) else {
@@ -961,13 +999,17 @@ impl WindowModel {
     /// with identities unscoped as the runtime capture writes them, and
     /// `active` as the window activated last when it is an open regular
     /// window. Quake windows keep their profile and are not activated.
+    /// Windows `departing` names, whose close already ends them, are left
+    /// out.
     pub(super) fn desktop_layout(
         &self,
         active: Option<WindowId>,
+        departing: impl Fn(&WindowRecord) -> bool,
     ) -> huterm_state::DesktopLayout {
         let mut active_window = None;
         let windows = self
             .open_records()
+            .filter(|record| !departing(record))
             .filter_map(|record| {
                 let layout = saved_window(record)?;
                 if active == Some(record.id) && record.quake.is_none() {
@@ -1054,8 +1096,10 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
     })
 }
 
-/// One remembered session's saved navigation, unscoped like the window's.
-fn saved_memory(memory: &SessionMemory) -> huterm_state::SessionNavigation {
+/// One remembered workspace's saved navigation, unscoped like the window's.
+pub(super) fn saved_memory(
+    memory: &NavigationMemory,
+) -> huterm_state::SessionNavigation {
     huterm_state::SessionNavigation {
         session: SessionId::new(memory.session.get()),
         workspace: WorkspaceId::new(memory.workspace.get()),
