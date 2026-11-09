@@ -516,6 +516,55 @@ fn a_window_opened_between_reads_marks_the_next_bell(cx: &mut TestAppContext) {
     harness.wait_for_dot(two, bells, Some(Dot::Bell));
 }
 
+/// W57 for a session switch: a window switching into a session the desktop
+/// already read counts the bells rung there before as seen, and the next
+/// one as unseen, though no hierarchy batch follows the switch.
+#[gpui::test]
+fn a_window_switched_between_reads_marks_the_next_bell(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let other = harness.other_session("other", 1);
+    let (bells, terminal) = {
+        let mut mux = harness.runtime.lock();
+        let bells = mux.create_workspace(other.session, None).unwrap();
+        let opened = mux.open_tab(bells, &fixture(BELLS)).unwrap();
+        (bells, opened.tab.first_pane().terminal_id)
+    };
+    // Another client rings once, before the window switches.
+    let viewer = {
+        let mut mux = harness.runtime.lock();
+        let attachment = mux.attach_session(other.session).unwrap();
+        mux.subscribe_terminal(
+            attachment,
+            terminal,
+            ViewerOptions::new(ViewerCapabilities::ALL),
+        )
+        .unwrap()
+    };
+    let ring = |viewer: &TerminalViewer| {
+        viewer
+            .send_input(huterm_protocol::TerminalInput::Text("a\r".into()))
+            .unwrap();
+    };
+    harness.wait_for("the shell to start", |cx| {
+        cx.global::<Desktop>().statuses.get(terminal).is_some()
+    });
+    ring(&viewer);
+    harness.wait_for("the desktop to read the bell", |cx| {
+        cx.global::<Desktop>()
+            .statuses
+            .get(terminal)
+            .is_some_and(|status| status.bells == 1)
+    });
+    harness.switch_to(window, other.session, &other.tabs);
+    assert_eq!(harness.dot(window, bells), None, "rung before it switched");
+    ring(&viewer);
+    harness.wait_for_dot(window, bells, Some(Dot::Bell));
+}
+
 /// W54: a shell that exits in a workspace no window shows marks its row,
 /// whose status names the tab: with no view, nothing closes the tab.
 #[gpui::test]
