@@ -912,13 +912,11 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
         Platform::MacOs => "cmd-alt-i",
         Platform::Linux => "ctrl-shift-alt-i",
     };
-    // GPUI folds Shift+bracket into a brace, so the Linux cycle keys add
-    // Alt to the `ctrl-super` focus keys instead.
-    let (next_layout, previous_layout, balance) = match platform {
-        Platform::MacOs => ("cmd-ctrl-]", "cmd-ctrl-[", "cmd-ctrl-="),
-        Platform::Linux => {
-            ("ctrl-super-alt-]", "ctrl-super-alt-[", "ctrl-super-=")
-        }
+    // The previous layout has no default; the workspace cycle took its
+    // bracket key.
+    let (next_layout, balance) = match platform {
+        Platform::MacOs => ("cmd-ctrl-\\", "cmd-ctrl-="),
+        Platform::Linux => ("ctrl-super-alt-\\", "ctrl-super-="),
     };
     let mut bindings = vec![
         default(
@@ -951,11 +949,6 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
             next_layout,
             ids::NEXT_PANE_LAYOUT,
             "Arrange the panes in the next layout",
-        ),
-        default(
-            previous_layout,
-            ids::PREVIOUS_PANE_LAYOUT,
-            "Arrange the panes in the previous layout",
         ),
         default(balance, ids::BALANCE_PANES, "Balance the panes"),
     ];
@@ -993,6 +986,10 @@ fn pane_defaults(platform: Platform) -> Vec<BindingEntry> {
 }
 
 /// The shipped per-platform bindings, in precedence order.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one entry per default binding group"
+)]
 pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     let mut entries = vec![
         default("shift-pageup", ids::SCROLL_PAGE_UP, "Scroll up one page"),
@@ -1072,6 +1069,34 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             "Activate the previous tab",
         ),
     ]);
+    // macOS GPUI clears Shift from a non-letter key and reports the
+    // shifted character, so Shift-Cmd-] arrives as `cmd-}`. Linux folds
+    // Shift+bracket into a brace too, so its workspace cycle adds Alt to
+    // the `ctrl-super` pane focus keys instead.
+    let (next_tab, previous_tab, next_workspace, previous_workspace) =
+        match platform {
+            Platform::MacOs => ("cmd-}", "cmd-{", "cmd-ctrl-]", "cmd-ctrl-["),
+            Platform::Linux => (
+                "ctrl-pagedown",
+                "ctrl-pageup",
+                "ctrl-super-alt-]",
+                "ctrl-super-alt-[",
+            ),
+        };
+    entries.extend([
+        default(next_tab, ids::NEXT_TAB, "Activate the next tab"),
+        default(previous_tab, ids::PREVIOUS_TAB, "Activate the previous tab"),
+        default(
+            next_workspace,
+            ids::NEXT_WORKSPACE,
+            "Show the next workspace",
+        ),
+        default(
+            previous_workspace,
+            ids::PREVIOUS_WORKSPACE,
+            "Show the previous workspace",
+        ),
+    ]);
     entries.extend(pane_defaults(platform));
     let modifier = match platform {
         Platform::MacOs => "cmd",
@@ -1092,6 +1117,7 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
     entries.extend(dialog_defaults());
     entries.extend(menu_defaults(platform));
     entries.extend(panel_defaults(platform));
+    entries.extend(sidebar_defaults());
     entries.extend(notice_defaults());
     entries.extend(settings_defaults(platform));
     entries.extend(text_field_defaults(platform));
@@ -1174,6 +1200,26 @@ fn panel_defaults(platform: Platform) -> Vec<BindingEntry> {
         on_slider(reset, ids::PANEL_RESET, "Reset"),
         on_button("enter", ids::PANEL_PRESS, "Press Button"),
         on_button("space", ids::PANEL_PRESS, "Press Button"),
+    ]
+}
+
+/// Sidebar bindings, identical on both platforms. Their commands carry the
+/// `Sidebar` context, so they match only while a workspace row or the
+/// session switcher has focus, in the sidebar or the workspace switcher.
+fn sidebar_defaults() -> Vec<BindingEntry> {
+    vec![
+        default("down", ids::SIDEBAR_NEXT, "Next"),
+        default("tab", ids::SIDEBAR_NEXT, "Next"),
+        default("up", ids::SIDEBAR_PREVIOUS, "Previous"),
+        default("shift-tab", ids::SIDEBAR_PREVIOUS, "Previous"),
+        default("home", ids::SIDEBAR_FIRST, "First"),
+        default("end", ids::SIDEBAR_LAST, "Last"),
+        default("enter", ids::SIDEBAR_SHOW, "Open"),
+        default("space", ids::SIDEBAR_SHOW, "Open"),
+        default("f2", ids::SIDEBAR_RENAME, "Rename"),
+        default("shift-f10", ids::SIDEBAR_MENU, "Open Menu"),
+        default("menu", ids::SIDEBAR_MENU, "Open Menu"),
+        default("escape", ids::SIDEBAR_EXIT, "Return to Terminal"),
     ]
 }
 

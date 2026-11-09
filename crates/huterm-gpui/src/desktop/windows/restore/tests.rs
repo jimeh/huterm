@@ -61,13 +61,13 @@ fn capture() -> RuntimeCapture {
         socket_name: "default".into(),
         next_id: 5,
         session_ordinal: 1,
-        workspace_ordinal: 1,
         sessions: vec![SessionCapture {
             info: SessionInfo {
                 id: SessionId::new(1),
                 custom_name: Some("main".into()),
                 automatic_name: "Session 1".into(),
             },
+            workspace_ordinal: 1,
             workspaces: vec![WorkspaceCapture {
                 info: WorkspaceInfo {
                     id: WorkspaceId::new(2),
@@ -108,6 +108,8 @@ fn layout(capture: &RuntimeCapture) -> DesktopLayout {
             },
             mode: WindowMode::Windowed,
             sidebar_width: 180.0,
+            workspace_panel_visible: None,
+            workspace_panel_width: 0.0,
             display: None,
             quake_profile: None,
             appearance: None,

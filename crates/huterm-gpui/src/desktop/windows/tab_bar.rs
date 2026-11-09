@@ -454,10 +454,10 @@ impl WorkspaceView {
         }
     }
 
-    /// Caches Fit tab widths, and the session control's name width, for
+    /// Caches Fit tab widths, and the session switcher's name width, for
     /// `tab_strip`, which cannot read titles because it has no `App`.
     pub(super) fn measure_tab_widths(&mut self, window: &Window, cx: &App) {
-        // The session control's width shares the bar with the tabs.
+        // The corner session switcher's width shares the bar with the tabs.
         self.measure_session_label(window, cx);
         let tabs = self.config.tabs;
         if tabs.width != TabWidth::Fit || tabs.position.vertical() {

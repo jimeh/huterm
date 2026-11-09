@@ -37,6 +37,8 @@ pub enum SectionId {
     General,
     Appearance,
     Windows,
+    Sessions,
+    Workspaces,
     Tabs,
     Panes,
     Terminal,
@@ -48,10 +50,12 @@ pub enum SectionId {
 }
 
 impl SectionId {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::General,
         Self::Appearance,
         Self::Windows,
+        Self::Sessions,
+        Self::Workspaces,
         Self::Tabs,
         Self::Panes,
         Self::Terminal,
@@ -70,6 +74,8 @@ impl SectionId {
             Self::Appearance => "appearance",
             Self::Tabs => "tabs",
             Self::Windows => "windows",
+            Self::Sessions => "sessions",
+            Self::Workspaces => "workspaces",
             Self::Panes => "panes",
             Self::Terminal => "terminal",
             Self::Scrollback => "scrollback",
@@ -87,6 +93,8 @@ impl SectionId {
             Self::Appearance => "Appearance",
             Self::Tabs => "Tabs",
             Self::Windows => "Windows",
+            Self::Sessions => "Sessions",
+            Self::Workspaces => "Workspaces",
             Self::Panes => "Panes",
             Self::Terminal => "Terminal",
             Self::Scrollback => "Scrollback",
@@ -938,6 +946,8 @@ mod tests {
                 "General",
                 "Appearance",
                 "Windows",
+                "Sessions",
+                "Workspaces",
                 "Tabs",
                 "Panes",
                 "Terminal",
@@ -1085,7 +1095,24 @@ mod tests {
                     {
                         SectionId::Appearance
                     }
+                    // The deprecated title-bar session control sits with
+                    // the session switcher it gave way to.
+                    Some(
+                        ("window", "session_button")
+                        | (
+                            "sidebar",
+                            "session_switcher" | "session_switcher_in_corner",
+                        )
+                        | ("general", "restore_sessions" | "session_numbering"),
+                    ) => SectionId::Sessions,
                     Some(("window", _)) => SectionId::Windows,
+                    Some((
+                        "sidebar",
+                        "position"
+                        | "visible"
+                        | "workspace_switcher_in_corner"
+                        | "switcher_style",
+                    )) => SectionId::Workspaces,
                     Some(("panes", _)) => SectionId::Panes,
                     _ => continue,
                 };
@@ -1101,6 +1128,11 @@ mod tests {
                 .collect()
         };
         assert_eq!(groups(SectionId::Windows), ["Window"]);
+        assert_eq!(
+            groups(SectionId::Sessions),
+            ["Session switcher", "Restore and names"]
+        );
+        assert_eq!(groups(SectionId::Workspaces), ["Sidebar"]);
         assert_eq!(
             groups(SectionId::Panes),
             [
@@ -1290,6 +1322,7 @@ mod tests {
             font: crate::RawFont::default(),
             window: crate::WindowConfig::default(),
             tabs: crate::TabsConfig::default(),
+            sidebar: crate::SidebarConfig::default(),
             updates: crate::UpdateConfig {
                 automatic_checks: Some(true),
                 check_interval_hours: Some(24),

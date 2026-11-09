@@ -9,7 +9,6 @@ use gpui::{Modifiers, MouseDownEvent};
 
 use super::super::menu_spec::{NativeItem, NativeMenu};
 use super::super::native_menus::{MenuAnchor, MenuPresenter, PresentedMenu};
-use super::worker_hooks::Stage;
 use super::*;
 
 /// One menu the presenter showed, with the sender that answers it.
@@ -317,234 +316,55 @@ fn the_native_window_menu_lists_copy_and_paste_and_opens_below_its_button(
 }
 
 #[gpui::test]
-fn the_native_session_menu_switches_or_opens_a_window_from_its_picks(
+fn the_session_list_stays_huterms_and_its_row_menu_opens_natively(
     cx: &mut TestAppContext,
 ) {
-    // A Linux window without client decorations has no title row, and a
-    // one-tab window hides its bar; an always-shown bar draws the control
-    // that the menu opens below on both platforms.
-    let mut harness = DesktopHarness::with_config(cx, |config| {
-        config.tabs.always_show = true;
-    });
+    let mut harness = DesktopHarness::new(cx);
     let (window, _, presenter) = harness.native_window();
     let other = harness.other_session("other", 1);
     harness.wait_projection();
-    let own = harness.session.get();
-    let theirs = other.session.get();
+    // The session list is a GPUI popover even with native menus.
     harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
-    harness.wait_shown(&presenter, 1);
-    {
-        let shown = presenter.shown.borrow();
-        // Below the control, which the native menu's open state follows.
-        let MenuAnchor::Below(anchor) = shown[0].anchor else {
-            panic!("the menu opens below the control");
-        };
-        let control = harness
-            .update_view(window, |view, _, _| view.session_button_bounds.get());
-        assert_eq!(Some(anchor), control);
-        // Each session row is followed by its Command alternate, Open in
-        // New Window; the automatic name has nothing to clear.
-        assert_eq!(
-            shown[0].ids(),
-            [
-                format!("session:{own}"),
-                format!("session-window:{own}"),
-                format!("session:{theirs}"),
-                format!("session-window:{theirs}"),
-                "-".to_owned(),
-                "new_session".to_owned(),
-                "new_workspace".to_owned(),
-                "open_session_in_new_window".to_owned(),
-                "rename_session".to_owned(),
-                "-".to_owned(),
-                "close_session".to_owned(),
-            ]
-        );
-    }
-    harness.cx.update(|cx| {
-        assert_eq!(
-            super::menus::a11y_node(cx, window, "session-control")["aria"]
-                ["expanded"],
-            true
-        );
-    });
-    presenter.shown.borrow()[0].pick(&format!("session:{theirs}"));
-    harness.wait_switched(window, other.session, &other.tabs);
-    // The alternate opens a second window on the window's session now.
-    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
-    harness.wait_shown(&presenter, 2);
-    let before = harness.cx.update(|cx| cx.windows().len());
-    presenter.shown.borrow()[1].pick(&format!("session-window:{own}"));
-    harness.wait_for("a window on the left session", |cx| {
-        cx.windows().len() == before + 1
-            && cx.global::<Desktop>().windows.records().any(|record| {
-                record.session.is_some_and(|session| session.get() == own)
-            })
-    });
-}
-
-#[gpui::test]
-fn the_first_native_session_menu_after_every_shell_exited_tags_the_session(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
-    let (window, _, presenter) = harness.native_window();
-    let gone = {
-        let mut mux = harness.runtime.lock();
-        let session = mux.create_session(Some("gone")).unwrap();
-        let workspace = mux.create_workspace(session, None).unwrap();
-        mux.open_tab(workspace, &fixture("exit 0")).unwrap();
-        session
-    };
-    let runtime = Arc::clone(&harness.runtime);
-    harness.wait_for("the session's shell to exit", |_| {
-        runtime.lock().exited_sessions().contains(&gone)
-    });
-    harness.wait_projection();
-    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
-    harness.wait_shown(&presenter, 1);
-    let shown = presenter.shown.borrow();
-    let id = format!("session:{}", gone.get());
-    let subtitle =
-        shown[0]
-            .menu
-            .entries()
-            .into_iter()
-            .find_map(|item| match item {
-                NativeItem::Item {
-                    id: item, subtitle, ..
-                } if *item == id => Some(subtitle.clone()),
-                _ => None,
-            });
-    assert_eq!(
-        subtitle,
-        Some(Some("1 tab · Every shell exited".to_owned())),
-        "the menu used the exited read from before the shell exited"
-    );
-}
-
-impl DesktopHarness {
-    /// Asks for the native session menu while its exited read waits, runs
-    /// `supersede`, then lets the read answer and settles its completion.
-    fn supersede_session_menu(
-        &mut self,
-        window: AnyWindowHandle,
-        supersede: impl FnOnce(&mut Self),
-    ) {
-        let runtime = Arc::clone(&self.runtime);
-        runtime.worker_hooks.hold(Stage::ExitedRead);
-        self.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
-        self.wait_for("the exited read to wait", |_| {
-            runtime.worker_hooks.held(Stage::ExitedRead) == 1
-        });
-        supersede(self);
-        runtime.worker_hooks.release(Stage::ExitedRead);
-        self.wait_for("the exited read to answer", |_| {
-            runtime.worker_hooks.held(Stage::ExitedRead) == 0
-        });
-        self.cx.run_until_parked();
-    }
-}
-
-/// Whether `window`'s session menu is open or waits for its read.
-fn session_menu_open(
-    harness: &mut DesktopHarness,
-    window: AnyWindowHandle,
-) -> bool {
-    harness.update_view(window, |view, _, _| view.session_menu_open())
-}
-
-#[gpui::test]
-fn a_native_session_menu_whose_window_deactivates_before_its_read_never_shows(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
-    let (window, tab, presenter) = harness.native_window();
-    harness.supersede_session_menu(window, |harness| {
-        harness.deactivate(window);
-    });
-    assert!(
-        presenter.shown.borrow().is_empty(),
-        "the menu showed after its window deactivated"
-    );
-    assert!(!session_menu_open(&mut harness, window));
-    // A request nothing supersedes still shows once its read answers.
-    harness.activate(window, tab);
-    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
-    harness.wait_shown(&presenter, 1);
-    harness.cx.update(|cx| {
-        assert_eq!(native_kind(cx, window), Some(MenuKind::Session));
-    });
-}
-
-#[gpui::test]
-fn escape_cancels_a_native_session_menu_before_its_read_answers(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
-    let (window, tab, presenter) = harness.native_window();
-    harness.supersede_session_menu(window, |harness| {
-        harness.press(window, "escape");
-        assert!(
-            !session_menu_open(harness, window),
-            "Escape left the menu waiting for its read"
-        );
-    });
-    assert!(
-        presenter.shown.borrow().is_empty(),
-        "the menu showed after Escape"
-    );
-    harness.cx.update(|cx| assert!(focused(cx, window, tab)));
-    // The next request still opens one.
-    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
-    harness.wait_shown(&presenter, 1);
-}
-
-#[gpui::test]
-fn a_native_session_menu_superseded_by_the_palette_never_shows(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
-    let (window, _, presenter) = harness.native_window();
-    harness.supersede_session_menu(window, |harness| {
-        harness.invoke(window, ids::OPEN_COMMAND_PALETTE).unwrap();
-        harness.press(window, "escape");
-        harness.wait_for("the palette to close", |cx| {
-            window
-                .update(cx, |root, _, cx| {
-                    root.downcast::<WorkspaceView>()
-                        .is_ok_and(|view| view.read(cx).palette.is_none())
+    harness.wait_for("the session list to paint", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx)
+                        .session_list_popover
+                        .content_bounds()
+                        .is_some()
                 })
-                .unwrap_or(false)
-        });
+            })
+            .unwrap_or(false)
     });
-    assert!(
-        presenter.shown.borrow().is_empty(),
-        "the menu showed after the palette opened and closed"
-    );
-    assert!(!session_menu_open(&mut harness, window));
-}
-
-#[gpui::test]
-fn a_native_session_menu_superseded_by_another_menu_never_shows(
-    cx: &mut TestAppContext,
-) {
-    let mut harness = DesktopHarness::new(cx);
-    let (window, _, presenter) = harness.native_window();
-    harness.supersede_session_menu(window, |harness| {
-        harness.invoke(window, ids::OPEN_MENU).unwrap();
-        harness.wait_shown(&presenter, 1);
-        presenter.shown.borrow()[0].dismiss();
-        harness.wait_for("the window menu to close", |cx| {
-            native_kind(cx, window).is_none()
-        });
+    assert!(presenter.shown.borrow().is_empty());
+    assert_eq!(harness.cx.update(|cx| native_kind(cx, window)), None);
+    // A row's menu is a menu, so it opens natively, for that row.
+    harness.update_view(window, |view, window, cx| {
+        view.open_session_row_menu(
+            other.session,
+            gpui::point(px(40.0), px(40.0)),
+            false,
+            window,
+            cx,
+        );
     });
+    harness.wait_shown(&presenter, 1);
+    let theirs = other.session.get();
     assert_eq!(
-        presenter.shown.borrow().len(),
-        1,
-        "the session menu showed after another menu opened and closed"
+        presenter.shown.borrow()[0].ids(),
+        [
+            format!("session-rename:{theirs}"),
+            format!("session-clear:{theirs}"),
+            format!("session-window:{theirs}"),
+            "-".to_owned(),
+            format!("session-close:{theirs}"),
+        ]
     );
-    assert!(!session_menu_open(&mut harness, window));
+    assert_eq!(
+        harness.cx.update(|cx| native_kind(cx, window)),
+        Some(MenuKind::SessionRow(other.session))
+    );
 }
 
 #[gpui::test]
@@ -986,4 +806,20 @@ fn a_settings_native_field_menu_closes_when_a_reload_hides_its_row(
     harness.wait_for("the hidden row's menu to close", |_| {
         presenter.shown.borrow()[0].closed.get()
     });
+}
+
+#[gpui::test]
+fn a_native_row_menu_opened_before_the_more_tooltip_keeps_it_hidden(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.macos_native_menus = true;
+        config.tabs.always_show = true;
+    });
+    let (window, _, presenter) = harness.native_window();
+    let (second, _) = harness.add_workspace(1);
+    harness.click_more_before_its_tooltip(window, second, |cx| {
+        native_kind(cx, window) == Some(MenuKind::WorkspaceRow(second))
+    });
+    assert_eq!(presenter.shown.borrow().len(), 1);
 }

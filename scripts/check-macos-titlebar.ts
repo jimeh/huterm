@@ -3,19 +3,20 @@
  * server decides whether a title-bar press moves the window, so NSEvents
  * posted inside the application cannot show it. Huterm owns the strip's
  * drags: in the merged row (`tabs.position = "titlebar"`) tab clicks,
- * drags, right-clicks, `+`, the session control, and the menu button stay
- * with Huterm; in every position, empty strip space drags the window and a
- * double-click there runs the title-bar action exactly once. The session
- * control sits just before the menu button in every position, opens the
- * session menu on a real click, and opens it from the keyboard; a second
- * run checks it at the end of a fullscreen top or bottom bar, in a
- * fullscreen column's new-tab row, and in a narrow window.
+ * drags, right-clicks, `+`, the sidebar button and session switcher, and
+ * the menu button stay with Huterm; in every position, empty strip space
+ * drags the window and a double-click there runs the title-bar action
+ * exactly once. The session switcher, which Settings show beside the
+ * sidebar button, sits just after that button in every position, opens the
+ * session list on a real click, and opens it from the keyboard; a second
+ * run checks it at the start of a fullscreen top or bottom bar, in a
+ * fullscreen column's row above its tabs, and in a narrow window.
  */
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appKitInput, field, parseRect, quoted } from "./check-overlays";
-import { assertNone, menuProblems, placementProblems, sessionControl } from "./session-control";
+import { assertNone, CONTROL_MAX, listProblems, placementProblems, sessionSwitcher } from "./session-control";
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Point = { x: number; y: number };
@@ -112,7 +113,8 @@ while IFS= read -r line; do
 done
 `, { mode: 0o700 });
   // The menu steps check Huterm's own menus, which macOS replaces with
-  // native ones by default.
+  // native ones by default. The session switcher beside the sidebar button
+  // is opt-in.
   await writeFile(config, `[window]
 macos_native_menus = false
 
@@ -120,6 +122,9 @@ macos_native_menus = false
 position = "${position}"
 always_show = true
 label = "title"
+
+[sidebar]
+session_switcher_in_corner = true
 `);
   const app = Bun.spawn([executable], {
     env: { ...process.env, HUTERM_PALETTE_SMOKE: directory, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell },
@@ -202,36 +207,47 @@ label = "title"
   function emptyRowSpace(text: string): Point {
     if (!merged) {
       const terminal = parseRect(field(text, "terminal_bounds"));
-      return { x: Math.max(trafficLightsEnd(text), vertical ? terminal.x : 0) + 24, y: ROW / 2 };
+      // Past the traffic lights, and past the sidebar button and session
+      // switcher where this row holds them after the lights.
+      const switcher = sessionSwitcher(text);
+      const corner = switcher.host === "TitleRow" ? switcher.rect.x + switcher.rect.w : 0;
+      return { x: Math.max(trafficLightsEnd(text), vertical ? terminal.x : 0, corner) + 24, y: ROW / 2 };
     }
     const last = field(text, "tabs_rects").split(";").map(parseRect).pop()!;
-    // The session control sits before the menu button.
-    const control = sessionControl(text).rect;
+    // The menu button ends the row.
+    const menu = parseRect(field(text, "menu_button"));
     const left = last.x + last.w + 32 + 8;
-    const right = control.x - 8;
+    const right = menu.x - 8;
     if (right - left < 40) throw new Error(`${engine}: no empty row space between ${left} and ${right}: ${text}`);
     return { x: left + 16, y: ROW / 2 };
   }
 
+  /** Waits for `expected` in a state whose session list has painted. */
+  async function paintedList(...expected: string[]): Promise<string> {
+    let text = "";
+    await waitFor(async () => {
+      text = await current();
+      return expected.every((value) => text.includes(value)) && field(text, "session_list_rect") !== "none";
+    }, `painted session list with ${expected.join(", ")}`);
+    return text;
+  }
   /**
-   * Clicks the session control at `rect` with real input, checks the menu
+   * Clicks the session switcher at `rect` with real input, checks the list
    * opened above or below it, and closes it with Escape.
    */
   async function openSessionMenu(rect: Rect, upward: boolean): Promise<void> {
     click(centre(rect));
-    const opened = await paintedMenu("w0.menu_kind=session", "w0.session_open=true", "w0.menu_selection=none");
+    const opened = await paintedList("w0.session_open=true", "w0.session_list_from=Corner");
     const window = frame();
-    assertNone(`${engine}: ${position} session menu`, menuProblems(parseRect(field(opened, "menu_rect")), rect, upward, { x: 0, y: 0, w: window.w, h: window.h }));
+    assertNone(`${engine}: ${position} session list`, listProblems(parseRect(field(opened, "session_list_rect")), rect, upward, { x: 0, y: 0, w: window.w, h: window.h }));
     await input.key("escape");
-    await state("w0.menu=false", "w0.session_open=false", "w0.terminal_focused=true");
+    await state("w0.session_open=false", "w0.terminal_focused=true");
   }
   async function keyboardSessionMenu(): Promise<void> {
     await command("invoke\topen_session_menu");
-    await state("w0.menu_kind=session", "w0.menu_selection=session:");
-    await input.key("down");
-    await state("w0.menu_kind=session", "w0.menu_selection=new_session");
+    await paintedList("w0.session_open=true");
     await input.key("escape");
-    await state("w0.menu=false", "w0.terminal_focused=true");
+    await state("w0.session_open=false", "w0.terminal_focused=true");
   }
 
   try {
@@ -269,15 +285,16 @@ label = "title"
     if (merged && (Math.abs(lights.y + lights.h / 2 - ROW / 2) > 0.5 || lights.x < 4 || lights.x > 16)) {
       throw new Error(`${engine}: traffic lights ${field(laid, "traffic_lights")} are not centred in the ${ROW}-point strip`);
     }
-    // The session control shares the strip's right end with the menu
-    // button: the end of the merged row's bar, else the title strip, over
-    // a right column's top strip or the terminal column's row beside a left
-    // one.
-    const control = sessionControl(laid);
-    const row = position === "right"
-      ? { x: terminal.x + terminal.w, y: 0, w: frame().w - terminal.x - terminal.w, h: ROW }
-      : { x: vertical ? terminal.x : trafficLightsEnd(laid), y: 0, w: frame().w - (vertical ? terminal.x : trafficLightsEnd(laid)), h: ROW };
-    assertNone(`${engine}: ${position} session control`, placementProblems(control, merged ? "BarEnd" : "TitleStrip", row, button));
+    // The session switcher follows the sidebar button after the traffic
+    // lights: at the start of the merged row's bar, else in the title row,
+    // or in a left column's row above its tabs, below the button.
+    const control = sessionSwitcher(laid);
+    const sidebarButton = parseRect(field(laid, "sidebar_button"));
+    const host = merged ? "Bar" : position === "left" ? "Column" : "TitleRow";
+    const row = position === "left"
+      ? { x: 0, y: ROW, w: terminal.x, h: frame().h - ROW }
+      : { x: trafficLightsEnd(laid), y: 0, w: (position === "right" ? terminal.x + terminal.w : frame().w) - trafficLightsEnd(laid), h: ROW };
+    assertNone(`${engine}: ${position} session switcher`, placementProblems(control, host, row, position === "left" ? undefined : sidebarButton));
     if (quoted(laid, "w0.session_name") !== "Session 1" || field(laid, "session_automatic") !== "true") {
       throw new Error(`${engine}: the control names ${quoted(laid, "w0.session_name")}, not the automatic Session 1`);
     }
@@ -338,11 +355,11 @@ label = "title"
     await state("w0.menu=true", "w0.menu_target=none");
     await input.key("escape");
     await state("w0.menu=false", "w0.terminal_focused=true");
-    // The session control opens the session menu below itself; Escape
+    // The session switcher opens the session list below itself; Escape
     // returns focus to the terminal, and neither press moves the window.
     await openSessionMenu(control.rect, false);
     assertUnmoved(moved, "the row's controls");
-    // From the keyboard, `open_session_menu` selects the first row.
+    // `open_session_menu` opens it from the keyboard.
     await keyboardSessionMenu();
 
     // 7. Double-clicking empty row space zooms the window once. AppKit and
@@ -378,8 +395,8 @@ label = "title"
       await state("w0.menu=true", "w0.menu_target=none");
       await input.key("escape");
       await state("w0.menu=false", "w0.terminal_focused=true");
-      // The control paints above the occluding bar beside the button.
-      await openSessionMenu(sessionControl(await current()).rect, false);
+      // The switcher paints above the occluding bar.
+      await openSessionMenu(sessionSwitcher(await current()).rect, false);
       assertUnmoved(stripMoved, "the sidebar's corner menu button");
       click(sidebarStripPoint(position, parseRect(field(await current(), "terminal_bounds"))), 2);
       await frameWhere((value) => near(value, target), "the sidebar strip zoomed the window");
@@ -400,9 +417,9 @@ label = "title"
       const last = parseRect(field(row, "tabs_rects").split(";").pop()!);
       click({ x: last.x + last.w + 16, y: ROW / 2 });
       await state("w0.tabs=3", "w0.active_index=2", "w0.terminal_focused=true");
-      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=titlebar layout=row tab-click=activates tab-drag=reorders right-click=tab-menu,window-menu menu-button=opens session-control=${field(laid, "session_rect")}@BarEnd,click-opens,keyboard-opens empty-drag=moves double-click=once plus=new-tab`);
+      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=titlebar layout=row tab-click=activates tab-drag=reorders right-click=tab-menu,window-menu menu-button=opens session-switcher=${field(laid, "session_rect")}@Bar,click-opens,keyboard-opens empty-drag=moves double-click=once plus=new-tab`);
     } else {
-      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=${position} layout=strip menu-button=opens session-control=${field(laid, "session_rect")}@TitleStrip,click-opens,keyboard-opens empty-drag=moves double-click=once`);
+      console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=${position} layout=strip menu-button=opens session-switcher=${field(laid, "session_rect")}@${field(laid, "session_host")},click-opens,keyboard-opens empty-drag=moves double-click=once`);
     }
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
@@ -422,12 +439,12 @@ label = "title"
 }
 
 /**
- * The session control where the window has no title strip and in a narrow
- * window, with real HID clicks: the end of a fullscreen top bar, the end of
- * a fullscreen bottom bar with the menu opening upward, icon-only in a
- * fullscreen column's new-tab row, and a long name that truncates in a wide
- * window and collapses to the icon in a narrow one, where the strip still
- * drags the window.
+ * The session switcher where the window has no title strip and in a narrow
+ * window, with real HID clicks: the start of a fullscreen top bar, the
+ * start of a fullscreen bottom bar with the list opening upward, a
+ * fullscreen column's row above its tabs, and a long name that truncates
+ * in a wide window and shows only the icon in a narrow one, where the strip
+ * still drags the window.
  */
 export async function checkMacSessionHosts(executable: string, pointer: string): Promise<void> {
   const engine = "ghostty";
@@ -443,8 +460,8 @@ while IFS= read -r line; do
   esac
 done
 `, { mode: 0o700 });
-  // The bar stays shown in fullscreen and below any notch, so its end is
-  // where the control goes.
+  // The bar stays shown in fullscreen and below any notch, so its start is
+  // where the switcher goes.
   const configText = (position: string) => `[window]
 macos_native_menus = false
 
@@ -453,6 +470,9 @@ position = "${position}"
 always_show = true
 auto_hide_in_fullscreen = false
 notch = "off"
+
+[sidebar]
+session_switcher_in_corner = true
 `;
   await writeFile(config, configText("top"));
   const app = Bun.spawn([executable], {
@@ -470,17 +490,13 @@ notch = "off"
     }, `state ${expected.join(", ")}`);
     return text;
   }
-  /**
-   * Waits for `expected` in a state whose open menu has painted. The state
-   * names a menu open before a frame draws it, and reports `menu_rect` only
-   * from a drawn frame.
-   */
-  async function paintedMenu(...expected: string[]): Promise<string> {
+  /** Waits for `expected` in a state whose session list has painted. */
+  async function paintedList(...expected: string[]): Promise<string> {
     let text = "";
     await waitFor(async () => {
       text = await current();
-      return expected.every((value) => text.includes(value)) && field(text, "menu_rect") !== "none";
-    }, `painted menu with ${expected.join(", ")}`);
+      return expected.every((value) => text.includes(value)) && field(text, "session_list_rect") !== "none";
+    }, `painted session list with ${expected.join(", ")}`);
     return text;
   }
   async function command(value: string): Promise<string> {
@@ -505,7 +521,7 @@ notch = "off"
     await input.key("enter");
     await state(`ACK:${token}`);
   }
-  /** Waits until the control reports `host` and the check passes. */
+  /** Waits until the switcher reports `host` and the check passes. */
   async function settled(host: string, check: (text: string) => string[]): Promise<string> {
     let text = "";
     let problems: string[] = [];
@@ -515,29 +531,30 @@ notch = "off"
         if (!text.includes(`w0.session_host=${host} `) || text.includes("w0.session_rect=none")) return false;
         problems = check(text);
         return problems.length === 0;
-      }, `the session control in ${host}`);
+      }, `the session switcher in ${host}`);
     } catch (error) {
       throw new Error(`${engine}: ${problems.join("; ") || String(error)}`, { cause: error });
     }
     return text;
   }
   /**
-   * Opens the session menu from the control and checks where it opens. In
-   * fullscreen the control sits at the screen's edge, where a synthetic
+   * Opens the session list from the switcher and checks where it opens. In
+   * fullscreen the switcher sits at the screen's edge, where a synthetic
    * click can reach the auto-hidden menu bar, the notification corner, or
-   * the Dock instead, so those steps open it by command; a window test
-   * clicks those hosts in-process.
+   * the Dock instead, so those steps open it by command, which anchors it
+   * to the switcher too; a window test clicks those hosts in-process.
    */
   async function openFrom(text: string, upward: boolean, label: string, via: "click" | "command" = "click"): Promise<void> {
-    const rect = sessionControl(text).rect;
+    const rect = sessionSwitcher(text).rect;
     if (via === "click") click(centre(rect));
     else await command("invoke\topen_session_menu");
-    const opened = await paintedMenu("w0.menu_kind=session", "w0.session_open=true");
+    const opened = await paintedList("w0.session_open=true", "w0.session_list_from=Corner");
     const window = frame();
-    assertNone(`${engine}: ${label} session menu`, menuProblems(parseRect(field(opened, "menu_rect")), rect, upward, { x: 0, y: 0, w: window.w, h: window.h }));
+    assertNone(`${engine}: ${label} session list`, listProblems(parseRect(field(opened, "session_list_rect")), rect, upward, { x: 0, y: 0, w: window.w, h: window.h }));
     await input.key("escape");
-    await state("w0.menu=false", "w0.session_open=false", "w0.terminal_focused=true");
+    await state("w0.session_open=false", "w0.terminal_focused=true");
   }
+  const button = (text: string) => parseRect(field(text, "sidebar_button"));
   const bar = (text: string) => parseRect(field(text, "tabs_rects").split(";")[0]!);
   const report: string[] = [];
 
@@ -550,29 +567,29 @@ notch = "off"
     await state("w0.tabs=2", "w0.terminal_focused=true");
 
     // 1. A long name truncates at the widest look in a roomy window and
-    // collapses to the icon in a narrow one; the strip still drags.
+    // shows only the icon in a narrow one; the strip still drags.
     const long = "huterm-release-notes-and-more";
     await command(`invoke\trename_session\tname=${long}`);
     await state(`w0.session_name="${long}"`, "w0.session_automatic=false");
     await command("resize\t900\t500");
-    const wide = await settled("TitleStrip", (text) => {
-      const control = sessionControl(text);
-      return control.truncated && !control.collapsed && Math.abs(control.rect.w - 168) <= 0.5 ? [] : [`not truncated at 168: ${field(text, "session_rect")}`];
+    const wide = await settled("TitleRow", (text) => {
+      const control = sessionSwitcher(text);
+      return Math.abs(control.rect.w - CONTROL_MAX) <= 0.5 ? [] : [`not truncated at ${CONTROL_MAX}: ${field(text, "session_rect")}`];
     });
     report.push(`truncated=${field(wide, "session_rect")}`);
     await command("resize\t320\t400");
-    const narrow = await settled("TitleStrip", (text) => {
-      const control = sessionControl(text);
-      const problems = placementProblems(control, "TitleStrip", { x: 0, y: 0, w: frame().w, h: ROW }, parseRect(field(text, "menu_button")));
-      return control.collapsed ? problems : [...problems, `not collapsed: ${field(text, "session_rect")}`];
+    const narrow = await settled("TitleRow", (text) => {
+      const control = sessionSwitcher(text);
+      const problems = placementProblems(control, "TitleRow", { x: 0, y: 0, w: frame().w, h: ROW }, button(text));
+      return control.icon ? problems : [...problems, `not icon-only: ${field(text, "session_rect")}`];
     });
-    report.push(`collapsed=${field(narrow, "session_rect")}`);
+    report.push(`icon=${field(narrow, "session_rect")}`);
     await openFrom(narrow, false, "narrow");
     const before = frame();
-    const lights = parseRect(field(narrow, "traffic_lights"));
-    const collapsed = sessionControl(narrow).rect;
-    const empty = { x: (lights.x + lights.w + collapsed.x) / 2, y: ROW / 2 };
-    if (collapsed.x - (lights.x + lights.w) < 40) throw new Error(`${engine}: no empty strip in the narrow window: ${field(narrow, "traffic_lights")} ${field(narrow, "session_rect")}`);
+    const icon = sessionSwitcher(narrow).rect;
+    const menu = parseRect(field(narrow, "menu_button"));
+    const empty = { x: (icon.x + icon.w + menu.x) / 2, y: ROW / 2 };
+    if (menu.x - (icon.x + icon.w) < 40) throw new Error(`${engine}: no empty strip in the narrow window: ${field(narrow, "session_rect")} ${field(narrow, "menu_button")}`);
     const [x, y] = [before.x + empty.x, before.y + empty.y];
     run([pointer, "drag", String(x), String(y), String(x + 60), String(y)], 15_000);
     await frameWhere(() => frame().x - before.x >= 30 && frame().w === before.w);
@@ -580,47 +597,47 @@ notch = "off"
     report.push("narrow-drag=moves");
     await command("resize\t900\t500");
 
-    // 2. Fullscreen has no title strip: the control ends the top bar,
-    // before the menu button, and the menu opens below it.
+    // 2. Fullscreen has no title strip: the switcher follows the sidebar
+    // button at the top bar's start, and the list opens below it.
     await command("invoke\ttoggle_fullscreen");
     await waitFor(async () => !(await current()).includes("w0.fullscreen=Windowed"), "fullscreen entry");
     // The state can report fullscreen before the frame grows; place the
-    // control against the screen-sized frame, not the 900-point window.
+    // switcher against the screen-sized frame, not the 900-point window.
     await frameWhere(() => frame().w > 900);
-    const top = await settled("BarEnd", (text) => {
+    const top = await settled("Bar", (text) => {
       const row = bar(text);
-      return placementProblems(sessionControl(text), "BarEnd", { x: 0, y: row.y, w: frame().w, h: row.h }, parseRect(field(text, "menu_button")));
+      return placementProblems(sessionSwitcher(text), "Bar", { x: 0, y: row.y, w: frame().w, h: row.h }, button(text));
     });
     await openFrom(top, false, "fullscreen top bar", "command");
     report.push(`fullscreen-top=${field(top, "session_rect")}`);
 
-    // 3. From a bottom bar the menu opens upward.
+    // 3. From a bottom bar the list opens upward.
     await writeFile(config, configText("bottom"));
     await command("invoke-reload");
-    const bottomBar = await settled("BarEnd", (text) => {
+    const bottomBar = await settled("Bar", (text) => {
       const row = bar(text);
-      const control = sessionControl(text);
-      const problems = placementProblems(control, "BarEnd", { x: 0, y: row.y, w: frame().w, h: row.h }, parseRect(field(text, "menu_button")));
+      const control = sessionSwitcher(text);
+      const problems = placementProblems(control, "Bar", { x: 0, y: row.y, w: frame().w, h: row.h }, button(text));
       return control.rect.y > frame().h / 2 ? problems : [...problems, `not at the bottom: ${field(text, "session_rect")}`];
     });
     await openFrom(bottomBar, true, "fullscreen bottom bar", "command");
     report.push(`fullscreen-bottom=${field(bottomBar, "session_rect")},upward`);
 
-    // 4. A column has no room at its top: the control is icon-only in the
-    // new-tab row, between `+` and the menu button.
+    // 4. A column gives the switcher a row above its tabs; without a
+    // title row the sidebar button starts that row.
     await writeFile(config, configText("left"));
     await command("invoke-reload");
-    const column = await settled("SplitRow", (text) => {
-      const control = sessionControl(text);
+    const column = await settled("Column", (text) => {
+      const control = sessionSwitcher(text);
       const terminal = parseRect(field(text, "terminal_bounds"));
-      return placementProblems(control, "SplitRow", { x: 0, y: 0, w: terminal.x, h: frame().h }, parseRect(field(text, "menu_button")));
+      return placementProblems(control, "Column", { x: 0, y: 0, w: terminal.x, h: frame().h }, button(text));
     });
     await openFrom(column, false, "fullscreen column", "command");
-    report.push(`fullscreen-left=${field(column, "session_rect")},icon`);
+    report.push(`fullscreen-left=${field(column, "session_rect")}`);
 
     await command("invoke\ttoggle_fullscreen");
     await state("w0.fullscreen=Windowed");
-    console.log(`MACOS_SESSION_CONTROL_SMOKE ${engine} ${report.join(" ")}`);
+    console.log(`MACOS_SESSION_SWITCHER_SMOKE ${engine} ${report.join(" ")}`);
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);

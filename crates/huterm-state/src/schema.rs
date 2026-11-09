@@ -167,6 +167,10 @@ struct RuntimeFile {
     socket_name: String,
     next_id: u64,
     session_ordinal: u64,
+    /// The runtime-wide workspace ordinal from before workspaces numbered
+    /// per session. Builds that require it still read this file, so it is
+    /// written as the highest session's counter; this build ignores it.
+    #[serde(default)]
     workspace_ordinal: u64,
     sessions: Bounded<SessionRecord, MAX_SESSIONS>,
     terminals: Bounded<TerminalRecord, MAX_PANES>,
@@ -178,6 +182,10 @@ struct SessionRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     custom_name: Option<String>,
     automatic_name: String,
+    /// Missing from files saved before workspaces numbered per session,
+    /// which a restore resumes from the session's workspaces instead.
+    #[serde(default)]
+    workspace_ordinal: u64,
     workspaces: Bounded<WorkspaceRecord, MAX_WORKSPACES>,
 }
 
@@ -263,6 +271,10 @@ struct WindowRecord {
     display: Option<String>,
     mode: ModeRecord,
     sidebar_width: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_panel_visible: Option<bool>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    workspace_panel_width: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     quake_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,7 +404,12 @@ pub(crate) fn encode_runtime(
         socket_name: capture.socket_name.clone(),
         next_id: capture.next_id,
         session_ordinal: capture.session_ordinal,
-        workspace_ordinal: capture.workspace_ordinal,
+        workspace_ordinal: capture
+            .sessions
+            .iter()
+            .map(|session| session.workspace_ordinal)
+            .max()
+            .unwrap_or(0),
         sessions: Bounded(
             capture.sessions.iter().map(session_record).collect(),
         ),
@@ -454,7 +471,6 @@ pub(crate) fn decode_runtime(bytes: &[u8]) -> Decoded<Stamped<RuntimeCapture>> {
             socket_name: file.socket_name,
             next_id: file.next_id,
             session_ordinal: file.session_ordinal,
-            workspace_ordinal: file.workspace_ordinal,
             sessions,
             terminals,
         },
@@ -543,6 +559,7 @@ fn runtime_capture(
                     custom_name: session.custom_name,
                     automatic_name: session.automatic_name,
                 },
+                workspace_ordinal: session.workspace_ordinal,
                 workspaces: session
                     .workspaces
                     .0
@@ -670,6 +687,7 @@ fn session_record(session: &SessionCapture) -> SessionRecord {
         id: session.info.id.get(),
         custom_name: session.info.custom_name.clone(),
         automatic_name: session.info.automatic_name.clone(),
+        workspace_ordinal: session.workspace_ordinal,
         workspaces: Bounded(
             session
                 .workspaces
@@ -766,6 +784,8 @@ fn window_record(window: &WindowLayout) -> WindowRecord {
             WindowMode::Fullscreen => ModeRecord::Fullscreen,
         },
         sidebar_width: window.sidebar_width,
+        workspace_panel_visible: window.workspace_panel_visible,
+        workspace_panel_width: window.workspace_panel_width,
         quake_profile: window.quake_profile.clone(),
         appearance: window.appearance.map(|appearance| AppearanceRecord {
             opacity: appearance.opacity,
@@ -787,6 +807,14 @@ fn window_record(window: &WindowLayout) -> WindowRecord {
                 .collect(),
         ),
     }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde passes a reference"
+)]
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
 }
 
 fn tab_ids(tabs: &[TabId]) -> Bounded<u64, MAX_TABS> {
@@ -825,6 +853,8 @@ fn window_layout(window: WindowRecord) -> WindowLayout {
             ModeRecord::Fullscreen => WindowMode::Fullscreen,
         },
         sidebar_width: window.sidebar_width,
+        workspace_panel_visible: window.workspace_panel_visible,
+        workspace_panel_width: window.workspace_panel_width,
         quake_profile: window.quake_profile,
         appearance: window.appearance.map(|appearance| WindowAppearance {
             opacity: appearance.opacity,

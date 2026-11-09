@@ -465,6 +465,12 @@ mod tests {
         mux.move_workspace(second, beta, second, None).unwrap();
         step(&mut mux, &mut state);
         assert_eq!(state.session_workspaces(second).unwrap(), [gamma, beta]);
+        mux.move_session(second, Some(first)).unwrap();
+        step(&mut mux, &mut state);
+        assert_eq!(state.sessions(), [second, first]);
+        mux.move_session(second, None).unwrap();
+        step(&mut mux, &mut state);
+        assert_eq!(state.sessions(), [first, second]);
 
         mux.close_tab(alpha, one).unwrap();
         step(&mut mux, &mut state);
@@ -855,6 +861,8 @@ mod tests {
             mux.move_workspace(session, stale_workspace, session, None)
                 .is_err()
         );
+        assert!(mux.move_session(stale_session, None).is_err());
+        assert!(mux.move_session(session, Some(stale_session)).is_err());
         assert!(mux.close_tab(workspace, stale_tab).is_err());
         assert!(mux.close_workspace(stale_workspace).is_err());
         assert!(mux.close_session(stale_session).is_err());
@@ -896,6 +904,8 @@ mod tests {
         mux.reorder_tab(workspace, tab, Some(tab)).unwrap();
         mux.move_workspace(session, workspace, session, None)
             .unwrap();
+        mux.move_session(session, None).unwrap();
+        mux.move_session(session, Some(session)).unwrap();
         mux.rename_session(session, None).unwrap();
         mux.rename_workspace(workspace, None).unwrap();
         mux.rename_tab(tab, None).unwrap();

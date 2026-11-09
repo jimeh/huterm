@@ -336,6 +336,13 @@ pub enum HierarchyEvent {
         /// Closed session.
         session: SessionId,
     },
+    /// A session moved within the session order.
+    SessionMoved {
+        /// Moved session.
+        session: SessionId,
+        /// Final position in the session order.
+        index: u32,
+    },
     /// A workspace was inserted into a session.
     WorkspaceCreated {
         /// Owning session.
@@ -474,6 +481,11 @@ pub struct HierarchyEnvelope {
 
 /// Result of applying one envelope to a [`HierarchyState`].
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an outcome lives only while its event applies; boxing every \
+              summary would allocate per event"
+)]
 pub enum ApplyOutcome {
     /// The event applied; the summary names what it changed.
     Applied(Touched),
@@ -504,7 +516,9 @@ pub enum ResyncReason {
 /// or they opened, moved, or closed; layouts list the tabs whose pane
 /// layout or shared zoom changed or that opened. The names flag records any
 /// change to the session or workspace lists or their names. Attachments
-/// list the sessions whose set of attachments changed.
+/// list the sessions whose set of attachments changed. Chrome lists the
+/// sessions whose workspace list, workspace names, or tab counts changed,
+/// which every client view of the session shows.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Touched {
     everything: bool,
@@ -513,6 +527,7 @@ pub struct Touched {
     tabs: HashSet<TabId>,
     layouts: HashSet<TabId>,
     attachments: HashSet<SessionId>,
+    chrome: HashSet<SessionId>,
 }
 
 impl Touched {
@@ -535,6 +550,7 @@ impl Touched {
             && self.tabs.is_empty()
             && self.layouts.is_empty()
             && self.attachments.is_empty()
+            && self.chrome.is_empty()
     }
 
     /// Whether the summary covers everything.
@@ -580,6 +596,13 @@ impl Touched {
         self.everything || self.attachments.contains(&session)
     }
 
+    /// Whether the session's workspace list, a workspace's name, or a
+    /// workspace's tab count changed.
+    #[must_use]
+    pub fn contains_chrome(&self, session: SessionId) -> bool {
+        self.everything || self.chrome.contains(&session)
+    }
+
     fn layout_changed(&mut self, workspace: WorkspaceId, tab: TabId) {
         self.workspaces.insert(workspace);
         self.tabs.insert(tab);
@@ -600,6 +623,7 @@ impl Touched {
         self.tabs.extend(other.tabs);
         self.layouts.extend(other.layouts);
         self.attachments.extend(other.attachments);
+        self.chrome.extend(other.chrome);
     }
 }
 
@@ -925,6 +949,7 @@ impl HierarchyState {
             }
             HierarchyEvent::SessionClosed { session } => {
                 let entry = self.sessions.remove(&session)?;
+                touched.chrome.insert(session);
                 self.session_order.retain(|id| *id != session);
                 for workspace in entry.workspaces {
                     self.remove_workspace(workspace, &mut touched);
@@ -936,6 +961,11 @@ impl HierarchyState {
                 }
                 touched.names = true;
             }
+            HierarchyEvent::SessionMoved { session, index } => {
+                self.move_session(session, position(index)?)?;
+                // Every window's session list shows the order.
+                touched.names = true;
+            }
             HierarchyEvent::WorkspaceCreated {
                 session,
                 workspace,
@@ -945,22 +975,29 @@ impl HierarchyState {
                 self.insert_workspace(session, workspace, position(index)?)?;
                 touched.names = true;
                 touched.workspaces.insert(id);
+                touched.chrome.insert(session);
             }
             HierarchyEvent::WorkspaceRenamed {
                 workspace,
                 custom_name,
             } => {
-                let info = &mut self.workspaces.get_mut(&workspace)?.info;
-                touched.names = rename(&mut info.custom_name, custom_name);
+                let entry = self.workspaces.get_mut(&workspace)?;
+                touched.names =
+                    rename(&mut entry.info.custom_name, custom_name);
+                if touched.names {
+                    touched.chrome.insert(entry.session);
+                }
             }
             HierarchyEvent::WorkspaceMoved {
                 workspace,
                 session,
                 index,
             } => {
+                let source = self.workspaces.get(&workspace)?.session;
                 self.move_workspace(workspace, session, position(index)?)?;
                 touched.names = true;
                 touched.workspaces.insert(workspace);
+                touched.chrome.extend([source, session]);
             }
             HierarchyEvent::WorkspaceClosed { workspace } => {
                 let session = self.workspaces.get(&workspace)?.session;
@@ -970,6 +1007,7 @@ impl HierarchyState {
                     .retain(|id| *id != workspace);
                 self.remove_workspace(workspace, &mut touched);
                 touched.names = true;
+                touched.chrome.insert(session);
             }
             HierarchyEvent::TabOpened {
                 workspace,
@@ -981,6 +1019,7 @@ impl HierarchyState {
                 touched.workspaces.insert(workspace);
                 touched.tabs.insert(id);
                 touched.layouts.insert(id);
+                self.touch_chrome(workspace, &mut touched);
             }
             HierarchyEvent::TabRenamed { tab, custom_name } => {
                 let info = &mut self.tabs.get_mut(&tab)?.info;
@@ -1003,6 +1042,8 @@ impl HierarchyState {
                 let source = self.move_tab(tab, workspace, position(index)?)?;
                 touched.workspaces.extend([source, workspace]);
                 touched.tabs.insert(tab);
+                self.touch_chrome(source, &mut touched);
+                self.touch_chrome(workspace, &mut touched);
             }
             HierarchyEvent::TabClosed { tab } => {
                 let workspace = self.remove_tab(tab)?;
@@ -1011,6 +1052,7 @@ impl HierarchyState {
                 }
                 touched.workspaces.insert(workspace);
                 touched.tabs.insert(tab);
+                self.touch_chrome(workspace, &mut touched);
             }
             HierarchyEvent::PaneLayoutChanged {
                 tab,
@@ -1031,7 +1073,29 @@ impl HierarchyState {
                 self.replace_zoom(tab, zoomed, &mut touched)?;
             }
             HierarchyEvent::PanesRearranged { changes } => {
+                let counts: HashMap<WorkspaceId, usize> = self
+                    .workspaces
+                    .iter()
+                    .map(|(id, entry)| (*id, entry.tabs.len()))
+                    .collect();
                 self.rearrange(changes, &mut touched)?;
+                // A rearrangement that opens, closes, or moves tabs
+                // changes their workspaces' counts.
+                let changed: Vec<_> = touched
+                    .workspaces
+                    .iter()
+                    .copied()
+                    .filter(|workspace| {
+                        counts.get(workspace).copied()
+                            != self
+                                .workspaces
+                                .get(workspace)
+                                .map(|entry| entry.tabs.len())
+                    })
+                    .collect();
+                for workspace in changed {
+                    self.touch_chrome(workspace, &mut touched);
+                }
             }
             HierarchyEvent::AttachmentCreated {
                 attachment,
@@ -1070,6 +1134,18 @@ impl HierarchyState {
             HierarchyEvent::Skipped => {}
         }
         Some(touched)
+    }
+
+    /// Moves a session to its final position in the session order, or
+    /// returns `None` without changes.
+    fn move_session(&mut self, session: SessionId, index: usize) -> Option<()> {
+        let source = self.session_order.iter().position(|id| *id == session)?;
+        if index >= self.session_order.len() {
+            return None;
+        }
+        self.session_order.remove(source);
+        self.session_order.insert(index, session);
+        Some(())
     }
 
     /// Moves a workspace to its final position in a session, or returns
@@ -1452,6 +1528,14 @@ impl HierarchyState {
         let entry = self.tabs.remove(&tab)?;
         self.unindex_layout(&entry.info.layout);
         Some(entry.workspace)
+    }
+
+    /// Notes that `workspace`'s session's chrome changed, while the
+    /// workspace exists.
+    fn touch_chrome(&self, workspace: WorkspaceId, touched: &mut Touched) {
+        if let Some(entry) = self.workspaces.get(&workspace) {
+            touched.chrome.insert(entry.session);
+        }
     }
 
     /// Removes a workspace record and its tabs, leaving the parent's order

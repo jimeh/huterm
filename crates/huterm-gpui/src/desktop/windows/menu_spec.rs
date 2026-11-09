@@ -4,7 +4,6 @@
 //! without a window.
 
 use gpui::Keystroke;
-use huterm_ui::components::kbd::Glyph;
 use huterm_ui::listbox::{self, ItemId};
 
 use super::super::key_hint::KeyHint;
@@ -25,49 +24,8 @@ pub(super) struct Item {
     pub(super) badge: Option<usize>,
     /// A checkable row, checked when true; None is a plain row.
     pub(super) checked: Option<bool>,
-    /// Secondary text on the right, such as a session's tab count. Native
-    /// menus show it, with the tags' text, as the item's subtitle where
-    /// `AppKit` has one.
-    pub(super) detail: Option<String>,
-    /// The label in the muted tone, such as an automatic name; native menus
-    /// draw every label alike.
-    pub(super) muted: bool,
     /// An icon asset in Huterm's leading column; native menus draw none.
     pub(super) icon: Option<&'static str>,
-    /// Outlined tags after the label.
-    pub(super) tags: Vec<Tag>,
-    /// The row's alternate action: Huterm's inline button on the selected
-    /// row, or a native item that replaces this one while Command is held.
-    pub(super) action: Option<Action>,
-    /// Shown only in native menus, for an action Huterm's own menu offers
-    /// another way, such as through rows' inline buttons.
-    pub(super) native_only: bool,
-}
-
-/// A tag after an item's label.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Tag {
-    /// The icon drawn before the text, if any.
-    pub(super) icon: Option<(&'static str, &'static str)>,
-    /// The visible text.
-    pub(super) text: String,
-    /// What assistive technology reads, the tooltip, and the native
-    /// subtitle's words.
-    pub(super) label: String,
-    pub(super) warning: bool,
-}
-
-/// An item's alternate action.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Action {
-    pub(super) id: ItemId,
-    /// The inline button's name and tooltip.
-    pub(super) label: String,
-    /// The native alternate item's title.
-    pub(super) native_title: String,
-    pub(super) icon: &'static str,
-    /// The binding that runs it from a focused menu.
-    pub(super) shortcut: Option<String>,
 }
 
 impl Item {
@@ -81,55 +39,13 @@ impl Item {
             disabled_hint: None,
             badge: None,
             checked: None,
-            detail: None,
-            muted: false,
             icon: None,
-            tags: Vec::new(),
-            action: None,
-            native_only: false,
         }
-    }
-
-    /// Shows this item only in native menus.
-    pub(super) fn native_only(mut self) -> Self {
-        self.native_only = true;
-        self
-    }
-
-    pub(super) fn detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = Some(detail.into());
-        self
-    }
-
-    pub(super) fn muted(mut self, muted: bool) -> Self {
-        self.muted = muted;
-        self
     }
 
     pub(super) fn icon(mut self, asset: &'static str) -> Self {
         self.icon = Some(asset);
         self
-    }
-
-    pub(super) fn tag(mut self, tag: Tag) -> Self {
-        self.tags.push(tag);
-        self
-    }
-
-    pub(super) fn action(mut self, action: Action) -> Self {
-        self.action = Some(action);
-        self
-    }
-
-    /// The native subtitle: the detail, then each tag's words.
-    fn subtitle(&self) -> Option<String> {
-        let parts: Vec<&str> = self
-            .detail
-            .iter()
-            .map(String::as_str)
-            .chain(self.tags.iter().map(|tag| tag.label.as_str()))
-            .collect();
-        (!parts.is_empty()).then(|| parts.join(" · "))
     }
 
     pub(super) fn shortcut(mut self, shortcut: Option<String>) -> Self {
@@ -166,9 +82,6 @@ pub(super) enum Row {
         label: String,
         items: Vec<Item>,
     },
-    /// Muted explanatory text that is never picked; native menus show it as
-    /// a disabled item.
-    Hint(String),
     /// An item that opens `rows`: Huterm's menus drill into them, and
     /// native menus cascade.
     Submenu {
@@ -217,50 +130,14 @@ fn listbox_item(item: &Item, platform: Platform) -> listbox::Item {
     if let Some(checked) = item.checked {
         lowered = lowered.checked(checked);
     }
-    if let Some(detail) = &item.detail {
-        lowered = lowered.detail(detail.clone());
-    }
-    if item.muted {
-        lowered = lowered.muted();
-    }
     if let Some(icon) = item.icon {
         lowered = lowered.icon(icon);
-    }
-    for tag in &item.tags {
-        let mut glyphs = Vec::new();
-        if let Some((path, text)) = tag.icon {
-            glyphs.push(Glyph::Icon {
-                path: path.into(),
-                text: text.into(),
-            });
-        }
-        glyphs.push(Glyph::Text(tag.text.clone().into()));
-        lowered = lowered.tag(listbox::Tag::new(
-            glyphs,
-            tag.label.clone(),
-            if tag.warning {
-                listbox::TagTone::Warning
-            } else {
-                listbox::TagTone::Accent
-            },
-        ));
-    }
-    if let Some(action) = &item.action {
-        lowered = lowered.action(listbox::Action {
-            id: action.id.clone(),
-            label: action.label.clone(),
-            icon: action.icon.into(),
-            shortcut: action.shortcut.as_deref().map_or_else(Vec::new, |key| {
-                KeyHint::parse(key, platform).glyphs()
-            }),
-        });
     }
     lowered
 }
 
 fn listbox_rows(rows: &[Row], platform: Platform) -> Vec<listbox::Row> {
     rows.iter()
-        .filter(|row| !matches!(row, Row::Item(item) if item.native_only))
         .map(|row| match row {
             Row::Item(item) => listbox::Row::Item(listbox_item(item, platform)),
             Row::Submenu { item, rows } => listbox::Row::Submenu {
@@ -268,7 +145,6 @@ fn listbox_rows(rows: &[Row], platform: Platform) -> Vec<listbox::Row> {
                 rows: listbox_rows(rows, platform),
             },
             Row::Separator => listbox::Row::Separator,
-            Row::Hint(text) => listbox::Row::Hint(text.clone()),
             Row::Group { label, items } => listbox::Row::Buttons {
                 label: label.clone(),
                 buttons: items
@@ -298,41 +174,13 @@ fn native_items(rows: &[Row]) -> Vec<NativeItem> {
         enabled: item.enabled,
         badge: item.badge,
         checked: item.checked,
-        subtitle: item.subtitle(),
+        subtitle: None,
         alternate: false,
-    };
-    // An alternate follows its item, which AppKit swaps it for while
-    // Command is held.
-    let alternate = |item: &Item| {
-        item.action.as_ref().filter(|_| item.enabled).map(|action| {
-            NativeItem::Item {
-                id: action.id.clone(),
-                title: action.native_title.clone(),
-                key: None,
-                enabled: true,
-                badge: None,
-                checked: None,
-                subtitle: None,
-                alternate: true,
-            }
-        })
     };
     rows.iter()
         .flat_map(|row| match row {
-            Row::Item(item) => std::iter::once(native(item))
-                .chain(alternate(item))
-                .collect(),
+            Row::Item(item) => vec![native(item)],
             Row::Separator => vec![NativeItem::Separator],
-            Row::Hint(text) => vec![NativeItem::Item {
-                id: ItemId::from(""),
-                title: text.clone(),
-                key: None,
-                enabled: false,
-                badge: None,
-                checked: None,
-                subtitle: None,
-                alternate: false,
-            }],
             Row::Group { items, .. } => items.iter().map(native).collect(),
             Row::Submenu { item, rows } => vec![NativeItem::Submenu {
                 title: item.label.clone(),

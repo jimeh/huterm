@@ -265,10 +265,10 @@
           "description": "Reopen the windows, tabs, and split panes that were open at Quit,\neach pane with a fresh shell in its last folder, and save them while\nHuterm runs. Turning this off deletes the saved windows.",
           "type": "boolean",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Sessions",
+          "x-huterm-group": "Restore and names",
           "x-huterm-label": "Restore windows and sessions at launch",
-          "x-huterm-order": 15,
-          "x-huterm-section": "general"
+          "x-huterm-order": 40,
+          "x-huterm-section": "sessions"
         },
         "session_numbering": {
           "allOf": [
@@ -279,10 +279,10 @@
           "default": "lowest_unused",
           "description": "How a new session picks the number in its automatic name, such as\n\"Session 2\": the lowest number no session uses, or one more than\nthe highest so far. Workspaces number the same way.",
           "x-huterm-apply": "live",
-          "x-huterm-group": "Sessions",
+          "x-huterm-group": "Restore and names",
           "x-huterm-label": "Number new sessions",
-          "x-huterm-order": 16,
-          "x-huterm-section": "general"
+          "x-huterm-order": 41,
+          "x-huterm-section": "sessions"
         },
         "watch_config": {
           "default": true,
@@ -1504,6 +1504,9 @@
                 "redo",
                 "open_menu",
                 "open_session_menu",
+                "open_workspace_switcher",
+                "toggle_sidebar",
+                "focus_sidebar",
                 "focus_notices",
                 "dismiss_all_notices",
                 "select_all",
@@ -1535,6 +1538,14 @@
                 "panel_last",
                 "panel_press",
                 "panel_reset",
+                "sidebar_next",
+                "sidebar_previous",
+                "sidebar_first",
+                "sidebar_last",
+                "sidebar_show",
+                "sidebar_rename",
+                "sidebar_menu",
+                "sidebar_exit",
                 "notice_next",
                 "notice_previous",
                 "notice_run_action",
@@ -3597,17 +3608,23 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Show another session in this window; both sessions keep running.",
+            "description": "Show another session in this window, by position from a keybinding or chosen; both sessions keep running.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "index": {
+                    "maximum": 9,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "select_session",
-                "description": "Show another session in this window; both sessions keep running.",
+                "description": "Show another session in this window, by position from a keybinding or chosen; both sessions keep running.",
                 "type": "string"
               },
               "description": {
@@ -3856,17 +3873,23 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Show another workspace of this window's session in this window.",
+            "description": "Show another workspace of this window's session in this window, by position from a keybinding or chosen.",
             "properties": {
               "args": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "index": {
+                    "maximum": 9,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
                 "required": [],
                 "type": "object"
               },
               "command": {
                 "const": "select_workspace",
-                "description": "Show another workspace of this window's session in this window.",
+                "description": "Show another workspace of this window's session in this window, by position from a keybinding or chosen.",
                 "type": "string"
               },
               "description": {
@@ -6358,7 +6381,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Open this window's session menu to switch, create, or rename sessions.",
+            "description": "Open this window's session list to switch, create, or rename sessions.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -6368,7 +6391,160 @@
               },
               "command": {
                 "const": "open_session_menu",
-                "description": "Open this window's session menu to switch, create, or rename sessions.",
+                "description": "Open this window's session list to switch, create, or rename sessions.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "open_workspace_switcher"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open this window's workspace switcher to show, create, rename, or reorder workspaces.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "open_workspace_switcher",
+                "description": "Open this window's workspace switcher to show, create, rename, or reorder workspaces.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "toggle_sidebar"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show or hide this window's sidebar, which holds its workspaces and session switcher.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "toggle_sidebar",
+                "description": "Show or hide this window's sidebar, which holds its workspaces and session switcher.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "focus_sidebar"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move keyboard focus to the shown workspace in this window's sidebar.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "focus_sidebar",
+                "description": "Move keyboard focus to the shown workspace in this window's sidebar.",
                 "type": "string"
               },
               "description": {
@@ -7950,6 +8126,414 @@
               "command": {
                 "const": "panel_reset",
                 "description": "Reset the focused slider's value to the one beneath it.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_next"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move focus to the next workspace or the session switcher.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_next",
+                "description": "Move focus to the next workspace or the session switcher.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_previous"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move focus to the previous workspace or the session switcher.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_previous",
+                "description": "Move focus to the previous workspace or the session switcher.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_first"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move focus to the first workspace or the session switcher.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_first",
+                "description": "Move focus to the first workspace or the session switcher.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_last"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Move focus to the last workspace or the session switcher.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_last",
+                "description": "Move focus to the last workspace or the session switcher.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_show"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Show the focused workspace or session, or open the session list from the session switcher.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_show",
+                "description": "Show the focused workspace or session, or open the session list from the session switcher.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_rename"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Rename the focused workspace.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_rename",
+                "description": "Rename the focused workspace.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_menu"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Open the focused workspace's context menu.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_menu",
+                "description": "Open the focused workspace's context menu.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "sidebar_exit"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Return keyboard focus to the terminal.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "sidebar_exit",
+                "description": "Return keyboard focus to the terminal.",
                 "type": "string"
               },
               "description": {
@@ -11018,6 +11602,21 @@
         }
       ]
     },
+    "SessionSwitcherPosition": {
+      "description": "Where the session switcher sits in the sidebar.",
+      "oneOf": [
+        {
+          "const": "bottom",
+          "type": "string",
+          "x-huterm-label": "Bottom"
+        },
+        {
+          "const": "top",
+          "type": "string",
+          "x-huterm-label": "Top"
+        }
+      ]
+    },
     "SettingsConfig": {
       "additionalProperties": false,
       "description": "The Settings window's own state.",
@@ -11097,6 +11696,100 @@
         }
       ]
     },
+    "SidebarConfig": {
+      "additionalProperties": false,
+      "description": "The sidebar, which holds the window's workspaces and session switcher.",
+      "properties": {
+        "position": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SidebarPosition"
+            }
+          ],
+          "default": "left",
+          "description": "The window side the sidebar docks on. Its button sits in the corner\non that side.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Position",
+          "x-huterm-order": 20,
+          "x-huterm-section": "workspaces"
+        },
+        "session_switcher": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionSwitcherPosition"
+            }
+          ],
+          "default": "bottom",
+          "description": "Where the session switcher sits in the sidebar: at the bottom or the\ntop.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Session switcher",
+          "x-huterm-label": "Position in the sidebar",
+          "x-huterm-order": 10,
+          "x-huterm-section": "sessions"
+        },
+        "session_switcher_in_corner": {
+          "default": false,
+          "description": "While the sidebar is hidden, also show the session switcher beside\nthe sidebar button.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Session switcher",
+          "x-huterm-label": "Show beside the sidebar button",
+          "x-huterm-order": 11,
+          "x-huterm-section": "sessions"
+        },
+        "switcher_style": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SwitcherStyle"
+            }
+          ],
+          "default": "full",
+          "description": "How the switchers beside the sidebar button look: the icon and name,\nor the icon alone. A narrow window shows icons either way.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Switcher style",
+          "x-huterm-order": 23,
+          "x-huterm-section": "workspaces"
+        },
+        "visible": {
+          "default": false,
+          "description": "New windows start with the sidebar shown. Each window keeps its own\nchoice.",
+          "type": "boolean",
+          "x-huterm-apply": "new_windows",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Show the sidebar in new windows",
+          "x-huterm-order": 21,
+          "x-huterm-section": "workspaces"
+        },
+        "workspace_switcher_in_corner": {
+          "default": true,
+          "description": "While the sidebar is hidden and the session has two or more\nworkspaces, show the workspace switcher beside the sidebar button.",
+          "type": "boolean",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Sidebar",
+          "x-huterm-label": "Show the workspace switcher beside the sidebar button",
+          "x-huterm-order": 22,
+          "x-huterm-section": "workspaces"
+        }
+      },
+      "type": "object"
+    },
+    "SidebarPosition": {
+      "description": "The window side the sidebar docks on.",
+      "oneOf": [
+        {
+          "const": "left",
+          "type": "string",
+          "x-huterm-label": "Left"
+        },
+        {
+          "const": "right",
+          "type": "string",
+          "x-huterm-label": "Right"
+        }
+      ]
+    },
     "SizeIndicator": {
       "description": "How the window shows its grid size while it resizes.",
       "oneOf": [
@@ -11117,6 +11810,23 @@
           "description": "No indicator.",
           "type": "string",
           "x-huterm-label": "Off"
+        }
+      ]
+    },
+    "SwitcherStyle": {
+      "description": "How the switchers beside the sidebar button look.",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "The icon, the name, and a chevron.",
+          "type": "string",
+          "x-huterm-label": "Icon and name"
+        },
+        {
+          "const": "icon",
+          "description": "The icon alone; the name shows in its tooltip.",
+          "type": "string",
+          "x-huterm-label": "Icon only"
         }
       ]
     },
@@ -11944,14 +12654,15 @@
           "x-huterm-section": "windows"
         },
         "session_button": {
-          "default": true,
-          "description": "Show the session control, which names the window's session and opens\nthe session menu, beside the window menu button.",
+          "deprecated": true,
+          "description": "Deprecated and ignored: the session switcher beside the sidebar\nbutton replaced the title-bar session control. Use\n`sidebar.session_switcher_in_corner`, and remove this field.",
           "type": "boolean",
+          "x-huterm-advanced": true,
           "x-huterm-apply": "live",
-          "x-huterm-group": "Window",
-          "x-huterm-label": "Session button",
-          "x-huterm-order": 15,
-          "x-huterm-section": "windows"
+          "x-huterm-group": "Session switcher",
+          "x-huterm-label": "Title-bar session control",
+          "x-huterm-order": 90,
+          "x-huterm-section": "sessions"
         },
         "shortcut_hints": {
           "default": false,
@@ -12225,6 +12936,13 @@
       "allOf": [
         {
           "$ref": "#/definitions/ShellIntegrationConfig"
+        }
+      ]
+    },
+    "sidebar": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SidebarConfig"
         }
       ]
     },

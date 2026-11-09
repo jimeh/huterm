@@ -751,7 +751,7 @@ rendered contexts through `Window::context_stack`.
 
 Text arguments accept a blank value: the core executor maps a blank rename name
 to `None`, which clears the custom name. Only sessions also get a
-`clear_session_name` command, for the session menu; core runs it.
+`clear_session_name` command, for the session row menu; core runs it.
 `close_session` is Runtime scope for its target but needs consent, so the
 window runs it through its close pipeline and core's executor refuses it.
 The palette prefills a rename's current custom name, selected, whenever the name
@@ -946,39 +946,19 @@ included; `NativeMenu::entries` and `id_at` read the same order, and
 `appkit_menu`'s `check_built` checks it in `smoke:macos-menus`.
 
 Each open menu carries a `MenuKind` and pointer anchor; derive button state
-and pick targets from them, not from whether any menu is open. The session
-menu (`MenuKind::Session`, `windows/session_control.rs`) anchors to the
-session control's painted bounds, or the window menu's fallback anchor while
-the control is hidden. The popover has one trigger probe, so only the open
-menu's trigger mounts it: the menu button while any other menu is open, the
-session control while its menu is. A probe in the wrong trigger makes the
-guard count a press on the open trigger as outside, so the toggle reopens
-the menu. The session menu reads the projection at every refresh, so the
-window is a title consumer while it is open: `reconcile` notifies every
-window when names or attachments change (every control names its session
-and the menu counts other windows) and open session menus on any structural
-batch (tab counts). It refreshes through `Menu::set_model_keeping_place`,
-which moves a selection whose session closed elsewhere to the row that took
-its place. Its "exited" tags come from `Mux::exited_sessions`, read on a
-worker each time it opens; a generation drops a superseded answer. Huterm's
-popover opens first and takes the tags when the read answers. A native menu
-is a snapshot, so it waits for the read (`native_session_pending`, which
-shows the control open). No menu is mounted meanwhile, so the root takes
-the `menu` key context for the request (`pending_session_menu_takes_keys`):
-`menu_close` (Escape) cancels it, and the other `menu_*` commands do
-nothing rather than reach the terminal. `cancel_pending_session_menu`
-drops the request and supersedes the read when the control toggles it,
-`menu_close` runs, `close_menu` runs (window deactivation, a command that
-replaces the menu), or the palette or another menu opens; a window that
-went away presents nothing. Tier 2 tests hold the read at
-`Stage::ExitedRead`.
-Its native lowering puts each session's Open in New Window in an
-alternate item (`setAlternate:` with the Command mask and no
-key), which AppKit swaps in while Command is held, and lists the
-`open_session_in_new_window` command as a visible item too
-(`menu_spec::Item::native_only`, which Huterm's popover leaves out), since
-a held-modifier alternate is hard to discover; it shows the detail in
-`subtitle` only when the item responds to `setSubtitle:`, which arrived in
+and pick targets from them, not from whether any menu is open. The popover
+has one trigger probe, so only the open menu's trigger mounts it: the menu
+button while any menu is open. A probe in the wrong trigger makes the guard
+count a press on the open trigger as outside, so the toggle reopens the
+menu. The session list is no menu: see [Sidebar chrome](#sidebar-chrome).
+It reads the projection at every render, so the window is a title consumer
+while it is open: `reconcile` notifies every window when names or
+attachments change and open session lists on any structural batch (tab
+counts). Its "exited" tags come from `Mux::exited_sessions`, read on a
+worker each time it opens; a generation drops a superseded answer. A
+native menu `subtitle` and alternate items stay supported in `appkit_menu`
+for menus that need them; no menu builds them now, and `subtitle` shows
+only when the item responds to `setSubtitle:`, which arrived in
 macOS 14.4 while the floor is 14.0. A terminal
 menu's kind names the terminal it opened over, and a pane menu's its pane,
 because their picks act on whatever is focused: `menu_target_live` closes
@@ -1211,14 +1191,15 @@ button with a tooltip shows it below itself while its ring shows and it is
 not clipped (`tooltip::focused`), an expanded button shows none, and an
 icon-only button's label is its tooltip.
 
-The session control is a `huterm_ui::components::menu_trigger::MenuTrigger`:
-its accessible name ("Session: name") differs from its visible label, which
-`Button` cannot do, since a button's label is its name. The owner measures
-the name (`measure_session_label`, run wherever tab widths are measured) and
-passes the label width it resolved, so layout, hit testing, and the drawn
-control agree; `menu_trigger::width_for_label` is the one width formula.
-Size it with the title row's `CONTROL_SIZE`: the component's default height
-is the 24-point control height, not the row's 26.
+The corner switchers are `huterm_ui::components::menu_trigger::MenuTrigger`s:
+their accessible names ("Session: name", "Workspace: name") differ from
+their visible labels, which `Button` cannot do, since a button's label is
+its name. The owner measures the names (`measure_session_label` and
+`sync_workspace_chrome`, run before layout) and passes the label width it
+resolved, so layout, hit testing, and the drawn switcher agree;
+`menu_trigger::width_for_label` is the one width formula. Size them with
+the title row's `CONTROL_SIZE`: the component's default height is the
+24-point control height, not the row's 26.
 
 Text fields are `huterm_ui::components::input::Input` entities, and
 `huterm_ui::text` holds the UTF-16 range conversions that `Input` and
@@ -1950,6 +1931,60 @@ constrained to the bar when the pointer leaves it; release commits and Escape
 cancels. During a drag, hovering an overflow edge scrolls continuously without
 changing the active terminal. Reordering preserves terminal processes, focus,
 selection, and scroll position. Cross-window moves and tear-out remain deferred.
+
+## Sidebar chrome
+
+The user-facing "sidebar" is the workspace panel in code
+(`workspace_chrome.rs`, `workspace_panel.rs`, `workspace_*` fields and
+`WindowLayout::workspace_panel_*` in saved state). `sidebar_width`,
+`resize_sidebar`, and `SIDEBAR_WIDTH` belong to the vertical tab column.
+
+`workspace_chrome::resolve` decides, purely, whether a window docks the
+sidebar (`Panel`) or keeps it hidden (`Hidden`, with the workspace switcher
+while the session has two or more workspaces and the session switcher when
+`[sidebar] session_switcher_in_corner` asks), from the window's visible
+state, the `[sidebar]` settings, the workspace count, and the terminal width
+a docked sidebar would leave: under 384 points it stays hidden and `narrow`,
+leaving the saved visible state alone, and the sidebar button opens a sheet.
+Layout, rendering, hit testing, popovers, and smoke state
+(`workspace_chrome=`) all read it. `corner_host` decides where the sidebar
+button and switchers go: on the right just inside wherever the menu button
+goes; on the left the matching leading spot.
+`ChromeLayout::build_with` carves a docked band from the content first and
+partitions what is left (`area`) exactly as a window without one; a hidden
+sidebar without a corner slot must reproduce the old layout, and
+`workspace_chrome/tests.rs` keeps a verbatim copy of it as the oracle. The
+left corner controls take a leading slot (`CornerSlot::Lead`) from a
+horizontal strip's `strip_inset`, or one row per switcher above a column's
+tabs (`CornerSlot::Rows`); the right ones add to `bar_trailing` and the
+title row's corner width. `switchers_icon_only` is the one rule for when
+the switchers show only their icons, which reservation and drawing both
+read. Each hidden placement draws the sidebar button where the docked
+sidebar's strip does: right after the traffic lights or the row's lead on
+the left, `CORNER_GAP` inside the menu button on the right. The side sweep
+in `window_tests/workspace_panel.rs` compares the two in a title row.
+
+Render reads the workspace count and measures the shown name in
+`sync_workspace_chrome` before laying out, so layout outside render
+resolves the same chrome. `Touched::contains_chrome` names the sessions
+whose workspace list, order, names, or tab counts changed; `windows_to_visit`
+visits every window on them and reconcile notifies them. The workspace
+switcher's popover and a narrow window's sheet share `switcher_popover`; the
+session list (`session_control.rs`) has its own `session_list_popover`. Both
+are non-modal GPUI popovers even under native menus, and each guard ignores
+presses in the menu popover, so a row menu opened from either stays, and the
+switcher's guard also ignores presses in the session list, which the sheet's
+session row opens. A popover whose anchor goes closes at the end of render
+(`switcher_anchor_went`, `session_list_anchor_went`). Both lists draw
+`sidebar_rows::list_row`; their rows take the `Sidebar` key context and its
+`sidebar_*` commands, which `run_session_list_command` takes first while a
+session row holds focus. A press never moves keyboard focus to a row, and
+becomes a drag (`sidebar_rows::RowDrag`) past the tab drag's threshold.
+Drops call `Mux::move_workspace` or `Mux::move_session` with the row they
+land before, by ID, on a worker. Row menus (`MenuKind::WorkspaceRow`,
+`MenuKind::SessionRow`) are ordinary menus and may open natively. A sidebar
+change relays out every terminal as a window resize does, so a selection
+survives only when the grid size stays the same (#373).
 
 ## Configuration and schemas
 

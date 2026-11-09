@@ -19,7 +19,7 @@ use super::*;
 impl DesktopHarness {
     /// Appends a workspace to the harness session with one tab running
     /// `command` per count, as another client would.
-    fn add_workspace_running(
+    pub(super) fn add_workspace_running(
         &self,
         command: &str,
         tabs: usize,
@@ -33,7 +33,10 @@ impl DesktopHarness {
     }
 
     /// [`Self::add_workspace_running`] with echo tabs.
-    fn add_workspace(&self, tabs: usize) -> (WorkspaceId, Vec<TabId>) {
+    pub(super) fn add_workspace(
+        &self,
+        tabs: usize,
+    ) -> (WorkspaceId, Vec<TabId>) {
         self.add_workspace_running(ECHO, tabs)
     }
 
@@ -55,7 +58,7 @@ impl DesktopHarness {
 
     /// Switches `window` to `workspace` and waits until the switch settled
     /// showing exactly `tabs`.
-    fn show_workspace(
+    pub(super) fn show_workspace(
         &mut self,
         window: AnyWindowHandle,
         workspace: WorkspaceId,
@@ -67,7 +70,7 @@ impl DesktopHarness {
     }
 
     /// Waits until `window` settled on `workspace` showing exactly `tabs`.
-    fn wait_workspace(
+    pub(super) fn wait_workspace(
         &mut self,
         window: AnyWindowHandle,
         workspace: WorkspaceId,
@@ -112,7 +115,7 @@ fn workspace_pick(
 }
 
 /// The workspace `window`'s record shows.
-fn shown_workspace(
+pub(super) fn shown_workspace(
     cx: &mut App,
     window: AnyWindowHandle,
 ) -> Option<WorkspaceId> {
@@ -228,6 +231,42 @@ fn switching_workspaces_keeps_each_workspaces_shells_navigation_and_undo(
 }
 
 #[gpui::test]
+fn select_workspace_by_index_shows_that_position_or_the_last_and_skips_an_empty_slot(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[first]);
+    let (second, others) = harness.add_workspace(1);
+    // Another session's workspace never counts toward a position.
+    harness.other_session("other", 1);
+    harness.wait_projection();
+    let at = |index| {
+        CommandInvocation::new(
+            ids::SELECT_WORKSPACE,
+            vec![CommandArgument::new("index", CommandValue::Integer(index))],
+        )
+    };
+    harness.invoke_with(window, &at(2)).unwrap();
+    harness.wait_workspace(window, second, &others);
+    // An empty slot completes without switching, as select_tab's does.
+    assert!(matches!(
+        harness.invoke_with(window, &at(3)),
+        Ok(CommandOutcome::Completed)
+    ));
+    harness.cx.update(|cx| {
+        assert!(!switching(cx, window));
+        assert_eq!(shown_workspace(cx, window), Some(second));
+    });
+    harness.invoke_with(window, &at(1)).unwrap();
+    harness.wait_workspace(window, harness.workspace, &[first]);
+    // The ninth position is the last workspace, however many there are,
+    // as select_tab's is.
+    harness.invoke_with(window, &at(9)).unwrap();
+    harness.wait_workspace(window, second, &others);
+}
+
+#[gpui::test]
 fn two_windows_on_one_session_switch_workspaces_independently(
     cx: &mut TestAppContext,
 ) {
@@ -238,6 +277,10 @@ fn two_windows_on_one_session_switch_workspaces_independently(
     let right = harness.split(split, left, SplitDirection::Right, ECHO);
     let one = harness.attach_showing(&[first, split]);
     let two = harness.attach_showing(&[first, split]);
+    // The second workspace comes first: the panel it shows in every window
+    // on the session resizes their terminals, and a grid change clears a
+    // selection (#373).
+    let (second, others) = harness.add_workspace(1);
     harness.activate(one, first);
     // Window two selects text in its view of `first` once the terminal
     // took the views' size, which a later resize would clear, then moves
@@ -255,7 +298,6 @@ fn two_windows_on_one_session_switch_workspaces_independently(
         .cx
         .update(|cx| selection.update(cx, TerminalView::select_all));
     harness.focus(two, split, right);
-    let (second, others) = harness.add_workspace(1);
     let untouched = |harness: &mut DesktopHarness| {
         harness.cx.update(|cx| {
             assert_eq!(shown_workspace(cx, two), Some(harness.workspace));
@@ -1769,6 +1811,19 @@ fn empty_state_focus(
     })
 }
 
+/// Whether `window` shows the workspace switcher's popover, opened from its
+/// empty state's Switch Workspace… button and anchored there.
+fn workspace_switcher_shown(
+    harness: &mut DesktopHarness,
+    window: AnyWindowHandle,
+) -> bool {
+    use super::super::workspace_panel::{SwitcherAnchor, SwitcherMode};
+    harness.update_view(window, |view, _, _| {
+        view.switcher_mode
+            == Some(SwitcherMode::Popover(SwitcherAnchor::EmptyState))
+    })
+}
+
 #[gpui::test]
 fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
@@ -1782,18 +1837,14 @@ fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
         empty_state_focus(&mut harness, window),
         Some("empty-switch-workspace")
     );
-    // Escape from the picker Switch Workspace… opened returns focus to it,
-    // where Tab still moves through the buttons.
+    // Escape from the workspace switcher Switch Workspace… opened returns
+    // focus to it, where Tab still moves through the buttons.
     harness.press(window, "enter");
-    harness.wait_for("the workspace prompt", |cx| {
-        palette_state(cx, window).is_some_and(|state| {
-            state.contains("slots command=select_workspace")
-        })
-    });
+    assert!(workspace_switcher_shown(&mut harness, window));
     harness.press(window, "escape");
-    harness.wait_for("the palette to close", |cx| {
-        palette_state(cx, window).is_none()
-    });
+    assert!(
+        harness.update_view(window, |view, _, _| view.switcher_mode.is_none())
+    );
     assert_eq!(
         empty_state_focus(&mut harness, window),
         Some("empty-switch-workspace")
@@ -1804,7 +1855,7 @@ fn dismissed_overlays_return_focus_to_the_empty_state(cx: &mut TestAppContext) {
         Some("empty-close-workspace")
     );
     // A menu a button did not open returns focus to New Tab.
-    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness.invoke(window, ids::OPEN_MENU).unwrap();
     assert!(harness.update_view(window, |view, _, _| view.menu.is_some()));
     harness.press(window, "escape");
     assert!(harness.update_view(window, |view, _, _| view.menu.is_none()));
@@ -1870,18 +1921,14 @@ fn the_empty_state_cycles_its_buttons_and_opens_a_tab(cx: &mut TestAppContext) {
     assert_eq!(focused(&mut harness), Some("empty-new-tab"));
     run(&mut harness, ids::PANEL_FOCUS_PREVIOUS);
     assert_eq!(focused(&mut harness), Some("empty-close-workspace"));
-    // Switch Workspace… asks which workspace in the palette.
+    // Switch Workspace… opens the workspace switcher at itself.
     run(&mut harness, ids::PANEL_FOCUS_PREVIOUS);
     run(&mut harness, ids::PANEL_PRESS);
-    harness.wait_for("the workspace prompt", |cx| {
-        palette_state(cx, window).is_some_and(|state| {
-            state.contains("slots command=select_workspace")
-        })
-    });
+    assert!(workspace_switcher_shown(&mut harness, window));
     harness.press(window, "escape");
-    harness.wait_for("the palette to close", |cx| {
-        palette_state(cx, window).is_none()
-    });
+    assert!(
+        harness.update_view(window, |view, _, _| view.switcher_mode.is_none())
+    );
     // Focus returned to Switch Workspace…; New Tab opens a shell in the
     // empty workspace.
     assert_eq!(focused(&mut harness), Some("empty-switch-workspace"));
@@ -2121,6 +2168,13 @@ fn workspace_commands_follow_availability_and_the_palette_prompts_for_a_workspac
         .rename_workspace(second, Some("build"))
         .unwrap();
     let other = harness.other_session("other", 1);
+    // Workspaces number per session, so the other session's first one
+    // shares this one's automatic name; a custom name tells them apart.
+    harness
+        .runtime
+        .lock()
+        .rename_workspace(other.workspace, Some("elsewhere"))
+        .unwrap();
     harness.wait_projection();
     for command in [
         ids::NEXT_WORKSPACE,
@@ -2219,10 +2273,8 @@ fn workspace_names_default_to_the_windows_workspace_and_cycling_wraps(
     harness.invoke(window, ids::PREVIOUS_WORKSPACE).unwrap();
     harness.wait_workspace(window, second, &seconds);
 
-    // The session menu's New Workspace creates one and shows it.
-    harness.update_view(window, |view, window, cx| {
-        view.run_session_pick(ids::NEW_WORKSPACE.as_str(), window, cx);
-    });
+    // New Workspace creates one and shows it.
+    harness.invoke(window, ids::NEW_WORKSPACE).unwrap();
     let own = harness.workspace;
     harness.wait_for("the new workspace", |cx| {
         shown_workspace(cx, window)

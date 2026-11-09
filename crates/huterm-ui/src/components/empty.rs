@@ -25,6 +25,9 @@ pub struct Empty {
     tokens: Tokens,
     description: Option<SharedString>,
     media: Option<AnyElement>,
+    /// Drawn in place of the title's plain text, which still names the
+    /// group.
+    styled_title: Option<AnyElement>,
     content: Vec<AnyElement>,
 }
 
@@ -52,6 +55,7 @@ impl Empty {
             tokens,
             description: None,
             media: None,
+            styled_title: None,
             content: Vec::new(),
         }
     }
@@ -60,6 +64,15 @@ impl Empty {
     #[must_use]
     pub fn description(mut self, text: impl Into<SharedString>) -> Self {
         self.description = Some(text.into());
+        self
+    }
+
+    /// Draws `element` in place of the title's text, such as a title with a
+    /// bold name; the title still names the group for assistive
+    /// technology.
+    #[must_use]
+    pub fn styled_title(mut self, element: impl IntoElement) -> Self {
+        self.styled_title = Some(element.into_any_element());
         self
     }
 
@@ -95,12 +108,12 @@ impl RenderOnce for Empty {
             .py(px(20.0))
             .text_center()
             .children(self.media)
-            .child(
-                div()
-                    .text_size(size::TEXT_BODY)
-                    .text_color(tokens.fg)
-                    .child(self.title),
-            )
+            .child(div().text_size(size::TEXT_BODY).text_color(tokens.fg).map(
+                |title| match self.styled_title {
+                    Some(styled) => title.child(styled),
+                    None => title.child(self.title),
+                },
+            ))
             .children(self.description.map(|text| {
                 div()
                     .text_size(size::TEXT_SMALL)

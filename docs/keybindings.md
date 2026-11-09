@@ -170,6 +170,7 @@ descendant context (`Workspace > Terminal`). The contexts are:
 | `confirming` | A close confirmation, the About panel, or a Settings dialog such as Delete profile's is open. |
 | `menu` | The window menu has keyboard focus. |
 | `Panel` | A control in the Window Transparency panel, or a button of a window's empty state, has focus. |
+| `Sidebar` | A workspace in the sidebar or the workspace switcher has focus. |
 | `notices` | A notice has keyboard focus (after `focus_notices`). |
 | `reordering` | A tab drag is in progress. |
 | `fullscreen` | The window has finished entering native or non-native fullscreen. Pending entry alone does not match. |
@@ -291,7 +292,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `move_tab_to_new_window` | Window | Optional `tab`, defaulting to the active tab. Moves it into a new regular window without restarting its terminals. Available in the palette and tab context menu, with no default binding. A window with one tab does nothing. |
 | `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`, or a name from `[panes.layouts]` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. A split tab's terminal menu lists every layout under Arrange Panes, disabling those that cannot hold its panes. |
-| `next_pane_layout` / `previous_pane_layout` | Window | Arranges the active tab's panes into the next or previous layout of the cycle, skipping a layout that does not fit the window or would change nothing. |
+| `next_pane_layout` / `previous_pane_layout` | Window | Arranges the active tab's panes into the next or previous layout of the cycle, skipping a layout that does not fit the window or would change nothing. `previous_pane_layout` has no default binding. |
 | `balance_panes` | Window | Gives every split of the active tab equal sizes, keeping its shape. |
 | `undo` | Window | Undoes this window's last pane swap, move, extraction, tab drop, arrangement, or balance, putting the same panes and terminals back where they were, with the earlier divider positions. A tab the change removed comes back with its name, at its old position. Renames, reorders, and zooms made since survive. Splits, closes, resizes, and zoom are not recorded, and only the last change can be undone. Once a tab the change touched has another shape, or has moved to another session, the change is dropped and undo does nothing; if the runtime refuses an undo the window could not yet see was stale, a notice says so. With nothing to undo, or while the window is busy, the key does nothing. |
 | `redo` | Window | Reapplies the change `undo` last undid. A new layout change replaces it. |
@@ -302,7 +303,10 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `minimize` | Window | |
 | `zoom` | Window | |
 | `open_menu` | Window | |
-| `open_session_menu` | Window | Opens the session menu at the title bar's session control, or at the window menu's place while the control is hidden, with the first session selected. No default binding. |
+| `open_session_menu` | Window | Opens the session list at the session switcher beside the sidebar button, else the sidebar's session row, else the window menu's place, with the window's session's row focused. No default binding. |
+| `toggle_sidebar` | Window | Shows or hides this window's sidebar, saved with the window; in a window too narrow to dock it, opens or closes it as a sheet over the terminal. No default binding. |
+| `focus_sidebar` | Window | Moves keyboard focus to the shown workspace's row in the sidebar, or in the sheet a narrow window opens for it. Unavailable while the sidebar is hidden. No default binding. |
+| `open_workspace_switcher` | Window | Opens the workspace switcher's popover at the switcher, else the sidebar button, else the window menu's place, with the shown workspace's row focused. While the sidebar shows, focuses that row there instead. No default binding. |
 | `open_context_menu` | Window | Opens the active terminal's context menu at its cursor. |
 | `focus_notices` | Window | Focuses the newest notice; unavailable without notices. |
 | `dismiss_all_notices` | Window | Dismisses every notice; unavailable without notices. |
@@ -320,10 +324,10 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `clear_session_name` | Runtime | Optional `session`, defaulting to the window's. Restores the automatic name; unavailable while the session has no custom name. No default binding. |
 | `close_session` | Runtime | Optional `session`, defaulting to the window's; the palette asks for it, so it can close a session no window shows. Closes the session and every tab in it, asking first when jobs run. Windows that show it close. When it is the window's own session, the window switches to the session it showed most recently instead, else to the session viewed most recently that no window shows, passing over any it cannot show, else, when one could not be shown, to a new session. It closes when no session remains, or when that new session fails too; on Linux the last window quits instead while sessions no window shows remain. Closing the window's own session is refused while Quit runs, and Quit cancels such a close that has not started committing. No default binding. |
 | `new_session` | Window | Optional `name`, which the palette does not ask for. Creates a session with one tab and switches the window to it; the previous session keeps running. No default binding. |
-| `select_session` | Window | `session`, which the palette prompts for. Switches the window to that session; both sessions keep running, and the window comes back to the tab and pane it last showed there, with its own undo. Two windows can show one session and switch independently. Quake windows can switch and keep their profile. No default binding. |
-| `new_workspace` | Window | Optional `name`, which the palette does not ask for. Creates a workspace with one tab in the window's session and switches the window to it; a shell that fails to start leaves no workspace behind. The session menu lists it. No default binding. |
-| `select_workspace` | Window | `workspace`, which the palette prompts for, listing only the window's session's workspaces by name. Switches the window to that workspace; the others keep running, and the window comes back to the tab, pane, and undo history it last had there. Two windows on one session switch independently. A workspace that closed or moved to another session is refused with "Workspace no longer exists". No default binding. |
-| `next_workspace` / `previous_workspace` | Window | Switches to the next or previous workspace of the window's session, in session order, wrapping. Unavailable with one workspace. No default binding. |
+| `select_session` | Window | `index` (1 to 9, the session's position in the session order; 9 selects the last session) or `session`, not both. Without either, the palette prompts for a session; a position past the last session does nothing. Switches the window to that session; both sessions keep running, and the window comes back to the tab and pane it last showed there, with its own undo. Two windows can show one session and switch independently. Quake windows can switch and keep their profile. No default binding. |
+| `new_workspace` | Window | Optional `name`, which the palette does not ask for. Creates a workspace with one tab in the window's session and switches the window to it; a shell that fails to start leaves no workspace behind. The workspace list's + runs it. No default binding. |
+| `select_workspace` | Window | `index` (1 to 9, the workspace's position in the window's session; 9 selects the last workspace) or `workspace`, not both. Without either, the palette prompts for a workspace, listing only the window's session's workspaces by name; a position past the last workspace does nothing. Switches the window to that workspace; the others keep running, and the window comes back to the tab, pane, and undo history it last had there. Two windows on one session switch independently. A workspace that closed or moved to another session is refused with "Workspace no longer exists". No default binding. |
+| `next_workspace` / `previous_workspace` | Window | Switches to the next or previous workspace of the window's session, in session order, wrapping. Unavailable with one workspace. |
 | `clear_workspace_name` | Runtime | Optional `workspace`, defaulting to the window's. Restores the automatic name; unavailable while the workspace has no custom name. No default binding. |
 | `close_workspace` | Runtime | Optional `workspace`, defaulting to the window's. Closes the workspace and every tab in it, asking first when jobs run; unavailable for a session's only workspace, which Close Session covers. A window showing the workspace moves to the workspace it showed most recently, else the first in session order that holds tabs, else the first, which shows the empty state. Closing the window's own workspace is refused while Quit runs, and Quit cancels such a close that has not started committing. No default binding. |
 | `rename_pane` | Runtime | `name`; `pane` defaults to the active tab's focused pane. |
@@ -351,6 +355,14 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `panel_last` | Window | Bound only while `Panel`. Moves the focused slider to its maximum. |
 | `panel_press` | Window | Bound only while `Panel`. Presses the focused button. |
 | `panel_reset` | Window | Bound only while `Panel`. Clears the focused slider's override, so the window uses the default or its Quake profile's value again. |
+| `sidebar_next` | Window | Bound only while `Sidebar`. Moves focus to the next workspace or the session switcher, wrapping. |
+| `sidebar_previous` | Window | Bound only while `Sidebar`. Moves focus to the previous workspace or the session switcher, wrapping. |
+| `sidebar_first` | Window | Bound only while `Sidebar`. |
+| `sidebar_last` | Window | Bound only while `Sidebar`. |
+| `sidebar_show` | Window | Bound only while `Sidebar`. Shows the focused workspace or session in the window, or opens the session list from the sidebar's session row. |
+| `sidebar_rename` | Window | Bound only while `Sidebar`. Renames the focused workspace through the palette prompt. |
+| `sidebar_menu` | Window | Bound only while `Sidebar`. Opens the focused workspace's context menu. |
+| `sidebar_exit` | Window | Bound only while `Sidebar`. Returns focus to the terminal. |
 | `notice_next` | Window | Bound only while `notices`. Scrolls a notice taller than the stack down first, then moves to the next notice. |
 | `notice_previous` | Window | Bound only while `notices`. Scrolls a notice taller than the stack up first, then moves to the previous notice. |
 | `notice_run_action` | Window | Bound only while `notices`. Presses the button `notice_focus_next` moved to, or runs the first action. |
@@ -421,10 +433,11 @@ menus, or your own bindings.
 | `resize_pane_left` and the other directions | `cmd-ctrl-` plus an arrow | `ctrl-super-shift-` plus an arrow |
 | `toggle_pane_zoom` | `cmd-shift-enter` | `ctrl-shift-enter` |
 | `toggle_pane_input_sync` | `cmd-alt-i` | `ctrl-shift-alt-i` |
-| `next_pane_layout` / `previous_pane_layout` | `cmd-ctrl-]` / `cmd-ctrl-[` | `ctrl-super-alt-]` / `ctrl-super-alt-[` |
+| `next_pane_layout` | `cmd-ctrl-\` | `ctrl-super-alt-\` |
 | `balance_panes` | `cmd-ctrl-=` | `ctrl-super-=` |
 | `close_window` | `cmd-shift-w` | `ctrl-shift-q` |
-| `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab` | `ctrl-tab` / `ctrl-shift-tab` |
+| `next_tab` / `previous_tab` | `ctrl-tab` / `ctrl-shift-tab`, `cmd-}` / `cmd-{` | `ctrl-tab` / `ctrl-shift-tab`, `ctrl-pagedown` / `ctrl-pageup` |
+| `next_workspace` / `previous_workspace` | `cmd-ctrl-]` / `cmd-ctrl-[` | `ctrl-super-alt-]` / `ctrl-super-alt-[` |
 | `select_tab` 1 to 9 | `cmd-1` to `cmd-9` | `alt-1` to `alt-9` |
 | `copy` / `paste` | `cmd-c` / `cmd-v` | `ctrl-shift-c` / `ctrl-shift-v` |
 | `undo` / `redo` | `cmd-z` / `cmd-shift-z` | `ctrl-shift-z` / `ctrl-shift-y` |
@@ -605,12 +618,10 @@ in a split tab, opens a submenu in place of the rows with Right, Enter, or a
 click; Left or its `‹` back row returns to it. Escape, Tab, running an item,
 or clicking elsewhere closes the menu and returns focus to the terminal.
 
-The session menu binds the same keys. The session control opens it with
-nothing selected, and `open_session_menu` selects the first session. Enter
-switches the window to the selected session, and `menu_confirm_alternate`
-opens it in a new window instead, as the selected row's inline button does.
-In a native macOS session menu, holding Command turns each session row into
-its Open in New Window item.
+The session list is no menu: its rows take the [Sidebar](#sidebar) keys, so
+the arrows, Home, and End walk them, Enter switches the window to the focused
+session, F2 renames it, the menu key or Shift-F10 opens its menu, with Open in
+New Window, and Escape closes the list.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
@@ -648,6 +659,29 @@ or a click outside the panel closes it and returns focus to the terminal.
 | `panel_last` | `end` | `end` |
 | `panel_press` | `enter`, `space` | `enter`, `space` |
 | `panel_reset` | `cmd-backspace` | `ctrl-backspace` |
+
+### Sidebar
+
+These bind only while a workspace row or the session switcher has focus
+(`Sidebar`), in the sidebar or the workspace switcher's popover.
+`focus_sidebar` and `open_workspace_switcher` give focus to the shown
+workspace. The arrows, Home, End, Tab, and Shift-Tab walk the rows and the
+session switcher, which comes after the rows at the bottom or before them at
+the top; Return or Space shows the focused workspace or opens the session
+menu. A click on a row shows its workspace, a double-click renames it in the
+docked sidebar, a right press opens its context menu, which acts on that
+row's workspace, and a drag reorders the workspaces; Escape cancels a drag.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| `sidebar_next` | `down`, `tab` | `down`, `tab` |
+| `sidebar_previous` | `up`, `shift-tab` | `up`, `shift-tab` |
+| `sidebar_first` | `home` | `home` |
+| `sidebar_last` | `end` | `end` |
+| `sidebar_show` | `enter`, `space` | `enter`, `space` |
+| `sidebar_rename` | `f2` | `f2` |
+| `sidebar_menu` | `shift-f10`, `menu` | `shift-f10`, `menu` |
+| `sidebar_exit` | `escape` | `escape` |
 
 ### Notices
 

@@ -137,6 +137,30 @@ fn descriptions_resolve_from_title_and_arguments() {
 }
 
 #[test]
+fn switch_bindings_take_a_position_index() {
+    for command in ["select_session", "select_workspace"] {
+        let bound = |index| {
+            with_args(
+                entry("cmd-alt-3", command),
+                &[("index", toml::Value::Integer(index))],
+            )
+        };
+        let compiled = compile(Platform::MacOs, &[bound(3)]).unwrap();
+        let effective = compiled.effective.last().unwrap();
+        assert!(
+            effective.description.ends_with("(index: 3)"),
+            "{command}: {}",
+            effective.description
+        );
+        let error = compile(Platform::MacOs, &[bound(12)])
+            .err()
+            .expect("an out-of-range index is refused")
+            .to_string();
+        assert!(error.contains("expected 1 to 9"), "{error}");
+    }
+}
+
+#[test]
 fn secondary_resolves_for_the_compiled_platform_rather_than_the_host() {
     for (platform, expected) in [
         (
@@ -1165,27 +1189,44 @@ fn linux_binds_ctrl_comma_to_open_settings_and_reserves_it() {
 }
 
 #[test]
-fn layout_defaults_cycle_and_balance_through_the_real_gpui_keymap() {
-    for (platform, next, previous, balance) in [
-        (Platform::MacOs, "cmd-ctrl-]", "cmd-ctrl-[", "cmd-ctrl-="),
+fn cycle_defaults_match_through_the_real_gpui_keymap() {
+    // macOS reports Shift-Cmd-] as `cmd-}`, with Shift cleared.
+    for (platform, bound) in [
+        (
+            Platform::MacOs,
+            [
+                ("cmd-ctrl-]", ids::NEXT_WORKSPACE),
+                ("cmd-ctrl-[", ids::PREVIOUS_WORKSPACE),
+                ("cmd-ctrl-\\", ids::NEXT_PANE_LAYOUT),
+                ("cmd-ctrl-=", ids::BALANCE_PANES),
+                ("cmd-}", ids::NEXT_TAB),
+                ("cmd-{", ids::PREVIOUS_TAB),
+                ("ctrl-tab", ids::NEXT_TAB),
+                ("ctrl-shift-tab", ids::PREVIOUS_TAB),
+            ],
+        ),
         (
             Platform::Linux,
-            "ctrl-super-alt-]",
-            "ctrl-super-alt-[",
-            "ctrl-super-=",
+            [
+                ("ctrl-super-alt-]", ids::NEXT_WORKSPACE),
+                ("ctrl-super-alt-[", ids::PREVIOUS_WORKSPACE),
+                ("ctrl-super-alt-\\", ids::NEXT_PANE_LAYOUT),
+                ("ctrl-super-=", ids::BALANCE_PANES),
+                ("ctrl-pagedown", ids::NEXT_TAB),
+                ("ctrl-pageup", ids::PREVIOUS_TAB),
+                ("ctrl-tab", ids::NEXT_TAB),
+                ("ctrl-shift-tab", ids::PREVIOUS_TAB),
+            ],
         ),
     ] {
         let compiled = compile(platform, &[]).unwrap();
+        assert_eq!(compiled.conflicts, Vec::<String>::new());
         let keymap = Keymap::new(compiled.bindings);
         let terminal = [
             KeyContext::parse("Workspace").unwrap(),
             KeyContext::parse("Terminal").unwrap(),
         ];
-        for (key, command) in [
-            (next, ids::NEXT_PANE_LAYOUT),
-            (previous, ids::PREVIOUS_PANE_LAYOUT),
-            (balance, ids::BALANCE_PANES),
-        ] {
+        for (key, command) in bound {
             assert!(compiled.reserved.is_reserved(&keystroke(key)), "{key}");
             let (bindings, pending) =
                 keymap.bindings_for_input(&[keystroke(key)], &terminal);
@@ -1196,6 +1237,13 @@ fn layout_defaults_cycle_and_balance_through_the_real_gpui_keymap() {
                 "{key}"
             );
         }
+        // The previous layout ships unbound.
+        assert!(
+            defaults(platform).iter().all(
+                |entry| entry.command != ids::PREVIOUS_PANE_LAYOUT.as_str()
+            ),
+            "{platform:?}"
+        );
     }
     // `arrange_panes` ships unbound; a binding names its layout, and only
     // the name's syntax is checked before the command runs.

@@ -1239,17 +1239,16 @@ fn cross_window_tear_off_pill_uses_free_space_after_tabs_and_add_button(
 fn a_narrow_titlebar_tear_off_pill_turns_compact_instead_of_covering_tabs(
     cx: &mut TestAppContext,
 ) {
-    // The fixture width fits two tabs and the pill without the session
-    // control, whose own narrow-host collapse has its tests.
+    // The fixture width fits two tabs and the compact pill beside the
+    // sidebar button.
     let mut h = DesktopHarness::with_config(cx, |config| {
         config.tabs.always_show = true;
         config.tabs.position = TabPosition::Titlebar;
-        config.window.session_button = false;
     });
     let tab = h.open_tab(ECHO);
     let _ = h.open_tab(ECHO);
     let source = h.attach_window();
-    h.cx.simulate_window_resize(source, size(px(456.0), px(353.0)));
+    h.cx.simulate_window_resize(source, size(px(486.0), px(353.0)));
     h.activate(source, tab);
     let _locator = h.cross_locator();
     h.cross_begin(source, tab);

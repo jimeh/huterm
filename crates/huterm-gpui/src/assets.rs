@@ -5,7 +5,7 @@ use gpui::{Application, AssetSource, QuitMode, SharedString};
 /// The application icon, shown by the About panel.
 pub(crate) const APP_ICON: &str = "images/huterm.png";
 
-const ASSETS: [(&str, &[u8]); 41] = [
+const ASSETS: [(&str, &[u8]); 45] = [
     ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
     ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
     (
@@ -142,6 +142,22 @@ const ASSETS: [(&str, &[u8]); 41] = [
         "icons/layout-grid.svg",
         include_bytes!("../assets/icons/layout-grid.svg"),
     ),
+    (
+        "icons/panel-left.svg",
+        include_bytes!("../assets/icons/panel-left.svg"),
+    ),
+    (
+        "icons/panel-right.svg",
+        include_bytes!("../assets/icons/panel-right.svg"),
+    ),
+    (
+        "icons/chevrons-up-down.svg",
+        include_bytes!("../assets/icons/chevrons-up-down.svg"),
+    ),
+    (
+        "icons/ellipsis.svg",
+        include_bytes!("../assets/icons/ellipsis.svg"),
+    ),
     (APP_ICON, include_bytes!("../../../assets/Huterm-512.png")),
 ];
 
@@ -188,11 +204,17 @@ pub(crate) enum Icon {
     Trash,
     /// A workspace.
     LayoutGrid,
+    /// The sidebar button on each side.
+    PanelLeft,
+    PanelRight,
+    /// The session switcher row's chevron.
+    ChevronsUpDown,
+    Ellipsis,
 }
 
 impl Icon {
     #[cfg(test)]
-    const ALL: [Self; 40] = [
+    const ALL: [Self; 44] = [
         Self::X,
         Self::Plus,
         Self::ChevronLeft,
@@ -233,6 +255,10 @@ impl Icon {
         Self::Eraser,
         Self::Trash,
         Self::LayoutGrid,
+        Self::PanelLeft,
+        Self::PanelRight,
+        Self::ChevronsUpDown,
+        Self::Ellipsis,
     ];
 
     pub(crate) const fn asset_path(self) -> &'static str {
@@ -277,6 +303,10 @@ impl Icon {
             Self::Eraser => "icons/eraser.svg",
             Self::Trash => "icons/trash-2.svg",
             Self::LayoutGrid => "icons/layout-grid.svg",
+            Self::PanelLeft => "icons/panel-left.svg",
+            Self::PanelRight => "icons/panel-right.svg",
+            Self::ChevronsUpDown => "icons/chevrons-up-down.svg",
+            Self::Ellipsis => "icons/ellipsis.svg",
         }
     }
 }

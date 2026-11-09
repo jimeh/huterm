@@ -16,7 +16,7 @@ fn unchecked(capture: &RuntimeCapture) -> Vec<u8> {
         socket_name: capture.socket_name.clone(),
         next_id: capture.next_id,
         session_ordinal: capture.session_ordinal,
-        workspace_ordinal: capture.workspace_ordinal,
+        workspace_ordinal: 0,
         sessions: Bounded(
             capture.sessions.iter().map(session_record).collect(),
         ),
@@ -88,6 +88,37 @@ fn a_capture_round_trips_through_its_file() {
     assert_eq!(SCOPE.to_string(), "07".repeat(16));
 }
 
+#[test]
+fn workspace_counters_round_trip_per_session_and_older_files_load() {
+    let mut capture = rich_capture();
+    capture.sessions[0].workspace_ordinal = 7;
+    capture.sessions[1].workspace_ordinal = 3;
+    let bytes = encode_runtime(&capture, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_runtime(&bytes) else {
+        panic!("the file did not decode");
+    };
+    assert_eq!(file.content, capture);
+    // Builds that require the runtime-wide field still find it.
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["workspace_ordinal"], 7);
+
+    // A file from before per-session counters has only the runtime-wide
+    // one, which loads as each session's unknown (zero) counter.
+    for session in json["sessions"].as_array_mut().unwrap() {
+        session.as_object_mut().unwrap().remove("workspace_ordinal");
+    }
+    let older = serde_json::to_vec(&json).unwrap();
+    let Decoded::Ok(file) = decode_runtime(&older) else {
+        panic!("an older file did not load");
+    };
+    assert!(
+        file.content
+            .sessions
+            .iter()
+            .all(|session| session.workspace_ordinal == 0)
+    );
+}
+
 const DISPLAY: &str = "1e2f3a4b-5c6d-7e8f-9a0b-1c2d3e4f5a6b";
 
 #[test]
@@ -104,6 +135,43 @@ fn a_window_display_round_trips_and_is_left_out_when_unknown() {
     // from before the field has none.
     let text = String::from_utf8(bytes).unwrap();
     assert_eq!(text.matches("\"display\"").count(), 1, "{text}");
+}
+
+#[test]
+fn a_windows_sidebar_state_round_trips_and_older_files_load() {
+    let mut layout = layout_for(&rich_capture());
+    layout.windows[0].workspace_panel_visible = Some(false);
+    layout.windows[0].workspace_panel_width = 230.0;
+    let bytes = encode_desktop(&layout, SCOPE, 1).unwrap();
+    let Decoded::Ok(file) = decode_desktop(&bytes) else {
+        panic!("the layout did not decode");
+    };
+    assert_eq!(file.content, layout);
+    // The second window keeps the defaults, so it writes neither field, as
+    // a file from before them has none, and such a file loads them as
+    // defaults.
+    let text = String::from_utf8(bytes).unwrap();
+    for field in ["\"workspace_panel_visible\"", "\"workspace_panel_width\""] {
+        assert_eq!(text.matches(field).count(), 1, "{text}");
+    }
+    let plain = layout_for(&rich_capture());
+    let text =
+        String::from_utf8(encode_desktop(&plain, SCOPE, 1).unwrap()).unwrap();
+    assert!(!text.contains("workspace_panel"), "{text}");
+    let Decoded::Ok(file) = decode_desktop(text.as_bytes()) else {
+        panic!("a file without the fields did not load");
+    };
+    assert!(file.content.windows.iter().all(|window| {
+        window.workspace_panel_visible.is_none()
+            && window.workspace_panel_width == 0.0
+    }));
+    // A width that is not a finite, non-negative number is refused.
+    for width in [-1.0, f32::NAN, f32::INFINITY] {
+        let mut broken = layout.clone();
+        broken.windows[0].workspace_panel_width = width;
+        let refused = encode_desktop(&broken, SCOPE, 1).unwrap_err();
+        assert!(refused.reason().contains("geometry"), "{refused}");
+    }
 }
 
 /// Encodes a desktop layout without checking any rule, as a damaged or

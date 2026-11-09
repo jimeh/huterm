@@ -82,7 +82,6 @@ fn saved(next_id: u64) -> Saved {
             socket_name: "default".into(),
             next_id,
             session_ordinal: 0,
-            workspace_ordinal: 0,
             sessions: Vec::new(),
             terminals: Vec::new(),
         },

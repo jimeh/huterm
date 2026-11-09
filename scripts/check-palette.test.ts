@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { profileRows } from "./check-palette";
 import { macKeyEvents } from "./macos-keys";
-import { menuProblems, placementProblems, sessionControl } from "./session-control";
+import { listProblems, placementProblems, sessionSwitcher } from "./session-control";
 
 test("macOS palette text uses one correctly keyed event per character", () => {
   expect(macKeyEvents("Ab z")).toEqual([
@@ -32,43 +32,50 @@ test("quake picker rows come from the named window's palette", () => {
   expect(profileRows(state, "w0")).toEqual({});
 });
 
-test("the session control reads from state and sits before the menu button", () => {
+test("the session switcher reads from state and sits beside the sidebar button", () => {
   const state = [
-    "w0.menu_button=600,3,26,26",
-    "w0.session_host=TitleStrip w0.session_rect=480,3,114,26 w0.session_collapsed=false",
-    'w0.session_truncated=true w0.session_open=false w0.session_name="huterm"',
+    "w0.sidebar_button=80,3,26,26",
+    "w0.session_host=TitleRow w0.session_rect=110,3,114,26 w0.session_open=true",
+    'w0.session_list_from=Corner w0.session_list_rect=110,33,260,200 w0.session_name="huterm"',
   ].join(" ");
-  const control = sessionControl(state);
-  expect(control).toEqual({
-    host: "TitleStrip",
-    rect: { x: 480, y: 3, w: 114, h: 26 },
-    collapsed: false,
-    truncated: true,
-    open: false,
+  const switcher = sessionSwitcher(state);
+  expect(switcher).toEqual({
+    host: "TitleRow",
+    rect: { x: 110, y: 3, w: 114, h: 26 },
+    icon: false,
+    open: true,
+    list: { x: 110, y: 33, w: 260, h: 200 },
   });
   const row = { x: 0, y: 0, w: 640, h: 32 };
-  const menu = { x: 600, y: 3, w: 26, h: 26 };
-  expect(placementProblems(control, "TitleStrip", row, menu)).toEqual([]);
-  // A control past the menu button, in the wrong host, or out of the row
+  const button = { x: 80, y: 3, w: 26, h: 26 };
+  expect(placementProblems(switcher, "TitleRow", row, button)).toEqual([]);
+  // On the right it sits just before the button instead.
+  const before = { ...switcher, rect: { ...switcher.rect, x: 500 } };
+  expect(placementProblems(before, "TitleRow", row, { x: 618, y: 3, w: 26, h: 26 })).toEqual([]);
+  // A switcher away from the button, in the wrong host, or out of the row
   // is reported.
-  const past = { ...control, rect: { ...control.rect, x: 500 } };
-  expect(placementProblems(past, "TitleStrip", row, menu)).toEqual(["ends at 614, past the menu button at 600"]);
-  expect(placementProblems(control, "BarEnd", row, menu)).toEqual(["host TitleStrip, expected BarEnd"]);
-  const low = { ...control, rect: { ...control.rect, y: 20 } };
-  expect(placementProblems(low, "TitleStrip", row)).toEqual([
+  const away = { ...switcher, rect: { ...switcher.rect, x: 140 } };
+  expect(placementProblems(away, "TitleRow", row, button)).toEqual([
+    `leaves 34 points beside the sidebar button ${JSON.stringify(button)}`,
+  ]);
+  expect(placementProblems(switcher, "Bar", row, button)).toEqual(["host TitleRow, expected Bar"]);
+  const low = { ...switcher, rect: { ...switcher.rect, y: 20 } };
+  expect(placementProblems(low, "TitleRow", row)).toEqual([
     `rect ${JSON.stringify(low.rect)} outside ${JSON.stringify(row)}`,
   ]);
-  const wide = { ...control, collapsed: true };
-  expect(placementProblems(wide, "TitleStrip", row, menu)).toEqual(["collapsed width 114"]);
+  // Only the icon shows at the control's size; a closed list has no rect.
+  const icon = sessionSwitcher("w0.session_host=Bar w0.session_rect=4,3,26,26 w0.session_open=false w0.session_list_rect=none");
+  expect(icon.icon).toBe(true);
+  expect(icon.list).toBeUndefined();
 });
 
-test("the session menu opens below the control, or above it from a bottom bar", () => {
+test("the session list opens below the switcher, or above it from a bottom bar", () => {
   const window = { x: 0, y: 0, w: 640, h: 480 };
-  const control = { x: 480, y: 3, w: 114, h: 26 };
-  expect(menuProblems({ x: 330, y: 33, w: 264, h: 200 }, control, false, window)).toEqual([]);
-  expect(menuProblems({ x: 330, y: 20, w: 264, h: 200 }, control, false, window)).toHaveLength(1);
-  const bottomControl = { x: 480, y: 451, w: 114, h: 26 };
-  expect(menuProblems({ x: 330, y: 240, w: 264, h: 200 }, bottomControl, true, window)).toEqual([]);
-  expect(menuProblems({ x: 330, y: 260, w: 264, h: 200 }, bottomControl, true, window)).toHaveLength(1);
-  expect(menuProblems({ x: 500, y: 33, w: 264, h: 200 }, control, false, window)).toHaveLength(1);
+  const switcher = { x: 110, y: 3, w: 114, h: 26 };
+  expect(listProblems({ x: 110, y: 33, w: 260, h: 200 }, switcher, false, window)).toEqual([]);
+  expect(listProblems({ x: 110, y: 20, w: 260, h: 200 }, switcher, false, window)).toHaveLength(1);
+  const bottomSwitcher = { x: 110, y: 451, w: 114, h: 26 };
+  expect(listProblems({ x: 110, y: 240, w: 260, h: 200 }, bottomSwitcher, true, window)).toEqual([]);
+  expect(listProblems({ x: 110, y: 260, w: 260, h: 200 }, bottomSwitcher, true, window)).toHaveLength(1);
+  expect(listProblems({ x: 500, y: 33, w: 260, h: 200 }, switcher, false, window)).toHaveLength(1);
 });

@@ -74,6 +74,10 @@ pub(super) struct WindowLayout {
     /// (`restore::display_uuid`).
     pub(super) display: Option<String>,
     pub(super) sidebar_width: Pixels,
+    /// The window shows its sidebar.
+    pub(super) workspace_visible: bool,
+    /// The sidebar's preferred width.
+    pub(super) workspace_width: Pixels,
     /// Whether the window is in, or entering, fullscreen.
     pub(super) fullscreen: bool,
 }
@@ -817,6 +821,28 @@ impl WindowModel {
         }
     }
 
+    pub(super) fn set_workspace_visible(
+        &mut self,
+        id: WindowId,
+        visible: bool,
+    ) {
+        if let Some(record) = self.record_mut(id)
+            && record.layout.workspace_visible != visible
+        {
+            record.layout.workspace_visible = visible;
+            self.revision += 1;
+        }
+    }
+
+    pub(super) fn set_workspace_width(&mut self, id: WindowId, width: Pixels) {
+        if let Some(record) = self.record_mut(id)
+            && record.layout.workspace_width != width
+        {
+            record.layout.workspace_width = width;
+            self.revision += 1;
+        }
+    }
+
     /// Notes whether a Window or emptied close of `id` is committing.
     pub(super) fn set_close_committing(
         &mut self,
@@ -1083,6 +1109,8 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
         display: record.layout.display.clone(),
         mode,
         sidebar_width: f32::from(record.layout.sidebar_width),
+        workspace_panel_visible: Some(record.layout.workspace_visible),
+        workspace_panel_width: f32::from(record.layout.workspace_width),
         quake_profile: record.quake.as_ref().map(|quake| quake.profile.clone()),
         appearance: (!transparency.is_empty()).then(|| {
             huterm_state::WindowAppearance {

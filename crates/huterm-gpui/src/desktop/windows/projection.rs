@@ -95,6 +95,10 @@ pub(super) enum Drained {
 
 /// The outcome of installing a resync snapshot.
 #[derive(Debug, Eq, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an install result lives only until its reconcile runs"
+)]
 pub(super) enum Install {
     /// The snapshot and its drained subscription are current; reconcile
     /// everything.
@@ -476,6 +480,11 @@ pub(super) fn windows_to_visit(
                 || record.workspace.is_some_and(|workspace| {
                     touched.contains_workspace(workspace)
                 })
+                // The sidebar and the workspace switcher show every
+                // workspace of the session with its tab count.
+                || record
+                    .session
+                    .is_some_and(|session| touched.contains_chrome(session))
                 || record
                     .tabs
                     .iter()

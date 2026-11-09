@@ -61,8 +61,6 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
 These are not available yet:
 
 - Pane layout presets, and undoing a layout change.
-- A workspace panel or dropdown. Workspaces are reached from the command
-  palette and the session menu for now.
 - A background server, local IPC, a command-line client, a TUI, or a browser
   client.
 - Saving and restoring sessions or terminal history across restarts.
@@ -143,9 +141,14 @@ shows an error.
 
 Each window creates and attaches to a private session with one workspace of
 ordered tabs. A session can hold more workspaces: New Workspace, in the
-session menu and the palette, adds one with a fresh shell, and Switch
+sidebar and the palette, adds one with a fresh shell, and Switch
 Workspace, Next Workspace, and Previous Workspace move a window between
 them, each window on its own and back to the tab and pane it left there.
+A left or right sidebar lists the window's workspaces, reorders them by
+dragging, and holds the session switcher; its button sits in the window's
+corner, with a workspace switcher, and optionally a session switcher, beside
+it while the sidebar is hidden.
+See [Sidebar and workspaces](docs/configuration.md#sidebar-and-workspaces).
 Each tab holds one or more panes, each with its own terminal and
 shell. Hidden tabs keep processing output without building snapshots or
 painting. A pane closes when its shell exits, and its tab closes with its last
@@ -194,29 +197,22 @@ them back.
 
 ### Switching sessions
 
-The session control at the right end of the title bar, just before the
-window menu button, names the window's session; an automatic name such as
-"Session 2" shows dimmed. Clicking it, or running `open_session_menu`, opens
-the session menu: every session with its tab count, a window tag on sessions
+The session switcher names the window's session; an automatic name such as
+"Session 2" shows dimmed. It sits in the sidebar, at the bottom or top, and
+`[sidebar] session_switcher_in_corner = true` also puts it beside the sidebar
+button. Clicking it, or running `open_session_menu`, opens the session list:
+every session with its workspace and tab counts, a window tag on sessions
 other windows show, and an "exited" tag on sessions whose shells all exited,
-then New Session, Rename Session…, Clear Name (while the session has a custom
-name), and Close Session…. Picking a session switches the window to it, and
-the selected row's Open in New Window button (or Cmd-Enter on macOS,
-Ctrl-Enter on Linux) shows it in a new window. The native macOS menu has no
-row buttons, so it lists Open Session in New Window… instead, and holding
-Command turns each row into its own Open in New Window. Close Session in the
-command palette asks which session to close, so one that no window shows
-can be ended without switching to it. Closing the window's own session moves
+with a + for New Session. Picking a session switches the window to it; drag
+a row to reorder the sessions, and right-click a row or use its "⋯" button
+for Rename, Clear Name, Open in New Window, and Close Session. Close Session
+in the command palette asks which session to close, so one that no window
+shows can be ended without switching to it. Closing the window's own session moves
 the window to the session it showed most recently, else to one no window
 shows, passing over any it cannot show; when one could not be shown and
 none is left, the window opens a new session, and with none at all it
 closes. Quit cancels a Close Session still asking or checking, so
-restore brings that session back. Without a title bar, in
-fullscreen, Quake windows, and Linux without client-side decorations, the
-control ends a top or bottom tab bar, or sits icon-only beside `+` in a left
-or right column. A long name truncates, and a narrow window shows only the
-icon. `[window] session_button = false` hides it; the menu and every session
-command stay available. New Session, Switch Session, Open Session in New
+restore brings that session back. New Session, Switch Session, Open Session in New
 Window, Rename Session, Clear Session Name, and Close Session are also in the
 command palette ([commands](docs/keybindings.md#commands)). Switching keeps
 both sessions running; the window returns to the tab and pane it last showed

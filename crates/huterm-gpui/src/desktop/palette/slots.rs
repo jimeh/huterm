@@ -580,11 +580,14 @@ fn parse_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huterm_protocol::{RuntimeId, TabId, WorkspaceId, catalog, ids};
+    use huterm_protocol::{
+        RuntimeId, SessionId, TabId, WorkspaceId, catalog, ids,
+    };
 
     struct Domain {
         tabs: Vec<TabId>,
         workspaces: Vec<WorkspaceId>,
+        sessions: Vec<SessionId>,
         active_tab: Option<TabId>,
     }
 
@@ -599,6 +602,12 @@ mod tests {
                     .iter()
                     .copied()
                     .map(CommandValue::Workspace)
+                    .collect(),
+                ArgumentKind::Session => self
+                    .sessions
+                    .iter()
+                    .copied()
+                    .map(CommandValue::Session)
                     .collect(),
                 ArgumentKind::QuakeProfile => {
                     vec![CommandValue::Text("default".into())]
@@ -630,6 +639,7 @@ mod tests {
         Domain {
             tabs: tabs.iter().map(|n| tab(*n)).collect(),
             workspaces: vec![WorkspaceId::in_runtime(RuntimeId::new(1), 1)],
+            sessions: vec![SessionId::in_runtime(RuntimeId::new(1), 1)],
             active_tab: tabs.first().map(|n| tab(*n)),
         }
     }
@@ -691,6 +701,35 @@ mod tests {
         };
         assert_eq!(invocation.tab("tab"), Some(tab(3)));
         assert_eq!(invocation.integer("index"), None);
+    }
+
+    #[test]
+    fn switching_prompts_only_for_the_session_or_workspace_and_runs_on_pick() {
+        let mut domain = with_tabs(&[1]);
+        domain
+            .sessions
+            .push(SessionId::in_runtime(RuntimeId::new(1), 2));
+        domain
+            .workspaces
+            .push(WorkspaceId::in_runtime(RuntimeId::new(1), 2));
+        let session = CommandValue::Session(domain.sessions[1]);
+        let workspace = CommandValue::Workspace(domain.workspaces[1]);
+        for (id, name, picked) in [
+            (ids::SELECT_SESSION, "session", session),
+            (ids::SELECT_WORKSPACE, "workspace", workspace),
+        ] {
+            assert!(!runs_without_prompt(spec(id), &domain), "{id}");
+            let mut editor =
+                SlotEditor::new(spec(id), &[], &domain, true).unwrap();
+            assert_eq!(editor.slots().len(), 1, "{id}: index is unprompted");
+            assert_eq!(editor.active().spec.name, name);
+            let Ok(Commit::Run(invocation)) =
+                editor.commit(Some(picked.clone()))
+            else {
+                panic!("picking runs {id}");
+            };
+            assert_eq!(invocation.args, [CommandArgument::new(name, picked)]);
+        }
     }
 
     #[test]

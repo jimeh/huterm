@@ -22,6 +22,7 @@ pub(crate) fn write_lock() -> &'static std::sync::Mutex<()> {
     &LOCK
 }
 
+pub(super) const SESSION_BUTTON_WARNING: &str = "window.session_button is deprecated and ignored; the session switcher beside the sidebar button replaced it (sidebar.session_switcher_in_corner). Remove window.session_button from your configuration.";
 pub(super) const LEGACY_ALACRITTY_WARNING: &str = "terminal.engine = \"alacritty\" is deprecated; Huterm now uses Ghostty. Remove terminal.engine from your configuration.";
 
 pub(super) const LINUX_AUDIBLE_BELL_WARNING: &str =
@@ -129,12 +130,9 @@ padding_y = 4.0
 padding_balance = false
 # Show the window menu button in the title bar, or in the tab bar without one.
 menu_button = true
-# Show the session control, which names the window's session and opens the
-# session menu, beside the window menu button.
-session_button = true
 # Show key hints on the scroll pill and on dialog and panel buttons.
 shortcut_hints = false
-# Open the window, tab, pane, terminal, and session menus as native macOS
+# Open the window, tab, pane, terminal, and sidebar row menus as native macOS
 # menus. Linux ignores it and always draws them in Huterm's style.
 macos_native_menus = true
 # Show a preview window under the pointer while a tab or pane is dragged
@@ -171,6 +169,25 @@ width = "fit"
 # Width bounds in logical points for fit mode.
 min_width = 96.0
 max_width = 240.0
+
+[sidebar]
+# The window side the sidebar docks on: left or right. The sidebar holds the
+# window's workspaces and session switcher; its button sits in the corner on
+# that side.
+position = "left"
+# New windows start with the sidebar shown. Each window keeps its own choice.
+visible = false
+# Where the session switcher sits in the sidebar: bottom or top.
+session_switcher = "bottom"
+# While the sidebar is hidden, also show the session switcher beside the
+# sidebar button.
+session_switcher_in_corner = false
+# While the sidebar is hidden and the session has two or more workspaces, show
+# the workspace switcher beside the sidebar button.
+workspace_switcher_in_corner = true
+# How those switchers look: full (icon and name) or icon. A narrow window shows
+# icons either way.
+switcher_style = "full"
 
 [panes]
 # Whether a split tab's panes show title bars: visible, hover, or hidden.
@@ -239,6 +256,7 @@ pub(super) struct Config {
     pub(super) font: FontConfig,
     pub(super) window: WindowConfig,
     pub(super) tabs: TabsConfig,
+    pub(super) sidebar: huterm_config::SidebarConfig,
     pub(super) updates: UpdateConfig,
     pub(super) palette: huterm_config::PaletteConfig,
     pub(super) panes: huterm_config::PanesConfig,
@@ -355,6 +373,7 @@ impl Default for Config {
             themes: ThemePair::default_pair(),
             window: WindowConfig::default(),
             tabs: TabsConfig::default(),
+            sidebar: huterm_config::SidebarConfig::default(),
             updates: UpdateConfig::default(),
             palette: huterm_config::PaletteConfig::default(),
             panes: huterm_config::PanesConfig::default(),
@@ -663,6 +682,13 @@ fn parse_consumed(
         (cfg!(target_os = "linux") && raw.terminal.bell.audio)
             .then_some(LINUX_AUDIBLE_BELL_WARNING),
     );
+    let warning = join_warnings(
+        warning,
+        raw.window
+            .session_button
+            .is_some()
+            .then_some(SESSION_BUTTON_WARNING),
+    );
     raw.validate_values()?;
     let directory = path
         .parent()
@@ -681,6 +707,7 @@ fn parse_consumed(
         general: raw.general,
         window: raw.window,
         tabs: raw.tabs,
+        sidebar: raw.sidebar,
         updates: raw.updates,
         palette: raw.palette,
         panes: raw.panes,

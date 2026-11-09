@@ -159,6 +159,7 @@ fn typing_keeps_condition_suggestions_open_and_return_completes_the_first(
         [
             "selection",
             "split",
+            "Sidebar",
             "Settings",
             "SettingsControl",
             "SettingsGroup"
@@ -215,9 +216,9 @@ fn the_arrows_and_the_pointer_move_one_condition_highlight(
     let mut pointer = visual(&harness);
     pointer.simulate_mouse_move(row, None, Modifiers::none());
     pointer.run_until_parked();
-    assert_eq!(shown(&mut harness, &list).2.as_deref(), Some("Settings"));
+    assert_eq!(shown(&mut harness, &list).2.as_deref(), Some("Sidebar"));
     let field = aria(&mut harness, &format!("keybinding-field-{when}"));
-    assert_eq!(field["description"], "Settings", "{field}");
+    assert_eq!(field["description"], "Sidebar", "{field}");
     // The text never changed, and nothing was written.
     assert_eq!(key_text(&mut harness, &when), "S");
     assert_eq!(focus(&mut harness), format!("key:{when}"));

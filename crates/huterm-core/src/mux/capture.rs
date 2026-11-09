@@ -307,6 +307,7 @@ impl Mux {
                     id: SessionId::new(session.id.get()),
                     ..session.info()
                 },
+                workspace_ordinal: session.workspace_ordinal,
                 workspaces: captured,
             });
         }
@@ -314,7 +315,6 @@ impl Mux {
             socket_name: self.socket_name.clone(),
             next_id: self.next_id,
             session_ordinal: self.session_ordinal,
-            workspace_ordinal: self.workspace_ordinal,
             sessions,
             terminals,
         }
@@ -353,11 +353,14 @@ impl Mux {
     /// numeric identities, now in this runtime's scope, and the terminals
     /// [`SpawnedTerminals::spawn`] started for it. Sets the allocator to
     /// the capture's watermark, so new allocations never collide, and
-    /// resumes each creation ordinal from the highest automatic name of
-    /// its kind restored, counting records with a custom name too, so
+    /// resumes the session creation ordinal from the highest automatic
+    /// session name restored, counting records with a custom name too, so
     /// increasing numbering repeats no restored name and does not keep
-    /// counting records closed before the capture. Emits the events
-    /// creation emits, so subscribers stay current.
+    /// counting sessions closed before the capture. Each session keeps its
+    /// saved workspace ordinal, raised to the highest automatic name among
+    /// its restored workspaces, so a capture without one (zero) resumes
+    /// from its workspaces. Emits the events creation emits, so subscribers
+    /// stay current.
     ///
     /// A pane whose terminal failed leaves its layout, and a tab left with
     /// no pane is removed; the report names both, and each session left
@@ -380,7 +383,6 @@ impl Mux {
             || !self.terminals.is_empty()
             || self.next_id != 0
             || self.session_ordinal != 0
-            || self.workspace_ordinal != 0
         {
             Some(MuxError::RestoreNotFresh)
         } else if capture.socket_name != self.socket_name {
@@ -402,8 +404,8 @@ impl Mux {
         }
         self.changed();
         self.next_id = capture.next_id;
-        // Automatic names resume after the highest one restored, not the
-        // saved ordinals, so records closed before the capture stop
+        // Session names resume after the highest one restored, not the
+        // saved ordinal, so sessions closed before the capture stop
         // pushing the count up across restarts.
         self.session_ordinal = resumed_ordinal(
             SESSION_NAME,
@@ -411,14 +413,6 @@ impl Mux {
                 .sessions
                 .iter()
                 .map(|session| session.info.automatic_name.as_str()),
-        );
-        self.workspace_ordinal = resumed_ordinal(
-            WORKSPACE_NAME,
-            capture
-                .sessions
-                .iter()
-                .flat_map(|session| &session.workspaces)
-                .map(|workspace| workspace.info.automatic_name.as_str()),
         );
         let failed: HashMap<TerminalId, RuntimeError> = spawned
             .failures
@@ -450,11 +444,27 @@ impl Mux {
 
     fn restore_session(&mut self, session: &SessionCapture) -> SessionId {
         let id = SessionId::in_runtime(self.runtime_id, session.info.id.get());
+        let resumed = resumed_ordinal(
+            WORKSPACE_NAME,
+            session
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.info.automatic_name.as_str()),
+        );
+        // A saved counter keeps counting closed workspaces, within a bound,
+        // so a damaged file cannot exhaust the session's numbers.
+        let bound = resumed.saturating_add(
+            u64::try_from(MAX_HIERARCHY_ITEMS).unwrap_or(u64::MAX),
+        );
         self.sessions.push(Session {
             id,
             workspaces: Vec::new(),
             custom_name: session.info.custom_name.clone(),
             automatic_name: session.info.automatic_name.clone(),
+            workspace_ordinal: session
+                .workspace_ordinal
+                .min(bound)
+                .max(resumed),
         });
         let index = position(self.sessions.len() - 1);
         self.emit_hierarchy(|mux| HierarchyEvent::SessionCreated {

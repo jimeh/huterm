@@ -29,6 +29,7 @@ fn catalog_entries_are_unique_and_described() {
                         | "confirming"
                         | "menu"
                         | "Panel"
+                        | "Sidebar"
                         | "notices"
                 )
             ),
@@ -267,6 +268,61 @@ fn validate_requires_exactly_one_group_member() {
         ))
         .is_ok()
     );
+}
+
+#[test]
+fn switching_takes_a_position_or_an_identity_but_not_both() {
+    for (id, name, value) in [
+        (
+            ids::SELECT_SESSION,
+            "session",
+            CommandValue::Session(SessionId::new(2)),
+        ),
+        (
+            ids::SELECT_WORKSPACE,
+            "workspace",
+            CommandValue::Workspace(WorkspaceId::new(2)),
+        ),
+    ] {
+        let index =
+            |value| CommandArgument::new("index", CommandValue::Integer(value));
+        let target = CommandArgument::new(name, value);
+        assert!(validate(&CommandInvocation::new(id, vec![index(9)])).is_ok());
+        assert!(
+            validate(&CommandInvocation::new(id, vec![target.clone()])).is_ok()
+        );
+        assert_eq!(
+            validate(&CommandInvocation::new(id, vec![index(10)])),
+            Err(CommandError::ArgumentRange {
+                command: id,
+                name: "index",
+                value: 10,
+                min: 1,
+                max: 9,
+            })
+        );
+        assert_eq!(
+            validate(&CommandInvocation::new(id, vec![target, index(1)])),
+            Err(CommandError::ConflictingArguments {
+                command: id,
+                group: "target",
+                names: vec!["index", name],
+            })
+        );
+        // A bare invocation prompts for the identity, never the position.
+        let bare = CommandInvocation::new(id, Vec::new());
+        assert_eq!(
+            validate(&bare),
+            Err(CommandError::MissingArgument { command: id, name })
+        );
+        let missing: Vec<_> = lookup(id.as_str())
+            .unwrap()
+            .missing_prompted(&bare)
+            .iter()
+            .map(|argument| argument.name)
+            .collect();
+        assert_eq!(missing, [name]);
+    }
 }
 
 #[test]

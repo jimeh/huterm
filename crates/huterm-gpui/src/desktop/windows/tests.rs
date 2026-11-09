@@ -1220,6 +1220,8 @@ fn quit_captures_zero_view_hierarchy_and_window_navigation_once() {
             },
             mode: huterm_state::WindowMode::Windowed,
             sidebar_width: 220.0,
+            workspace_panel_visible: None,
+            workspace_panel_width: 0.0,
             display: None,
             quake_profile: None,
             appearance: None,
@@ -3146,6 +3148,24 @@ fn initial_window_grid_adds_padding_and_chrome_then_respects_minimum() {
         initial_window_size(&config, metrics, host, frame),
         size(px(280.0), px(180.0))
     );
+}
+
+#[test]
+fn a_new_window_that_starts_with_the_sidebar_shown_widens_by_it() {
+    let metrics = GridMetrics::fixed(8.0, 16.0);
+    let host = TabHost {
+        platform: Platform::current(),
+        fullscreen: false,
+        quake: false,
+        client_decorations: false,
+    };
+    let frame = WindowFrame::default();
+    let mut config = Config::default();
+    let hidden = initial_window_size(&config, metrics, host, frame);
+    config.sidebar.visible = true;
+    let shown = initial_window_size(&config, metrics, host, frame);
+    assert_eq!(shown.width - hidden.width, workspace_chrome::PANEL_WIDTH);
+    assert_eq!(shown.height, hidden.height);
 }
 
 #[test]

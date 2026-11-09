@@ -108,12 +108,17 @@ What a window draws while the workspace it shows holds no tab: the
 workspace's name with New Tab, Switch Workspace…, and Close Workspace.
 _Avoid_: Blank workspace.
 
-**Session control**:
-The control that names a window's session and opens the session menu, which
-switches, creates, renames, and closes sessions and opens one in a new window.
-Its state and commands do not depend on where it is drawn; #26 draws it in the
-title bar beside the window menu button.
-_Avoid_: Session switcher, session picker.
+**Session switcher**:
+The control that names a window's session and opens the session list. The
+sidebar draws it as a row, and Settings can also show it beside the sidebar
+button. Its state and commands do not depend on where it is drawn.
+_Avoid_: Session control, session picker.
+
+**Session list**:
+The popover a session switcher opens: every session as a row, with New
+Session, that switches to, reorders, renames, closes, or opens a session in a
+new window.
+_Avoid_: Session menu.
 
 **Restoration**:
 Recreating saved workspace structure and client layout after a restart, with

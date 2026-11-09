@@ -859,9 +859,16 @@ pub mod ids {
     pub const REDO: CommandId = CommandId::new("redo");
     /// Opens the window's application menu.
     pub const OPEN_MENU: CommandId = CommandId::new("open_menu");
-    /// Opens the window's session menu.
+    /// Opens the window's session list.
     pub const OPEN_SESSION_MENU: CommandId =
         CommandId::new("open_session_menu");
+    /// Opens the window's workspace switcher.
+    pub const OPEN_WORKSPACE_SWITCHER: CommandId =
+        CommandId::new("open_workspace_switcher");
+    /// Shows or hides the window's sidebar.
+    pub const TOGGLE_SIDEBAR: CommandId = CommandId::new("toggle_sidebar");
+    /// Moves keyboard focus to the shown workspace's row in the sidebar.
+    pub const FOCUS_SIDEBAR: CommandId = CommandId::new("focus_sidebar");
     /// Focuses the window's notice list.
     pub const FOCUS_NOTICES: CommandId = CommandId::new("focus_notices");
     /// Dismisses every notice in the window.
@@ -934,6 +941,22 @@ pub mod ids {
     pub const PANEL_PRESS: CommandId = CommandId::new("panel_press");
     /// Resets the focused panel slider's value.
     pub const PANEL_RESET: CommandId = CommandId::new("panel_reset");
+    /// Moves sidebar focus to the next row.
+    pub const SIDEBAR_NEXT: CommandId = CommandId::new("sidebar_next");
+    /// Moves sidebar focus to the previous row.
+    pub const SIDEBAR_PREVIOUS: CommandId = CommandId::new("sidebar_previous");
+    /// Moves sidebar focus to the first row.
+    pub const SIDEBAR_FIRST: CommandId = CommandId::new("sidebar_first");
+    /// Moves sidebar focus to the last row.
+    pub const SIDEBAR_LAST: CommandId = CommandId::new("sidebar_last");
+    /// Shows the focused row's workspace.
+    pub const SIDEBAR_SHOW: CommandId = CommandId::new("sidebar_show");
+    /// Renames the focused row's workspace.
+    pub const SIDEBAR_RENAME: CommandId = CommandId::new("sidebar_rename");
+    /// Opens the focused row's context menu.
+    pub const SIDEBAR_MENU: CommandId = CommandId::new("sidebar_menu");
+    /// Returns focus from the sidebar to the terminal.
+    pub const SIDEBAR_EXIT: CommandId = CommandId::new("sidebar_exit");
     /// Moves the notice selection down.
     pub const NOTICE_NEXT: CommandId = CommandId::new("notice_next");
     /// Moves the notice selection up.
@@ -1496,13 +1519,22 @@ const CATALOG: &[CommandSpec] = &[
         ids::SELECT_SESSION,
         CommandScope::Window,
         "Switch Session",
-        "Show another session in this window; both sessions keep running.",
-        &[ArgumentSpec {
-            name: "session",
-            kind: ArgumentKind::Session,
-            required: Requirement::Always,
-            prompt: true,
-        }],
+        "Show another session in this window, by position from a \
+         keybinding or chosen; both sessions keep running.",
+        &[
+            ArgumentSpec {
+                name: "index",
+                kind: ArgumentKind::Integer { min: 1, max: 9 },
+                required: Requirement::OneOf("target"),
+                prompt: false,
+            },
+            ArgumentSpec {
+                name: "session",
+                kind: ArgumentKind::Session,
+                required: Requirement::OneOf("target"),
+                prompt: true,
+            },
+        ],
     ),
     spec(
         ids::CLEAR_SESSION_NAME,
@@ -1547,13 +1579,22 @@ const CATALOG: &[CommandSpec] = &[
         ids::SELECT_WORKSPACE,
         CommandScope::Window,
         "Switch Workspace",
-        "Show another workspace of this window's session in this window.",
-        &[ArgumentSpec {
-            name: "workspace",
-            kind: ArgumentKind::Workspace,
-            required: Requirement::Always,
-            prompt: true,
-        }],
+        "Show another workspace of this window's session in this window, \
+         by position from a keybinding or chosen.",
+        &[
+            ArgumentSpec {
+                name: "index",
+                kind: ArgumentKind::Integer { min: 1, max: 9 },
+                required: Requirement::OneOf("target"),
+                prompt: false,
+            },
+            ArgumentSpec {
+                name: "workspace",
+                kind: ArgumentKind::Workspace,
+                required: Requirement::OneOf("target"),
+                prompt: true,
+            },
+        ],
     ),
     spec(
         ids::NEXT_WORKSPACE,
@@ -1929,7 +1970,31 @@ const CATALOG: &[CommandSpec] = &[
         ids::OPEN_SESSION_MENU,
         CommandScope::Window,
         "Open Session Menu",
-        "Open this window's session menu to switch, create, or rename sessions.",
+        "Open this window's session list to switch, create, or rename sessions.",
+        &[],
+    ),
+    spec(
+        ids::OPEN_WORKSPACE_SWITCHER,
+        CommandScope::Window,
+        "Open Workspace Switcher",
+        "Open this window's workspace switcher to show, create, rename, or \
+         reorder workspaces.",
+        &[],
+    ),
+    spec(
+        ids::TOGGLE_SIDEBAR,
+        CommandScope::Window,
+        "Toggle Sidebar",
+        "Show or hide this window's sidebar, which holds its workspaces and \
+         session switcher.",
+        &[],
+    ),
+    spec(
+        ids::FOCUS_SIDEBAR,
+        CommandScope::Window,
+        "Focus Sidebar",
+        "Move keyboard focus to the shown workspace in this window's \
+         sidebar.",
         &[],
     ),
     spec(
@@ -2176,6 +2241,70 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Panel: Reset",
         "Reset the focused slider's value to the one beneath it.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_NEXT,
+        CommandScope::Window,
+        "Sidebar: Next",
+        "Move focus to the next workspace or the session switcher.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_PREVIOUS,
+        CommandScope::Window,
+        "Sidebar: Previous",
+        "Move focus to the previous workspace or the session switcher.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_FIRST,
+        CommandScope::Window,
+        "Sidebar: First",
+        "Move focus to the first workspace or the session switcher.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_LAST,
+        CommandScope::Window,
+        "Sidebar: Last",
+        "Move focus to the last workspace or the session switcher.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_SHOW,
+        CommandScope::Window,
+        "Sidebar: Open",
+        "Show the focused workspace or session, or open the session list from the session switcher.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_RENAME,
+        CommandScope::Window,
+        "Sidebar: Rename",
+        "Rename the focused workspace.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_MENU,
+        CommandScope::Window,
+        "Sidebar: Open Menu",
+        "Open the focused workspace's context menu.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_EXIT,
+        CommandScope::Window,
+        "Sidebar: Return to Terminal",
+        "Return keyboard focus to the terminal.",
         &[],
     ),
     spec_in(

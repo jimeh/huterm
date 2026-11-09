@@ -145,7 +145,7 @@ started again. A pane whose last folder no longer exists starts in an
 earlier folder it used, or failing that in your home folder on macOS or
 Huterm's working directory on Linux, and its window says so. A session no
 window showed at Quit comes back the same way, running but in no window;
-switch to it from the session menu. A shown session whose workspaces
+switch to it from the session list. A shown session whose workspaces
 were all empty at Quit keeps its workspaces and names, and its first
 workspace starts one fresh shell. Closing the
 last window is not a Quit: it ends that session, so the next launch opens
@@ -163,7 +163,7 @@ restore_sessions = true
 ```
 
 Set `restore_sessions = false` to start fresh every time. Turning it off,
-in the file or in Settings > General, deletes the saved windows at once;
+in the file or in Settings > Sessions, deletes the saved windows at once;
 turning it on saves the current windows right away. Both apply without a
 restart.
 
@@ -193,8 +193,81 @@ session_numbering = "lowest_unused"
 Set `session_numbering = "increasing"` to keep counting up instead: each
 new session takes one more than the highest number used since launch, and
 a restart continues after the highest number it restored. Workspaces
-number the same way. The setting applies to sessions created after it
-changes, without a restart; existing names never change.
+number the same way within their session: each session's first workspace is
+Workspace 1, and with `increasing` a restart keeps each session's count. The
+setting applies to sessions created after it changes, without a restart;
+existing names never change.
+
+## Sidebar and workspaces
+
+A session holds one or more workspaces, each with its own tabs. The
+sidebar lists the window's workspaces and holds its session switcher. Its
+button sits in the corner of the title bar or tab bar on the sidebar's
+side, so it is always one click away. The + in the workspace list's header,
+or New Workspace in the palette, creates a workspace with a fresh shell.
+
+```toml
+[sidebar]
+position = "left"                   # left or right
+visible = false                     # new windows start with the sidebar shown
+session_switcher = "bottom"         # bottom or top
+session_switcher_in_corner = false  # session switcher beside the button
+workspace_switcher_in_corner = true # workspace switcher beside the button
+switcher_style = "full"             # full (icon and name) or icon
+```
+
+- The sidebar button shows or hides the sidebar. On the left it follows the
+  traffic lights or window buttons; on the right it sits just inside the
+  menu button. While the sidebar shows, the button stays in the same place,
+  inside the sidebar's top strip. `toggle_sidebar` does the same from the
+  palette. Each window keeps its own choice, saved with it; `visible` sets
+  it for new windows. The sidebar never opens by itself.
+- While the sidebar is hidden, switchers sit beside the button: the
+  workspace switcher while the session has two or more workspaces, and the
+  session switcher when `session_switcher_in_corner = true`. On the left
+  the button comes first, then the session switcher, then the workspace
+  switcher; on the right the order mirrors, ending at the menu button. Each
+  shows its icon and the name, dimmed when automatic, or only its icon with
+  `switcher_style = "icon"` or when the bar is short of room. In a left or
+  right tab column they take a row each above the tabs. The workspace
+  switcher opens a popover with the workspace list, as tall as it needs, in
+  Huterm's style even with `macos_native_menus`; the session switcher opens
+  the session list. Picking a row closes them; so do Escape and a click
+  outside. `open_workspace_switcher` and `open_session_menu` open them from
+  the palette.
+- The sidebar spans the window's height and is outermost on its side, with
+  a tab column on the same side next to it. It holds that corner of the
+  title bar: the traffic lights or window buttons, and on the right the menu
+  button. Drag its inner edge to resize it, between 140 and 400 points and
+  at most half the window; each window keeps its own width. In a window too
+  narrow to leave the terminal 384 points beside it, the button opens the
+  sidebar as a sheet over the terminal instead, which closes when you pick a
+  workspace, press Escape, or click outside it. The sheet changes no saved
+  choice: a window that had its sidebar shown docks it again once it is wide
+  enough, and one that did not keeps it hidden. Resizing the sidebar or the
+  tab column beside it stops where the terminal would get narrower than 384
+  points.
+- Workspace and session rows look alike: an icon, the name, dimmed when
+  automatic, and a second line of details. A workspace row shows its tab
+  count; a session row shows its workspace and tab counts, a window tag
+  while other windows show it, and an "exited" tag once all its shells
+  exited. A click shows the workspace or session, and a right-click opens
+  the row's menu: Rename, Clear Name, and Close, and for a session, Open in
+  New Window. In the popovers each row also has a "⋯" button that opens the
+  same menu. Drag a row up or down to reorder the session's workspaces or
+  the sessions, holding it at the list's edge to scroll; Escape cancels the
+  drag. A double-click renames a workspace row in the sidebar; in the
+  popovers and the sheet a click shows the workspace and closes them, so
+  rename there with F2 or the row's menu. `focus_sidebar` moves keyboard
+  focus to the shown workspace's row; see
+  [keybindings](keybindings.md#sidebar).
+- The session switcher row shows the session's name over its workspace and
+  tab counts, at the bottom of the sidebar or at the top with
+  `session_switcher = "top"`. It opens the session list, a popover in
+  Huterm's style even with `macos_native_menus`, with a + for New Session.
+
+Showing or hiding the sidebar resizes the window's terminals as a window
+resize does, so a selection survives only when the grid size stays the same.
 
 ## Shells
 
@@ -725,11 +798,11 @@ chooses it: `"full"` shows the panel, or a compact badge with the numbers alone
 in a pane too small for the panel; `"compact"` always shows the badge; and
 `"off"` shows neither. A tiny pane shows nothing. The indicator stays for
 `size_indicator_linger_ms` after the size stops changing, from 0 to 10000
-milliseconds, then fades. While you still drag a pane divider or the sidebar's
-edge, or on macOS a window's edge, it stays however long you rest, and the
-linger starts when you release. On Linux, Huterm cannot tell when a window
-edge drag ends, so there the linger counts from the last resize. Both settings
-apply on reload:
+milliseconds, then fades. While you still drag a pane divider, the tab
+column's or sidebar's edge, or on macOS a window's edge, it stays however
+long you rest, and the linger starts when you release. On Linux, Huterm
+cannot tell when a window edge drag ends, so there the linger counts from the
+last resize. Both settings apply on reload:
 
 ```toml
 [window]
@@ -820,7 +893,6 @@ padding_y = 4.0
 padding_balance = false
 macos_fullscreen_mode = "non_native" # native or non_native; ignored on Linux
 menu_button = true # the window menu button in the title bar or tab bar
-session_button = true # the session control beside the menu button
 shortcut_hints = false # key hints on the scroll pill and dialog buttons
 macos_native_menus = true # native macOS menus; ignored on Linux
 macos_drag_preview = true # floating drag preview; ignored on Linux
@@ -857,12 +929,12 @@ and hovered tabs (`active`), on hovered tabs only (`hover`), or on every tab
 `width = "fit"` sizes top and bottom tabs to their titles between `min_width`
 and `max_width`, each from 48 to 600 points. `width = "fill"` shares the bar
 equally, shrinking tabs to 120 points before the bar scrolls. Left and right
-tabs have a fixed height in a sidebar; drag its inner edge to resize it between
+tabs have a fixed height in a column; drag its inner edge to resize it between
 140 and 400 points, capped at half the window width. Each window keeps its own
-sidebar width. On macOS the sidebar fills the window height, with its rows
+column width. On macOS the column fills the window height, with its rows
 below the title bar. The title bar spans the terminal column in the terminal
 background; traffic lights and the menu button stay at the window's corners.
-Drag empty space in either the title bar or the strip above the sidebar rows
+Drag empty space in either the title bar or the strip above the column's rows
 to move the window, or double-click it for the system title-bar action.
 A title bar without tabs has a thin line above split panes, including while
 zoomed, or above a visible top pane title bar. Hover title bars do not add it.
@@ -912,8 +984,8 @@ blur = 0                 # 0 (off) to 64: blur radius, macOS only
 `opacity` fades everything in the window together, chrome, text, cursor and
 selection included. `background_opacity` sets how much of the terminal's
 default background shows, together with the padding, the tab bar, the title
-row, the tab sidebar and pane title bars; their text, icons and dividers stay
-solid. `foreground_opacity` fades terminal text, box-drawing and powerline
+row, the tab column, the sidebar and pane title bars; their text, icons and
+dividers stay solid. `foreground_opacity` fades terminal text, box-drawing and powerline
 characters, underlines, strikethrough and link underlines. `opacity`
 multiplies the other two: opacity 0.7 with background opacity 0.6 leaves the
 background at 0.42. All four apply to open windows, Quake windows included, as
@@ -1052,21 +1124,14 @@ column. It hides with an auto-hidden bar. A yellow dot marks waiting notices.
 `menu_button = false` removes the button; `open_menu` and every menu item stay
 available through the palette and shortcuts.
 
-`session_button` shows the session control just before the menu button: a
-layers icon, the window's session name, and a chevron. It opens the session
-menu, which switches, creates, renames, and closes sessions and opens one in
-a new window. It follows the menu button's placement one slot further in, so
-the menu button keeps the rightmost slot, and takes the button's slot when
-`menu_button = false`. In a left or right column without a title bar it shows
-only its icon in the new-tab row. Its name truncates at 168 points and in
-narrow hosts, and below about 345 points of title bar it shows only the icon;
-the tooltip and accessible name keep the full name. It hides with an
-auto-hidden bar. `session_button = false` removes it; `open_session_menu` and
-the session commands stay available. The session menu follows
-`macos_native_menus` like the other menus; a native menu shows each session's
-tab count and tags as a subtitle on macOS 14.4 and later. Right-clicking empty tab-bar
-space also opens the window menu, except in Huterm's own Linux title row,
-where it opens the window manager's menu.
+The session switcher, in the sidebar or beside the sidebar button, opens
+the session list, which switches, creates, renames, reorders, and closes
+sessions and opens one in a new window; see
+[Sidebar and workspaces](#sidebar-and-workspaces). `[window] session_button`,
+the title-bar session control it replaced, is deprecated: Huterm ignores it
+and warns until you remove it.
+Right-clicking empty tab-bar space also opens the window menu, except in
+Huterm's own Linux title row, where it opens the window manager's menu.
 
 Menus and the command palette show each command's shortcut: in symbols on macOS
 (`⇧⌘P`) and in words on Linux (`Ctrl+Shift+P`), with Return, Tab, Backspace,
@@ -1074,8 +1139,8 @@ and the arrows drawn as icons on both. The scroll pill, the close
 confirmation's buttons, the About panel, and the Licenses view show key hints
 only with `shortcut_hints = true`.
 
-On macOS the window, tab, pane, terminal, and session menus, and a text field's
-right-click menu, open as native macOS menus while
+On macOS the window, tab, pane, and terminal menus, the sidebar's row menus,
+and a text field's right-click menu, open as native macOS menus while
 `macos_native_menus = true`, the default. They list the same
 items with the same shortcuts, follow the theme's light or dark appearance,
 and use the system's keys and dismissal. The Edit row becomes separate

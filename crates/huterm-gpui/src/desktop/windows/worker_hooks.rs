@@ -50,7 +50,7 @@ pub(super) enum Stage {
     /// window to the session it moves to. Each failure fails one attempt:
     /// a candidate's attach, then the fresh session's shell.
     CloseFollow,
-    /// The session menu's read of exited sessions, before it takes the Mux
+    /// The session list's read of exited sessions, before it takes the Mux
     /// lock.
     ExitedRead,
 }
