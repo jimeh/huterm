@@ -387,8 +387,8 @@ impl WorkspaceView {
             .state()
             .workspace_tabs(workspace)
             .is_some_and(<[TabId]>::is_empty);
-        // Scoped to the session the window shows now, so a session switch
-        // that lands before the worker locks Mux closes nothing.
+        // Scoped to the session that held the workspace when the exit-close
+        // finished, so a later session switch does not change the decision.
         if emptied
             && !terminating(cx)
             && let Some(session) = self.attached_session(cx)

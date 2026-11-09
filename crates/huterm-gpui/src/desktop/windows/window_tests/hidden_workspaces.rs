@@ -484,6 +484,16 @@ fn show_tab_prefers_the_window_that_shows_the_pane(cx: &mut TestAppContext) {
     let showing = harness.attach_showing(&[first]);
     harness.show_workspace(showing, second, &seconds);
     let pane = harness.first_pane(seconds[0]);
+    // Asked first, the holding window would switch but for the showing
+    // window's precedence.
+    harness.cx.update(|cx| {
+        let order: Vec<_> = cx
+            .windows()
+            .into_iter()
+            .filter(|handle| [holding, showing].contains(handle))
+            .collect();
+        assert_eq!(order, [holding, showing]);
+    });
     let revealed = harness.cx.update(|cx| {
         super::super::terminal_notifications::reveal_pane(pane.get(), cx)
     });
@@ -532,8 +542,24 @@ fn an_install_racing_a_deferred_adoption_builds_no_second_view(
         .unwrap();
     harness.wait_projection();
     runtime.worker_hooks.release(Stage::Subscribe);
-    harness.wait_for("the split's install to end", |_| {
-        runtime.worker_hooks.held(Stage::Subscribe) == 0
+    // The install completes while the window is still busy, before any
+    // adoption: its tab is shown now, but the window's view is still hidden.
+    harness.wait_for("the split's install to complete", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                let view = root.downcast::<WorkspaceView>().unwrap();
+                view.read(cx).installs.idle_in(Some(second))
+            })
+            .unwrap()
+    });
+    harness.cx.update(|cx| {
+        assert!(busy(cx, window));
+        assert!(!shown_tabs(cx, window).contains(&moving));
+        assert_eq!(
+            hidden_tabs(cx, window, second).as_deref(),
+            Some(&[moving][..])
+        );
+        assert_eq!(hidden_panes(cx, window, moving), [pane]);
     });
     runtime.worker_hooks.release(Stage::Spawned);
     harness.wait_for("the moved tab to show both panes", |cx| {
@@ -578,7 +604,7 @@ fn remembered_navigation_survives_leaving_before_its_tabs_arrive(
                 session,
                 workspace: second,
                 active: Some(split),
-                history: vec![split],
+                history: vec![split, seconds[0]],
                 panes: vec![(split, right)],
                 layout_history:
                     super::super::layout_history::LayoutHistory::default(),
@@ -593,6 +619,10 @@ fn remembered_navigation_survives_leaving_before_its_tabs_arrive(
         .cx
         .update(|cx| capture_windows(cx).windows.remove(0));
     assert_eq!(saved.active_tab.map(TabId::get), Some(split.get()));
+    // Saved most recent last.
+    let history: Vec<u64> =
+        saved.tab_history.iter().map(|tab| tab.get()).collect();
+    assert_eq!(history, [seconds[0].get(), split.get()]);
     assert!(saved.focused_panes.iter().any(|focused| {
         focused.tab.get() == split.get() && focused.pane.get() == right.get()
     }));
@@ -612,5 +642,7 @@ fn remembered_navigation_survives_leaving_before_its_tabs_arrive(
             panes_shown(cx, window, split).map(|(_, focused)| focused),
             Some(right)
         );
+        let record = cx.global::<Desktop>().windows.record(window.window_id());
+        assert_eq!(record.unwrap().history, [split, seconds[0]]);
     });
 }

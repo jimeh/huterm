@@ -137,11 +137,22 @@ pub(super) struct PendingFocus {
     pub(super) chosen: Option<TabId>,
     /// Remembered pane focus of tabs that have no view yet.
     pub(super) panes: Vec<(TabId, PaneId)>,
+    /// Remembered activations of tabs that have no view yet, most recent
+    /// first.
+    pub(super) history: Vec<TabId>,
 }
 
 impl PendingFocus {
     fn is_empty(&self) -> bool {
-        self.active.is_none() && self.panes.is_empty()
+        self.active.is_none()
+            && self.panes.is_empty()
+            && self.history.is_empty()
+    }
+
+    fn names(&self, tab: TabId) -> bool {
+        self.active == Some(tab)
+            || self.history.contains(&tab)
+            || self.panes.iter().any(|(pending, _)| *pending == tab)
     }
 
     /// The remembered active tab while the user has not chosen another.
@@ -158,15 +169,16 @@ impl PendingFocus {
         workspace: WorkspaceId,
     ) -> bool {
         let tabs = state.workspace_tabs(workspace).unwrap_or_default();
-        let before = (self.active, self.panes.len());
+        let before = (self.active, self.panes.len(), self.history.len());
         self.active = self.active.filter(|tab| tabs.contains(tab));
+        self.history.retain(|tab| tabs.contains(tab));
         self.panes.retain(|(tab, pane)| {
             tabs.contains(tab)
                 && state
                     .tab(*tab)
                     .is_some_and(|info| info.layout.pane(*pane).is_some())
         });
-        before != (self.active, self.panes.len())
+        before != (self.active, self.panes.len(), self.history.len())
     }
 }
 
@@ -225,11 +237,17 @@ impl WindowRecord {
     }
 
     /// The activation history a departure files and a capture saves, most
-    /// recent first, led by [`Self::navigated_active`].
+    /// recent first, led by [`Self::navigated_active`], with the remembered
+    /// activations of tabs still installing after the window's own.
     fn navigated_history(&self) -> Vec<TabId> {
         let mut history = self.history.clone();
         if let Some(active) = self.pending.active_over(self.active) {
             record_tab_activation(&mut history, active);
+        }
+        for tab in &self.pending.history {
+            if !history.contains(tab) {
+                history.push(*tab);
+            }
         }
         history
     }
@@ -457,14 +475,21 @@ impl WindowModel {
                 .copied()
                 .filter(|(tab, _)| !shows(tab))
                 .collect(),
+            history: history
+                .iter()
+                .copied()
+                .filter(|tab| !shows(tab))
+                .collect(),
         };
         record.tabs = tabs;
     }
 
     /// Takes the pending navigation of the tabs `arrived` names: their
-    /// remembered pane focus, and the remembered active tab when it arrived
-    /// and still applies. With `settled`, no install is left to bring the
-    /// rest, which goes too.
+    /// remembered activations join the history after the window's own, and
+    /// their remembered pane focus and the remembered active tab, when it
+    /// arrived and still applies, are returned for the window to apply.
+    /// With `settled`, no install is left to bring the rest, which goes
+    /// too.
     pub(super) fn take_pending(
         &mut self,
         id: WindowId,
@@ -488,6 +513,12 @@ impl WindowModel {
             .copied()
             .partition(|(tab, _)| arrived(*tab));
         pending.panes = waiting;
+        let (joined, waiting): (Vec<_>, Vec<_>) = pending
+            .history
+            .iter()
+            .copied()
+            .partition(|tab| arrived(*tab));
+        pending.history = waiting;
         let active = if pending.active.is_some_and(&arrived) {
             let remembered = pending.active.take();
             remembered.filter(|_| {
@@ -496,6 +527,11 @@ impl WindowModel {
         } else {
             None
         };
+        for tab in joined {
+            if !record.history.contains(&tab) {
+                record.history.push(tab);
+            }
+        }
         if settled {
             record.pending = PendingFocus::default();
         }
@@ -1251,15 +1287,8 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
     let (session, workspace) = (record.session?, record.workspace?);
     // Tabs still installing count as shown: their pending navigation is
     // what the window will show.
-    let shown = |tab: &TabId| {
-        record.contains(*tab)
-            || record.pending.active == Some(*tab)
-            || record
-                .pending
-                .panes
-                .iter()
-                .any(|(pending, _)| pending == tab)
-    };
+    let shown =
+        |tab: &TabId| record.contains(*tab) || record.pending.names(*tab);
     let mut history: Vec<TabId> = record
         .navigated_history()
         .into_iter()

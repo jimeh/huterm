@@ -5434,8 +5434,8 @@ fn finish_exit_commit(
 
 /// Offers the owed exit-closes, once no window is being updated, to the
 /// windows other than `except` that hold views of their tabs, shown or
-/// hidden; the first whose close pipeline is idle takes each. Never reads another window's view from
-/// inside an update.
+/// hidden; the first whose close pipeline is idle takes each. Never reads
+/// another window's view from inside an update.
 fn offer_exit_closes(cx: &mut App, except: Option<gpui::WindowId>) {
     cx.defer(move |cx| {
         if terminating(cx) {

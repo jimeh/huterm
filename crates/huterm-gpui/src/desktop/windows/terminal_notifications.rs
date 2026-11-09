@@ -299,13 +299,13 @@ impl WorkspaceView {
             cx.activate(true);
         }
         self.select_tab(tab_id, true, window, cx);
-        let hidden = self
+        let zoomed_away = self
             .tabs
             .iter()
             .find(|tab| tab.id == tab_id)
             .and_then(|tab| self.shown_zoom(tab, cx))
             .is_some_and(|zoomed| zoomed != pane_id);
-        if hidden {
+        if zoomed_away {
             self.set_zoom(tab_id, None, window, cx);
         }
         self.focus_pane(tab_id, pane_id, window, cx);
