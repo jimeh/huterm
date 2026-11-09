@@ -334,7 +334,11 @@ session, `ViewNotEmpty`, then `CloseEffect::LeaveWorkspace` while the
 session holds any other workspace, with tabs or empty, including when the
 workspace left the session that keeps one, else `Detach` or `Session`, which
 apply only to a session's only workspace: an emptied window never ends a
-session that still holds another workspace. `LeaveWorkspace` stops no
+session that still holds another workspace. A pinned workspace refuses with
+`PinnedWorkspace`, which `emptied_close_pinned` settles: the mark clears,
+queued closes run, and the window shows the empty state, even on its
+session's only workspace, so no Quit conversion can follow.
+`LeaveWorkspace` stops no
 terminal, closes the workspace only if it is still an empty member, and
 keeps the attachment. The completion dispatches by the effect the
 assessment committed (`closes_window`): only `Detach` and `Session` remove
@@ -613,7 +617,8 @@ navigation and the remaining remembered list with it.
 `capture_windows` leaves out departing windows: one that shows no tab,
 owes an emptied close (`WindowRecord::emptied_close`) or became the Quit
 under way (`Desktop::emptied_quit`), and whose session holds no other
-workspace. A refused emptied close is not owed: the runtime kept the
+workspace, unless its workspace is pinned, since core refuses that close.
+A refused emptied close is not owed: the runtime kept the
 window, which stays saved while its tabs install. Both runtime captures
 keep a tabless session only when the layout's windows or stashes show it
 (`shown_sessions`), so Quit and checkpoints never save a session a close
@@ -1981,7 +1986,15 @@ session row opens. A popover whose anchor goes closes at the end of render
 session row holds focus. A press never moves keyboard focus to a row, and
 becomes a drag (`sidebar_rows::RowDrag`) past the tab drag's threshold.
 Drops call `Mux::move_workspace` or `Mux::move_session` with the row they
-land before, by ID, on a worker. Row menus (`MenuKind::WorkspaceRow`,
+land before, by ID, on a worker. Workspace rows draw a pin mark and a status
+dot (`workspace_status.rs`). One application task (`start_status_feed`)
+follows core's viewer-free status feed, reading on a worker one read at a
+time into `Desktop::statuses`, and moves every window record's
+`BellBaselines`; `install_session` marks the left workspace's bells seen
+before `switch_to`, so a bell seen while shown never marks the row after the
+window leaves. Rows read the dot at render from the projection, the
+statuses, and the record, and the shown workspace's row never shows a bell.
+Row menus (`MenuKind::WorkspaceRow`,
 `MenuKind::SessionRow`) are ordinary menus and may open natively. A sidebar
 change relays out every terminal as a window resize does, so a selection
 survives only when the grid size stays the same (#373).

@@ -24,7 +24,9 @@
 //! left most recently.
 //!
 //! Every change to a saved fact moves [`WindowModel::revision`], which
-//! schedules a checkpoint.
+//! schedules a checkpoint. Each record also keeps the bells its window has
+//! seen per terminal, for the workspace rows' status dots; they are not
+//! saved.
 //!
 //! Not yet covered, for later extension: panel placement (#27).
 
@@ -158,6 +160,9 @@ pub(super) struct WindowRecord {
     /// The window's own transparency overrides, runtime state over the
     /// configured defaults and its Quake profile.
     pub(super) transparency: crate::transparency::Layer,
+    /// The bells this window has seen, per terminal, for the workspace
+    /// rows' dots.
+    pub(super) bells: super::workspace_status::BellBaselines,
 }
 
 impl WindowRecord {
@@ -262,6 +267,7 @@ impl WindowModel {
             close_committing: false,
             emptied_close: false,
             transparency: crate::transparency::Layer::default(),
+            bells: super::workspace_status::BellBaselines::default(),
         });
     }
 
@@ -907,6 +913,39 @@ impl WindowModel {
                 pruned.then_some(record.id)
             })
             .collect()
+    }
+
+    /// Moves every window's bell baselines along with a status read.
+    pub(super) fn follow_bells(
+        &mut self,
+        state: &HierarchyState,
+        statuses: &super::workspace_status::Statuses,
+        previous: &std::collections::HashMap<TerminalId, u64>,
+    ) {
+        for record in &mut self.records {
+            record.bells.follow(
+                state,
+                record.session,
+                record.workspace,
+                statuses,
+                previous,
+            );
+        }
+    }
+
+    /// Marks the bells of the workspace a window shows as seen, before it
+    /// leaves it.
+    pub(super) fn see_shown_bells(
+        &mut self,
+        id: WindowId,
+        state: &HierarchyState,
+        statuses: &super::workspace_status::Statuses,
+    ) {
+        if let Some(record) = self.record_mut(id)
+            && let Some(workspace) = record.workspace
+        {
+            record.bells.see(state, workspace, statuses);
+        }
     }
 
     pub(super) fn record(&self, id: WindowId) -> Option<&WindowRecord> {

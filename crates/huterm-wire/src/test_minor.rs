@@ -35,7 +35,7 @@ use crate::{MINOR, digest_profile};
 pub const TEST_MINOR: u16 = MINOR + 1;
 
 /// The first event tag after minor version 0's.
-const FIRST_TEST_TAG: u64 = 22;
+const FIRST_TEST_TAG: u64 = 23;
 
 /// A hierarchy at the test-only minor version: minor version 0's state and
 /// the tabs the appended field pins.

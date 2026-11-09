@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 mod arrange;
 mod capture;
 mod hierarchy;
@@ -11,6 +13,7 @@ pub use lifecycle::{CloseAssessment, CloseEffect, CloseRequest, CloseTicket};
 pub use moves::{Beside, MoveDestination, PaneRef};
 pub use restore::RestoreDirection;
 
+use crate::status_feed::{StatusFeed, StatusSubscription, TerminalStatuses};
 use crate::terminal::RuntimeClient;
 use crate::{RuntimeError, TerminalRuntime, TerminalViewer, ViewerOptions};
 use hierarchy::HierarchyPublisher;
@@ -105,6 +108,9 @@ pub struct Workspace {
     pub tabs: Vec<Tab>,
     custom_name: Option<String>,
     automatic_name: String,
+    pinned: bool,
+    /// The directory its last tab left behind; see [`Self::directory`].
+    directory: Option<PathBuf>,
 }
 /// Canonical session and its ordered workspace membership.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,6 +143,23 @@ macro_rules! named_record {
 }
 named_record!(Session);
 named_record!(Workspace);
+
+impl Workspace {
+    /// Whether the workspace stays when its last tab closes. An emptied
+    /// window's close refuses to remove it ([`MuxError::PinnedWorkspace`]);
+    /// an explicit [`Mux::close_workspace`] still does.
+    #[must_use]
+    pub fn pinned(&self) -> bool {
+        self.pinned
+    }
+    /// The working directory of the tab that last left the workspace empty,
+    /// for a new tab to start in while it holds none: the first pane's local
+    /// effective directory, else its shell's, else its launch directory.
+    #[must_use]
+    pub fn directory(&self) -> Option<&Path> {
+        self.directory.as_deref()
+    }
+}
 
 /// A validated navigation target with its current ownership ancestry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -206,6 +229,8 @@ pub struct Mux {
     workspaces: BTreeMap<WorkspaceId, Workspace>,
     terminals: BTreeMap<TerminalId, TerminalRuntime>,
     hierarchy: HierarchyPublisher,
+    /// Every owned terminal signals it; see [`Self::subscribe_status`].
+    status_feed: Arc<StatusFeed>,
 }
 impl Default for Mux {
     fn default() -> Self {
@@ -233,6 +258,7 @@ impl Mux {
             workspaces: BTreeMap::new(),
             terminals: BTreeMap::new(),
             hierarchy: HierarchyPublisher::default(),
+            status_feed: Arc::default(),
         })
     }
     /// Sets how later sessions and workspaces number their automatic names.
@@ -471,6 +497,8 @@ impl Mux {
                 tabs: Vec::new(),
                 custom_name: name.map(str::to_owned),
                 automatic_name: automatic_name(WORKSPACE_NAME, ordinal),
+                pinned: false,
+                directory: None,
             },
         );
         let record = self
@@ -566,6 +594,31 @@ impl Mux {
         });
         Ok(())
     }
+    /// Pins or unpins a workspace. A change advances the revision, because
+    /// it changes how an emptied window's pending close resolves.
+    /// # Errors
+    /// Rejects foreign/missing targets.
+    pub fn set_workspace_pinned(
+        &mut self,
+        id: WorkspaceId,
+        pinned: bool,
+    ) -> Result<(), MuxError> {
+        self.select_workspace(id)?;
+        let record = self
+            .workspaces
+            .get_mut(&id)
+            .ok_or(MuxError::UnknownWorkspace(id))?;
+        if record.pinned == pinned {
+            return Ok(());
+        }
+        record.pinned = pinned;
+        self.changed();
+        self.emit_hierarchy(|_| HierarchyEvent::WorkspacePinned {
+            workspace: id,
+            pinned,
+        });
+        Ok(())
+    }
     /// Sets a tab's custom name; `None` resumes the current terminal title.
     /// # Errors
     /// Rejects blank names and foreign/missing targets.
@@ -654,7 +707,7 @@ impl Mux {
             .tabs;
         tabs.push(tab.clone());
         let index = position(tabs.len() - 1);
-        self.terminals.insert(terminal_id, runtime);
+        self.insert_terminal(terminal_id, runtime);
         self.emit_hierarchy(|_| HierarchyEvent::TabOpened {
             workspace,
             tab: tab.info(),
@@ -722,7 +775,7 @@ impl Mux {
         let record = self.tab_record_mut(workspace, tab)?;
         record.layout = layout;
         record.zoomed = None;
-        self.terminals.insert(added.terminal_id, runtime);
+        self.insert_terminal(added.terminal_id, runtime);
         self.emit_layout(workspace, tab);
         Ok(OpenedPane { tab, pane: added })
     }
@@ -967,6 +1020,7 @@ impl Mux {
             .ok_or(MuxError::UnknownWorkspace(source))?
             .tabs
             .remove(source_index);
+        self.remember_directory(source, &record);
         self.workspaces
             .get_mut(&destination)
             .ok_or(MuxError::UnknownWorkspace(destination))?
@@ -1178,6 +1232,7 @@ impl Mux {
             .position(|t| t.id == tab)
             .ok_or(MuxError::UnknownTab(tab))?;
         let tab = record.tabs.remove(index);
+        self.remember_directory(workspace, &tab);
         self.changed();
         self.emit_hierarchy(|_| HierarchyEvent::TabClosed { tab: tab.id });
         self.close_terminals(tab.terminals())
@@ -1285,6 +1340,35 @@ impl Mux {
     #[must_use]
     pub fn terminal_count(&self) -> usize {
         self.terminals.len()
+    }
+    /// Takes ownership of a started terminal and connects it to the status
+    /// feed.
+    fn insert_terminal(&mut self, id: TerminalId, runtime: TerminalRuntime) {
+        runtime.registry().join_feed(Arc::clone(&self.status_feed));
+        self.terminals.insert(id, runtime);
+    }
+    /// Subscribes to status changes of every terminal this Mux owns, viewed
+    /// or not: one coalescing wake after any change to a terminal's exit,
+    /// failures, bells, progress, or foreground program, and after a
+    /// terminal joins. Read the statuses with [`Self::terminal_statuses`].
+    #[must_use]
+    pub fn subscribe_status(&self) -> StatusSubscription {
+        self.status_feed.subscribe()
+    }
+    /// Every owned terminal's published status, read from its registry
+    /// without waiting on its runtime, with the feed revision read first, so
+    /// the read covers every change signalled up to it.
+    #[must_use]
+    pub fn terminal_statuses(&self) -> TerminalStatuses {
+        let revision = self.status_feed.revision();
+        TerminalStatuses {
+            revision,
+            statuses: self
+                .terminals
+                .iter()
+                .map(|(id, runtime)| (*id, runtime.registry().status()))
+                .collect(),
+        }
     }
     /// The sessions whose every terminal's root process has exited, in
     /// session order, read from each terminal's published status without
@@ -1516,6 +1600,9 @@ pub enum MuxError {
     /// An emptied window's workspace still holds tabs it has not shown yet.
     #[error("workspace {0:?} still holds tabs")]
     ViewNotEmpty(WorkspaceId),
+    /// An emptied window's workspace is pinned, so it stays, empty.
+    #[error("workspace {0:?} is pinned")]
+    PinnedWorkspace(WorkspaceId),
     /// A workspace close named its session's only workspace, which only a
     /// session close ends.
     #[error("workspace {0:?} is its session's only workspace")]

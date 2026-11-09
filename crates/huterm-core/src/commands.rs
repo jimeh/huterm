@@ -73,6 +73,18 @@ pub fn execute(
                 .ok_or_else(|| missing("workspace"))?;
             mux.rename_workspace(workspace, None)
         }
+        ids::TOGGLE_WORKSPACE_PIN => {
+            let workspace = invocation
+                .workspace("workspace")
+                .ok_or_else(|| missing("workspace"))?;
+            // Toggled under the lock, so two quick toggles never agree.
+            let pinned = mux
+                .workspace(workspace)
+                .map(crate::Workspace::pinned)
+                .ok_or(MuxError::UnknownWorkspace(workspace));
+            pinned
+                .and_then(|pinned| mux.set_workspace_pinned(workspace, !pinned))
+        }
         other => {
             return Err(CommandError::Unavailable(format!(
                 "runtime command `{other}` has no executor"

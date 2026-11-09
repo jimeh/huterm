@@ -105,8 +105,10 @@ fn capture(scratch: &Scratch) -> RuntimeCapture {
             id: WorkspaceId::new(id),
             custom_name: None,
             automatic_name: format!("Workspace {id}"),
+            pinned: false,
         },
         tabs,
+        directory: None,
     };
     RuntimeCapture {
         socket_name: huterm_core::DEFAULT_SOCKET_NAME.into(),
@@ -1509,6 +1511,7 @@ fn two_workspace_capture(scratch: &Scratch) -> RuntimeCapture {
             id: WorkspaceId::new(17),
             custom_name: None,
             automatic_name: "Workspace 3".into(),
+            pinned: false,
         },
         tabs: vec![TabInfo {
             id: TabId::new(18),
@@ -1517,6 +1520,7 @@ fn two_workspace_capture(scratch: &Scratch) -> RuntimeCapture {
             zoomed: None,
             input_sync: false,
         }],
+        directory: None,
     });
     saved
         .terminals

@@ -73,6 +73,7 @@ fn capture() -> RuntimeCapture {
                     id: WorkspaceId::new(2),
                     custom_name: None,
                     automatic_name: "Workspace 1".into(),
+                    pinned: false,
                 },
                 tabs: vec![TabInfo {
                     id: TabId::new(3),
@@ -81,6 +82,7 @@ fn capture() -> RuntimeCapture {
                     zoomed: None,
                     input_sync: false,
                 }],
+                directory: None,
             }],
         }],
         terminals: vec![TerminalCapture {

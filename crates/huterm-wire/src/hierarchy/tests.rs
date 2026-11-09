@@ -33,6 +33,7 @@ fn workspace(value: u64) -> WorkspaceInfo {
         id: WorkspaceId::in_runtime(RUNTIME, WIDE + value),
         custom_name: Some(name('w')),
         automatic_name: name('a'),
+        pinned: true,
     }
 }
 

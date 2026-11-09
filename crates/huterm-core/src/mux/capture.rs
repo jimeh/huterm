@@ -59,7 +59,8 @@ pub struct RestoreReport {
     pub failed: Vec<FailedPane>,
     /// Tabs removed because none of their panes started.
     pub removed_tabs: Vec<TabId>,
-    /// Restored sessions that hold no tab.
+    /// Restored sessions that hold no tab and no pinned workspace, which
+    /// keeps a session for its window to show empty.
     pub empty_sessions: Vec<SessionId>,
 }
 
@@ -278,7 +279,9 @@ impl Mux {
                 .iter()
                 .map(|id| &self.workspaces[id])
                 .collect();
-            if workspaces.iter().all(|workspace| workspace.tabs.is_empty())
+            if workspaces
+                .iter()
+                .all(|workspace| workspace.tabs.is_empty() && !workspace.pinned)
                 && !shown.contains(&SessionId::new(session.id.get()))
             {
                 continue;
@@ -300,6 +303,7 @@ impl Mux {
                         ..workspace.info()
                     },
                     tabs,
+                    directory: workspace.directory.clone(),
                 });
             }
             sessions.push(SessionCapture {
@@ -324,6 +328,16 @@ impl Mux {
     /// effective directory when it is local, the root shell's own last
     /// local report, then the launch directory, without repeats.
     fn capture_terminal(&self, id: TerminalId) -> TerminalCapture {
+        TerminalCapture {
+            id: TerminalId::new(id.get()),
+            directories: self.directory_candidates(id),
+            launch: TerminalLaunch::DefaultShell,
+        }
+    }
+
+    /// A terminal's directory candidates, as [`Self::capture_terminal`]
+    /// records them.
+    fn directory_candidates(&self, id: TerminalId) -> Vec<PathBuf> {
         let mut directories: Vec<PathBuf> = Vec::new();
         if let Some(runtime) = self.terminals.get(&id) {
             let status = runtime.registry().status();
@@ -342,10 +356,32 @@ impl Mux {
                 }
             }
         }
-        TerminalCapture {
-            id: TerminalId::new(id.get()),
-            directories,
-            launch: TerminalLaunch::DefaultShell,
+        directories
+    }
+
+    /// Records where `removed`, a tab that just left `workspace`, worked,
+    /// when the workspace now holds no tab: its first pane's best directory
+    /// candidate, read before the terminal stops.
+    pub(super) fn remember_directory(
+        &mut self,
+        workspace: WorkspaceId,
+        removed: &Tab,
+    ) {
+        if self
+            .workspaces
+            .get(&workspace)
+            .is_none_or(|record| !record.tabs.is_empty())
+        {
+            return;
+        }
+        let terminal = removed.first_pane().terminal_id;
+        let Some(directory) =
+            self.directory_candidates(terminal).into_iter().next()
+        else {
+            return;
+        };
+        if let Some(record) = self.workspaces.get_mut(&workspace) {
+            record.directory = Some(directory);
         }
     }
 
@@ -435,7 +471,11 @@ impl Mux {
                     );
                 }
             }
-            if !holds_tab {
+            let pinned = session
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.info.pinned);
+            if !holds_tab && !pinned {
                 report.empty_sessions.push(id);
             }
         }
@@ -489,6 +529,8 @@ impl Mux {
                 tabs: Vec::new(),
                 custom_name: workspace.info.custom_name.clone(),
                 automatic_name: workspace.info.automatic_name.clone(),
+                pinned: workspace.info.pinned,
+                directory: workspace.directory.clone(),
             },
         );
         let siblings = &mut self
@@ -564,7 +606,7 @@ impl Mux {
                 .terminals
                 .remove(&pane.terminal_id)
                 .expect("a covered capture started every surviving pane");
-            self.terminals.insert(pane.terminal_id, started.runtime);
+            self.insert_terminal(pane.terminal_id, started.runtime);
         }
         let tab = Tab {
             id,

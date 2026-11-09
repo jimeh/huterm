@@ -482,6 +482,7 @@ fn projected() -> HierarchyState {
                 id: WorkspaceId::in_runtime(runtime, value),
                 custom_name: None,
                 automatic_name: format!("Workspace {value}"),
+                pinned: false,
             },
             index: u32::try_from(index).unwrap(),
         });

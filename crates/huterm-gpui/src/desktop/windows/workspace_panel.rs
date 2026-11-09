@@ -674,9 +674,9 @@ impl WorkspaceView {
         Some(result)
     }
 
-    /// Shows, renames, clears the name of, or closes `workspace`, as the
-    /// palette's commands do with that workspace named. Showing one from the
-    /// switcher's popover or the sheet closes it.
+    /// Shows, renames, clears the name of, pins or unpins, or closes
+    /// `workspace`, as the palette's commands do with that workspace named.
+    /// Showing one from the switcher's popover or the sheet closes it.
     pub(super) fn run_workspace_row(
         &mut self,
         workspace: WorkspaceId,
@@ -697,6 +697,7 @@ impl WorkspaceView {
             }
             RowAction::Rename => ids::RENAME_WORKSPACE,
             RowAction::ClearName => ids::CLEAR_WORKSPACE_NAME,
+            RowAction::TogglePin => ids::TOGGLE_WORKSPACE_PIN,
             RowAction::Close => ids::CLOSE_WORKSPACE,
         };
         let invocation = CommandInvocation::new(
@@ -974,6 +975,7 @@ impl WorkspaceView {
         let (action, raw) = match pick {
             WorkspacePick::Rename(raw) => (RowAction::Rename, raw),
             WorkspacePick::ClearName(raw) => (RowAction::ClearName, raw),
+            WorkspacePick::TogglePin(raw) => (RowAction::TogglePin, raw),
             WorkspacePick::Close(raw) => (RowAction::Close, raw),
         };
         let Some(workspace) = resolve(state, raw) else {
@@ -1399,10 +1401,36 @@ impl WorkspaceView {
             .children(rows)
     }
 
+    /// `workspace`'s status dot in this window: bells this window has not
+    /// seen mark a workspace it does not show; the one it shows marks none,
+    /// since its tabs do.
+    pub(super) fn workspace_row_status(
+        &self,
+        workspace: WorkspaceId,
+        cx: &App,
+    ) -> Option<workspace_status::RowStatus> {
+        let desktop = cx.global::<Desktop>();
+        let bells = (self.workspace_id(cx) != Some(workspace))
+            .then(|| desktop.windows.record(self.window))
+            .flatten()
+            .map(|record| &record.bells);
+        workspace_status::workspace_status(
+            desktop.hierarchy.state(),
+            workspace,
+            &desktop.statuses,
+            bells,
+        )
+    }
+
     /// One workspace row: a press shows it, a drag reorders it, a double
     /// click renames it, a right press opens its menu, and in the popover
     /// its "⋯" button does too. A button named "Workspace: name, n tabs",
-    /// selected while shown.
+    /// selected while shown, with a pin mark when pinned and a status dot
+    /// whose tooltip names the tabs.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one row element and its listeners, read top to bottom"
+    )]
     fn workspace_row_element(
         &mut self,
         row: &WorkspaceRow,
@@ -1462,6 +1490,8 @@ impl WorkspaceView {
                     && !dragged
                     && drag.is_some_and(|drag| drag.before.is_none()),
                 badges: Vec::new(),
+                pinned: row.pinned,
+                status: self.workspace_row_status(workspace, cx),
             },
             &focus,
             more,
@@ -2184,5 +2214,7 @@ pub(super) enum RowAction {
     Show,
     Rename,
     ClearName,
+    /// Workspaces only: pins or unpins the row's workspace.
+    TogglePin,
     Close,
 }

@@ -822,6 +822,12 @@ impl WorkspaceView {
         if let Some(terminal) = switched.spawned {
             desktop.fresh_terminals.insert(terminal);
         }
+        // Bells the left workspace rang while shown were seen there.
+        desktop.windows.see_shown_bells(
+            self.window,
+            desktop.hierarchy.state(),
+            &desktop.statuses,
+        );
         let memory = desktop.windows.switch_to(
             self.window,
             switched.session,

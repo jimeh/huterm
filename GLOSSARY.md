@@ -108,6 +108,11 @@ What a window draws while the workspace it shows holds no tab: the
 workspace's name with New Tab, Switch Workspace…, and Close Workspace.
 _Avoid_: Blank workspace.
 
+**Pinned workspace**:
+A workspace that stays when its last tab goes, so its windows show its empty
+state instead of moving on. Only an explicit close removes it.
+_Avoid_: Kept workspace, sticky workspace.
+
 **Session switcher**:
 The control that names a window's session and opens the session list. The
 sidebar draws it as a row, and Settings can also show it beside the sidebar

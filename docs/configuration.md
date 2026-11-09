@@ -252,8 +252,9 @@ switcher_style = "full"             # full (icon and name) or icon
   count; a session row shows its workspace and tab counts, a window tag
   while other windows show it, and an "exited" tag once all its shells
   exited. A click shows the workspace or session, and a right-click opens
-  the row's menu: Rename, Clear Name, and Close, and for a session, Open in
-  New Window. In the popovers each row also has a "⋯" button that opens the
+  the row's menu: Rename, Clear Name, and Close, and for a workspace, Pin
+  Workspace or Unpin Workspace, and for a session, Open in New Window.
+  In the popovers each row also has a "⋯" button that opens the
   same menu. Drag a row up or down to reorder the session's workspaces or
   the sessions, holding it at the list's edge to scroll; Escape cancels the
   drag. A double-click renames a workspace row in the sidebar; in the
@@ -261,6 +262,21 @@ switcher_style = "full"             # full (icon and name) or icon
   rename there with F2 or the row's menu. `focus_sidebar` moves keyboard
   focus to the shown workspace's row; see
   [keybindings](keybindings.md#sidebar).
+- A workspace row ends with a status dot for its most urgent tab: yellow
+  while a program runs or reports progress, the accent color for a bell this
+  window has not seen, grey once a shell exited and its tab stays, and red
+  once a terminal failed. Hovering the row names the tabs by state. A bell
+  marks a workspace until the window shows it, so two windows can differ;
+  the shown workspace's row shows no bell, since its tabs do. Workspaces no
+  window shows report too.
+- A pinned workspace stays when its last tab closes, exits, or moves away:
+  the window shows its empty state instead of moving on, even when it is the
+  session's only workspace, so the window and session stay open. Pinned
+  rows show a pin after the name. Close Workspace still closes a pinned
+  workspace. `toggle_workspace_pin` pins or unpins from the palette, and
+  quitting saves pins and the empty pinned workspaces with them.
+- New Tab in a workspace with no tab starts in the directory its last tab
+  worked in, while `new_tab_directory = "inherit"`.
 - The session switcher row shows the session's name over its workspace and
   tab counts, at the bottom of the sidebar or at the top with
   `session_switcher = "top"`. It opens the session list, a popover in

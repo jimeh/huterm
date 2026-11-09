@@ -484,6 +484,7 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
             menu_ids(cx, window),
             [
                 format!("workspace-rename:{raw}"),
+                format!("workspace-pin:{raw}"),
                 format!("workspace-close:{raw}"),
             ]
         );

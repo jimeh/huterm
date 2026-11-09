@@ -60,6 +60,9 @@ pub struct WorkspaceCapture {
     pub info: WorkspaceInfo,
     /// Tabs in order, with their layouts, shared zoom, and input sync.
     pub tabs: Vec<TabInfo>,
+    /// The directory the workspace's last tab left behind, where a new tab
+    /// starts while the workspace holds none.
+    pub directory: Option<PathBuf>,
 }
 
 /// What a restore needs to start one terminal again.

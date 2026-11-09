@@ -25,6 +25,7 @@ mod mux;
 mod notifications;
 mod pty;
 mod shell_integration;
+mod status_feed;
 mod terminal;
 #[cfg(test)]
 mod test_support;
@@ -38,6 +39,7 @@ pub use mux::{
     OpenedTab, PaneRef, RestoreDirection, RestoreReport, SelectionTarget,
     Session, SpawnFailure, SpawnedTerminals, Tab, Workspace,
 };
+pub use status_feed::{StatusSubscription, TerminalStatuses};
 pub use terminal::{
     RefusedInput, RuntimeError, SelectUnitsRequest, SelectionRequest,
     SnapshotReply, SnapshotRequest, TerminalRuntime,

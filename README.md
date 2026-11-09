@@ -166,9 +166,11 @@ window closes on its own when its last tab goes away, for example when its
 shell exits; that close stops no other terminal and never asks. When its
 session has another workspace, the window instead closes the emptied
 workspace and moves to the workspace it showed before, else to one that holds
-tabs, else to an empty one's empty state. Close
-Workspace closes a workspace and its tabs, asking first when jobs run; a
-window left on a workspace without tabs shows an empty state with New Tab.
+tabs, else to an empty one's empty state. A pinned workspace stays instead,
+and the window shows its empty state, even for the session's only workspace.
+Close Workspace closes a workspace and its tabs, pinned or not, asking first
+when jobs run; a window left on a workspace without tabs shows an empty state
+with New Tab.
 
 Close and Quit warn about foreground or background jobs, or when Huterm cannot
 determine a terminal's process state. Idle shells need no confirmation. Huterm

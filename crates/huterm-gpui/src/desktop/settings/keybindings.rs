@@ -116,6 +116,7 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::NEXT_WORKSPACE,
             ids::PREVIOUS_WORKSPACE,
             ids::CLEAR_WORKSPACE_NAME,
+            ids::TOGGLE_WORKSPACE_PIN,
             ids::CLOSE_WORKSPACE,
         ],
     ),

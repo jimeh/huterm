@@ -5464,6 +5464,7 @@ mod pane_indicators;
 mod pane_layouts;
 mod pane_moves;
 mod pane_names;
+mod pinned_workspaces;
 mod restore;
 mod session_control;
 mod sessions;

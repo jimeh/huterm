@@ -508,7 +508,9 @@ impl Mux {
             .iter()
             .position(|t| t.id == tab)
             .ok_or(MuxError::UnknownTab(tab))?;
-        Ok(tabs.remove(index))
+        let removed = tabs.remove(index);
+        self.remember_directory(workspace, &removed);
+        Ok(removed)
     }
 
     /// The tab's current record, or its absence.
