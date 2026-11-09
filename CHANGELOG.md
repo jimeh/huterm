@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.33.0](https://github.com/jimeh/huterm/compare/v0.32.0...v0.33.0) (2026-11-09)
+
+
+### Features
+
+* add the sidebar with workspace and session switchers ([#443](https://github.com/jimeh/huterm/issues/443)) ([21681a2](https://github.com/jimeh/huterm/commit/21681a2767b4547957f5eadb8df44ca182c6c988))
+* create, switch, and close workspaces within a session ([#441](https://github.com/jimeh/huterm/issues/441)) ([58f3c43](https://github.com/jimeh/huterm/commit/58f3c433b5137e0d92d185e713d2dcb851360410))
+* show each workspace's status in the sidebar and keep pinned workspaces ([#449](https://github.com/jimeh/huterm/issues/449)) ([3fb4480](https://github.com/jimeh/huterm/commit/3fb44804c58c5551417fcd09c734f4a890f8d8a1))
+
 ## [0.32.0](https://github.com/jimeh/huterm/compare/v0.31.0...v0.32.0) (2026-11-07)
 
 
