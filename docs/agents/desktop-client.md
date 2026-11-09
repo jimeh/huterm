@@ -1959,7 +1959,10 @@ horizontal strip's `strip_inset`, or one row per switcher above a column's
 tabs (`CornerSlot::Rows`); the right ones add to `bar_trailing` and the
 title row's corner width. `switchers_icon_only` is the one rule for when
 the switchers show only their icons, which reservation and drawing both
-read.
+read. Each hidden placement draws the sidebar button where the docked
+sidebar's strip does: right after the traffic lights or the row's lead on
+the left, `CORNER_GAP` inside the menu button on the right. The side sweep
+in `window_tests/workspace_panel.rs` compares the two in a title row.
 
 Render reads the workspace count and measures the shown name in
 `sync_workspace_chrome` before laying out, so layout outside render

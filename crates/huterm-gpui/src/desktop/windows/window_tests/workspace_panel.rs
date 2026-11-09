@@ -790,6 +790,8 @@ fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
             TabPosition::Right,
         ] {
             for session_button in [false, true] {
+                // Where the sidebar button painted while hidden.
+                let mut hidden_button = None;
                 for visible in [false, true] {
                     harness.reload_config(window, |config| {
                         config.sidebar.position = position;
@@ -842,6 +844,18 @@ fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
                             !button.intersects(&layout.terminal),
                             "{label}: {button:?}"
                         );
+                        // Showing the sidebar leaves its button where it
+                        // was in a title row, the docked sidebar's strip
+                        // standing in for the row's corner.
+                        if !visible {
+                            hidden_button = Some(button);
+                        } else if view.title_row() > px(0.0) {
+                            assert_eq!(
+                                Some(button),
+                                hidden_button,
+                                "{label}: the sidebar button moved"
+                            );
+                        }
                         assert_eq!(
                             view.workspace_trigger_drawn.get(),
                             !visible,

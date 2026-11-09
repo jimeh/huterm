@@ -14102,14 +14102,15 @@ impl ChromeLayout {
             // Huterm draws, whose window controls end the row; the
             // terminal keeps the whole area below the strip. A side
             // workspace panel holds the corner it takes, so the row starts
-            // or ends at the panel with a small lead.
+            // or ends at the panel, the tabs as far from it as a top bar's
+            // are from the window's edge.
             let row = titlebar.max(px(0.0)).min(viewport.height.max(px(0.0)));
             tabs = Bounds::new(
                 point(px(0.0), px(0.0)),
                 size(viewport.width.max(px(0.0)), row),
             );
             strip_inset = if !corners.leading {
-                TITLE_ROW_LEAD
+                px(0.0)
             } else if frame.controls {
                 if frame.buttons.leading.is_empty() {
                     TITLE_ROW_LEAD
@@ -14197,21 +14198,24 @@ impl ChromeLayout {
                 Some(slot)
             }
             CornerSlot::Lead(lead) => {
-                let room = (tabs.size.width - strip_inset).max(px(0.0));
-                let lead = (lead + workspace_chrome::CORNER_MARGIN).min(room);
-                let x = (strip_inset + workspace_chrome::CORNER_MARGIN)
-                    .min(tabs.size.width.max(px(0.0)));
+                // Right after the traffic lights or the row's lead, where a
+                // docked sidebar's strip draws the sidebar button, or a
+                // margin in from a bar's start; the tabs follow the controls.
+                let x = if strip_inset > px(0.0) {
+                    strip_inset
+                } else {
+                    workspace_chrome::CORNER_MARGIN
+                }
+                .min(tabs.size.width.max(px(0.0)));
+                let lead = lead.min((tabs.size.width - x).max(px(0.0)));
                 let slot = Bounds::new(
                     point(
                         x,
                         ((tabs.size.height - CONTROL_SIZE) / 2.0).max(px(0.0)),
                     ),
-                    size(
-                        (lead - workspace_chrome::CORNER_MARGIN).max(px(0.0)),
-                        CONTROL_SIZE.min(tabs.size.height.max(px(0.0))),
-                    ),
+                    size(lead, CONTROL_SIZE.min(tabs.size.height.max(px(0.0)))),
                 );
-                strip_inset += lead;
+                strip_inset = x + lead;
                 Some(slot)
             }
         });
@@ -14917,7 +14921,6 @@ impl Render for WorkspaceView {
                     colors,
                     cx,
                 )
-                .ml(px(4.0))
             });
         let title_corner_right = title_corner(workspace_chrome::Edge::Right)
             .then(|| {
@@ -14929,7 +14932,7 @@ impl Render for WorkspaceView {
                     cx,
                 )
                 .mr(if title_menu_button.is_some() {
-                    CONTROL_SLOT - CONTROL_SIZE
+                    workspace_panel::CORNER_GAP
                 } else {
                     CONTROL_INSET
                 })
@@ -14967,13 +14970,14 @@ impl Render for WorkspaceView {
                 },
             );
         // Without leading window buttons the row starts after the traffic
-        // lights, or a small lead in the row Huterm draws.
+        // lights, or a small lead in the row Huterm draws: where a docked
+        // sidebar's strip draws the sidebar button too.
         let title_lead = (frame.buttons.leading.is_empty() && !lead_held)
             .then(|| {
                 div().flex_none().w(if frame.controls {
-                    TITLE_ROW_LEAD - px(4.0)
+                    TITLE_ROW_LEAD
                 } else {
-                    TRAFFIC_LIGHT_INSET - px(4.0)
+                    TRAFFIC_LIGHT_INSET
                 })
             })
             .filter(|_| title_corner_left.is_some());

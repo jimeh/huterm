@@ -23,7 +23,7 @@ use super::*;
 /// A corner switcher's widest label; a longer name truncates.
 pub(super) const SWITCHER_LABEL_MAX: Pixels = px(140.0);
 /// The gap between the sidebar button and the switchers beside it.
-const CORNER_GAP: Pixels = px(4.0);
+pub(super) const CORNER_GAP: Pixels = px(4.0);
 /// A list's header: "WORKSPACES" with New Workspace, or "SESSIONS".
 pub(super) const HEADER_HEIGHT: Pixels = px(28.0);
 /// The sidebar's session row, with its caption.
@@ -1796,13 +1796,21 @@ impl WorkspaceView {
         } else {
             px(0.0)
         };
+        // Without a title row the button keeps the inset it has while the
+        // sidebar is hidden: a tab column's row margin, or a bar's corner
+        // margin.
+        let inset = if self.layout_tabs().position.vertical() {
+            tab_bar::VERTICAL_ROW_MARGIN_X
+        } else {
+            workspace_chrome::CORNER_MARGIN
+        };
         let corner = div()
             .id("workspace-panel-strip")
             .flex_none()
             .h(strip)
             .flex()
             .items_center()
-            .px(px(8.0))
+            .px(inset)
             .when(!left, Styled::justify_end);
         let corner = if titled {
             // The title row's corner controls draw over this strip.

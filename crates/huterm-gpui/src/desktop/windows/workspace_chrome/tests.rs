@@ -537,9 +537,10 @@ fn a_docked_sidebar_owns_its_title_row_corner() {
         docked(Edge::Left),
     ));
     // The traffic lights and sidebar button sit in the sidebar's strip, so
-    // the merged row starts at the sidebar with a small lead.
+    // the merged row starts at the sidebar, as a top bar at the window's
+    // edge does.
     assert_eq!(left.tabs.left(), PANEL_WIDTH);
-    assert_eq!(left.strip_inset, TITLE_ROW_LEAD);
+    assert_eq!(left.strip_inset, px(0.0));
     let right = ChromeLayout::build_with(layout_inputs(
         window,
         px(28.0),
@@ -561,7 +562,7 @@ fn a_docked_sidebar_owns_its_title_row_corner() {
             )
         });
         let (inset, trailing) = match edge {
-            Edge::Left => (TITLE_ROW_LEAD, frame.buttons.trailing.width()),
+            Edge::Left => (px(0.0), frame.buttons.trailing.width()),
             Edge::Right => (frame.buttons.leading.width(), px(0.0)),
         };
         assert_eq!(layout.strip_inset, inset, "{edge:?}");
@@ -591,18 +592,17 @@ fn the_corner_slot_leads_a_bar_or_takes_a_row_above_a_column() {
             corner: Some(CornerSlot::Lead(lead)),
             ..layout_inputs(window, titlebar, position, hidden(Edge::Left))
         });
-        // The controls sit after the traffic lights or the bar's start, and
-        // the tabs start after them; nothing else moves.
-        assert_eq!(
-            slotted.strip_inset,
-            plain.strip_inset + lead + CORNER_MARGIN,
-            "{position:?}"
-        );
+        // The controls sit right after the traffic lights, as a docked
+        // sidebar's strip draws the button, or a margin in from the bar's
+        // start; the tabs start after them, and nothing else moves.
+        let start = if plain.strip_inset > px(0.0) {
+            plain.strip_inset
+        } else {
+            CORNER_MARGIN
+        };
+        assert_eq!(slotted.strip_inset, start + lead, "{position:?}");
         let slot = slotted.corner().expect("a slot");
-        assert_eq!(
-            slot.left(),
-            slotted.tabs.left() + plain.strip_inset + CORNER_MARGIN
-        );
+        assert_eq!(slot.left(), slotted.tabs.left() + start, "{position:?}");
         assert_eq!(slot.size.width, lead, "{position:?}");
         assert!(inside(slot, slotted.tabs), "{position:?}");
         assert_eq!(slotted.terminal, plain.terminal, "{position:?}");
