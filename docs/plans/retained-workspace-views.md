@@ -119,10 +119,29 @@ them.
 
 ## Measurement
 
-See the pull request for the numbers: a release `restore_smoke` build of
-the base and of this change, relaunched five times on a saved session of 10
-workspaces with 5 tabs each, measuring time to restore, time until every
-view installed, resident memory after settling and after 10 seconds idle,
-and switch latency over two laps of every workspace.
+Release `restore_smoke` builds of the base (`3fb44804`) and of this change,
+each relaunched five times on one saved session of 10 workspaces with 5
+tabs each (idle fixture shells, macOS arm64), medians of five runs. Switch
+times come from inside the app: from the command to the window settling on
+the target with its views, and to its active view holding a snapshot, over
+one lap of all ten workspaces (first visit) and a second lap (revisit).
+
+| Measure | Base | Retained views |
+| --- | --- | --- |
+| Launch to restored and settled | 671 ms | 661 ms |
+| Launch to every workspace's views installed | not applicable | 661 ms |
+| Resident memory, settled | 117.8 MB | 119.0 MB |
+| Resident memory, after both laps | 126.4 MB | 123.3 MB |
+| Resident memory, 10 s later | 126.5 MB | 123.3 MB |
+| Switch settled, first visit (median / max) | 0.3 / 1.1 ms | 0.1 / 0.3 ms |
+| Switch settled, revisit (median / max) | 0.3 / 0.4 ms | 0.1 / 0.1 ms |
+| Switch to a drawable snapshot, first visit | 1.3 ms | 0.4 ms |
+| Switch to a drawable snapshot, revisit | 0.3 ms | 0.1 ms |
+
+Installing all 50 views costs no measurable launch time, because the shells
+dominate it, and about 1.2 MB, about 25 KB per view that has not drawn. The
+in-process runtime already made the old switch fast with idle shells; the
+change removes the install, the blank frame before views arrive, and the
+loss of scroll, selection, and view zoom on every switch.
 
 [issue-27]: https://github.com/jimeh/huterm/issues/27
