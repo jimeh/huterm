@@ -3312,7 +3312,6 @@ fn open_window_with_profile(
                 installs: PendingInstalls::default(),
                 hidden: HashMap::new(),
                 scope: None,
-                arriving: None,
                 restore_focus: None,
                 reopen: None,
                 switch: None,
@@ -4817,9 +4816,6 @@ struct WorkspaceView {
     /// The hidden workspace whose views `tabs` holds while reconcile or an
     /// install works on them; `None` outside that.
     scope: Option<WorkspaceId>,
-    /// Where a workspace switch left the focus of tabs whose views were
-    /// still installing, applied as they arrive.
-    arriving: Option<hidden_workspaces::Arriving>,
     tab_scroll: Pixels,
     scroll_target: Option<Pixels>,
     last_scroll: Instant,
@@ -5437,8 +5433,8 @@ fn finish_exit_commit(
 }
 
 /// Offers the owed exit-closes, once no window is being updated, to the
-/// windows other than `except` that show their tabs; the first whose close
-/// pipeline is idle takes each. Never reads another window's view from
+/// windows other than `except` that hold views of their tabs, shown or
+/// hidden; the first whose close pipeline is idle takes each. Never reads another window's view from
 /// inside an update.
 fn offer_exit_closes(cx: &mut App, except: Option<gpui::WindowId>) {
     cx.defer(move |cx| {
@@ -5452,12 +5448,27 @@ fn offer_exit_closes(cx: &mut App, except: Option<gpui::WindowId>) {
             .owed()
             .filter_map(|pane| state.pane_tab(pane))
             .collect();
+        // A window holds views of every workspace of its attached session,
+        // hidden ones included.
+        let holds = |session: SessionId, tab: TabId| {
+            state
+                .tab_workspace(tab)
+                .and_then(|workspace| state.workspace_session(workspace))
+                == Some(session)
+        };
         let windows: Vec<gpui::WindowId> = desktop
             .windows
             .records()
             .filter(|record| {
                 Some(record.id) != except
-                    && record.tabs.iter().any(|entry| owed.contains(&entry.id))
+                    && (record
+                        .tabs
+                        .iter()
+                        .any(|entry| owed.contains(&entry.id))
+                        || record.attachment.is_some()
+                            && record.session.is_some_and(|session| {
+                                owed.iter().any(|tab| holds(session, *tab))
+                            }))
             })
             .map(|record| record.id)
             .collect();
@@ -13507,9 +13518,9 @@ impl WorkspaceView {
     /// that changes only the theme does.
     fn apply_theme(&mut self, theme: &Theme, cx: &mut Context<'_, Self>) {
         self.config.theme = theme.clone();
+        // Hidden workspaces' views follow too, as hidden tabs' do.
         let views: Vec<_> = self
-            .tabs
-            .iter()
+            .all_tab_views()
             .flat_map(|tab| tab.panes.iter().map(|pane| pane.view.clone()))
             .collect();
         for view in views {

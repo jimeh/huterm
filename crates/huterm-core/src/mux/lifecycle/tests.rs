@@ -328,26 +328,32 @@ fn an_emptied_hidden_workspace_closes_only_when_empty_unpinned_and_not_alone() {
     let session = mux.create_session(None).unwrap();
     let shown = mux.create_workspace(session, None).unwrap();
     let hidden = mux.create_workspace(session, None).unwrap();
-    let attachment = mux.attach_session(session).unwrap();
+    let other = mux.create_session(None).unwrap();
+    let elsewhere = mux.create_workspace(other, None).unwrap();
+    mux.create_workspace(other, None).unwrap();
 
     // A workspace that holds a tab stays, and so does a pinned one.
     let held = mux.open_test_tab(hidden, &command(steps)).unwrap();
     wait_for_text(&held.client, "READY");
-    assert!(!mux.close_emptied_workspace(attachment, hidden).unwrap());
+    assert!(!mux.close_emptied_workspace(session, hidden).unwrap());
     mux.close_tab(hidden, held.tab.id).unwrap();
     mux.set_workspace_pinned(hidden, true).unwrap();
-    assert!(!mux.close_emptied_workspace(attachment, hidden).unwrap());
+    assert!(!mux.close_emptied_workspace(session, hidden).unwrap());
     assert!(mux.workspace(hidden).is_some());
+
+    // Another session's workspace stays, however empty.
+    assert!(!mux.close_emptied_workspace(session, elsewhere).unwrap());
+    assert!(mux.workspace(elsewhere).is_some());
 
     // Empty and unpinned beside a sibling, it closes.
     mux.set_workspace_pinned(hidden, false).unwrap();
-    assert!(mux.close_emptied_workspace(attachment, hidden).unwrap());
+    assert!(mux.close_emptied_workspace(session, hidden).unwrap());
     assert!(mux.workspace(hidden).is_none());
     assert_eq!(mux.session(session).unwrap().workspaces, [shown]);
 
     // A session's only workspace stays, and a gone one changes nothing.
-    assert!(!mux.close_emptied_workspace(attachment, shown).unwrap());
-    assert!(!mux.close_emptied_workspace(attachment, hidden).unwrap());
+    assert!(!mux.close_emptied_workspace(session, shown).unwrap());
+    assert!(!mux.close_emptied_workspace(session, hidden).unwrap());
     assert_eq!(mux.session(session).unwrap().workspaces, [shown]);
     mux.shutdown().unwrap();
 }

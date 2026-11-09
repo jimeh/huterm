@@ -858,7 +858,6 @@ impl WorkspaceView {
         self.switch_recovers = recovers;
         self.close.emptied = EmptiedClose::None;
         self.restore_focus = None;
-        self.arriving = None;
         self.reopen = Some(remembered_focus(memory));
         if !self.overlay_holds_focus() {
             // The focused view is about to drop.

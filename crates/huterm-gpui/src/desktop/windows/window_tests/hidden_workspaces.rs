@@ -8,7 +8,7 @@
 use super::super::workspace_status::Dot;
 use super::pane_moves::active;
 use super::sessions::{shown_tabs, switching};
-use super::workspaces::{shown_workspace, workspace_pick};
+use super::workspaces::{empty_state, shown_workspace, workspace_pick};
 use super::*;
 
 /// A child that prints `READY`, then rings a bell for each line it reads.
@@ -428,4 +428,189 @@ fn an_exit_in_a_hidden_workspace_closes_its_tab_and_an_emptied_workspace(
         assert_eq!(view.close.emptied, EmptiedClose::None);
     });
     harness.answers(window, shown, "still");
+}
+
+/// R1-7 into an empty workspace: a tab adopted from a hidden workspace
+/// into the shown one that had no tab becomes active and shows, as an
+/// installed one does.
+#[gpui::test]
+fn a_tab_adopted_into_an_empty_shown_workspace_shows(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[first]);
+    let (second, seconds) = harness.add_workspace(1);
+    harness.wait_hidden(window, second, &seconds);
+    // The shown workspace stays, empty, once pinned.
+    harness
+        .runtime
+        .lock()
+        .set_workspace_pinned(harness.workspace, true)
+        .unwrap();
+    harness
+        .runtime
+        .lock()
+        .close_tab(harness.workspace, first)
+        .unwrap();
+    harness.wait_for("the empty state", |cx| empty_state(cx, window).is_some());
+    let view = harness.cx.update(|cx| held_view(cx, window, seconds[0]));
+    harness
+        .runtime
+        .lock()
+        .move_tab(second, seconds[0], harness.workspace, None)
+        .unwrap();
+    harness.wait_for("the adopted tab to show", |cx| {
+        shown_tabs(cx, window) == seconds
+            && active(cx, window) == Some(seconds[0])
+            && terminal(cx, window, seconds[0])
+                .is_some_and(|view| view.read(cx).visible)
+            && empty_state(cx, window).is_none()
+    });
+    assert_eq!(
+        harness.cx.update(|cx| held_view(cx, window, seconds[0])),
+        view
+    );
+    harness.answers(window, seconds[0], "adopted");
+}
+
+/// R1-17 with two windows: Show Tab reveals the pane in the window that
+/// shows its workspace before switching one that holds it hidden.
+#[gpui::test]
+fn show_tab_prefers_the_window_that_shows_the_pane(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let holding = harness.attach_showing(&[first]);
+    let (second, seconds) = harness.add_workspace(1);
+    harness.wait_hidden(holding, second, &seconds);
+    let showing = harness.attach_showing(&[first]);
+    harness.show_workspace(showing, second, &seconds);
+    let pane = harness.first_pane(seconds[0]);
+    let revealed = harness.cx.update(|cx| {
+        super::super::terminal_notifications::reveal_pane(pane.get(), cx)
+    });
+    assert!(revealed);
+    harness.cx.update(|cx| {
+        assert_eq!(shown_workspace(cx, holding), Some(harness.workspace));
+        assert_eq!(shown_workspace(cx, showing), Some(second));
+    });
+}
+
+/// An install that completes for a tab another client moved while the
+/// window was busy, before the window adopted the tab's view, builds no
+/// second view of the tab: the moved view takes the new pane afterwards.
+#[gpui::test]
+fn an_install_racing_a_deferred_adoption_builds_no_second_view(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[first]);
+    let (second, seconds) = harness.add_workspace(1);
+    harness.wait_hidden(window, second, &seconds);
+    let moving = seconds[0];
+    let runtime = Arc::clone(&harness.runtime);
+    // A split elsewhere starts the hidden pane's install, which waits.
+    runtime.worker_hooks.hold(Stage::Subscribe);
+    let pane = harness.first_pane(moving);
+    let added = runtime
+        .lock()
+        .split_pane(second, moving, pane, SplitDirection::Right, &fixture(ECHO))
+        .unwrap()
+        .pane
+        .id;
+    harness.wait_for("the split's install to wait", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) > 0
+    });
+    // The window's own New Tab keeps it busy, so it adopts nothing.
+    runtime.worker_hooks.hold(Stage::Spawned);
+    harness.invoke(window, ids::NEW_TAB).unwrap();
+    harness.wait_for("the new tab to wait", |_| {
+        runtime.worker_hooks.held(Stage::Spawned) == 1
+    });
+    runtime
+        .lock()
+        .move_tab(second, moving, harness.workspace, None)
+        .unwrap();
+    harness.wait_projection();
+    runtime.worker_hooks.release(Stage::Subscribe);
+    harness.wait_for("the split's install to end", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) == 0
+    });
+    runtime.worker_hooks.release(Stage::Spawned);
+    harness.wait_for("the moved tab to show both panes", |cx| {
+        let tabs = shown_tabs(cx, window);
+        tabs.iter().filter(|tab| **tab == moving).count() == 1
+            && panes_shown(cx, window, moving)
+                .is_some_and(|(panes, _)| panes == [pane, added])
+            && hidden_tabs(cx, window, second).as_deref() == Some(&[][..])
+            && !busy(cx, window)
+    });
+}
+
+/// R1-2 across a departure and a capture: a switch away before the
+/// remembered tabs arrive files their navigation, and a capture meanwhile
+/// saves it, so it applies on the next visit.
+#[gpui::test]
+fn remembered_navigation_survives_leaving_before_its_tabs_arrive(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let first = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[first]);
+    let runtime = Arc::clone(&harness.runtime);
+    runtime.worker_hooks.hold(Stage::Subscribe);
+    let (second, seconds) = harness.add_workspace(2);
+    let split = seconds[1];
+    let left = harness.first_pane(split);
+    let right = runtime
+        .lock()
+        .split_pane(second, split, left, SplitDirection::Right, &fixture(ECHO))
+        .unwrap()
+        .pane
+        .id;
+    harness.wait_for("the hidden install to wait", |_| {
+        runtime.worker_hooks.held(Stage::Subscribe) > 0
+    });
+    let session = harness.session;
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().windows.restore_memory(
+            window.window_id(),
+            vec![super::super::model::NavigationMemory {
+                session,
+                workspace: second,
+                active: Some(split),
+                history: vec![split],
+                panes: vec![(split, right)],
+                layout_history:
+                    super::super::layout_history::LayoutHistory::default(),
+            }],
+        );
+    });
+    harness
+        .invoke_with(window, &workspace_pick(ids::SELECT_WORKSPACE, second))
+        .unwrap();
+    // A capture while the tabs install saves what the window will show.
+    let saved = harness
+        .cx
+        .update(|cx| capture_windows(cx).windows.remove(0));
+    assert_eq!(saved.active_tab.map(TabId::get), Some(split.get()));
+    assert!(saved.focused_panes.iter().any(|focused| {
+        focused.tab.get() == split.get() && focused.pane.get() == right.get()
+    }));
+    // Leaving before they arrive files it back into memory.
+    harness
+        .invoke_with(
+            window,
+            &workspace_pick(ids::SELECT_WORKSPACE, harness.workspace),
+        )
+        .unwrap();
+    runtime.worker_hooks.release(Stage::Subscribe);
+    harness.wait_hidden(window, second, &seconds);
+    harness.show_workspace(window, second, &seconds);
+    harness.cx.update(|cx| {
+        assert_eq!(active(cx, window), Some(split));
+        assert_eq!(
+            panes_shown(cx, window, split).map(|(_, focused)| focused),
+            Some(right)
+        );
+    });
 }

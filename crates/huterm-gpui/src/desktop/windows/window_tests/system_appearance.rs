@@ -74,6 +74,33 @@ fn windows_follow_the_application_appearance(cx: &mut TestAppContext) {
     DARK.set(false);
 }
 
+/// A window's hidden workspaces follow the application's appearance as
+/// its shown one does, so showing one later draws the current theme.
+#[gpui::test]
+fn hidden_workspaces_follow_the_application_appearance(
+    cx: &mut TestAppContext,
+) {
+    DARK.set(false);
+    let pair = inverted();
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.themes = inverted();
+    });
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_showing(&[tab]);
+    let (second, seconds) = harness.add_workspace(1);
+    harness.wait_hidden(window, second, &seconds);
+    DARK.set(true);
+    assert!(harness.cx.update(system_appearance::follow));
+    harness.cx.run_until_parked();
+    harness.cx.update(|cx| {
+        let hidden =
+            super::hidden_workspaces::hidden_view(cx, window, seconds[0])
+                .expect("the hidden view");
+        assert_eq!(hidden.read(cx).theme, pair.dark);
+    });
+    DARK.set(false);
+}
+
 #[gpui::test]
 fn a_window_appearance_change_never_picks_the_theme(cx: &mut TestAppContext) {
     // Dark mode with a light theme for it: on macOS that theme gives the

@@ -22,8 +22,10 @@
 //! A workspace switch within the session (`show_workspace`) runs in one
 //! update: the shown views move to `hidden`, the target's come out, the
 //! model takes the target's entries and memory, and the remembered tab
-//! shows. Tabs whose views are still installing join as they arrive
-//! (`Arriving`). A session switch still replaces every view.
+//! shows. Tabs whose views are still installing join as they arrive, and
+//! the model keeps their remembered navigation pending until then
+//! (`PendingFocus`), so a departure or a capture meanwhile keeps it too. A
+//! session switch still replaces every view.
 
 use super::model::NavigationMemory;
 use super::{
@@ -32,21 +34,6 @@ use super::{
     WindowReconcile, WorkspaceId, WorkspaceView, mark_titles_changed,
     reconcile_window, terminating,
 };
-
-/// The remembered focus of tabs a switch showed before their views
-/// arrived, applied as each arrives while its workspace stays shown.
-#[derive(Debug)]
-pub(super) struct Arriving {
-    workspace: WorkspaceId,
-    /// The remembered active tab, when it had no view yet.
-    active: Option<TabId>,
-    /// The tab the switch activated in its place, which the remembered one
-    /// replaces only while it stays active. With none, the remembered tab
-    /// replaces whichever tab arrived first.
-    chosen: Option<TabId>,
-    /// Remembered pane focus of tabs that had no view yet.
-    panes: Vec<(TabId, PaneId)>,
-}
 
 impl WorkspaceView {
     /// The workspace the view-level operations work on: the hidden one
@@ -234,6 +221,16 @@ impl WorkspaceView {
         if shown_changed {
             self.debug_assert_tabs_aligned(cx);
             self.sync_tab_order(cx);
+            // A shown workspace that had no tab activates the first that
+            // arrived, as an install does (`show_pushed_panes`); the
+            // reconcile caller sees the new active tab and shows it.
+            if self.active_tab(cx).is_none()
+                && let Some(first) = self.tabs.first().map(|view| view.id)
+            {
+                cx.global_mut::<Desktop>()
+                    .windows
+                    .select(self.window, first);
+            }
         }
         shown_changed
     }
@@ -282,6 +279,7 @@ impl WorkspaceView {
             entries,
             memory.and_then(|memory| memory.active),
             memory.map_or(&[], |memory| memory.history.as_slice()),
+            memory.map_or(&[], |memory| memory.panes.as_slice()),
         );
         mark_titles_changed(self.window, cx);
         self.debug_assert_tabs_aligned(cx);
@@ -317,27 +315,7 @@ impl WorkspaceView {
         self.close.emptied = EmptiedClose::None;
         desktop.windows.set_emptied_close(self.window, false);
         self.restore_focus = None;
-        self.arriving = None;
         self.swap_shown(left, workspace, memory.as_ref(), cx);
-        // Tabs still installing take their remembered focus as they land.
-        if let Some(memory) = memory.as_ref() {
-            let missing = |tab: &TabId| !self.tabs.iter().any(|v| v.id == *tab);
-            let active = memory.active.filter(missing);
-            let panes: Vec<(TabId, PaneId)> = memory
-                .panes
-                .iter()
-                .copied()
-                .filter(|(tab, _)| missing(tab))
-                .collect();
-            if active.is_some() || !panes.is_empty() {
-                self.arriving = Some(Arriving {
-                    workspace,
-                    active,
-                    chosen: self.active_tab(cx),
-                    panes,
-                });
-            }
-        }
         self.layout_pending = true;
         self.reconcile_own(window, cx);
         self.measure_tab_widths(window, cx);
@@ -357,47 +335,38 @@ impl WorkspaceView {
         cx.notify();
     }
 
-    /// Applies the remembered focus of tabs that were still installing
-    /// when the switch showed their workspace, as their views arrive.
+    /// Applies the remembered navigation of tabs that were still
+    /// installing when a switch showed their workspace, as their views
+    /// arrive: each one's focused pane, and the remembered active tab
+    /// unless the user chose another meanwhile. What never arrives goes
+    /// once the workspace's installs are idle.
     pub(super) fn apply_arriving(
         &mut self,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(mut arriving) = self.arriving.take() else {
-            return;
-        };
-        if Some(arriving.workspace) != self.workspace_id(cx) {
+        let settled = self.installs.idle_in(self.workspace_id(cx));
+        let tabs = &self.tabs;
+        let (active, panes) = cx.global_mut::<Desktop>().windows.take_pending(
+            self.window,
+            |tab| tabs.iter().any(|view| view.id == tab),
+            settled,
+        );
+        if active.is_none() && panes.is_empty() {
             return;
         }
-        let tabs = &mut self.tabs;
-        arriving.panes.retain(|(tab, pane)| {
-            match tabs.iter_mut().find(|view| view.id == *tab) {
-                Some(view) => {
-                    view.focus_pane(*pane);
-                    false
-                }
-                None => true,
-            }
-        });
-        if let Some(active) = arriving.active
-            && self.tabs.iter().any(|view| view.id == active)
-        {
-            arriving.active = None;
-            if arriving
-                .chosen
-                .is_none_or(|chosen| self.active_tab(cx) == Some(chosen))
+        for (tab, pane) in panes {
+            if let Some(view) = self.tabs.iter_mut().find(|view| view.id == tab)
             {
-                let focus = !self.overlay_holds_focus();
-                self.measure_tab_widths(window, cx);
-                self.select_tab(active, focus, window, cx);
+                view.focus_pane(pane);
             }
+        }
+        if let Some(active) = active {
+            let focus = !self.overlay_holds_focus();
+            self.measure_tab_widths(window, cx);
+            self.select_tab(active, focus, window, cx);
         }
         self.publish_pane_focus(cx);
-        let waiting = arriving.active.is_some() || !arriving.panes.is_empty();
-        if waiting && !self.installs.idle_in(Some(arriving.workspace)) {
-            self.arriving = Some(arriving);
-        }
     }
 
     /// Ends a committed exit-close of a pane in hidden `workspace`: its
@@ -418,20 +387,22 @@ impl WorkspaceView {
             .state()
             .workspace_tabs(workspace)
             .is_some_and(<[TabId]>::is_empty);
+        // Scoped to the session the window shows now, so a session switch
+        // that lands before the worker locks Mux closes nothing.
         if emptied
             && !terminating(cx)
-            && let Some(attachment) = self.attachment_id(cx)
+            && let Some(session) = self.attached_session(cx)
         {
             let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
             cx.background_executor()
                 .spawn(async move {
+                    let mut mux = runtime.lock();
                     if runtime.terminating.load(Ordering::Acquire) {
                         return;
                     }
-                    let closed = runtime
-                        .lock()
-                        .close_emptied_workspace(attachment, workspace);
-                    if let Err(error) = closed {
+                    if let Err(error) =
+                        mux.close_emptied_workspace(session, workspace)
+                    {
                         eprintln!("Cannot close emptied workspace: {error}");
                     }
                 })

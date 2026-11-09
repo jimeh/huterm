@@ -125,6 +125,51 @@ impl NavigationMemory {
     }
 }
 
+/// Navigation a workspace switch remembered for tabs whose views had not
+/// arrived yet. The window applies it as they arrive, and until then a
+/// departure files it and a capture saves it in their place.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct PendingFocus {
+    /// The remembered active tab, while it has no view.
+    pub(super) active: Option<TabId>,
+    /// The tab the switch activated in its place: the remembered tab wins
+    /// only while this one stays active, or when the switch had none.
+    pub(super) chosen: Option<TabId>,
+    /// Remembered pane focus of tabs that have no view yet.
+    pub(super) panes: Vec<(TabId, PaneId)>,
+}
+
+impl PendingFocus {
+    fn is_empty(&self) -> bool {
+        self.active.is_none() && self.panes.is_empty()
+    }
+
+    /// The remembered active tab while the user has not chosen another.
+    fn active_over(&self, active: Option<TabId>) -> Option<TabId> {
+        self.active
+            .filter(|_| self.chosen.is_none() || active == self.chosen)
+    }
+
+    /// Drops what names tabs or panes the projection no longer holds in
+    /// `workspace`; returns whether anything went.
+    fn prune(
+        &mut self,
+        state: &HierarchyState,
+        workspace: WorkspaceId,
+    ) -> bool {
+        let tabs = state.workspace_tabs(workspace).unwrap_or_default();
+        let before = (self.active, self.panes.len());
+        self.active = self.active.filter(|tab| tabs.contains(tab));
+        self.panes.retain(|(tab, pane)| {
+            tabs.contains(tab)
+                && state
+                    .tab(*tab)
+                    .is_some_and(|info| info.layout.pane(*pane).is_some())
+        });
+        before != (self.active, self.panes.len())
+    }
+}
+
 /// Everything the client knows about one window.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct WindowRecord {
@@ -163,11 +208,40 @@ pub(super) struct WindowRecord {
     /// The bells this window has seen, per terminal, for the workspace
     /// rows' dots.
     pub(super) bells: super::workspace_status::BellBaselines,
+    /// Remembered navigation of the shown workspace's tabs still
+    /// installing.
+    pub(super) pending: PendingFocus,
 }
 
 impl WindowRecord {
     fn contains(&self, tab: TabId) -> bool {
         self.tabs.iter().any(|entry| entry.id == tab)
+    }
+
+    /// The active tab a departure files and a capture saves: a remembered
+    /// one still installing over the one the switch chose in its place.
+    fn navigated_active(&self) -> Option<TabId> {
+        self.pending.active_over(self.active).or(self.active)
+    }
+
+    /// The activation history a departure files and a capture saves, most
+    /// recent first, led by [`Self::navigated_active`].
+    fn navigated_history(&self) -> Vec<TabId> {
+        let mut history = self.history.clone();
+        if let Some(active) = self.pending.active_over(self.active) {
+            record_tab_activation(&mut history, active);
+        }
+        history
+    }
+
+    /// Each tab's focused pane a departure files and a capture saves, with
+    /// the remembered focus of tabs still installing.
+    fn navigated_panes(&self) -> Vec<(TabId, PaneId)> {
+        self.tabs
+            .iter()
+            .filter_map(|entry| Some((entry.id, entry.focused?)))
+            .chain(self.pending.panes.iter().copied())
+            .collect()
     }
 }
 
@@ -268,6 +342,7 @@ impl WindowModel {
             emptied_close: false,
             transparency: crate::transparency::Layer::default(),
             bells: super::workspace_status::BellBaselines::default(),
+            pending: PendingFocus::default(),
         });
     }
 
@@ -317,13 +392,9 @@ impl WindowModel {
             let memory = NavigationMemory {
                 session: left,
                 workspace: left_workspace,
-                active: record.active,
-                history: record.history.clone(),
-                panes: record
-                    .tabs
-                    .iter()
-                    .filter_map(|entry| Some((entry.id, entry.focused?)))
-                    .collect(),
+                active: record.navigated_active(),
+                history: record.navigated_history(),
+                panes: record.navigated_panes(),
                 layout_history: std::mem::take(&mut record.layout_history),
             };
             record
@@ -345,6 +416,7 @@ impl WindowModel {
             .unwrap_or_default();
         record.session = Some(session);
         record.workspace = Some(workspace);
+        record.pending = PendingFocus::default();
         if let Some((left, _)) = left {
             self.note_viewed(left);
         }
@@ -355,13 +427,16 @@ impl WindowModel {
     /// Replaces a window's tab entries with those of the workspace a
     /// switch just showed from views it already held: the remembered
     /// activation `history`, most recent first, keeping only tabs it shows,
-    /// and `active` when it shows it, else the first tab.
+    /// and `active` when it shows it, else the first tab. What `active`
+    /// and `panes` remember of tabs it does not show yet stays pending
+    /// until they arrive.
     pub(super) fn show_tabs(
         &mut self,
         id: WindowId,
         tabs: Vec<TabEntry>,
         active: Option<TabId>,
         history: &[TabId],
+        panes: &[(TabId, PaneId)],
     ) {
         let Some(record) = self.saved_mut(id) else {
             return;
@@ -374,7 +449,57 @@ impl WindowModel {
         if let Some(active) = record.active {
             record_tab_activation(&mut record.history, active);
         }
+        record.pending = PendingFocus {
+            active: active.filter(|tab| !shows(tab)),
+            chosen: record.active,
+            panes: panes
+                .iter()
+                .copied()
+                .filter(|(tab, _)| !shows(tab))
+                .collect(),
+        };
         record.tabs = tabs;
+    }
+
+    /// Takes the pending navigation of the tabs `arrived` names: their
+    /// remembered pane focus, and the remembered active tab when it arrived
+    /// and still applies. With `settled`, no install is left to bring the
+    /// rest, which goes too.
+    pub(super) fn take_pending(
+        &mut self,
+        id: WindowId,
+        arrived: impl Fn(TabId) -> bool,
+        settled: bool,
+    ) -> (Option<TabId>, Vec<(TabId, PaneId)>) {
+        if self
+            .record(id)
+            .is_none_or(|record| record.pending.is_empty())
+        {
+            return (None, Vec::new());
+        }
+        let Some(record) = self.saved_mut(id) else {
+            return (None, Vec::new());
+        };
+        let shown_active = record.active;
+        let pending = &mut record.pending;
+        let (panes, waiting): (Vec<_>, Vec<_>) = pending
+            .panes
+            .iter()
+            .copied()
+            .partition(|(tab, _)| arrived(*tab));
+        pending.panes = waiting;
+        let active = if pending.active.is_some_and(&arrived) {
+            let remembered = pending.active.take();
+            remembered.filter(|_| {
+                pending.chosen.is_none() || shown_active == pending.chosen
+            })
+        } else {
+            None
+        };
+        if settled {
+            record.pending = PendingFocus::default();
+        }
+        (active, panes)
     }
 
     /// The workspace a window left last in `session`, if it remembers one.
@@ -425,6 +550,9 @@ impl WindowModel {
             changed |= record.memory.len() != before;
             for memory in &mut record.memory {
                 changed |= memory.prune(state);
+            }
+            if let Some(workspace) = record.workspace {
+                changed |= record.pending.prune(state, workspace);
             }
         }
         self.viewed
@@ -1121,9 +1249,22 @@ impl WindowModel {
 fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
     record.attachment?;
     let (session, workspace) = (record.session?, record.workspace?);
-    let shown = |tab: &TabId| record.contains(*tab);
-    let mut history: Vec<TabId> =
-        record.history.iter().copied().filter(shown).collect();
+    // Tabs still installing count as shown: their pending navigation is
+    // what the window will show.
+    let shown = |tab: &TabId| {
+        record.contains(*tab)
+            || record.pending.active == Some(*tab)
+            || record
+                .pending
+                .panes
+                .iter()
+                .any(|(pending, _)| pending == tab)
+    };
+    let mut history: Vec<TabId> = record
+        .navigated_history()
+        .into_iter()
+        .filter(shown)
+        .collect();
     // Saved most recent last.
     history.reverse();
     let (mode, bounds) = match record.layout.bounds {
@@ -1147,7 +1288,7 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
         session: SessionId::new(session.get()),
         workspace: WorkspaceId::new(workspace.get()),
         active_tab: record
-            .active
+            .navigated_active()
             .filter(shown)
             .map(|tab| TabId::new(tab.get())),
         tab_history: history
@@ -1155,13 +1296,11 @@ fn saved_window(record: &WindowRecord) -> Option<huterm_state::WindowLayout> {
             .map(|tab| TabId::new(tab.get()))
             .collect(),
         focused_panes: record
-            .tabs
-            .iter()
-            .filter_map(|entry| {
-                Some(huterm_state::FocusedPane {
-                    tab: TabId::new(entry.id.get()),
-                    pane: PaneId::new(entry.focused?.get()),
-                })
+            .navigated_panes()
+            .into_iter()
+            .map(|(tab, pane)| huterm_state::FocusedPane {
+                tab: TabId::new(tab.get()),
+                pane: PaneId::new(pane.get()),
             })
             .collect(),
         bounds: huterm_state::WindowBounds {

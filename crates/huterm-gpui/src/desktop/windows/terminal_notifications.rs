@@ -220,19 +220,25 @@ pub(super) fn install(cx: &mut App) {
 
 /// Brings the window holding pane number `pane` forward, summoning a
 /// hidden Quake window, selects its tab, clears a zoom that hides the
-/// pane, and focuses it. Returns whether a window held it.
+/// pane, and focuses it. A window that shows the pane's workspace goes
+/// first; only then does one that holds it hidden switch to it. Returns
+/// whether a window held it.
 pub(super) fn reveal_pane(pane: u64, cx: &mut App) -> bool {
-    for handle in cx.windows() {
-        let revealed = handle
-            .update(cx, |root, window, cx| {
-                let Ok(view) = root.downcast::<WorkspaceView>() else {
-                    return false;
-                };
-                view.update(cx, |view, cx| view.reveal(pane, window, cx))
-            })
-            .unwrap_or(false);
-        if revealed {
-            return true;
+    for hidden in [false, true] {
+        for handle in cx.windows() {
+            let revealed = handle
+                .update(cx, |root, window, cx| {
+                    let Ok(view) = root.downcast::<WorkspaceView>() else {
+                        return false;
+                    };
+                    view.update(cx, |view, cx| {
+                        view.reveal(pane, hidden, window, cx)
+                    })
+                })
+                .unwrap_or(false);
+            if revealed {
+                return true;
+            }
         }
     }
     false
@@ -255,10 +261,12 @@ fn active_window(window: &Window, cx: &mut App) -> Option<AnyWindowHandle> {
 }
 
 impl WorkspaceView {
-    /// Reveals pane number `pane` if this window holds it.
+    /// Reveals pane number `pane` if this window shows its workspace, or,
+    /// with `hidden`, holds it in a hidden workspace, which it then shows.
     fn reveal(
         &mut self,
         pane: u64,
+        hidden: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
@@ -273,7 +281,8 @@ impl WorkspaceView {
         // A pane in a hidden workspace shows its workspace first, which
         // only a window free to switch does.
         if let Some(workspace) = self.hidden_workspace_of(tab_id)
-            && self.switch_workspace(workspace, window, cx).is_err()
+            && (!hidden
+                || self.switch_workspace(workspace, window, cx).is_err())
         {
             return false;
         }

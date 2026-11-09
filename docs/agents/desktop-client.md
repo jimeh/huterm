@@ -138,27 +138,27 @@ view's exit transition does, and a view installed later keeps the exited
 tab.
 
 A workspace switch (`windows/workspace_switch.rs`) is the guard, which still
-cancels drags, and then `show_workspace` in the same update: it marks the
-left workspace's bells seen, files its memory (`switch_to`), swaps the views
-(`swap_shown`), gives the model the target's entries, active tab, history,
-and pane focus, and selects the active tab. It holds no spawn and defers no
+cancels drags, and then `show_workspace` in the same update: it marks the left
+workspace's bells seen, files its memory (`switch_to`), swaps the views
+(`swap_shown`), gives the model the target's entries, active tab, history, and
+pane focus, and selects the active tab. It holds no spawn and defers no
 checkpoint, because the model is consistent when the update ends. Tabs whose
-views are still installing, as right after the window attached, join as
-they arrive, and `Arriving` applies their remembered focus then. A
-`LeaveWorkspace` or own-workspace close follows the same way
-(`follow_left_workspace`) and releases the commit's hold only after the
-window names its new workspace, so a deferred checkpoint or Quit never saves
-the workspace that went. New Workspace keeps the worker, which runs
+views are still installing, as right after the window attached, join as they
+arrive; the window model keeps their remembered navigation in
+`WindowRecord::pending` until then, which a departure files and a capture saves.
+A `LeaveWorkspace` or own-workspace close follows the same way
+(`follow_left_workspace`) and releases the commit's hold only after the window
+names its new workspace, so a deferred checkpoint or Quit never saves the
+workspace that went. New Workspace keeps the worker, which runs
 `Mux::create_workspace_with_tab` under one lock so a failed shell leaves no
-workspace, and the install and settle; its install keeps the left
-workspace's views hidden. `install_session` takes `recovers`: a session
-switch and a follow-up that chose its target for its tabs pass true, a
-workspace the user selected false. Both `settle_switch` and `show_workspace`
-owe the emptied close only when the session or workspace went
-(`shown_workspace_gone`), or when a recovering target holds no tab any more;
-a selected empty workspace stays and draws the empty state
-(`windows/empty_state.rs`), whose buttons take the `Panel` key context and
-reach `run_empty_state_command` before the transparency panel.
+workspace, and the install and settle; its install keeps the left workspace's
+views hidden. `install_session` takes `recovers`: a session switch and a
+follow-up that chose its target for its tabs pass true, a workspace the user
+selected false. Both `settle_switch` and `show_workspace` owe the emptied close
+only when the session or workspace went (`shown_workspace_gone`), or when a
+recovering target holds no tab any more; a selected empty workspace stays and
+draws the empty state (`windows/empty_state.rs`), whose buttons take the `Panel`
+key context and reach `run_empty_state_command` before the transparency panel.
 
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it

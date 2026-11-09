@@ -53,7 +53,11 @@ a tab onto a hidden workspace row (D) then needs no install, and
 spring-loading a row is as cheap as spring-loading a tab.
 
 Install completions route each tab to the workspace the projection places
-it in: the shown one, a hidden one, or nowhere.
+it in: the shown one, a hidden one, or nowhere. A completion for a tab the
+window still holds elsewhere, because a busy window has not adopted it yet,
+drops its viewers instead, so a tab never has two views; the adopted view
+takes the new panes afterwards. A tab adopted into a shown workspace that
+had none becomes active, as an installed one does.
 
 ## Switch
 
@@ -68,31 +72,36 @@ worker and phases, and its install keeps the left workspace's views hidden.
 
 The one asynchronous remainder is a target whose tab views are still
 installing, such as right after the window attached: the switch shows what
-it holds, and `Arriving` applies the remembered focus as the rest land.
+it holds, and the window model keeps the rest of the remembered navigation
+pending (`PendingFocus`) and applies it as those tabs land. A departure
+files the pending navigation and a capture saves it, so leaving or quitting
+before the tabs arrive loses nothing.
 
 ## Hidden workspaces behave like hidden tabs
 
 Settled with the maintainer on 2026-11-09:
 
-- Program notifications are delivered. Show Tab switches to the workspace
-  first. This closes #449's gap for every session a window is attached to;
-  a session no window shows still has no viewer.
+- Program notifications are delivered. Show Tab reveals the pane in a
+  window that shows its workspace first, and otherwise switches a window
+  that holds it hidden. This closes #449's gap for every session a window
+  is attached to; a session no window shows still has no viewer.
 - Bells mark the tab, ring the audible bell, and ask for attention while
   the window is inactive, without a visual flash. The row's bell follows the
   per-window baselines as before; the shown workspace's row never shows one.
 - Failure notices show.
-- `close_on_exit` closes the exited tab through the window's exit-close.
-  A user's close never reaches a hidden pane.
+- `close_on_exit` closes the exited tab through the window's exit-close,
+  which any window holding the pane, shown or hidden, may take. A user's
+  close never reaches a hidden pane.
 - A hidden workspace that such an exit-close empties follows the shown
   workspace's rule: it closes unless pinned, decided under the Mux lock by
   `Mux::close_emptied_workspace`, which closes only an empty, unpinned
-  member of the attachment's session that has a sibling. The coordinator
+  member of the window's session that has a sibling. The coordinator
   chose this default; the maintainer has not confirmed it.
 
 Hidden views publish no accessibility tree, never take focus, and keep their
 geometry until shown: a window resize does not resize hidden workspaces'
-terminals, which resize when shown, as before. Configuration reloads reach
-them.
+terminals, which resize when shown, as before. Configuration reloads and
+the light or dark theme that follows the system reach them.
 
 ## Interleavings
 
@@ -116,6 +125,11 @@ them.
 | R1-16 | Bell in a hidden workspace | Tab and row marked, no flash, seen on show | `a_hidden_workspaces_bell_marks_its_tab_and_row_without_a_flash` |
 | R1-17 | Notification in a hidden workspace | Notice with Show Tab, which switches | `a_hidden_workspaces_notification_offers_show_tab_which_switches_to_it` |
 | R1-18 | Exit in a hidden workspace | Tab closes; emptied unpinned workspace closes; pinned stays; window stays | `an_exit_in_a_hidden_workspace_closes_its_tab_and_an_emptied_workspace` |
+| R1-19 | Tab adopted into an empty shown workspace | Becomes active and shows | `a_tab_adopted_into_an_empty_shown_workspace_shows` |
+| R1-20 | Install completes for a tab a busy window has not adopted yet | No second view; the adopted view takes the pane | `an_install_racing_a_deferred_adoption_builds_no_second_view` |
+| R1-21 | Leave or capture before remembered tabs arrive | Navigation filed and saved, applied on the next visit | `remembered_navigation_survives_leaving_before_its_tabs_arrive` |
+| R1-22 | Show Tab with one window showing and one hiding the workspace | The showing window reveals; the other stays | `show_tab_prefers_the_window_that_shows_the_pane` |
+| R1-23 | System light or dark change | Hidden views take the new theme | `hidden_workspaces_follow_the_application_appearance` |
 
 ## Measurement
 

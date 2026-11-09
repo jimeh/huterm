@@ -242,7 +242,14 @@ impl WorkspaceView {
             }
         }
         for (tab, entries) in by_tab {
-            match self.install_place(tab, cx).filter(|_| current) {
+            // A view of the tab elsewhere in this window, which a busy
+            // window has not adopted yet, takes the new panes once it moves;
+            // a second view of one tab is never built.
+            let place = self.install_place(tab, cx).filter(|place| {
+                current
+                    && self.held_place(tab).is_none_or(|held| held == *place)
+            });
+            match place {
                 Some(InstallPlace::Shown) => {
                     let (added, removed) = self.apply_tab_viewers(
                         tab, entries, true, committed, window, cx,
@@ -412,6 +419,15 @@ impl WorkspaceView {
         });
         if !outstanding && self.notices.dismiss_where(is_install_failure) {
             cx.notify();
+        }
+    }
+
+    /// Where this window holds a view of `tab`, if it holds one.
+    fn held_place(&self, tab: TabId) -> Option<InstallPlace> {
+        if self.tabs.iter().any(|view| view.id == tab) {
+            Some(InstallPlace::Shown)
+        } else {
+            self.hidden_workspace_of(tab).map(InstallPlace::Hidden)
         }
     }
 
