@@ -15301,6 +15301,7 @@ impl Render for WorkspaceView {
         ));
         root = root.children(self.empty_state_element(
             layout.terminal,
+            colors.terminal,
             swatch,
             window,
             cx,

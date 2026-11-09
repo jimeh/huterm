@@ -302,6 +302,7 @@ impl WorkspaceView {
     pub(super) fn empty_state_element(
         &self,
         bounds: Bounds<Pixels>,
+        background: gpui::Hsla,
         swatch: Swatch,
         window: &Window,
         cx: &mut Context<'_, Self>,
@@ -397,6 +398,9 @@ impl WorkspaceView {
                 .top(bounds.origin.y)
                 .w(bounds.size.width)
                 .h(bounds.size.height)
+                // No terminal view paints the default background here, so
+                // the empty state does, at the window's background opacity.
+                .bg(background)
                 .flex()
                 .items_center()
                 .justify_center()
