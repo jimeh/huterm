@@ -907,6 +907,10 @@ Recorded while implementing PR C:
 - Program notifications from terminals no window views stay unshown: the
   status feed carries status, not host effects, so it closes the bell
   attention gap through the dot but not the notification one.
+- The empty state paints the terminal background at the window's background
+  opacity: no terminal view draws there, and a translucent window's root
+  paints none, so any opacity below 1 showed the desktop through it. Pinned
+  workspaces made that state common.
 - The row's tooltip is one line, since `huterm-ui`'s tooltip does not wrap,
   and it hides while the row's menu is open.
 - The status names each tab as the tab bar labels it (the tab's custom

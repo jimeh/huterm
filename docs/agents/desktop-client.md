@@ -650,8 +650,10 @@ stay correct only because the preview never outlives its drag.
 ## Rendering
 
 `TerminalView` alone fills the default background, including padding and the
-first frame before a snapshot. Keep window and renderer underlays out of the
-grid. Transparency and inactive-pane tints are paint state, never prepared-row
+first frame before a snapshot; where no view draws, the empty state fills its
+area with the theme background at the window's background opacity, since a
+translucent window's root paints none. Keep window and renderer underlays
+out of the grid. Transparency and inactive-pane tints are paint state, never prepared-row
 or glyph-cache inputs. Compare snapshot `default_background` in presentation
 equality even when every row keeps its `Arc`; OSC 11 also colors padding.
 
