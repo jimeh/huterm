@@ -7364,7 +7364,14 @@ impl WorkspaceView {
         let leading = if lead_held {
             px(0.0)
         } else if layout.frame.controls {
-            layout.frame.buttons.leading.width()
+            // Without leading window buttons the corner controls follow the
+            // row's small lead.
+            if layout.frame.buttons.leading.is_empty() && corner_lead > px(0.0)
+            {
+                TITLE_ROW_LEAD
+            } else {
+                layout.frame.buttons.leading.width()
+            }
         } else {
             TRAFFIC_LIGHT_INSET
         } + corner_lead;

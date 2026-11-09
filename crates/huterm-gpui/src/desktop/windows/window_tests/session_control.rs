@@ -389,6 +389,43 @@ fn client_frame_window(
 }
 
 #[gpui::test]
+fn the_drop_region_starts_after_a_left_corner_in_a_drawn_title_row(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.tabs.position = crate::config::TabPosition::Titlebar;
+        config.sidebar.session_switcher_in_corner = true;
+    });
+    let (window, _) = client_frame_window(&mut harness);
+    harness.wait_for("the drawn title row", |cx| {
+        window
+            .update(cx, |root, window, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx).chrome_layout(window).frame.controls
+                })
+            })
+            .unwrap_or(false)
+    });
+    let switcher = harness.session_switcher(window);
+    let (drop_region, leading) =
+        harness.update_view(window, |view, window, _| {
+            let layout = view.chrome_layout(window);
+            (
+                view.title_row_layout(&layout).drop_region,
+                layout.frame.buttons.leading.is_empty(),
+            )
+        });
+    // The row's lead and the corner controls after it stay out of the
+    // region a pane drops on.
+    assert!(leading, "the default layout puts every window button last");
+    assert!(
+        drop_region.left() >= switcher.right(),
+        "{drop_region:?} {switcher:?}"
+    );
+    assert!(drop_region.size.width > px(0.0));
+}
+
+#[gpui::test]
 fn the_title_row_keeps_its_gestures_and_drop_region_beside_the_switcher(
     cx: &mut TestAppContext,
 ) {
