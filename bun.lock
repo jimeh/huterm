@@ -8,7 +8,7 @@
         "@conventional-commits/parser": "0.4.1",
         "@types/bun": "1.4.4",
         "ajv": "8.20.0",
-        "lucide-static": "1.66.0",
+        "lucide-static": "1.68.0",
         "typescript": "7.0.2",
       },
     },
@@ -72,7 +72,7 @@
 
     "json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 
-    "lucide-static": ["lucide-static@1.66.0", "", {}, "sha512-j8Bjf/f21PtlD8p0wx1lRxyOrs98WZ1QEImkWmfskuJ8mOCwTN7Dwc6EHUzJDSzh79aB+Bo7SWcoTCM2zEjnJg=="],
+    "lucide-static": ["lucide-static@1.68.0", "", {}, "sha512-sInxhr771A4UUu8D1gXZjj3mmGwqRTYDVNbfwN25Yx6vwA9Hnq9t+P9rF49UW8MirAe1iaYpqe+3vq99bbH8zg=="],
 
     "require-from-string": ["require-from-string@2.0.2", "", {}, "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw=="],
 
