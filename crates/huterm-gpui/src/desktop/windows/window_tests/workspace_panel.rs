@@ -385,6 +385,51 @@ fn the_switcher_opens_a_popover_of_the_sidebars_content_under_native_menus(
 }
 
 #[gpui::test]
+fn a_row_menu_opened_before_the_more_tooltip_keeps_it_hidden(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.window.macos_native_menus = false;
+        config.tabs.always_show = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let (second, _) = harness.add_workspace(1);
+    let switcher = harness.switcher_bounds(window);
+    harness.click_at(window, switcher.center());
+    let row = harness.row_bounds(window, second);
+    let id: &'static str =
+        format!("workspace-row-more-{}", second.get()).leak();
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    let more = visual.debug_bounds(id).expect("the row's ⋯ button");
+    let hover = |visual: &mut VisualTestContext, at| {
+        visual.simulate_mouse_move(at, None, Modifiers::none());
+    };
+    // Resting on the button shows its tooltip.
+    hover(&mut visual, more.center());
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("tooltip").is_some(),
+        "the hover tooltip"
+    );
+    hover(&mut visual, point(row.left() + px(8.0), row.center().y));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("tooltip").is_none(), "leaving hides it");
+    // A click before the tooltip's delay opens the menu, and the pointer
+    // resting there afterwards does not bring the tooltip over it.
+    hover(&mut visual, more.center());
+    visual.simulate_click(more.center(), Modifiers::none());
+    harness.wait_for("the row menu", |cx| open_kind(cx, window).is_some());
+    let mut visual = VisualTestContext::from_window(window, &harness.cx);
+    visual.executor().advance_clock(Duration::from_secs(2));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("tooltip").is_none(), "over the menu");
+    harness.cx.update(|cx| {
+        assert_eq!(a11y_node(cx, window, id)["aria"]["expanded"], true);
+    });
+}
+
+#[gpui::test]
 fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
     cx: &mut TestAppContext,
 ) {

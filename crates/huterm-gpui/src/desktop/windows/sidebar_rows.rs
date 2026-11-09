@@ -314,7 +314,9 @@ impl<K: Copy + Eq + Hash> RowDrag<K> {
 
 /// The "⋯" button at a popover row's end, which opens the row's menu as a
 /// right press does. It never takes focus: the menu key and Shift-F10 open
-/// the same menu from the keyboard.
+/// the same menu from the keyboard. It reports the menu as expanded while
+/// `open`, which also drops a tooltip still waiting to show, so a quick
+/// click does not leave one over the menu.
 pub(super) fn more_button(
     id: String,
     label: String,
@@ -342,7 +344,7 @@ pub(super) fn more_button(
             }),
         )
         .icon_only()
-        .toggled(open)
+        .expanded(open)
         .group(group)
         .stop_presses()
         .size(px(22.0))
