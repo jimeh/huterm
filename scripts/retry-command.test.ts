@@ -67,14 +67,51 @@ test("ends a timed-out attempt's whole process group and reports the timeout", a
   expect(messages.at(-1)).toContain("has timed out after 2 attempts of 0.3 s");
 });
 
-test("forwards a signal it receives to the attempt's process group", async () => {
-  const pidFile = join(scratch(), "pid");
-  const helper = spawn("bun", [join(import.meta.dir, "retry-command.ts"), "--attempts", "1", "--timeout", "60", "--",
-    "sh", "-c", `echo $$ > "$1"; exec sleep 30`, "sh", pidFile], { stdio: "ignore" });
+/** Runs the helper's CLI around a shell script that receives a scratch file path as $1. */
+function runHelper(timeoutSeconds: string, script: string, file: string) {
+  const helper = spawn(process.execPath, [join(import.meta.dir, "retry-command.ts"), "--attempts", "1", "--timeout", timeoutSeconds, "--",
+    "sh", "-c", script, "sh", file], { stdio: ["ignore", "ignore", "inherit"] });
   const exited = new Promise<number | null>((resolve) => helper.once("exit", (code) => resolve(code)));
-  await eventually(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n"), () => "the command never started");
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  helper.kill("SIGTERM");
-  expect(await exited).toBe(143);
-  await eventually(() => !alive(pid), () => `pid ${pid} outlived the helper`);
+  return { helper, exited };
+}
+
+/** A survivor would keep the test runner's stderr open and hang the run. */
+function killGroup(pid: number) {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
+
+const lines = (file: string) => existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+
+test("forwards a signal it receives to the attempt's process group", async () => {
+  const file = join(scratch(), "events");
+  const { helper, exited } = runHelper("60", `echo $$ > "$1"; exec sleep 30`, file);
+  await eventually(() => lines(file).length > 0 && readFileSync(file, "utf8").endsWith("\n"), () => "the command never started");
+  const pid = Number(lines(file)[0]);
+  try {
+    helper.kill("SIGTERM");
+    expect(await exited).toBe(143);
+    await eventually(() => !alive(pid), () => `pid ${pid} outlived the helper`);
+  } finally {
+    killGroup(pid);
+  }
+});
+
+test("kills a timed-out attempt that ignores SIGTERM when the helper is signalled in its grace period", async () => {
+  const file = join(scratch(), "events");
+  const { helper, exited } = runHelper("0.2", `trap 'echo term >> "$1"' TERM; echo $$ >> "$1"; while :; do sleep 0.05; done`, file);
+  // The trap's line shows the timeout's SIGTERM arrived and was ignored; the
+  // default grace period is far longer than this test.
+  await eventually(() => lines(file).includes("term"), () => `no timeout SIGTERM yet: ${JSON.stringify(lines(file))}`);
+  const pid = Number(lines(file)[0]);
+  try {
+    helper.kill("SIGTERM");
+    expect(await exited).toBe(143);
+    await eventually(() => !alive(pid), () => `pid ${pid} outlived the helper`);
+  } finally {
+    killGroup(pid);
+  }
 });

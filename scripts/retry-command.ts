@@ -44,8 +44,10 @@ function runAttempt(command: string[], timeoutMs: number, graceMs: number): Prom
         if (code !== "ESRCH" && code !== "EPERM") throw error;
       }
     };
+    // After a timeout the helper would exit before its SIGKILL escalation,
+    // so a command that already ignored SIGTERM gets SIGKILL at once.
     const forward = (value: NodeJS.Signals) => {
-      signal(value);
+      signal(timedOut ? "SIGKILL" : value);
       process.exit(128 + constants.signals[value]);
     };
     for (const value of forwardedSignals) process.on(value, forward);
