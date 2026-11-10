@@ -878,8 +878,13 @@ command = "open_context_menu"
       await invoke(`arrange_panes\tlayout=${layout}`);
       return settledLayout(expected, `the ${layout} layout`);
     };
+    // `pane_rects` follows the projected layout, but GPUI hit-tests a click
+    // against the last drawn frame, which can still show the previous
+    // layout or window size. Clicks wait for the frame to show the panes.
+    const panesDrawn = (text: string) => field(text, "pane_rects_drawn") === "true";
     const focusPane = async (index: number) => {
-      const centre = rectCentre(field(await current(), "pane_rects").split(";")[index]!);
+      const drawn = await stateWhere(panesDrawn, `the drawn panes before focusing pane ${index}`);
+      const centre = rectCentre(field(drawn, "pane_rects").split(";")[index]!);
       await click(centre.x, centre.y);
       await state(`w0.pane_focus=${index}`);
     };
@@ -902,7 +907,7 @@ command = "open_context_menu"
     const clickReported = async () => {
       await typeText("mouse");
       await key("enter");
-      const tracking = await state("MOUSE-ON", "w0.mouse=Buttons");
+      const tracking = await state("MOUSE-ON", "w0.mouse=Buttons", "w0.pane_rects_drawn=true");
       const cellGrid = parseRect(field(tracking, "grid_bounds"));
       const [cellW, cellH] = field(tracking, "cell").split(",").map(Number);
       await click(cellGrid.x + cellW! * 2.5, cellGrid.y + cellH! * 1.5);
@@ -929,7 +934,7 @@ command = "open_context_menu"
       const focused = paneRects(text)[Number(field(text, "pane_focus"))];
       const inner = parseRect(field(text, "grid_bounds"));
       const [cellW, cellH] = field(text, "cell").split(",").map(Number);
-      if (!focused || !cellW || !cellH) return false;
+      if (!panesDrawn(text) || !focused || !cellW || !cellH) return false;
       const padX = inner.x - focused.x;
       const padY = inner.y - focused.y;
       return field(text, "pane_grids").split(";").every((grid, index) => {

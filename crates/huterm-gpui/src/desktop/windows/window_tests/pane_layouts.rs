@@ -1343,3 +1343,40 @@ fn a_layout_reflows_a_shrunk_pane_and_leaves_an_unchanged_one_alone(
             && snapshot.is_some_and(|snapshot| runs(&snapshot) == [length])
     });
 }
+
+/// Whether `window`'s last drawn frame shows the projected panes, as
+/// smoke state reports it in `pane_rects_drawn`.
+fn pane_rects_drawn(cx: &mut App, window: AnyWindowHandle) -> bool {
+    window
+        .update(cx, |root, window, cx| {
+            root.downcast::<WorkspaceView>()
+                .is_ok_and(|view| view.read(cx).pane_rects_drawn(window, cx))
+        })
+        .unwrap_or(false)
+}
+
+/// Smoke fixtures click at projected pane rectangles, but GPUI hit-tests
+/// clicks against the last drawn frame, so `pane_rects_drawn` must stay
+/// false from a projected layout change until a frame draws it.
+#[gpui::test]
+fn pane_rects_drawn_waits_for_a_frame_that_draws_the_projected_layout(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab, panes) = harness.three_panes(ECHO);
+    harness.wait_layout(window, tab, &panes, NESTED);
+    harness.wait_for("the split to draw", |cx| pane_rects_drawn(cx, window));
+    harness.reweigh(tab, 0, &[700_000, 300_000]);
+    // GPUI's test mode draws dirty windows when an update ends, so the
+    // projection applies the change and is read before any draw.
+    let before_draw = harness.cx.update(|cx| {
+        sync_hierarchy(cx);
+        assert_eq!(
+            shown(cx, tab, &panes),
+            "C[700000:0,300000:R[500000:1,500000:2]]"
+        );
+        pane_rects_drawn(cx, window)
+    });
+    assert!(!before_draw, "an undrawn layout reported as drawn");
+    harness.wait_for("the resize to draw", |cx| pane_rects_drawn(cx, window));
+}

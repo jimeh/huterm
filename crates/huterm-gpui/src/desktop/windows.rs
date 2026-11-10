@@ -17652,13 +17652,16 @@ impl WorkspaceView {
     /// `panes` counts them, `pane_focus` is the focused pane's index, and
     /// `pane_zoomed` the zoomed one's, or `none`. In split layout order and
     /// `;`-separated, `pane_grids` holds each pane's requested grid as
-    /// `columns,rows`, `pane_rects` its drawn terminal bounds in window
-    /// points (a pane a zoom hides keeps its split bounds), and `pane_close`
-    /// and `pane_zoom` its title bar buttons' centres as `x,y`, or `none`
-    /// when a bar or control is absent. `pane_dividers` lists the drawn
-    /// dividers' grab zones as `x,y,w,h`. `pane_layout` is the projected
-    /// layout in canonical form, and `arranging` counts this window's
-    /// arrangements in flight.
+    /// `columns,rows`, `pane_rects` its terminal bounds in the projected
+    /// layout in window points (a pane a zoom hides keeps its split
+    /// bounds), and `pane_close` and `pane_zoom` its title bar buttons'
+    /// centres as `x,y`, or `none` when a bar or control is absent.
+    /// `pane_rects_drawn` is whether the last drawn frame placed the panes
+    /// as the projection does; GPUI hit-tests clicks against that frame, so
+    /// a click at a `pane_rects` point lands as expected only once it is
+    /// `true`. `pane_dividers` lists the drawn dividers' grab zones as
+    /// `x,y,w,h`. `pane_layout` is the projected layout in canonical form,
+    /// and `arranging` counts this window's arrangements in flight.
     pub(super) fn pane_smoke_state(
         &self,
         prefix: &str,
@@ -17754,8 +17757,9 @@ impl WorkspaceView {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_split_right={split_rights} {prefix}pane_split_down={split_downs} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {} {prefix}pane_dividers={} {prefix}grab_badge_titles={:?}",
+            "{prefix}panes={} {prefix}pane_focus={focus} {prefix}pane_zoomed={zoom_index} {prefix}pane_grids={grids} {prefix}pane_rects={terminals} {prefix}pane_rects_drawn={} {prefix}pane_close={closes} {prefix}pane_zoom={zooms} {prefix}pane_split_right={split_rights} {prefix}pane_split_down={split_downs} {prefix}pane_grab={grabs} {prefix}pane_bar_opacity={opacities} {prefix}pane_focus_marks={marks} {prefix}drop={drop} {prefix}spring={spring} {} {} {prefix}pane_dividers={} {prefix}grab_badge_titles={:?}",
             panes.len(),
+            self.pane_rects_drawn(window, cx),
             self.grab_smoke_state(prefix),
             self.layout_smoke_state(prefix, cx),
             if dividers.is_empty() {
@@ -17765,6 +17769,27 @@ impl WorkspaceView {
             },
             self.drawn_badges.borrow(),
         )
+    }
+
+    /// Whether the last drawn frame placed the active tab's panes where the
+    /// projection places them now, as `pane_elements` would draw them.
+    fn pane_rects_drawn(&self, window: &Window, cx: &App) -> bool {
+        let Some(tab) = self.active_tab_view(cx) else {
+            return false;
+        };
+        let Some(bounds) = self.terminal_geometry(window).bounds else {
+            return false;
+        };
+        let zoomed = self.shown_zoom(tab, cx);
+        self.tab_panes(tab.id, bounds, zoomed, window, cx)
+            .is_some_and(|shown| {
+                self.drawn_panes
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(id, rects)| {
+                        *id == tab.id && *rects == shown.panes
+                    })
+            })
     }
 
     /// Smoke output for the Licenses view: `closed`, `loading`,
