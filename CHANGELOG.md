@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.34.0](https://github.com/jimeh/huterm/compare/v0.33.1...v0.34.0) (2026-11-10)
+
+
+### Features
+
+* drop tabs and panes on workspace rows and drag workspaces between windows ([#458](https://github.com/jimeh/huterm/issues/458)) ([d905c5f](https://github.com/jimeh/huterm/commit/d905c5f15ee951594a1af7636eb05c039b504687))
+* switch workspaces instantly and keep each workspace's scroll, selection, and zoom ([#452](https://github.com/jimeh/huterm/issues/452)) ([b2568c3](https://github.com/jimeh/huterm/commit/b2568c3a09bba22d8aff545dc39abdcc1665b7f5))
+
+
+### Bug Fixes
+
+* keep the sidebar button and title-bar tabs close to the traffic lights on every macOS version ([#461](https://github.com/jimeh/huterm/issues/461)) ([1ea5eb6](https://github.com/jimeh/huterm/commit/1ea5eb627a1ae91326252bfb34f3f8966277c83d))
+
 ## [0.33.1](https://github.com/jimeh/huterm/compare/v0.33.0...v0.33.1) (2026-11-10)
 
 
