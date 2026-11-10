@@ -1452,6 +1452,8 @@ impl WorkspaceView {
                         window_locator::place(number, pointer, grab);
                     }
                 }
+                #[cfg(not(target_os = "macos"))]
+                let _ = destination;
                 let _ = source.update_in(cx, |view, window, cx| {
                     view.busy = false;
                     checkpoints::set_transfer_reserved(cx, view.window, false);
