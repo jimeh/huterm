@@ -140,6 +140,11 @@ pub(super) struct PendingFocus {
     /// Remembered activations of tabs that have no view yet, most recent
     /// first.
     pub(super) history: Vec<TabId>,
+    /// The whole remembered activation history, most recent first, which
+    /// the window's history follows while the user has not chosen another
+    /// tab, so a tab activated only because nothing else had arrived
+    /// reorders nothing.
+    pub(super) order: Vec<TabId>,
 }
 
 impl PendingFocus {
@@ -155,10 +160,36 @@ impl PendingFocus {
             || self.panes.iter().any(|(pending, _)| *pending == tab)
     }
 
+    /// Whether the user has not chosen another tab since the switch:
+    /// `active` is still the tab the switch activated, or the switch had
+    /// none to activate.
+    fn untouched(&self, active: Option<TabId>) -> bool {
+        self.chosen.is_none() || active == self.chosen
+    }
+
     /// The remembered active tab while the user has not chosen another.
     fn active_over(&self, active: Option<TabId>) -> Option<TabId> {
-        self.active
-            .filter(|_| self.chosen.is_none() || active == self.chosen)
+        self.active.filter(|_| self.untouched(active))
+    }
+
+    /// `history` in the remembered order, keeping only tabs `held` names,
+    /// followed by the entries the remembered order lacks.
+    fn remembered_order(
+        &self,
+        history: &[TabId],
+        held: impl Fn(TabId) -> bool,
+    ) -> Vec<TabId> {
+        self.order
+            .iter()
+            .copied()
+            .filter(|tab| held(*tab))
+            .chain(
+                history
+                    .iter()
+                    .copied()
+                    .filter(|tab| !self.order.contains(tab)),
+            )
+            .collect()
     }
 
     /// Drops what names tabs or panes the projection no longer holds in
@@ -172,6 +203,7 @@ impl PendingFocus {
         let before = (self.active, self.panes.len(), self.history.len());
         self.active = self.active.filter(|tab| tabs.contains(tab));
         self.history.retain(|tab| tabs.contains(tab));
+        self.order.retain(|tab| tabs.contains(tab));
         self.panes.retain(|(tab, pane)| {
             tabs.contains(tab)
                 && state
@@ -240,14 +272,22 @@ impl WindowRecord {
     /// recent first, led by [`Self::navigated_active`], with the remembered
     /// activations of tabs still installing after the window's own.
     fn navigated_history(&self) -> Vec<TabId> {
-        let mut history = self.history.clone();
-        if let Some(active) = self.pending.active_over(self.active) {
-            record_tab_activation(&mut history, active);
-        }
-        for tab in &self.pending.history {
-            if !history.contains(tab) {
-                history.push(*tab);
+        let pending = &self.pending;
+        let mut history = if pending.untouched(self.active) {
+            pending.remembered_order(&self.history, |tab| {
+                self.contains(tab) || pending.names(tab)
+            })
+        } else {
+            let mut history = self.history.clone();
+            for tab in &pending.history {
+                if !history.contains(tab) {
+                    history.push(*tab);
+                }
             }
+            history
+        };
+        if let Some(active) = pending.active_over(self.active) {
+            record_tab_activation(&mut history, active);
         }
         history
     }
@@ -480,6 +520,7 @@ impl WindowModel {
                 .copied()
                 .filter(|tab| !shows(tab))
                 .collect(),
+            order: history.to_vec(),
         };
         record.tabs = tabs;
     }
@@ -527,9 +568,17 @@ impl WindowModel {
         } else {
             None
         };
-        for tab in joined {
-            if !record.history.contains(&tab) {
-                record.history.push(tab);
+        if record.pending.untouched(shown_active) {
+            let held: Vec<TabId> =
+                record.tabs.iter().map(|entry| entry.id).collect();
+            record.history = record
+                .pending
+                .remembered_order(&record.history, |tab| held.contains(&tab));
+        } else {
+            for tab in joined {
+                if !record.history.contains(&tab) {
+                    record.history.push(tab);
+                }
             }
         }
         if settled {
