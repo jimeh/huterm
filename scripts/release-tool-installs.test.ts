@@ -32,3 +32,15 @@ test("CI installs every release runner's tool lists on that runner", () => {
     .map(([runner]) => runner);
   expect(uncovered).toEqual([]);
 });
+
+test("CI installs Zig from ziglang.org only, so its download cache can hit", () => {
+  // Mise's download store reuses an archive only for a URL it has recorded,
+  // and the Zig backend picks a random community mirror per install.
+  const setupZig = parse<{ runs: { steps: Step[] } }>(".github/actions/setup-zig/action.yml");
+  const install = setupZig.runs.steps.find(step => step.name === "Install Zig");
+  expect(install?.env?.MISE_ZIG_USE_COMMUNITY_MIRRORS).toBe("false");
+  const step = parse<Workflow>(".github/workflows/ci.yml").jobs.package!.steps
+    .find(step => step.name === "Install release tools in a clean Mise state");
+  expect(step?.env?.MISE_ZIG_USE_COMMUNITY_MIRRORS).toBe("false");
+  expect(step?.run).toContain("bun scripts/retry-command.ts --attempts 3 --timeout 180 --");
+});

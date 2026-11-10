@@ -81,15 +81,25 @@ CI installs Zig through `.github/actions/setup-zig`, which runs
 install lists so that step keeps its time bound and retry. The action gives the
 install its own `MISE_CACHE_DIR` under `RUNNER_TEMP` and caches that directory,
 which holds Mise's download store, keyed by runner, Zig version, and Mise
-version. Mise reuses a stored archive only when it matches the `mise.lock`
-checksum, and it checks the minisign signature on every install. A cache hit
-therefore still fetches the `.minisig`. Mise tries the serving mirror,
-ziglang.org, and then every other mirror for it. Releases before 2026.10.7
-asked only the serving mirror, so one rate-limited mirror (HTTP 429) failed the
-job. A mirror that sends nothing costs about two minutes (a 30-second read
-timeout and three retries), but one that sends slowly is limited only by the
-30-minute download timeout. Jobs therefore bound the step to 4 minutes and
-retry once within 6 minutes, which reshuffles the mirrors.
+version. The store (`downloads-cas/`) reuses an archive only for a URL it has
+already recorded under `urls/`; a new URL downloads the whole archive again,
+even when its checksum matches a stored blob. Mise's Zig backend shuffles about
+17 community mirrors on every install, so with mirrors enabled a restored
+entry, saved once with one mirror URL, almost never hit: jobs downloaded the
+54 MB archive from a random mirror, sometimes at a few kB/s. Setup-zig and the
+package jobs' release-tools step therefore set
+`MISE_ZIG_USE_COMMUNITY_MIRRORS=false`, which always picks the ziglang.org URL,
+so ziglang.org serves only cache misses. Bump the key's `v2` prefix if the
+chosen URL changes again, because a hit never re-saves the entry.
+
+Mise checks the `mise.lock` checksum and the minisign signature on every
+install, so a cache hit still fetches the `.minisig`. A server that sends
+nothing costs about two minutes (a 30-second read timeout and three retries),
+but one that sends slowly is limited only by the 30-minute download timeout.
+Jobs therefore bound setup-zig to 4 minutes and retry once within 6 minutes.
+The release-tools step runs each `mise install` through
+`scripts/retry-command.ts`, which allows three attempts of three minutes;
+macOS runners have no `timeout` command.
 
 Every install, cached or not, also fetches `ziglang.org/download/index.json`
 to find the tarball URL. When that fails, Mise 2026.10.25 still falls back to
@@ -101,9 +111,10 @@ tools installed later in a job, such as Zig and the `cargo:` tools, never reach
 it. The setup-zig action also points `ZIG_GLOBAL_CACHE_DIR` and
 `ZIG_LOCAL_CACHE_DIR` under `RUNNER_TEMP`, where restore-ghostty and
 save-ghostty expect Zig's package cache. Release jobs install Zig through the
-Mise action and use no Actions cache. Reference local actions as
-`./.github/actions/...` with a `zizmor: ignore[self-repository]` comment:
-actionlint rejects GitHub's `$/` self-repository syntax.
+Mise action, with community mirrors, no Actions cache, and no retry. Reference
+local actions as `./.github/actions/...` with a
+`zizmor: ignore[self-repository]` comment: actionlint rejects GitHub's `$/`
+self-repository syntax.
 
 CI invokes `ci:smoke:build` separately after the workflow's dependency-preparation
 step. When a smoke binary gains a native compile-time dependency, prepare it in

@@ -1,7 +1,8 @@
 name: Set up Zig
 description: >-
-  Install the Zig version pinned in mise.toml through Mise, reusing a cached
-  download that Mise verifies against mise.lock. Requires Mise on PATH.
+  Install the Zig version pinned in mise.toml through Mise from ziglang.org,
+  reusing a cached download that Mise verifies against mise.lock. Requires
+  Mise on PATH.
 runs:
   using: composite
   steps:
@@ -9,13 +10,14 @@ runs:
       id: key
       shell: bash
       # A Mise release that changes its download store's layout would ignore
-      # an older entry, and a hit would never save a usable one.
+      # an older entry, and a hit would never save a usable one. v1 entries
+      # recorded a community mirror URL, which a ziglang.org install ignores.
       run: |
         set -euo pipefail
         zig="$(mise tool zig --requested)"
         mise="$(mise --version | cut -d' ' -f1)"
         test -n "$zig" && test -n "$mise"
-        echo "key=huterm-zig-download-v1-$RUNNER_OS-$RUNNER_ARCH-$zig-mise-$mise" >> "$GITHUB_OUTPUT"
+        echo "key=huterm-zig-download-v2-$RUNNER_OS-$RUNNER_ARCH-$zig-mise-$mise" >> "$GITHUB_OUTPUT"
 
     # Mise checks a stored archive against the mise.lock checksum and its
     # minisign signature before installing it, so a stale or tampered entry
@@ -28,10 +30,14 @@ runs:
         key: ${{ steps.key.outputs.key }}
 
     # A separate cache directory keeps other tools' downloads out of this
-    # cache entry. A cache hit still fetches Zig's release index from
-    # ziglang.org and the archive's signature from a mirror.
+    # cache entry. Mise reuses a stored archive only for a URL it has already
+    # downloaded, and it shuffles the community mirrors on every install, so
+    # only the fixed ziglang.org URL makes a hit reuse the archive. A hit
+    # still fetches Zig's release index and the archive's signature.
     - name: Install Zig
       shell: bash
+      env:
+        MISE_ZIG_USE_COMMUNITY_MIRRORS: "false"
       run: MISE_CACHE_DIR="$RUNNER_TEMP/mise-zig-cache" mise install --locked zig
 
     - name: Save the Zig download
