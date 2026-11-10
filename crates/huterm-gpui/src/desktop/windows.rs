@@ -312,6 +312,7 @@ const CONTROL_INSET: Pixels = px(3.0);
 const TRAFFIC_LIGHT_INSET: Pixels = px(84.0);
 /// The space between the macOS zoom button and the first control or tab
 /// after it in the title strip.
+#[cfg(any(target_os = "macos", test))]
 const TRAFFIC_LIGHT_GAP: Pixels = px(8.0);
 /// Where the tabs start in the title row Huterm draws on Linux, which has
 /// no traffic lights.

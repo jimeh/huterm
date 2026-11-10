@@ -411,11 +411,12 @@ window, which has no buttons, and Quake windows never request a position.
 `smoke:macos-palette` asserts the centring from the `traffic_lights` state.
 
 What follows the traffic lights in the strip starts `TRAFFIC_LIGHT_GAP`
-past the zoom button, which ends about 60 points in on macOS 26 and 69 on
-macOS 27. `sync_frame` measures the buttons on every sample
-(`measured_traffic_lights`) and `WindowFrame::traffic_light_inset` carries
-the result to the merged row, the corner controls and their drop region,
-a docked sidebar's strip, and a left column's top strip. Do not reintroduce
+past the zoom button, whose position differs between macOS releases: 69
+points in on macOS 27 and about 60 on macOS 26. `sync_frame` measures the
+buttons on every sample (`measured_traffic_lights`), and
+`WindowFrame::traffic_light_inset` carries the result to the merged row,
+the corner controls and their drop region, a docked sidebar's strip, and a
+left column's top strip. Do not reintroduce
 a fixed width there. Fullscreen moves the buttons out of the window, so it
 keeps the windowed value; a window with nothing to measure, such as a
 borderless Quake window or a test window, keeps its last value or the

@@ -1696,7 +1696,9 @@ fn a_tab_column_beside_the_sidebar_resizes_from_its_own_edge(
 }
 
 /// The sidebar button follows the traffic lights a window measured in every
-/// host that puts it beside them, and a merged row's tabs move with it.
+/// host that puts it beside them, and a merged row's tabs move with it. Only
+/// macOS has the title strip and its traffic lights.
+#[cfg(target_os = "macos")]
 #[gpui::test]
 fn the_sidebar_button_follows_the_measured_traffic_lights(
     cx: &mut TestAppContext,
@@ -1704,7 +1706,7 @@ fn the_sidebar_button_follows_the_measured_traffic_lights(
     let mut harness = corner_harness(cx);
     let (window, tab) = harness.workspace_window();
     harness.add_workspace(1);
-    // Where macOS 26's buttons put it: 16 points before the fallback.
+    // About where macOS 26's buttons put it: 16 points before the fallback.
     let lights = px(68.0);
     for tabs in [TabPosition::Titlebar, TabPosition::Top, TabPosition::Left] {
         for visible in [false, true] {

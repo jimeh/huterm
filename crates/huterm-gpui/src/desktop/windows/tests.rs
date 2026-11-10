@@ -2173,13 +2173,15 @@ fn the_strip_starts_a_fixed_gap_past_any_traffic_lights() {
         origin: point(x, 9.0),
         size: gpui::size(width, 14.0),
     };
-    // macOS 26's buttons end about 60 points in and macOS 27's at 69; the
-    // first control keeps the same gap after either.
-    assert_eq!(traffic_light_inset(span(7.0, 53.0)), Some(px(68.0)));
-    assert_eq!(traffic_light_inset(span(9.0, 60.0)), Some(px(77.0)));
+    // A span like macOS 26's, read from a screenshot, and macOS 27's
+    // measured one: the first control keeps the same gap after either.
     assert_eq!(
-        traffic_light_inset(span(9.0, 60.0)).unwrap() - px(69.0),
-        TRAFFIC_LIGHT_GAP
+        traffic_light_inset(span(7.0, 53.0)),
+        Some(px(60.0) + TRAFFIC_LIGHT_GAP)
+    );
+    assert_eq!(
+        traffic_light_inset(span(9.0, 60.0)),
+        Some(px(69.0) + TRAFFIC_LIGHT_GAP)
     );
     // A span that ends at the window's edge measured nothing.
     assert_eq!(traffic_light_inset(span(0.0, 0.0)), None);
