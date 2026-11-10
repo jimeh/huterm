@@ -493,6 +493,16 @@ impl WorkspaceView {
         window: &Window,
         cx: &App,
     ) -> Option<DropTarget> {
+        // A busy source refuses a workspace's release, so nothing here
+        // offers to take it.
+        if matches!(payload.drag, Dragged::Workspace { .. })
+            && handle(cx, payload.source)
+                .and_then(|handle| handle.downcast::<WorkspaceView>())
+                .and_then(|handle| handle.read(cx).ok())
+                .is_some_and(|source| source.busy)
+        {
+            return None;
+        }
         self.resolve_drop(payload.drag, pointer, Side::Incoming, window, cx)
     }
 

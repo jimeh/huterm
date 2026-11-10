@@ -861,7 +861,17 @@ fn a_closing_window_takes_no_workspace_drop(cx: &mut TestAppContext) {
     // A busy source refuses too: its release would start a transfer beside
     // its own operation in flight, and outside it offers no tear-off.
     h.begin_workspace_drag(source, second);
-    h.update_view(source, |view, _, _| view.busy = true);
+    h.update_view(source, |view, window, cx| {
+        view.busy = true;
+        let at = view.drag.as_ref().unwrap().pointer();
+        view.update_drag(at + gpui::point(px(1.0), px(0.0)), window, cx);
+    });
+    h.cx.run_until_parked();
+    assert!(h.update_view(destination, |view, _, _| {
+        view.incoming
+            .as_ref()
+            .is_some_and(|incoming| incoming.hover.target.is_none())
+    }));
     h.finish_workspace_drag(source);
     h.cx.run_until_parked();
     unchanged(&mut h);
