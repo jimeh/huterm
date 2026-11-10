@@ -10,6 +10,7 @@ use gpui::{
 };
 use huterm_config::{SessionSwitcherPosition, SidebarPosition, TabPosition};
 
+use super::super::drag::{DropTarget, Gesture, RowKey};
 use super::super::workspace_panel::{SwitcherAnchor, SwitcherMode};
 use super::menus::a11y_node;
 use super::workspaces::shown_workspace;
@@ -588,9 +589,13 @@ fn dragging_a_row_reorders_the_sessions_workspaces_in_every_window(
     let below = gpui::point(to.center().x, to.bottom() - px(2.0));
     harness.drag_row(one, from.center(), below);
     harness.update_view(one, |view, _, _| {
-        let drag = view.workspace_drag.expect("a drag");
-        assert!(drag.dragging);
-        assert_eq!(drag.before, None, "a drop past the last row ends it");
+        let drag = view.drag.as_ref().expect("a drag");
+        assert!(drag.dragging());
+        assert_eq!(
+            drag.target(),
+            Some(DropTarget::RowSlot(None)),
+            "a drop past the last row ends it"
+        );
     });
     harness.press(one, "escape");
     harness.release(one, below);
@@ -630,6 +635,56 @@ fn dragging_a_row_reorders_the_sessions_workspaces_in_every_window(
 }
 
 #[gpui::test]
+fn escape_waits_for_a_row_press_to_drag_and_a_menu_ends_the_drag(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let first = harness.open_tab(ECHO);
+    let (second, _) = harness.add_workspace(1);
+    let window = harness.attach_showing(&[first]);
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let session = harness.session;
+    let start = harness.cx.update(|cx| order(cx, session));
+    let from = harness.row_bounds(window, harness.workspace).center();
+    let to = harness.row_bounds(window, second);
+    let below = gpui::point(to.center().x, to.bottom() - px(2.0));
+    // Before the threshold, Escape leaves the press alone.
+    VisualTestContext::from_window(window, &harness.cx).simulate_event(
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        },
+    );
+    harness.press(window, "escape");
+    harness.update_view(window, |view, _, _| {
+        let drag = view.drag.as_ref().expect("the press survives Escape");
+        assert!(!drag.dragging());
+    });
+    // Once it drags, an opening menu ends it, and the release moves
+    // nothing.
+    VisualTestContext::from_window(window, &harness.cx).simulate_event(
+        MouseMoveEvent {
+            position: below,
+            modifiers: Modifiers::none(),
+            pressed_button: Some(MouseButton::Left),
+        },
+    );
+    harness.update_view(window, |view, window, cx| {
+        assert!(view.drag.as_ref().is_some_and(Gesture::dragging));
+        view.open_tab_menu(first, below, window, cx);
+        assert!(view.drag.is_none(), "the menu ends the row drag");
+    });
+    harness.release(window, below);
+    harness.cx.run_until_parked();
+    assert_eq!(harness.cx.update(|cx| order(cx, session)), start);
+}
+
+#[gpui::test]
 fn a_workspace_drag_cancels_when_its_workspace_goes(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::with_config(cx, |config| {
         config.sidebar.visible = true;
@@ -648,7 +703,7 @@ fn a_workspace_drag_cancels_when_its_workspace_goes(cx: &mut TestAppContext) {
         window
             .update(cx, |root, _, cx| {
                 root.downcast::<WorkspaceView>()
-                    .is_ok_and(|view| view.read(cx).workspace_drag.is_none())
+                    .is_ok_and(|view| view.read(cx).drag.is_none())
             })
             .unwrap_or(false)
     });
@@ -680,7 +735,10 @@ fn a_workspace_drop_whose_anchor_went_lands_by_id(cx: &mut TestAppContext) {
     let above = gpui::point(anchor.center().x, anchor.top() + px(2.0));
     harness.drag_row(window, from.center(), above);
     harness.update_view(window, |view, _, _| {
-        assert_eq!(view.workspace_drag.unwrap().before, Some(third));
+        assert_eq!(
+            view.drag.as_ref().unwrap().target(),
+            Some(DropTarget::RowSlot(Some(RowKey::Workspace(third))))
+        );
     });
     // The anchor closes before the drop (W42); the rows below it move up,
     // and the drop lands before the row now under the pointer, by ID.

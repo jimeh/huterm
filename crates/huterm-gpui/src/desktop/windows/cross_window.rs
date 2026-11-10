@@ -1,13 +1,13 @@
 //! Source-owned cross-window gestures and two-stage transfer completion.
 //! Preview updates are deferred and tagged; release resolves again and reserves
 //! both windows synchronously before any runtime worker can start.
-use super::pane_drag::{DropTarget, SpringLoad};
-use super::pane_geometry::{Zone, drop_zone};
+use super::drag::{
+    Destination, DropTarget, Gesture, Hover, Operation, Payload as Dragged,
+    Side, SpringBack, operation,
+};
 use super::pane_moves::PaneMove;
-use super::tab_strip::LabelZone;
 use super::window_locator::{Located, NativeLocator, WindowLocator};
 use super::*;
-use huterm_core::{Beside, MoveDestination, PaneRef};
 
 pub(super) struct CrossWindows {
     pub(super) locator: Rc<dyn WindowLocator>,
@@ -52,12 +52,12 @@ impl CrossWindows {
     }
 }
 
+/// A gesture as other windows see it: its source, what it drags, and what
+/// a destination needs to take the drop.
 #[derive(Clone, Debug)]
 pub(super) struct Payload {
     pub(super) source: gpui::WindowId,
-    workspace: WorkspaceId,
-    tab: TabId,
-    pane: Option<PaneId>,
+    pub(super) drag: Dragged,
     panes: Vec<PaneId>,
     focus: PaneId,
     pub(super) title: String,
@@ -78,35 +78,23 @@ impl Drag {
     }
 }
 
+/// A destination's preview of another window's gesture.
 pub(super) struct Incoming {
     generation: u64,
     sample: u64,
     pub(super) payload: Payload,
-    pub(super) pointer: gpui::Point<Pixels>,
-    pub(super) target: Option<DropTarget>,
-    origin: Option<TabId>,
-    sprung: Option<TabId>,
-    pub(super) spring: SpringLoad,
-    scroll: Pixels,
-    strip: TabStrip,
-    over_bar: bool,
+    pub(super) hover: Hover,
 }
 impl Incoming {
     pub(super) fn scrolls(&self, scroll: Pixels) -> bool {
-        self.over_bar
-            && self
-                .strip
-                .autoscroll(self.pointer, Duration::from_millis(16))
-                != scroll
+        self.hover.scrolls(scroll)
     }
     pub(super) fn autoscroll(
         &mut self,
         strip: TabStrip,
         elapsed: Duration,
     ) -> Option<Pixels> {
-        self.strip = strip;
-        self.over_bar
-            .then(|| self.strip.autoscroll(self.pointer, elapsed))
+        self.hover.autoscroll(strip, elapsed)
     }
 }
 
@@ -120,51 +108,11 @@ pub(super) struct PendingTransfer {
     preview: Option<PreviewRestore>,
 }
 
+/// What a failed transfer puts back in its destination: the preview's
+/// spring-load and bar scroll.
 struct PreviewRestore {
-    origin: Option<TabId>,
-    sprung: Option<TabId>,
+    back: Option<SpringBack>,
     scroll: Pixels,
-}
-
-#[derive(Clone, Copy)]
-enum Transfer {
-    Tab {
-        workspace: WorkspaceId,
-        tab: TabId,
-        to: WorkspaceId,
-        before: Option<TabId>,
-    },
-    Pane(PaneMove),
-}
-impl DesktopRuntime {
-    fn transfer(&self, change: Transfer) -> Committed<Result<(), MuxError>> {
-        match change {
-            Transfer::Tab {
-                workspace,
-                tab,
-                to,
-                before,
-            } => {
-                let mut mux = self.lock();
-                let result = if self.terminating.load(Ordering::Acquire) {
-                    Err(RuntimeError::Stopped.into())
-                } else {
-                    mux.move_tab(workspace, tab, to, before)
-                };
-                Committed {
-                    result,
-                    seq: mux.hierarchy_seq(),
-                }
-            }
-            Transfer::Pane(change) => {
-                let Committed { result, seq } = self.commit_pane_move(change);
-                Committed {
-                    result: result.map(|_| ()),
-                    seq,
-                }
-            }
-        }
-    }
 }
 
 pub(super) fn handle(cx: &App, id: gpui::WindowId) -> Option<AnyWindowHandle> {
@@ -175,15 +123,8 @@ pub(super) fn handle(cx: &App, id: gpui::WindowId) -> Option<AnyWindowHandle> {
 
 impl WorkspaceView {
     fn cross_payload(&self, cx: &App) -> Option<Payload> {
-        let (tab, pane) = if let Some(drag) =
-            self.reorder.as_ref().filter(|drag| drag.dragging)
-        {
-            (drag.source.tab, None)
-        } else {
-            let drag = self.pane_drag.as_ref().filter(|drag| drag.dragging)?;
-            (drag.tab, Some(drag.pane))
-        };
-        self.payload(tab, pane, cx)
+        let drag = self.drag.as_ref().filter(|drag| drag.dragging())?;
+        self.payload(drag.payload.tab()?, drag.payload.pane(), cx)
     }
 
     fn payload(
@@ -203,11 +144,17 @@ impl WorkspaceView {
         } else {
             layout.first_pane().id
         };
+        let workspace = self.workspace_id(cx)?;
         Some(Payload {
             source: self.window,
-            workspace: self.workspace_id(cx)?,
-            tab,
-            pane,
+            drag: match pane {
+                Some(pane) => Dragged::Pane {
+                    workspace,
+                    tab,
+                    pane,
+                },
+                None => Dragged::Tab { workspace, tab },
+            },
             panes: pane.map_or_else(
                 || layout.panes().into_iter().map(|pane| pane.id).collect(),
                 |pane| vec![pane],
@@ -328,7 +275,8 @@ impl WorkspaceView {
                 .as_ref()
                 .is_some_and(|drag| {
                     drag.payload
-                        .pane
+                        .drag
+                        .pane()
                         .is_none_or(|pane| self.drawn_frame(pane).is_none())
                 })
     }
@@ -336,22 +284,17 @@ impl WorkspaceView {
     /// Whether `payload` can leave this window for a new one: a tab when
     /// the window has others, a pane unless it is alone in the only tab.
     pub(super) fn tears_off(&self, payload: &Payload) -> bool {
-        if payload.pane.is_none() {
-            tab_tear_off_availability(self.tabs.len()).is_ok()
-        } else {
-            pane_tear_off_availability(
+        match payload.drag {
+            Dragged::Tab { .. } => {
+                tab_tear_off_availability(self.tabs.len()).is_ok()
+            }
+            Dragged::Pane { tab, .. } => pane_tear_off_availability(
                 self.tabs.len(),
-                self.pane_count(payload.tab),
+                self.pane_count(tab),
             )
-            .is_ok()
+            .is_ok(),
+            Dragged::Workspace { .. } | Dragged::Session(_) => false,
         }
-    }
-
-    fn pane_count(&self, tab: TabId) -> usize {
-        self.tabs
-            .iter()
-            .find(|view| view.id == tab)
-            .map_or(0, |view| view.panes.len())
     }
 
     pub(super) fn end_cross_drag(
@@ -432,14 +375,12 @@ impl WorkspaceView {
                 generation: drag.generation,
                 sample: drag.sample,
                 payload: drag.payload.clone(),
-                pointer,
-                target: None,
-                origin: self.active_tab(cx),
-                sprung: None,
-                spring: SpringLoad::default(),
-                scroll: self.tab_scroll,
-                strip: self.tab_strip(window),
-                over_bar: false,
+                hover: Hover::new(
+                    pointer,
+                    self.active_tab(cx),
+                    self.tab_scroll,
+                    self.tab_strip(window),
+                ),
             });
             self.last_scroll = Instant::now();
         }
@@ -449,7 +390,7 @@ impl WorkspaceView {
             }
             incoming.sample = drag.sample;
             incoming.payload = drag.payload;
-            incoming.pointer = pointer;
+            incoming.hover.pointer = pointer;
         }
         self.refresh_tab_visibility(window, cx);
         self.retarget_incoming(Instant::now(), false, window, cx);
@@ -468,11 +409,9 @@ impl WorkspaceView {
             .remove(&self.window);
         if let Some(incoming) = self.incoming.take() {
             if back {
-                self.tab_scroll = incoming.scroll;
-                if incoming.sprung == self.active_tab(cx)
-                    && let Some(origin) = incoming.origin
-                {
-                    self.select_tab(origin, false, window, cx);
+                self.tab_scroll = incoming.hover.scroll;
+                if let Some(back) = incoming.hover.back() {
+                    self.spring_back(back, false, window, cx);
                 }
             }
             cx.notify();
@@ -486,124 +425,7 @@ impl WorkspaceView {
         window: &Window,
         cx: &App,
     ) -> Option<DropTarget> {
-        if !self.bar_drawn()
-            && self.presentation() == Presentation::Hidden
-            && self.title_row() > px(0.0)
-            && self
-                .title_row_layout(&self.chrome_layout(window))
-                .drop_region
-                .contains(&pointer)
-        {
-            return Some(DropTarget::TitleRow);
-        }
-        if self.over_tab_bar(pointer, window) {
-            let active = self.active_tab(cx).and_then(|active| {
-                self.tabs.iter().position(|tab| tab.id == active)
-            });
-            return match self.tab_strip(window).label_zone(pointer, active)? {
-                LabelZone::Spring(index) => {
-                    self.tabs.get(index).map(|tab| DropTarget::Spring(tab.id))
-                }
-                LabelZone::Slot(index) => Some(DropTarget::Slot(index)),
-            };
-        }
-        let (tab, rect) = self.drawn_pane_at(pointer)?;
-        if self.active_tab(cx) != Some(tab) {
-            return None;
-        }
-        let Zone::Edge(side) = drop_zone(rect.frame, pointer)? else {
-            return None;
-        };
-        let target = DropTarget::Pane {
-            tab,
-            pane: rect.pane,
-            frame: rect.frame,
-            zone: Zone::Edge(side),
-            refused: false,
-        };
-        let change = self.cross_change(payload, target, cx)?;
-        let refused = match change {
-            Transfer::Pane(change) => {
-                self.check_move_fits(change, window, cx).is_err()
-            }
-            Transfer::Tab { .. } => false,
-        };
-        Some(DropTarget::Pane {
-            tab,
-            pane: rect.pane,
-            frame: rect.frame,
-            zone: Zone::Edge(side),
-            refused,
-        })
-    }
-
-    fn cross_change(
-        &self,
-        payload: &Payload,
-        target: DropTarget,
-        cx: &App,
-    ) -> Option<Transfer> {
-        let workspace = self.workspace_id(cx)?;
-        match target {
-            DropTarget::Pane {
-                tab,
-                pane,
-                zone: Zone::Edge(side),
-                refused: false,
-                ..
-            } => {
-                let to = Beside {
-                    target: PaneRef {
-                        workspace,
-                        tab,
-                        pane,
-                    },
-                    side,
-                };
-                Some(Transfer::Pane(if let Some(pane) = payload.pane {
-                    PaneMove::Move {
-                        from: PaneRef {
-                            workspace: payload.workspace,
-                            tab: payload.tab,
-                            pane,
-                        },
-                        to: MoveDestination::Beside(to),
-                    }
-                } else {
-                    PaneMove::TabInto {
-                        workspace: payload.workspace,
-                        tab: payload.tab,
-                        to,
-                    }
-                }))
-            }
-            DropTarget::Slot(_) | DropTarget::TitleRow => {
-                let before = match target {
-                    DropTarget::Slot(index) => {
-                        self.tabs.get(index).map(|tab| tab.id)
-                    }
-                    _ => None,
-                };
-                Some(if let Some(pane) = payload.pane {
-                    Transfer::Pane(PaneMove::Move {
-                        from: PaneRef {
-                            workspace: payload.workspace,
-                            tab: payload.tab,
-                            pane,
-                        },
-                        to: MoveDestination::NewTab { workspace, before },
-                    })
-                } else {
-                    Transfer::Tab {
-                        workspace: payload.workspace,
-                        tab: payload.tab,
-                        to: workspace,
-                        before,
-                    }
-                })
-            }
-            _ => None,
-        }
+        self.resolve_drop(payload.drag, pointer, Side::Incoming, window, cx)
     }
 
     pub(super) fn retarget_incoming(
@@ -618,27 +440,17 @@ impl WorkspaceView {
         };
         let target = self.incoming_target(
             &incoming.payload,
-            incoming.pointer,
+            incoming.hover.pointer,
             window,
             cx,
         );
-        let over_bar = self.over_tab_bar(incoming.pointer, window);
+        let over_bar = self.over_tab_bar(incoming.hover.pointer, window);
         let strip = self.tab_strip(window);
         if let Some(incoming) = &mut self.incoming {
-            incoming.target = target;
-            incoming.over_bar = over_bar;
-            incoming.strip = strip;
-            let tab = match target {
-                Some(DropTarget::Spring(tab)) => Some(tab),
-                _ => None,
-            };
-            if rearm {
-                incoming.spring.rearm(tab, now);
-            } else {
-                incoming.spring.hover(tab, now);
-            }
-            let label =
-                super::pane_drag::drop_label(incoming.target, &self.tabs);
+            incoming.hover.over_bar = over_bar;
+            incoming.hover.set_strip(strip);
+            incoming.hover.retarget(target, now, rearm);
+            let label = super::drag::drop_label(target, &self.tabs);
             cx.global_mut::<Desktop>().cross.previews.insert(
                 self.window,
                 (incoming.generation, incoming.sample, label),
@@ -655,17 +467,16 @@ impl WorkspaceView {
         let Some(armed) = self
             .incoming
             .as_ref()
-            .and_then(|incoming| incoming.spring.due(now))
+            .and_then(|incoming| incoming.hover.spring.due(now))
         else {
             return;
         };
         self.retarget_incoming(now, false, window, cx);
         if let Some(incoming) = &mut self.incoming
-            && incoming.target == Some(DropTarget::Spring(armed))
+            && incoming.hover.target == Some(DropTarget::Spring(armed))
         {
-            incoming.spring = SpringLoad::default();
-            incoming.sprung = Some(armed);
-            self.select_tab(armed, false, window, cx);
+            incoming.hover.sprang(armed);
+            self.spring_load(armed, false, window, cx);
             self.retarget_incoming(now, false, window, cx);
             cx.notify();
         }
@@ -707,9 +518,11 @@ impl WorkspaceView {
                                     return None;
                                 }
                                 let workspace = view.workspace_id(cx)?;
-                                if workspace.runtime()
-                                    != payload.workspace.runtime()
-                                {
+                                if payload.drag.workspace().is_none_or(
+                                    |source| {
+                                        source.runtime() != workspace.runtime()
+                                    },
+                                ) {
                                     return Some(Err(()));
                                 }
                                 let target = view.incoming_target(
@@ -718,9 +531,14 @@ impl WorkspaceView {
                                     target_window,
                                     cx,
                                 )?;
-                                let change =
-                                    view.cross_change(&payload, target, cx)?;
-                                let mut touched = vec![payload.tab];
+                                let change = view.drop_operation(
+                                    payload.drag,
+                                    target,
+                                    Side::Incoming,
+                                    cx,
+                                )?;
+                                let mut touched: Vec<TabId> =
+                                    payload.drag.tab().into_iter().collect();
                                 if let DropTarget::Pane { tab, .. } = target {
                                     touched.push(tab);
                                 }
@@ -794,35 +612,28 @@ impl WorkspaceView {
         &mut self,
         source: gpui::WindowId,
         destination: gpui::WindowId,
-        change: Transfer,
+        change: Operation,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let source_tab = match change {
-            Transfer::Tab { tab, .. }
-            | Transfer::Pane(
-                PaneMove::TabInto { tab, .. } | PaneMove::Swap { tab, .. },
-            ) => tab,
-            Transfer::Pane(PaneMove::Move { from, .. }) => from.tab,
-        };
+        let source_tab = change.source_tab();
         let moving: Vec<PaneId> = match change {
-            Transfer::Pane(PaneMove::Move { from, .. }) => vec![from.pane],
+            Operation::Pane(PaneMove::Move { from, .. }) => vec![from.pane],
             _ => self
                 .tabs
                 .iter()
-                .find(|tab| tab.id == source_tab)
+                .find(|tab| Some(tab.id) == source_tab)
                 .map(|tab| tab.panes.iter().map(|pane| pane.pane).collect())
                 .unwrap_or_default(),
         };
-        let scroll = self
-            .reorder
-            .as_ref()
-            .map(|drag| drag.original_scroll)
+        // A tear-off's gesture is gone by now, and a row press may have
+        // started another, so only a tab or pane gesture restores here.
+        let gesture = self.drag.as_ref().filter(|drag| drag.payload.in_bar());
+        let scroll = gesture
+            .map(|drag| drag.hover.scroll)
             .or(self.transfer_scroll.take());
-        let back = self
-            .pane_drag
-            .as_ref()
-            .and_then(PaneDrag::back)
+        let back = gesture
+            .and_then(Gesture::back)
             .or(self.transfer_back.take());
         self.busy = true;
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
@@ -838,7 +649,7 @@ impl WorkspaceView {
                     seq: runtime.lock().hierarchy_seq(),
                 };
             }
-            let committed = runtime.transfer(change);
+            let committed = runtime.commit_drop(change);
             #[cfg(all(test, feature = "test-support"))]
             runtime
                 .worker_hooks
@@ -876,7 +687,11 @@ impl WorkspaceView {
                                     }
                                 }
                                 if result.is_ok() {
-                                    view.clear_transfer_zoom(&[source_tab]);
+                                    view.clear_transfer_zoom(
+                                        &source_tab
+                                            .into_iter()
+                                            .collect::<Vec<_>>(),
+                                    );
                                 }
                                 if let Err(error) = &result
                                     && !terminating(cx)
@@ -927,11 +742,9 @@ impl WorkspaceView {
                                         .and_then(|pending| pending.preview)
                                     {
                                         view.tab_scroll = preview.scroll;
-                                        if preview.sprung == view.active_tab(cx)
-                                            && let Some(origin) = preview.origin
-                                        {
-                                            view.select_tab(
-                                                origin, false, window, cx,
+                                        if let Some(back) = preview.back {
+                                            view.spring_back(
+                                                back, false, window, cx,
                                             );
                                         }
                                     }
@@ -1082,9 +895,8 @@ fn clear_incoming_later(
 impl Incoming {
     fn restore(&self) -> PreviewRestore {
         PreviewRestore {
-            origin: self.origin,
-            sprung: self.sprung,
-            scroll: self.scroll,
+            back: self.hover.back(),
+            scroll: self.hover.scroll,
         }
     }
 }
@@ -1112,13 +924,9 @@ impl WorkspaceView {
         self.busy = true;
         // Release drops the drag before the window opens, so its
         // restoration is captured now for a failure to put back.
-        self.transfer_scroll = self
-            .reorder
-            .as_ref()
-            .map(|drag| drag.original_scroll)
-            .or_else(|| self.pane_drag.as_ref().map(PaneDrag::original_scroll));
-        self.transfer_back = self.pane_drag.as_ref().and_then(PaneDrag::back);
-        let noun = if payload.pane.is_some() {
+        self.transfer_scroll = self.drag.as_ref().map(|drag| drag.hover.scroll);
+        self.transfer_back = self.drag.as_ref().and_then(Gesture::back);
+        let noun = if payload.drag.pane().is_some() {
             "Move pane"
         } else {
             "Move tab"
@@ -1204,7 +1012,11 @@ impl WorkspaceView {
                                 view.transfer = Some(PendingTransfer {
                                     panes: payload.panes.clone(),
                                     focus: payload.focus,
-                                    touched: vec![payload.tab],
+                                    touched: payload
+                                        .drag
+                                        .tab()
+                                        .into_iter()
+                                        .collect(),
                                     installing: false,
                                     created: true,
                                     closes: Vec::new(),
@@ -1242,24 +1054,18 @@ impl WorkspaceView {
                         if terminating(cx) || cx.global::<Desktop>().quitting {
                             return false;
                         }
-                        let change = match payload.pane {
-                            Some(pane) => Transfer::Pane(PaneMove::Move {
-                                from: PaneRef {
-                                    workspace: payload.workspace,
-                                    tab: payload.tab,
-                                    pane,
-                                },
-                                to: MoveDestination::NewTab {
-                                    workspace,
-                                    before: None,
-                                },
-                            }),
-                            None => Transfer::Tab {
-                                workspace: payload.workspace,
-                                tab: payload.tab,
-                                to: workspace,
-                                before: None,
+                        // The new window takes the drop at the end of its
+                        // workspace, as its title row would.
+                        let Some(change) = operation(
+                            payload.drag,
+                            DropTarget::TitleRow,
+                            &Destination {
+                                workspace: Some(workspace),
+                                cross: true,
+                                ..Destination::default()
                             },
+                        ) else {
+                            return false;
                         };
                         view.dispatch_transfer(
                             payload.source,
@@ -1338,18 +1144,19 @@ impl WorkspaceView {
         &self,
         window: &Window,
     ) -> Option<(gpui::Point<f64>, gpui::Point<Pixels>)> {
-        if let Some(drag) = self.reorder.as_ref() {
-            return window_locator::screen_point(window, drag.pointer)
-                .map(|pointer| (pointer, drag.origin));
-        }
-        let drag = self.pane_drag.as_ref()?;
-        let pointer = window_locator::screen_point(window, drag.pointer)?;
+        let drag = self.drag.as_ref()?;
+        let pointer = window_locator::screen_point(window, drag.pointer())?;
+        let pane = match drag.payload {
+            Dragged::Tab { .. } => return Some((pointer, drag.origin())),
+            Dragged::Pane { pane, .. } => pane,
+            Dragged::Workspace { .. } | Dragged::Session(_) => return None,
+        };
         let grabbed = self
             .drawn_panes
             .borrow()
             .as_ref()
             .and_then(|(_, rects)| {
-                rects.iter().find(|rect| rect.pane == drag.pane).copied()
+                rects.iter().find(|rect| rect.pane == pane).copied()
             })
             .map_or(drag.origin(), |rect| {
                 let bar = rect.title_bar.unwrap_or(rect.frame);
@@ -1594,8 +1401,7 @@ pub(super) fn closed(id: gpui::WindowId, cx: &mut App) {
                     let _ = source.update(cx, |root, window, cx| {
                         if let Ok(view) = root.downcast::<WorkspaceView>() {
                             view.update(cx, |view, cx| {
-                                view.cancel_reorder(window, cx);
-                                view.cancel_pane_drag(window, cx);
+                                view.cancel_drag(window, cx);
                             });
                         }
                     });

@@ -546,7 +546,7 @@ fn a_press_on_an_inactive_tabs_close_button_neither_selects_nor_drags_it(
         .center();
     press_at(&mut harness, window, close, 1);
     harness.update_view(window, |view, _, cx| {
-        assert!(view.reorder.is_none(), "the press started a tab drag");
+        assert!(!view.reordering(), "the press started a tab drag");
         assert_eq!(view.active_tab(cx), Some(tab));
     });
     VisualTestContext::from_window(window, &harness.cx).simulate_event(

@@ -12,8 +12,9 @@ use huterm_ui::components::popover::Placement;
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::typography;
 
+use super::drag::{DropTarget, Payload, RowKey};
 use super::session_control::{SessionLabel, SessionListAnchor, switcher_label};
-use super::sidebar_rows::{self, ListRow, ROW_GAP, ROW_HEIGHT, RowDrag};
+use super::sidebar_rows::{self, ListRow, ROW_GAP, ROW_HEIGHT};
 use super::workspace_chrome::{CornerHost, Edge};
 use super::workspace_menu::{
     WorkspacePick, WorkspaceRow, parse_pick, resolve, row_menu, workspace_rows,
@@ -94,9 +95,6 @@ enum SidebarItem {
     Row(WorkspaceId),
     Session,
 }
-
-/// A workspace row pressed, and dragged once it moves past the threshold.
-pub(super) type WorkspaceDrag = RowDrag<WorkspaceId>;
 
 impl WorkspaceView {
     /// The workspace switcher's drawn width.
@@ -388,12 +386,13 @@ impl WorkspaceView {
             .retain(|workspace, _| rows.contains(workspace));
         // A drag whose workspace or session went, or whose rows no longer
         // draw, ends without moving anything (W41).
-        if let Some(drag) = self.workspace_drag
+        if let Some(Payload::Workspace { session, workspace }) =
+            self.drag.as_ref().map(|drag| drag.payload)
             && (!drawn
-                || !rows.contains(&drag.item)
-                || self.attached_session(cx) != Some(drag.session))
+                || !rows.contains(&workspace)
+                || self.attached_session(cx) != Some(session))
         {
-            self.workspace_drag = None;
+            self.drag = None;
         }
         // A workspace the window starts to show, as one New Workspace just
         // made past the end of a long list, scrolls into view.
@@ -887,7 +886,9 @@ impl WorkspaceView {
         if self.switcher_mode.take().is_none() {
             return false;
         }
-        self.workspace_drag = None;
+        self.drop_row_drag(|payload| {
+            matches!(payload, Payload::Workspace { .. })
+        });
         // A menu opened from its rows goes with them, and hands focus back
         // to the terminal, since nothing it opened from is left to take it.
         // So does a session list opened from the sheet's session row.
@@ -989,129 +990,26 @@ impl WorkspaceView {
         self.run_workspace_row(workspace, action, window, cx);
     }
 
-    /// Starts tracking a press on `workspace`'s row; it becomes a drag
-    /// once the pointer moves past the tab drag's threshold, and a click
-    /// that shows the workspace otherwise.
-    fn begin_workspace_drag(
-        &mut self,
-        workspace: WorkspaceId,
-        pointer: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(session) = self.attached_session(cx) else {
-            return;
-        };
-        self.workspace_drag = Some(RowDrag::new(workspace, session, pointer));
-    }
-
     /// The window's session's workspaces in order.
-    fn workspace_order(&self, cx: &App) -> Vec<WorkspaceId> {
+    pub(super) fn workspace_order(&self, cx: &App) -> Vec<WorkspaceId> {
         self.workspace_rows(cx)
             .iter()
             .map(|row| row.workspace)
             .collect()
     }
 
-    /// Follows the pointer: past the threshold the press becomes a drag,
-    /// and the drop target follows the rows' painted midpoints. A pointer
-    /// near the list's edge scrolls it on every frame (`scroll_workspace_drag`).
-    pub(super) fn update_workspace_drag(
-        &mut self,
-        pointer: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(mut drag) = self.workspace_drag else {
-            return;
-        };
-        drag.follow(pointer);
-        drag.retarget(
-            &self.workspace_order(cx),
-            &self.workspace_row_bounds.borrow(),
-        );
-        self.workspace_drag = Some(drag);
-        cx.notify();
-    }
-
-    /// The scroll handle of the list a drag runs in.
-    fn drag_scroll(&self) -> &gpui::ScrollHandle {
+    /// The scroll handle of the list a workspace row drag runs in.
+    pub(super) fn workspace_drag_scroll(&self) -> gpui::ScrollHandle {
         if self.switcher_mode.is_some() {
-            &self.switcher_scroll
+            self.switcher_scroll.clone()
         } else {
-            &self.workspace_scroll
+            self.workspace_scroll.clone()
         }
-    }
-
-    /// The direction a dragged row at its list's edge scrolls the list:
-    /// positive towards the top, negative towards the bottom, `None` away
-    /// from an edge or where the list cannot move further.
-    pub(super) fn workspace_drag_scrolls(&self) -> Option<f32> {
-        self.workspace_drag?.edge_scroll(self.drag_scroll())
-    }
-
-    /// Scrolls the list under a dragged row resting at its edge by the time
-    /// since the last frame, and moves the drop target with the rows.
-    /// Returns whether it scrolled.
-    pub(super) fn scroll_workspace_drag(
-        &mut self,
-        now: Instant,
-        cx: &App,
-    ) -> bool {
-        let Some(mut drag) = self.workspace_drag else {
-            return false;
-        };
-        let scrolled = drag.scroll(now, self.drag_scroll());
-        if scrolled {
-            drag.retarget(
-                &self.workspace_order(cx),
-                &self.workspace_row_bounds.borrow(),
-            );
-        }
-        self.workspace_drag = Some(drag);
-        scrolled
-    }
-
-    /// Ends the press: a drag moves the workspace to its drop target, a
-    /// press that never moved shows the workspace.
-    pub(super) fn finish_workspace_drag(
-        &mut self,
-        pointer: gpui::Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.update_workspace_drag(pointer, cx);
-        let Some(drag) = self.workspace_drag.take() else {
-            return;
-        };
-        cx.notify();
-        if !drag.dragging {
-            self.run_workspace_row(drag.item, RowAction::Show, window, cx);
-            return;
-        }
-        if self.attached_session(cx) != Some(drag.session) {
-            return;
-        }
-        // A drop where the row already sits moves nothing.
-        if drag.moves(&self.workspace_order(cx)) {
-            Self::move_workspace(drag.session, drag.item, drag.before, cx);
-        }
-    }
-
-    /// Cancels a row press or drag; nothing moves. `true` when one was
-    /// under way.
-    pub(super) fn cancel_workspace_drag(
-        &mut self,
-        cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let cancelled = self.workspace_drag.take().is_some();
-        if cancelled {
-            cx.notify();
-        }
-        cancelled
     }
 
     /// Moves `workspace` before `before`, or to the end, on a worker. The
     /// projection applies the committed order; this only reports failure.
-    fn move_workspace(
+    pub(super) fn move_workspace(
         session: SessionId,
         workspace: WorkspaceId,
         before: Option<WorkspaceId>,
@@ -1446,8 +1344,18 @@ impl WorkspaceView {
         let swatch = tokens(&self.config.theme);
         // The row's menu is open, native or Huterm's own.
         let targeted = self.menu_targets(&MenuKind::WorkspaceRow(workspace));
-        let drag = self.workspace_drag.filter(|drag| drag.dragging);
-        let dragged = drag.is_some_and(|drag| drag.item == workspace);
+        let drag = self
+            .drag
+            .as_ref()
+            .filter(|drag| drag.dragging())
+            .filter(|drag| matches!(drag.payload, Payload::Workspace { .. }));
+        let dragged = drag.is_some_and(|drag| {
+            drag.payload.row() == Some(RowKey::Workspace(workspace))
+        });
+        let slot = drag.and_then(|drag| match drag.target() {
+            Some(DropTarget::RowSlot(before)) => Some(before),
+            _ => None,
+        });
         let bounds_cell = Rc::clone(&self.workspace_row_bounds);
         let more = (surface == Surface::Popover).then(|| {
             sidebar_rows::more_button(
@@ -1485,11 +1393,8 @@ impl WorkspaceView {
                 selected: self.workspace_id(cx) == Some(workspace),
                 targeted,
                 dragged,
-                line_above: drag
-                    .is_some_and(|drag| drag.before == Some(workspace)),
-                line_below: last
-                    && !dragged
-                    && drag.is_some_and(|drag| drag.before.is_none()),
+                line_above: slot == Some(Some(RowKey::Workspace(workspace))),
+                line_below: last && !dragged && slot == Some(None),
                 badges: Vec::new(),
                 pinned: row.pinned,
                 status: self.workspace_row_status(workspace, cx),
@@ -1507,7 +1412,7 @@ impl WorkspaceView {
                 window.prevent_default();
                 cx.stop_propagation();
                 if event.click_count >= 2 {
-                    view.cancel_workspace_drag(cx);
+                    view.cancel_drag(window, cx);
                     view.run_workspace_row(
                         workspace,
                         RowAction::Rename,
@@ -1515,14 +1420,19 @@ impl WorkspaceView {
                         cx,
                     );
                 } else {
-                    view.begin_workspace_drag(workspace, event.position, cx);
+                    view.begin_row_drag(
+                        RowKey::Workspace(workspace),
+                        event.position,
+                        window,
+                        cx,
+                    );
                 }
             }),
         )
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                view.cancel_workspace_drag(cx);
+                view.cancel_drag(window, cx);
                 view.open_workspace_row_menu(
                     workspace,
                     event.position,
@@ -1888,8 +1798,7 @@ impl WorkspaceView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| {
-                            view.cancel_reorder(window, cx);
-                            view.cancel_pane_drag(window, cx);
+                            view.cancel_drag(window, cx);
                             view.resizing_workspace = true;
                             cx.stop_propagation();
                         }),

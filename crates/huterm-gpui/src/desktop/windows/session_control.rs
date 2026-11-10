@@ -16,12 +16,13 @@ use huterm_ui::components::menu_trigger::{self, MenuTrigger};
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::typography;
 
+use super::drag::{DropTarget, Payload, RowKey};
 use super::session_menu::{
     SessionControlState, SessionPick, SessionRow, parse_pick, resolve,
     row_menu, session_rows,
 };
 use super::sidebar_rows::{
-    self, ListRow, ROW_GAP, ROW_HEIGHT, ROW_MARGIN, RowBadge, RowDrag,
+    self, ListRow, ROW_GAP, ROW_HEIGHT, ROW_MARGIN, RowBadge,
 };
 use super::workspace_panel::{HEADER_HEIGHT, RowAction, SWITCHER_LABEL_MAX};
 use super::*;
@@ -41,9 +42,6 @@ pub(super) enum SessionListAnchor {
     /// draws neither.
     Fallback,
 }
-
-/// A session row pressed, and dragged once it moves past the threshold.
-pub(super) type SessionDrag = RowDrag<SessionId>;
 
 /// A name a switcher last measured, and its width at the switcher's text
 /// size.
@@ -347,7 +345,7 @@ impl WorkspaceView {
         if self.session_list.take().is_none() {
             return false;
         }
-        self.session_drag = None;
+        self.drop_row_drag(|payload| matches!(payload, Payload::Session(_)));
         if self
             .menu
             .as_ref()
@@ -437,10 +435,11 @@ impl WorkspaceView {
         self.session_row_bounds
             .borrow_mut()
             .retain(|session, _| rows.contains(session));
-        if let Some(drag) = self.session_drag
-            && (!drawn || !rows.contains(&drag.item))
+        if let Some(Payload::Session(session)) =
+            self.drag.as_ref().map(|drag| drag.payload)
+            && (!drawn || !rows.contains(&session))
         {
-            self.session_drag = None;
+            self.drag = None;
         }
     }
 
@@ -699,112 +698,9 @@ impl WorkspaceView {
         self.run_session_row(session, action, window, cx);
     }
 
-    /// Starts tracking a press on `session`'s row; it becomes a drag once
-    /// the pointer moves past the threshold, and a click that shows the
-    /// session otherwise.
-    fn begin_session_drag(
-        &mut self,
-        session: SessionId,
-        pointer: gpui::Point<Pixels>,
-    ) {
-        self.session_drag = Some(RowDrag::new(session, session, pointer));
-    }
-
-    /// Follows the pointer and points the drop target at the row it is
-    /// above.
-    pub(super) fn update_session_drag(
-        &mut self,
-        pointer: gpui::Point<Pixels>,
-        cx: &mut Context<'_, Self>,
-    ) {
-        let Some(mut drag) = self.session_drag else {
-            return;
-        };
-        drag.follow(pointer);
-        let order: Vec<SessionId> = self
-            .session_rows(cx)
-            .iter()
-            .map(|row| row.session)
-            .collect();
-        drag.retarget(&order, &self.session_row_bounds.borrow());
-        self.session_drag = Some(drag);
-        cx.notify();
-    }
-
-    /// Whether a dragged session row rests at the list's edge, so frames
-    /// keep scrolling it.
-    pub(super) fn session_drag_scrolls(&self) -> bool {
-        self.session_drag.is_some_and(|drag| {
-            drag.edge_scroll(&self.session_list_scroll).is_some()
-        })
-    }
-
-    /// Scrolls the list under a dragged row resting at its edge, and moves
-    /// the drop target with the rows. Returns whether it scrolled.
-    pub(super) fn scroll_session_drag(
-        &mut self,
-        now: Instant,
-        cx: &App,
-    ) -> bool {
-        let Some(mut drag) = self.session_drag else {
-            return false;
-        };
-        let scrolled = drag.scroll(now, &self.session_list_scroll);
-        if scrolled {
-            let order: Vec<SessionId> = self
-                .session_rows(cx)
-                .iter()
-                .map(|row| row.session)
-                .collect();
-            drag.retarget(&order, &self.session_row_bounds.borrow());
-        }
-        self.session_drag = Some(drag);
-        scrolled
-    }
-
-    /// Ends the press: a drag moves the session to its drop target, a press
-    /// that never moved shows the session.
-    pub(super) fn finish_session_drag(
-        &mut self,
-        pointer: gpui::Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
-        self.update_session_drag(pointer, cx);
-        let Some(drag) = self.session_drag.take() else {
-            return;
-        };
-        cx.notify();
-        if !drag.dragging {
-            self.run_session_row(drag.item, RowAction::Show, window, cx);
-            return;
-        }
-        let order: Vec<SessionId> = self
-            .session_rows(cx)
-            .iter()
-            .map(|row| row.session)
-            .collect();
-        if drag.moves(&order) {
-            Self::move_session(drag.item, drag.before, cx);
-        }
-    }
-
-    /// Cancels a session row press or drag; nothing moves. `true` when one
-    /// was under way.
-    pub(super) fn cancel_session_drag(
-        &mut self,
-        cx: &mut Context<'_, Self>,
-    ) -> bool {
-        let cancelled = self.session_drag.take().is_some();
-        if cancelled {
-            cx.notify();
-        }
-        cancelled
-    }
-
     /// Moves `session` before `before`, or to the end, on a worker. The
     /// projection applies the committed order; this only reports failure.
-    fn move_session(
+    pub(super) fn move_session(
         session: SessionId,
         before: Option<SessionId>,
         cx: &mut Context<'_, Self>,
@@ -851,8 +747,18 @@ impl WorkspaceView {
         let swatch = tokens(&self.config.theme);
         // The row's menu is open, native or Huterm's own.
         let targeted = self.menu_targets(&MenuKind::SessionRow(session));
-        let drag = self.session_drag.filter(|drag| drag.dragging);
-        let dragged = drag.is_some_and(|drag| drag.item == session);
+        let drag = self
+            .drag
+            .as_ref()
+            .filter(|drag| drag.dragging())
+            .filter(|drag| matches!(drag.payload, Payload::Session(_)));
+        let dragged = drag.is_some_and(|drag| {
+            drag.payload.row() == Some(RowKey::Session(session))
+        });
+        let slot = drag.and_then(|drag| match drag.target() {
+            Some(DropTarget::RowSlot(before)) => Some(before),
+            _ => None,
+        });
         let mut badges = Vec::new();
         if row.windows > 0 {
             badges.push(RowBadge {
@@ -900,11 +806,8 @@ impl WorkspaceView {
                 selected: self.attached_session(cx) == Some(session),
                 targeted,
                 dragged,
-                line_above: drag
-                    .is_some_and(|drag| drag.before == Some(session)),
-                line_below: last
-                    && !dragged
-                    && drag.is_some_and(|drag| drag.before.is_none()),
+                line_above: slot == Some(Some(RowKey::Session(session))),
+                line_below: last && !dragged && slot == Some(None),
                 badges,
                 pinned: false,
                 status: None,
@@ -921,13 +824,18 @@ impl WorkspaceView {
                 // where it was, as on tabs.
                 window.prevent_default();
                 cx.stop_propagation();
-                view.begin_session_drag(session, event.position);
+                view.begin_row_drag(
+                    RowKey::Session(session),
+                    event.position,
+                    window,
+                    cx,
+                );
             }),
         )
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |view, event: &MouseDownEvent, window, cx| {
-                view.cancel_session_drag(cx);
+                view.cancel_drag(window, cx);
                 view.open_session_row_menu(
                     session,
                     event.position,

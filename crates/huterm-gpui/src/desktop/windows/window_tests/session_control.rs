@@ -7,6 +7,7 @@
 
 use gpui::{Modifiers, MouseDownEvent, MouseUpEvent};
 
+use super::super::drag::{DropTarget, Gesture, RowKey};
 use super::super::session_control::SessionListAnchor;
 use super::menus::a11y_node;
 use super::sessions::{shown_session, shown_tabs};
@@ -354,9 +355,12 @@ fn dragging_a_session_row_reorders_the_sessions(cx: &mut TestAppContext) {
     let above = gpui::point(to.center().x, to.top() + px(2.0));
     harness.drag_row(window, from.center(), above);
     harness.update_view(window, |view, _, _| {
-        let drag = view.session_drag.expect("a drag");
-        assert!(drag.dragging);
-        assert_eq!(drag.before, Some(main));
+        let drag = view.drag.as_ref().expect("a drag");
+        assert!(drag.dragging());
+        assert_eq!(
+            drag.target(),
+            Some(DropTarget::RowSlot(Some(RowKey::Session(main))))
+        );
     });
     harness.release(window, above);
     harness.wait_for("the sessions to reorder", |cx| {
@@ -520,7 +524,7 @@ fn a_session_drag_cancels_when_its_session_goes(cx: &mut TestAppContext) {
     let above = gpui::point(to.center().x, to.top() + px(2.0));
     harness.drag_row(window, from.center(), above);
     harness.update_view(window, |view, _, _| {
-        assert!(view.session_drag.is_some_and(|drag| drag.dragging));
+        assert!(view.drag.as_ref().is_some_and(Gesture::dragging));
     });
     // The dragged session closes elsewhere: the drag ends and the release
     // moves nothing.
@@ -533,7 +537,7 @@ fn a_session_drag_cancels_when_its_session_goes(cx: &mut TestAppContext) {
         window
             .update(cx, |root, _, cx| {
                 root.downcast::<WorkspaceView>()
-                    .is_ok_and(|view| view.read(cx).session_drag.is_none())
+                    .is_ok_and(|view| view.read(cx).drag.is_none())
             })
             .unwrap_or(false)
     });

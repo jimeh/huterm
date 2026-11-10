@@ -682,8 +682,7 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Result<CommandOutcome, CommandError> {
-        self.cancel_reorder(window, cx);
-        self.cancel_pane_drag(window, cx);
+        self.cancel_drag(window, cx);
         self.clear_incoming(true, window, cx);
         self.cancel_divider_drag(cx);
         self.resizing_sidebar = false;

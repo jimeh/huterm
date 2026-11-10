@@ -66,7 +66,7 @@ fn drag_preview_modes_follow_the_pointer_and_close_at_release(
         .0
         .set(Located::Window(destination.window_id(), slot));
     h.update_view(source, |view, window, cx| {
-        view.update_reorder(point(px(-10.0), px(-10.0)), window, cx);
+        view.update_drag(point(px(-10.0), px(-10.0)), window, cx);
     });
     let (id, mode, visible) = h.preview();
     assert!(id.is_some());
@@ -76,14 +76,14 @@ fn drag_preview_modes_follow_the_pointer_and_close_at_release(
             .incoming
             .as_ref()
             .is_some_and(
-                |incoming| incoming.target == Some(DropTarget::Slot(0))
+                |incoming| incoming.hover.target == Some(DropTarget::Slot(0))
             )),
         "the destination keeps its target"
     );
     assert!(!h.chip_drawn(destination), "the preview draws the chip");
     locator.0.set(Located::Outside);
     h.update_view(source, |view, window, cx| {
-        view.update_reorder(point(px(-20.0), px(-20.0)), window, cx);
+        view.update_drag(point(px(-20.0), px(-20.0)), window, cx);
     });
     let (same, mode, _) = h.preview();
     assert_eq!(same, id, "one preview window per drag");
@@ -98,12 +98,12 @@ fn drag_preview_modes_follow_the_pointer_and_close_at_release(
     });
     locator.0.set(Located::Blocked);
     h.update_view(source, |view, window, cx| {
-        view.update_reorder(point(px(-30.0), px(-30.0)), window, cx);
+        view.update_drag(point(px(-30.0), px(-30.0)), window, cx);
     });
     assert_eq!(h.preview().1, PreviewMode::Dimmed);
     locator.0.set(Located::Window(source.window_id(), inside));
     h.update_view(source, |view, window, cx| {
-        view.update_reorder(inside, window, cx);
+        view.update_drag(inside, window, cx);
     });
     let (kept, mode, visible) = h.preview();
     assert_eq!(
@@ -129,7 +129,7 @@ fn drag_preview_closes_on_escape_and_when_either_window_closes(
     h.preview_hooks(true, false);
     h.cross_begin(source, tab);
     assert_eq!(h.preview().1, PreviewMode::Chip);
-    h.update_view(source, WorkspaceView::cancel_reorder);
+    h.update_view(source, WorkspaceView::cancel_drag);
     h.preview_closed("Escape");
     h.cross_begin(source, tab);
     assert_eq!(h.preview().1, PreviewMode::Chip);
@@ -203,7 +203,7 @@ fn drag_preview_a_failed_or_unshown_preview_keeps_the_in_window_cues(
         );
         locator.0.set(Located::Outside);
         h.update_view(source, |view, window, cx| {
-            view.update_reorder(point(px(-10.0), px(-10.0)), window, cx);
+            view.update_drag(point(px(-10.0), px(-10.0)), window, cx);
         });
         h.cx.run_until_parked();
         assert!(
@@ -213,7 +213,7 @@ fn drag_preview_a_failed_or_unshown_preview_keeps_the_in_window_cues(
                 .is_some()),
             "visible {visible}, failed {fail_open}: the pill draws"
         );
-        h.update_view(source, WorkspaceView::cancel_reorder);
+        h.update_view(source, WorkspaceView::cancel_drag);
         h.preview_closed("cancel");
     }
 }
@@ -250,7 +250,7 @@ fn drag_preview_hides_s1_and_turning_it_off_mid_drag_brings_the_cues_back(
     let (_, mode, visible) = h.preview();
     assert_eq!((mode, visible), (PreviewMode::None, false));
     assert!(
-        h.update_view(source, |view, _, _| view.pane_drag.is_some()),
+        h.update_view(source, |view, _, _| view.pane_dragging()),
         "the reload keeps the drag"
     );
     assert!(
@@ -260,6 +260,6 @@ fn drag_preview_hides_s1_and_turning_it_off_mid_drag_brings_the_cues_back(
             .is_some()),
         "S1 returns with the setting off"
     );
-    h.update_view(source, WorkspaceView::cancel_pane_drag);
+    h.update_view(source, WorkspaceView::cancel_drag);
     h.preview_closed("cancel");
 }

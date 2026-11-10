@@ -2022,9 +2022,10 @@ session row opens. A popover whose anchor goes closes at the end of render
 `sidebar_rows::list_row`; their rows take the `Sidebar` key context and its
 `sidebar_*` commands, which `run_session_list_command` takes first while a
 session row holds focus. A press never moves keyboard focus to a row, and
-becomes a drag (`sidebar_rows::RowDrag`) past the tab drag's threshold.
-Drops call `Mux::move_workspace` or `Mux::move_session` with the row they
-land before, by ID, on a worker. Workspace rows draw a pin mark and a status
+becomes a row drag past the shared threshold, a `Workspace` or `Session`
+payload of [the drag model](desktop-input.md#the-drag-model). Drops call
+`Mux::move_workspace` or `Mux::move_session` with the row they land
+before, by ID, on a worker. Workspace rows draw a pin mark and a status
 dot (`workspace_status.rs`). One application task (`start_status_feed`)
 follows core's viewer-free status feed, reading on a worker one read at a
 time into `Desktop::statuses`, and moves every window record's
