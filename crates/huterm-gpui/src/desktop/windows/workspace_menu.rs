@@ -66,6 +66,7 @@ pub(super) fn tabs_text(count: usize) -> String {
 const RENAME_PREFIX: &str = "workspace-rename:";
 const CLEAR_PREFIX: &str = "workspace-clear:";
 const PIN_PREFIX: &str = "workspace-pin:";
+const WINDOW_PREFIX: &str = "workspace-window:";
 const CLOSE_PREFIX: &str = "workspace-close:";
 
 /// What a row menu pick runs.
@@ -76,6 +77,8 @@ pub(super) enum WorkspacePick {
     Rename(u64),
     ClearName(u64),
     TogglePin(u64),
+    /// Moves the workspace into a new window and session.
+    NewWindow(u64),
     Close(u64),
 }
 
@@ -90,6 +93,9 @@ pub(super) fn parse_pick(id: &str) -> Option<WorkspacePick> {
     }
     if let Some(raw) = raw(PIN_PREFIX) {
         return Some(WorkspacePick::TogglePin(raw));
+    }
+    if let Some(raw) = raw(WINDOW_PREFIX) {
+        return Some(WorkspacePick::NewWindow(raw));
     }
     raw(CLOSE_PREFIX).map(WorkspacePick::Close)
 }
@@ -107,8 +113,8 @@ pub(super) fn resolve(state: &HierarchyState, raw: u64) -> Option<WorkspaceId> {
 
 /// A row's context menu, acting on that row's workspace: Rename…,
 /// Clear Name for a custom name, Pin Workspace or Unpin Workspace, and
-/// Close Workspace… while the session has another workspace, as the
-/// session rows' menu has them.
+/// Move to New Window and Close Workspace… while the session has another
+/// workspace, as the session rows' menu has them.
 pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
     let raw = row.workspace.get();
     let item = |id: String, label: &str, icon: Icon| {
@@ -136,6 +142,11 @@ pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
         item(format!("{PIN_PREFIX}{raw}"), "Pin Workspace", Icon::Pin)
     });
     if workspaces > 1 {
+        rows.push(item(
+            format!("{WINDOW_PREFIX}{raw}"),
+            "Move Workspace to New Window",
+            Icon::AppWindow,
+        ));
         rows.push(MenuRow::Separator);
         rows.push(item(
             format!("{CLOSE_PREFIX}{raw}"),

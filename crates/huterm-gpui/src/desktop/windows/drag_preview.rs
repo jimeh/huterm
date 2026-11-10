@@ -272,7 +272,7 @@ fn wanted(cx: &App) -> Option<Wanted> {
             }
         }
         Located::Outside => Spot::Outside {
-            tear_off: source.tears_off(&drag.payload),
+            tear_off: source.tears_off(&drag.payload, cx),
         },
         Located::Blocked => Spot::NoTarget,
     };

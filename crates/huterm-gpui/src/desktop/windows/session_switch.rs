@@ -658,6 +658,16 @@ impl WorkspaceView {
     ) -> Result<(), CommandError> {
         self.check_new_tab_available(cx)?;
         self.check_available(true)?;
+        self.check_switch_guard(cx)
+    }
+
+    /// The switch guard without its tab-drag refusal, for a drag's own
+    /// spring load of a workspace row.
+    pub(super) fn check_switch_guard(
+        &self,
+        cx: &App,
+    ) -> Result<(), CommandError> {
+        self.check_new_tab_available(cx)?;
         let refusal = if self.switch.is_some() {
             "session switch in progress"
         } else if self.reopen.is_some() {

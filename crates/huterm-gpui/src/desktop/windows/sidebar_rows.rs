@@ -47,6 +47,11 @@ pub(super) struct ListRow {
     /// The row's menu is open.
     pub(super) targeted: bool,
     pub(super) dragged: bool,
+    /// A dragged tab or pane would move into this row's item (H1).
+    pub(super) drop_target: bool,
+    /// A release now would tear this dragged row off into a new window
+    /// (W1).
+    pub(super) tearing_off: bool,
     /// The drop line above the row, or below the last row.
     pub(super) line_above: bool,
     pub(super) line_below: bool,
@@ -84,6 +89,8 @@ pub(super) fn list_row(
         selected,
         targeted,
         dragged,
+        drop_target,
+        tearing_off,
         line_above,
         line_below,
         badges,
@@ -158,7 +165,7 @@ pub(super) fn list_row(
         .pr(px(if more.is_some() { 4.0 } else { 8.0 }))
         .rounded(px(7.0))
         .cursor_pointer()
-        .when(dragged, |row| row.opacity(0.5))
+        .when(dragged && !tearing_off, |row| row.opacity(0.5))
         .when(selected, |row| row.bg(colors.active))
         .when(!selected, |row| {
             row.hover(|style| style.bg(colors.hover))
@@ -237,8 +244,70 @@ pub(super) fn list_row(
         }))
         .children(dot)
         .children(more)
+        .when(tearing_off, |row| row.children(tear_off_cue(colors)))
+        // The drop region pane edges use: accent at 22% inside a 2 pt
+        // accent border, over the row so its contents keep their places.
+        .when(drop_target, |row| {
+            row.child(
+                div()
+                    .debug_selector(|| "workspace-row-drop".to_owned())
+                    .absolute()
+                    .inset_0()
+                    .rounded(px(7.0))
+                    .bg(colors.accent.opacity(0.22))
+                    .border_2()
+                    .border_color(colors.accent.opacity(0.8)),
+            )
+        })
         .when(line_above, |row| row.child(line(true)))
         .when(line_below, |row| row.child(line(false)))
+}
+
+/// S1 on a row a release would tear off (W1): the row's own colour at 55%
+/// over its contents, a dashed outline at full contrast, and the
+/// "↗ New window" pill centred, the arrow alone where the row is narrow.
+fn tear_off_cue(colors: TabColors) -> [AnyElement; 3] {
+    [
+        div()
+            .absolute()
+            .inset_0()
+            .rounded(px(7.0))
+            .bg(colors.terminal.opacity(0.55))
+            .into_any_element(),
+        div()
+            .debug_selector(|| "workspace-tear-off-outline".to_owned())
+            .absolute()
+            .inset(px(2.0))
+            .rounded(px(5.0))
+            .border_1()
+            .border_dashed()
+            .border_color(colors.foreground)
+            .into_any_element(),
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .debug_selector(|| "workspace-tear-off-pill".to_owned())
+                    .h(px(22.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .rounded(px(6.0))
+                    .bg(colors.active)
+                    .border_1()
+                    .border_color(colors.accent)
+                    .text_color(colors.foreground)
+                    .text_size(typography::ui(11.0))
+                    .child("↗ New window"),
+            )
+            .into_any_element(),
+    ]
 }
 
 /// The "⋯" button at a popover row's end, which opens the row's menu as a

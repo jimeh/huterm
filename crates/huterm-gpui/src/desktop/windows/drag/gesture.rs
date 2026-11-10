@@ -9,7 +9,7 @@ use super::super::workspace_panel::RowAction;
 use super::super::*;
 use super::{
     Destination, DropTarget, Gesture, Hover, Operation, PANE_DROP_DEPTH,
-    Payload, RowKey, SpringBack, SpringKey, operation, row_slot,
+    Payload, RowKey, Shown, SpringBack, SpringKey, operation, row_slot,
 };
 
 /// Which window resolves a target: the gesture's own, or another window
@@ -59,8 +59,9 @@ impl DesktopRuntime {
             Operation::MoveWorkspace {
                 session,
                 workspace,
+                to,
                 before,
-            } => self.move_workspace(session, workspace, before),
+            } => self.move_workspace(session, workspace, to, before),
             Operation::MoveSession { session, before } => {
                 self.move_session(session, before)
             }
@@ -150,7 +151,7 @@ impl WorkspaceView {
         }
         let hover = Hover::new(
             pointer,
-            payload.tab(),
+            self.shown(cx),
             self.tab_scroll,
             self.tab_strip(window),
         );
@@ -176,20 +177,56 @@ impl WorkspaceView {
     }
 
     /// A pane drag, from its press on.
+    #[cfg(test)]
     pub(in super::super) fn pane_dragging(&self) -> bool {
         self.drag
             .as_ref()
             .is_some_and(|drag| drag.payload.pane().is_some())
     }
 
-    /// Whether a tab drag may start or go on: the tab is still in this
-    /// window's workspace, and nothing holds the window.
+    /// What the window shows: its workspace and that workspace's active
+    /// tab.
+    pub(in super::super) fn shown(&self, cx: &App) -> Shown {
+        Shown {
+            workspace: self.workspace_id(cx),
+            tab: self.active_tab(cx),
+        }
+    }
+
+    /// Whether the window holds `tab`'s view in `workspace`, shown or
+    /// hidden.
+    fn holds_tab_in(
+        &self,
+        workspace: WorkspaceId,
+        tab: TabId,
+        cx: &App,
+    ) -> Option<&TabView> {
+        let views = if Some(workspace) == self.workspace_id(cx) {
+            Some(&self.tabs)
+        } else {
+            self.hidden.get(&workspace)
+        };
+        views?.iter().find(|view| view.id == tab)
+    }
+
+    /// Whether a tab or pane gesture comes from another workspace than the
+    /// one the window shows, after a row drag sprang it there.
+    pub(in super::super) fn drag_away(
+        &self,
+        payload: Payload,
+        cx: &App,
+    ) -> bool {
+        payload.in_bar() && payload.workspace() != self.workspace_id(cx)
+    }
+
+    /// Whether a tab drag may start or go on: the tab is still in its
+    /// workspace here, shown or sprung away from, and nothing holds the
+    /// window.
     fn can_reorder(&self, payload: Payload, cx: &App) -> bool {
         let Payload::Tab { workspace, tab } = payload else {
             return false;
         };
-        Some(workspace) == self.workspace_id(cx)
-            && self.tabs.iter().any(|view| view.id == tab)
+        self.holds_tab_in(workspace, tab, cx).is_some()
             && cx.global::<Desktop>().hierarchy.state().tab_workspace(tab)
                 == Some(workspace)
             && !self.busy
@@ -211,25 +248,43 @@ impl WorkspaceView {
     }
 
     /// Whether a pane drag can go on: the window takes drags, the dragged
-    /// pane is still in its tab here and in the projection, and the active
-    /// tab is the one the drag expects. Other payloads are always valid
-    /// here; a tab drag checks itself on motion, and a row drag when its
-    /// list draws.
+    /// pane is still in its tab here and in the projection, and the window
+    /// shows what the drag expects. A tab drag the window sprang away from
+    /// its workspace checks the same; one in its own workspace checks
+    /// itself on motion. Other payloads are always valid here; a row drag
+    /// checks itself when its list draws.
     pub(in super::super) fn pane_drag_valid(&self, cx: &App) -> bool {
         let Some(drag) = &self.drag else {
             return false;
         };
-        let Payload::Pane { tab, pane, .. } = drag.payload else {
-            return true;
-        };
-        self.can_drag_panes(cx)
-            && self.active_tab(cx) == drag.expected_active()
-            && self
-                .tabs
-                .iter()
-                .any(|view| view.id == tab && view.pane(pane).is_some())
-            && cx.global::<Desktop>().hierarchy.state().pane_tab(pane)
-                == Some(tab)
+        match drag.payload {
+            Payload::Pane {
+                workspace,
+                tab,
+                pane,
+            } => {
+                self.can_drag_panes(cx)
+                    && drag.expected().matches(self.shown(cx))
+                    && self
+                        .holds_tab_in(workspace, tab, cx)
+                        .is_some_and(|view| view.pane(pane).is_some())
+                    && cx.global::<Desktop>().hierarchy.state().pane_tab(pane)
+                        == Some(tab)
+            }
+            payload @ Payload::Tab { .. } if self.drag_away(payload, cx) => {
+                self.can_reorder(payload, cx)
+                    && drag.expected().matches(self.shown(cx))
+            }
+            _ => true,
+        }
+    }
+
+    /// A tab or pane drag the window must check on each frame: a pane
+    /// drag, or a tab drag sprang away from its workspace.
+    pub(in super::super) fn drag_checks_each_frame(&self, cx: &App) -> bool {
+        self.drag.as_ref().is_some_and(|drag| {
+            drag.payload.pane().is_some() || self.drag_away(drag.payload, cx)
+        })
     }
 
     /// Follows the pointer from the capture listeners.
@@ -243,15 +298,33 @@ impl WorkspaceView {
             return;
         };
         if payload.row().is_some() {
-            if let Some(drag) = &mut self.drag {
+            let dragging = self.drag.as_mut().is_some_and(|drag| {
                 drag.follow(pointer);
+                drag.dragging()
+            });
+            // A workspace row can leave the window, for another one or a
+            // window of its own; a session row stays in its list.
+            if dragging && matches!(payload, Payload::Workspace { .. }) {
+                let outside = self.route_cross_drag(pointer, window, cx);
+                if let Some(drag) = &mut self.drag {
+                    drag.outside = outside;
+                    if outside {
+                        drag.hover.leave();
+                    }
+                }
+                if outside {
+                    cx.notify();
+                    return;
+                }
             }
             self.retarget_drag(Instant::now(), false, window, cx);
             cx.notify();
             return;
         }
         let valid = match payload {
-            Payload::Tab { .. } => self.can_reorder(payload, cx),
+            Payload::Tab { .. } => {
+                self.can_reorder(payload, cx) && self.pane_drag_valid(cx)
+            }
             _ => self.pane_drag_valid(cx),
         };
         if !valid {
@@ -371,16 +444,100 @@ impl WorkspaceView {
         cx: &App,
     ) -> Option<DropTarget> {
         match payload {
+            Payload::Workspace { .. } if side == Side::Incoming => {
+                self.resolve_incoming_workspace(payload, pointer, window, cx)
+            }
             Payload::Workspace { .. } | Payload::Session(_) => {
                 self.resolve_row(payload, pointer, cx)
             }
-            Payload::Tab { tab, .. } if side == Side::Source => {
-                self.resolve_reorder(payload, tab, pointer, window, cx)
-            }
             Payload::Tab { .. } | Payload::Pane { .. } => {
-                self.resolve_bar(payload, pointer, side, window, cx)
+                if let Some(row) =
+                    self.resolve_workspace_row(payload, pointer, window, cx)
+                {
+                    return Some(row);
+                }
+                // A gesture the window sprang away from its workspace
+                // resolves as another window's would: no reorder, no swap,
+                // no lone-pane rule.
+                let away = self.drag_away(payload, cx);
+                match payload {
+                    Payload::Tab { tab, .. }
+                        if side == Side::Source && !away =>
+                    {
+                        self.resolve_reorder(payload, tab, pointer, window, cx)
+                    }
+                    _ => {
+                        let rules = if away { Side::Incoming } else { side };
+                        self.resolve_bar(
+                            payload, pointer, side, rules, window, cx,
+                        )
+                    }
+                }
             }
         }
+    }
+
+    /// The bounds of the workspace list's visible part, when the sidebar or
+    /// the switcher's popover draws it.
+    fn workspace_list_at(
+        &self,
+        pointer: gpui::Point<Pixels>,
+        window: &Window,
+    ) -> bool {
+        self.rows_drawn(&self.chrome_layout(window))
+            && self.workspace_drag_scroll().bounds().contains(&pointer)
+    }
+
+    /// A workspace row under a tab or pane: one of another workspace than
+    /// the dragged item's, which spring-loads unless the window shows it.
+    fn resolve_workspace_row(
+        &self,
+        payload: Payload,
+        pointer: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &App,
+    ) -> Option<DropTarget> {
+        if !self.workspace_list_at(pointer, window) {
+            return None;
+        }
+        let painted = self.workspace_row_bounds.borrow();
+        let workspace =
+            self.session_workspaces(cx).into_iter().find(|row| {
+                painted
+                    .get(row)
+                    .is_some_and(|bounds| bounds.contains(&pointer))
+            })?;
+        (payload.workspace() != Some(workspace)).then(|| {
+            DropTarget::Workspace {
+                workspace,
+                spring: self.workspace_id(cx) != Some(workspace),
+            }
+        })
+    }
+
+    /// Another window's workspace over this one: a slot of the workspace
+    /// list where it draws, else the window's content.
+    fn resolve_incoming_workspace(
+        &self,
+        payload: Payload,
+        pointer: gpui::Point<Pixels>,
+        window: &Window,
+        cx: &App,
+    ) -> Option<DropTarget> {
+        let row = payload.row()?;
+        if !self.workspace_list_at(pointer, window) {
+            return Some(DropTarget::Window);
+        }
+        let order: Vec<RowKey> = self
+            .session_workspaces(cx)
+            .into_iter()
+            .map(RowKey::Workspace)
+            .collect();
+        let painted = self.workspace_row_bounds.borrow();
+        Some(row_slot(row, pointer, &order, |item| match item {
+            RowKey::Workspace(workspace) => painted.get(&workspace).copied(),
+            RowKey::Session(_) => None,
+        }))
     }
 
     /// A row's slot in its list, from the rows' painted midpoints.
@@ -466,16 +623,18 @@ impl WorkspaceView {
     /// A tab or pane drag over the title row, the tab bar, or a pane of
     /// the active tab. A pane alone in its tab offers no slot or title
     /// row in its own window, and only the dragged pane's own tab offers a
-    /// centre.
+    /// centre. `rules` is the side whose rules apply: a gesture sprang
+    /// away from its workspace follows another window's.
     fn resolve_bar(
         &self,
         payload: Payload,
         pointer: gpui::Point<Pixels>,
         side: Side,
+        rules: Side,
         window: &Window,
         cx: &App,
     ) -> Option<DropTarget> {
-        let source = side == Side::Source;
+        let source = rules == Side::Source;
         let lone = source
             && payload.pane().is_some()
             && payload.tab().is_none_or(|tab| self.pane_count(tab) < 2);
@@ -575,12 +734,21 @@ impl WorkspaceView {
         cx: &App,
     ) -> Option<Operation> {
         let tabs: Vec<TabId> = self.tabs.iter().map(|tab| tab.id).collect();
-        let rows = self.row_order(payload, cx);
+        let rows = match payload {
+            // Another window's workspace slots into this window's list.
+            Payload::Workspace { .. } if side == Side::Incoming => self
+                .session_workspaces(cx)
+                .into_iter()
+                .map(RowKey::Workspace)
+                .collect(),
+            _ => self.row_order(payload, cx),
+        };
         operation(
             payload,
             target,
             &Destination {
                 workspace: self.workspace_id(cx),
+                session: self.attached_session(cx),
                 cross: side == Side::Incoming,
                 tabs: &tabs,
                 rows: &rows,
@@ -689,8 +857,7 @@ impl WorkspaceView {
             Payload::Pane { pane, .. } => Some(pane),
             // A nested tab keeps the pane it focused.
             Payload::Tab { tab, .. } => self
-                .tabs
-                .iter()
+                .all_tab_views()
                 .find(|view| view.id == tab)
                 .map(|view| view.focused().pane),
             Payload::Workspace { .. } | Payload::Session(_) => None,
@@ -740,6 +907,7 @@ impl WorkspaceView {
                 session,
                 workspace,
                 before,
+                ..
             } => Self::move_workspace(session, workspace, before, cx),
             Operation::MoveSession { session, before } => {
                 Self::move_session(session, before, cx);
@@ -759,6 +927,10 @@ impl WorkspaceView {
             .background_executor()
             .spawn(async move { runtime.commit_drop(change) });
         let app = cx.to_async();
+        let (title, verb) = match change {
+            Operation::MoveTab { .. } => ("Move tab", "move"),
+            _ => ("Reorder tab", "reorder"),
+        };
         cx.spawn_in(window, async move |view, cx| {
             let Committed { result, seq } = task.await;
             // Reconcile applies the committed order while draining; this
@@ -766,22 +938,48 @@ impl WorkspaceView {
             projected(&app, seq).await;
             let _ = view.update_in(cx, |view, window, cx| {
                 view.busy = false;
+                let moved = result.is_ok();
                 if let Err(error) = result
                     && !terminating(cx)
                 {
                     view.report_failure(
-                        "Reorder tab",
-                        format!("Cannot reorder tab: {error}"),
+                        title,
+                        format!("Cannot {verb} tab: {error}"),
                         cx,
                     );
                 }
                 view.reconcile_own(window, cx);
+                if moved {
+                    view.settle_moved(change, window, cx);
+                }
                 view.restore_tab_focus(window, cx);
                 view.resume_close(window, cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// After a committed move between this window's workspaces: a tab that
+    /// landed in the shown workspace shows, and a hidden workspace the move
+    /// emptied closes unless pinned, as an exit-close's does.
+    pub(in super::super) fn settle_moved(
+        &mut self,
+        change: Operation,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if let Operation::MoveTab { tab, to, .. } = change
+            && Some(to) == self.workspace_id(cx)
+            && self.tabs.iter().any(|view| view.id == tab)
+        {
+            self.select(tab, window, cx);
+        }
+        if let Some(source) = change.source_workspace()
+            && Some(source) != self.workspace_id(cx)
+        {
+            self.close_emptied_hidden(source, cx);
+        }
     }
 
     fn take_drag(&mut self, cx: &mut Context<'_, Self>) -> Option<Gesture> {
@@ -808,10 +1006,17 @@ impl WorkspaceView {
         true
     }
 
-    /// Drops a row drag, as when its list closes; nothing moves.
-    pub(in super::super) fn drop_row_drag(&mut self, row: fn(Payload) -> bool) {
+    /// Drops a row drag, as when its list closes or its row goes; nothing
+    /// moves, and a workspace row that left the window ends its
+    /// cross-window record too.
+    pub(in super::super) fn drop_row_drag(
+        &mut self,
+        row: impl FnOnce(Payload) -> bool,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.drag.as_ref().is_some_and(|drag| row(drag.payload)) {
             self.drag = None;
+            self.end_cross_drag(true, cx);
         }
     }
 
@@ -848,7 +1053,9 @@ impl WorkspaceView {
         self.spring_back(back, focus, window, cx);
     }
 
-    /// Reactivates `back.origin` while `back.sprung` is still active.
+    /// Shows `back.origin` again while the window still shows
+    /// `back.sprung`: its workspace, when the drag sprang a row and the
+    /// window may switch, then its tab.
     pub(in super::super) fn spring_back(
         &mut self,
         back: SpringBack,
@@ -856,10 +1063,78 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.active_tab(cx) == Some(back.sprung)
-            && self.tabs.iter().any(|view| view.id == back.origin)
+        if !back.sprung.matches(self.shown(cx)) {
+            return;
+        }
+        if back.origin.workspace != self.workspace_id(cx) {
+            let Some(origin) = back.origin.workspace else {
+                return;
+            };
+            if !self.spring_workspace(origin, focus, window, cx) {
+                return;
+            }
+        }
+        if let Some(tab) = back.origin.tab
+            && self.active_tab(cx) != Some(tab)
+            && self.tabs.iter().any(|view| view.id == tab)
         {
-            self.select_tab(back.origin, focus, window, cx);
+            self.select_tab(tab, focus, window, cx);
+        }
+    }
+
+    /// Whether spring-loading may activate `key` now: a tab always, a
+    /// workspace of the attached session while the window could switch to
+    /// it.
+    fn can_spring(&self, key: SpringKey, cx: &App) -> bool {
+        match key {
+            SpringKey::Tab(_) => true,
+            SpringKey::Workspace(workspace) => {
+                self.check_switch_guard(cx).is_ok()
+                    && self.attached_session(cx).is_some_and(|session| {
+                        cx.global::<Desktop>()
+                            .hierarchy
+                            .state()
+                            .workspace_session(workspace)
+                            == Some(session)
+                    })
+            }
+        }
+    }
+
+    /// Shows `workspace` of the attached session under a drag, which goes
+    /// on, unlike a workspace switch, moving keyboard focus only when
+    /// `focus`. Returns whether it shows.
+    fn spring_workspace(
+        &mut self,
+        workspace: WorkspaceId,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if !self.can_spring(SpringKey::Workspace(workspace), cx) {
+            return false;
+        }
+        let Some(session) = self.attached_session(cx) else {
+            return false;
+        };
+        self.show_workspace_focused(
+            session, workspace, false, focus, window, cx,
+        );
+        self.workspace_id(cx) == Some(workspace)
+    }
+
+    /// What the window shows once spring-loading activates `key`, as far
+    /// as known before it does: a workspace's tab is not.
+    fn springs_to(&self, key: SpringKey, cx: &App) -> Shown {
+        match key {
+            SpringKey::Tab(tab) => Shown {
+                workspace: self.workspace_id(cx),
+                tab: Some(tab),
+            },
+            SpringKey::Workspace(workspace) => Shown {
+                workspace: Some(workspace),
+                tab: None,
+            },
         }
     }
 
@@ -870,25 +1145,49 @@ impl WorkspaceView {
         selected: TabId,
         cx: &mut Context<'_, Self>,
     ) {
+        let now = Shown {
+            workspace: self.workspace_id(cx),
+            tab: Some(selected),
+        };
         if self.drag.as_ref().is_some_and(|drag| {
-            drag.payload.pane().is_some()
-                && drag.expected_active() != Some(selected)
+            (drag.payload.pane().is_some() || self.drag_away(drag.payload, cx))
+                && !drag.expected().matches(now)
         }) {
             self.take_drag(cx);
         }
     }
 
     /// Activates what a spring load came due on: a tab, with keyboard focus
-    /// when `focus`.
+    /// when `focus`, or a workspace row's workspace. `hover` records what
+    /// the window will show first, so the switch is the drag's own, then
+    /// what it shows once it did.
     pub(in super::super) fn spring_load(
         &mut self,
         key: SpringKey,
         focus: bool,
+        hover: fn(&mut Self) -> Option<&mut Hover>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        if !self.can_spring(key, cx) {
+            if let Some(hover) = hover(self) {
+                hover.spring = super::SpringLoad::default();
+            }
+            return;
+        }
+        let springs_to = self.springs_to(key, cx);
+        if let Some(hover) = hover(self) {
+            hover.sprang(springs_to);
+        }
         match key {
             SpringKey::Tab(tab) => self.select_tab(tab, focus, window, cx),
+            SpringKey::Workspace(workspace) => {
+                self.spring_workspace(workspace, focus, window, cx);
+            }
+        }
+        let shown = self.shown(cx);
+        if let Some(hover) = hover(self) {
+            hover.sprang(shown);
         }
     }
 
@@ -917,14 +1216,19 @@ impl WorkspaceView {
         let Some(drag) = &mut self.drag else {
             return;
         };
-        if drag.target() != Some(DropTarget::Spring(armed)) {
+        if drag.target().and_then(DropTarget::spring) != Some(armed) {
             // `retarget` re-armed for another target or disarmed.
             cx.notify();
             return;
         }
-        drag.hover.sprang(armed);
         let focus = !self.overlay_holds_focus();
-        self.spring_load(armed, focus, window, cx);
+        self.spring_load(
+            armed,
+            focus,
+            |view| view.drag.as_mut().map(|drag| &mut drag.hover),
+            window,
+            cx,
+        );
         self.retarget_drag(now, false, window, cx);
         cx.notify();
     }
@@ -954,7 +1258,13 @@ impl WorkspaceView {
         match self.drag.as_ref()?.payload {
             Payload::Workspace { .. } => Some(self.workspace_drag_scroll()),
             Payload::Session(_) => Some(self.session_list_scroll.clone()),
-            Payload::Tab { .. } | Payload::Pane { .. } => None,
+            // A tab or pane reaching for a row scrolls the workspace list
+            // it is over, while one draws.
+            Payload::Tab { .. } | Payload::Pane { .. } => {
+                let chrome = self.workspace_chrome_now.get();
+                (chrome.docked() || self.switcher_mode.is_some())
+                    .then(|| self.workspace_drag_scroll())
+            }
         }
     }
 

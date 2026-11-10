@@ -35,6 +35,12 @@ pub(super) enum PaneMove {
 }
 
 impl PaneMove {
+    /// The workspace the moved pane or tab leaves, when it moves into
+    /// another.
+    pub(super) fn source_workspace(self) -> Option<WorkspaceId> {
+        super::drag::Operation::Pane(self).source_workspace()
+    }
+
     /// The notice title a failed commit raises.
     fn title(self) -> &'static str {
         match self {
@@ -523,13 +529,24 @@ impl WorkspaceView {
                     view.switch_back(back, window, cx);
                 }
                 if result.is_ok()
-                    && let Some(pane) = focus
-                    && let Some(tab) = view.tab_showing(pane)
+                    && let Some(source) = change.source_workspace()
+                    && Some(source) != view.workspace_id(cx)
                 {
-                    if view.active_tab(cx) != Some(tab) {
-                        view.select(tab, window, cx);
+                    view.close_emptied_hidden(source, cx);
+                }
+                if result.is_ok()
+                    && let Some(pane) = focus
+                {
+                    if let Some(tab) = view.tab_showing(pane) {
+                        if view.active_tab(cx) != Some(tab) {
+                            view.select(tab, window, cx);
+                        }
+                        view.focus_pane(tab, pane, window, cx);
+                    } else if view.projects(pane, cx) {
+                        // Moved in from another workspace, it shows once its
+                        // view installs here.
+                        view.restore_focus = Some(pane);
                     }
-                    view.focus_pane(tab, pane, window, cx);
                 }
                 view.restore_tab_focus(window, cx);
                 view.resume_close(window, cx);

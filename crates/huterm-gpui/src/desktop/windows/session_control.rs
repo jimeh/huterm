@@ -345,7 +345,10 @@ impl WorkspaceView {
         if self.session_list.take().is_none() {
             return false;
         }
-        self.drop_row_drag(|payload| matches!(payload, Payload::Session(_)));
+        self.drop_row_drag(
+            |payload| matches!(payload, Payload::Session(_)),
+            cx,
+        );
         if self
             .menu
             .as_ref()
@@ -535,7 +538,7 @@ impl WorkspaceView {
             RowAction::ClearName => ids::CLEAR_SESSION_NAME,
             RowAction::Close => ids::CLOSE_SESSION,
             // Sessions have no pin; their menu never offers one.
-            RowAction::TogglePin => return,
+            RowAction::TogglePin | RowAction::NewWindow => return,
         };
         self.run_recorded(
             &CommandInvocation::new(
@@ -806,6 +809,8 @@ impl WorkspaceView {
                 selected: self.attached_session(cx) == Some(session),
                 targeted,
                 dragged,
+                drop_target: false,
+                tearing_off: false,
                 line_above: slot == Some(Some(RowKey::Session(session))),
                 line_below: last && !dragged && slot == Some(None),
                 badges,

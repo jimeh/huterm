@@ -59,7 +59,8 @@ pub(super) struct Payload {
     pub(super) source: gpui::WindowId,
     pub(super) drag: Dragged,
     panes: Vec<PaneId>,
-    focus: PaneId,
+    /// The pane the destination focuses; none for an empty workspace.
+    focus: Option<PaneId>,
     pub(super) title: String,
 }
 
@@ -100,7 +101,10 @@ impl Incoming {
 
 pub(super) struct PendingTransfer {
     panes: Vec<PaneId>,
-    focus: PaneId,
+    focus: Option<PaneId>,
+    /// A workspace moved into this window's session, which it shows once
+    /// the move commits.
+    show: Option<WorkspaceId>,
     touched: Vec<TabId>,
     pub(super) installing: bool,
     created: bool,
@@ -124,7 +128,50 @@ pub(super) fn handle(cx: &App, id: gpui::WindowId) -> Option<AnyWindowHandle> {
 impl WorkspaceView {
     fn cross_payload(&self, cx: &App) -> Option<Payload> {
         let drag = self.drag.as_ref().filter(|drag| drag.dragging())?;
-        self.payload(drag.payload.tab()?, drag.payload.pane(), cx)
+        match drag.payload {
+            Dragged::Workspace { session, workspace } => {
+                self.workspace_payload(session, workspace, cx)
+            }
+            Dragged::Session(_) => None,
+            Dragged::Tab { .. } | Dragged::Pane { .. } => {
+                self.payload(drag.payload.tab()?, drag.payload.pane(), cx)
+            }
+        }
+    }
+
+    /// A workspace of `session` as other windows see it: every pane it
+    /// holds, the pane to focus (the shown one's, else its first), and its
+    /// name.
+    fn workspace_payload(
+        &self,
+        session: SessionId,
+        workspace: WorkspaceId,
+        cx: &App,
+    ) -> Option<Payload> {
+        let state = cx.global::<Desktop>().hierarchy.state();
+        if state.workspace_session(workspace) != Some(session) {
+            return None;
+        }
+        let tabs = state.workspace_tabs(workspace)?;
+        let panes: Vec<PaneId> = tabs
+            .iter()
+            .filter_map(|tab| state.tab(*tab))
+            .flat_map(|tab| tab.layout.panes().into_iter().map(|pane| pane.id))
+            .collect();
+        let focus = if Some(workspace) == self.workspace_id(cx) {
+            self.active_pane(cx).map(|(_, pane)| pane)
+        } else {
+            None
+        }
+        .or_else(|| panes.first().copied());
+        Some(Payload {
+            source: self.window,
+            drag: Dragged::Workspace { session, workspace },
+            panes,
+            focus,
+            title: self
+                .row_title(Dragged::Workspace { session, workspace }, cx),
+        })
     }
 
     fn payload(
@@ -133,8 +180,11 @@ impl WorkspaceView {
         pane: Option<PaneId>,
         cx: &App,
     ) -> Option<Payload> {
-        let view = self.tabs.iter().find(|view| view.id == tab)?;
-        let layout = &cx.global::<Desktop>().hierarchy.state().tab(tab)?.layout;
+        // A drag sprang away from its workspace still holds the tab's view.
+        let view = self.all_tab_views().find(|view| view.id == tab)?;
+        let state = cx.global::<Desktop>().hierarchy.state();
+        let workspace = state.tab_workspace(tab)?;
+        let layout = &state.tab(tab)?.layout;
         if pane.is_some_and(|pane| layout.pane(pane).is_none()) {
             return None;
         }
@@ -144,7 +194,6 @@ impl WorkspaceView {
         } else {
             layout.first_pane().id
         };
-        let workspace = self.workspace_id(cx)?;
         Some(Payload {
             source: self.window,
             drag: match pane {
@@ -159,7 +208,7 @@ impl WorkspaceView {
                 || layout.panes().into_iter().map(|pane| pane.id).collect(),
                 |pane| vec![pane],
             ),
-            focus: pane.unwrap_or(focused),
+            focus: Some(pane.unwrap_or(focused)),
             title: pane.and_then(|pane| view.pane(pane)).map_or_else(
                 || view.title(self.config.tabs, cx),
                 |pane| view.pane_label(pane, self.config.tabs, cx),
@@ -253,7 +302,7 @@ impl WorkspaceView {
             .is_some_and(|drag| {
                 drag.payload.source == self.window
                     && drag.located == Located::Outside
-                    && self.tears_off(&drag.payload)
+                    && self.tears_off(&drag.payload, cx)
             })
     }
 
@@ -282,8 +331,9 @@ impl WorkspaceView {
     }
 
     /// Whether `payload` can leave this window for a new one: a tab when
-    /// the window has others, a pane unless it is alone in the only tab.
-    pub(super) fn tears_off(&self, payload: &Payload) -> bool {
+    /// the window has others, a pane unless it is alone in the only tab,
+    /// and a workspace unless it is its session's only one.
+    pub(super) fn tears_off(&self, payload: &Payload, cx: &App) -> bool {
         match payload.drag {
             Dragged::Tab { .. } => {
                 tab_tear_off_availability(self.tabs.len()).is_ok()
@@ -293,7 +343,11 @@ impl WorkspaceView {
                 self.pane_count(tab),
             )
             .is_ok(),
-            Dragged::Workspace { .. } | Dragged::Session(_) => false,
+            Dragged::Workspace { .. } => workspace_tear_off_availability(
+                self.session_workspaces(cx).len(),
+            )
+            .is_ok(),
+            Dragged::Session(_) => false,
         }
     }
 
@@ -377,7 +431,7 @@ impl WorkspaceView {
                 payload: drag.payload.clone(),
                 hover: Hover::new(
                     pointer,
-                    self.active_tab(cx),
+                    self.shown(cx),
                     self.tab_scroll,
                     self.tab_strip(window),
                 ),
@@ -472,11 +526,18 @@ impl WorkspaceView {
             return;
         };
         self.retarget_incoming(now, false, window, cx);
-        if let Some(incoming) = &mut self.incoming
-            && incoming.hover.target == Some(DropTarget::Spring(armed))
-        {
-            incoming.hover.sprang(armed);
-            self.spring_load(armed, false, window, cx);
+        if self.incoming.as_ref().is_some_and(|incoming| {
+            incoming.hover.target.and_then(DropTarget::spring) == Some(armed)
+        }) {
+            self.spring_load(
+                armed,
+                false,
+                |view| {
+                    view.incoming.as_mut().map(|incoming| &mut incoming.hover)
+                },
+                window,
+                cx,
+            );
             self.retarget_incoming(now, false, window, cx);
             cx.notify();
         }
@@ -556,6 +617,13 @@ impl WorkspaceView {
                                 view.transfer = Some(PendingTransfer {
                                     panes: payload.panes.clone(),
                                     focus: payload.focus,
+                                    show: match change {
+                                        Operation::MoveWorkspace {
+                                            workspace,
+                                            ..
+                                        } => Some(workspace),
+                                        _ => None,
+                                    },
                                     touched,
                                     installing: false,
                                     created: false,
@@ -592,9 +660,13 @@ impl WorkspaceView {
                 }
                 true
             }
-            Located::Outside if self.tears_off(&drag.payload) => {
+            Located::Outside if self.tears_off(&drag.payload, cx) => {
                 self.end_cross_drag(true, cx);
-                self.tear_off(drag.payload, window, cx);
+                if matches!(drag.payload.drag, Dragged::Workspace { .. }) {
+                    self.tear_off_workspace(drag.payload, window, cx);
+                } else {
+                    self.tear_off(drag.payload, window, cx);
+                }
                 true
             }
             _ => {
@@ -705,6 +777,13 @@ impl WorkspaceView {
                                     );
                                 }
                                 view.reconcile_own(window, cx);
+                                if result.is_ok()
+                                    && let Some(source) =
+                                        change.source_workspace()
+                                    && Some(source) != view.workspace_id(cx)
+                                {
+                                    view.close_emptied_hidden(source, cx);
+                                }
                                 view.resume_close(window, cx);
                                 cx.notify();
                             });
@@ -727,6 +806,7 @@ impl WorkspaceView {
                                         .unwrap_or_default();
                                     view.clear_transfer_zoom(&touched);
                                     view.reconcile_own(window, cx);
+                                    view.show_transferred(window, cx);
                                     view.finish_transfer_install(window, cx);
                                 } else {
                                     let pending = view.transfer.take();
@@ -779,6 +859,47 @@ impl WorkspaceView {
         }
     }
 
+    /// Shows the workspace a committed transfer moved into this window's
+    /// session, once the projection holds it there.
+    fn show_transferred(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(workspace) = self
+            .transfer
+            .as_mut()
+            .and_then(|pending| pending.show.take())
+        else {
+            return;
+        };
+        let Some(session) = self.attached_session(cx) else {
+            return;
+        };
+        if cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .workspace_session(workspace)
+            == Some(session)
+            && self.workspace_id(cx) != Some(workspace)
+        {
+            self.show_workspace(session, workspace, false, window, cx);
+        }
+    }
+
+    /// The tab the projection places `pane` in, within a workspace this
+    /// window holds, shown or hidden.
+    fn held_pane_tab(&self, pane: PaneId, cx: &App) -> Option<TabId> {
+        let state = cx.global::<Desktop>().hierarchy.state();
+        state.pane_tab(pane).filter(|tab| {
+            state.tab_workspace(*tab).is_some_and(|workspace| {
+                Some(workspace) == self.workspace_id(cx)
+                    || self.hidden.contains_key(&workspace)
+            })
+        })
+    }
+
     pub(super) fn projected_pane_tab(
         &self,
         pane: PaneId,
@@ -807,9 +928,11 @@ impl WorkspaceView {
         if !pending.installing {
             return;
         }
-        let in_workspace = |pane| self.projected_pane_tab(pane, cx);
+        // A drop on a hidden workspace's row lands there: its panes count
+        // once they install hidden.
+        let in_workspace = |pane| self.held_pane_tab(pane, cx);
         let installed = |pane| {
-            self.tabs.iter().any(|tab| {
+            self.all_tab_views().any(|tab| {
                 tab.pane(pane)
                     .is_some_and(|pane| !pane.view.read(cx).revoked)
             })
@@ -832,7 +955,9 @@ impl WorkspaceView {
         self.transfer = None;
         checkpoints::set_transfer_reserved(cx, self.window, false);
         self.busy = false;
-        if let Some(tab) = self.tab_showing(focus) {
+        if let Some(focus) = focus
+            && let Some(tab) = self.tab_showing(focus)
+        {
             self.select(tab, window, cx);
             self.focus_pane(tab, focus, window, cx);
         }
@@ -1012,6 +1137,7 @@ impl WorkspaceView {
                                 view.transfer = Some(PendingTransfer {
                                     panes: payload.panes.clone(),
                                     focus: payload.focus,
+                                    show: None,
                                     touched: payload
                                         .drag
                                         .tab()
@@ -1120,6 +1246,225 @@ impl WorkspaceView {
         cx.notify();
     }
 
+    /// Moves a workspace of this window's session into a new session shown
+    /// by a new window. One worker moves it and attaches the session under
+    /// the Mux lock; the window then adopts the attachment and installs the
+    /// workspace's tabs, reserved until they show. A window that cannot
+    /// open puts the workspace back in its slot and closes the session.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "window creation owns the move back across awaits"
+    )]
+    fn tear_off_workspace(
+        &mut self,
+        payload: Payload,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Dragged::Workspace { session, workspace } = payload.drag else {
+            return;
+        };
+        if self.busy
+            || self.close.confirmation.is_some()
+            || cx.global::<Desktop>().quitting
+            || terminating(cx)
+        {
+            return;
+        }
+        // The slot it leaves, for a failure to put it back in.
+        let before = {
+            let order = self.session_workspaces(cx);
+            order
+                .iter()
+                .position(|id| *id == workspace)
+                .and_then(|at| order.get(at + 1).copied())
+        };
+        self.busy = true;
+        // From the first change to the new window's reservation, a capture
+        // waits, so none saves the workspace half moved.
+        checkpoints::set_transfer_reserved(cx, self.window, true);
+        let content_size = window.viewport_size();
+        #[cfg(target_os = "macos")]
+        let placement = self.tear_off_placement(window);
+        let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        let cleanup_runtime = Arc::clone(&runtime);
+        let task = cx.background_executor().spawn(async move {
+            #[cfg(all(test, feature = "test-support"))]
+            if runtime
+                .worker_hooks
+                .enter(worker_hooks::Stage::Transfer)
+                .await
+            {
+                return Committed {
+                    result: Err(RuntimeError::Stopped.into()),
+                    seq: runtime.lock().hierarchy_seq(),
+                };
+            }
+            let mut mux = runtime.lock();
+            let result = if runtime.terminating.load(Ordering::Acquire) {
+                Err(RuntimeError::Stopped.into())
+            } else {
+                mux.move_workspace_to_new_session(session, workspace)
+                    .and_then(|created| {
+                        mux.attach_session(created)
+                            .map(|attachment| (created, attachment))
+                            .inspect_err(|_| {
+                                put_back(
+                                    &mut mux, created, None, session,
+                                    workspace, before,
+                                );
+                            })
+                    })
+            };
+            Committed {
+                result,
+                seq: mux.hierarchy_seq(),
+            }
+        });
+        let app = cx.to_async();
+        cx.spawn_in(window, async move |source, cx| {
+            let Committed { result, seq } = task.await;
+            projected(&app, seq).await;
+            let (created, attachment) = match result {
+                Ok(created) => created,
+                Err(error) => {
+                    let _ = source.update_in(cx, |view, window, cx| {
+                        view.busy = false;
+                        checkpoints::set_transfer_reserved(
+                            cx,
+                            view.window,
+                            false,
+                        );
+                        if !terminating(cx) {
+                            view.report_failure(
+                                "Move workspace",
+                                format!("Cannot move workspace: {error}"),
+                                cx,
+                            );
+                        }
+                        view.reconcile_own(window, cx);
+                        view.resume_close(window, cx);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            let destination = app.update(|cx| {
+                // A Quit that began meanwhile saves the workspace where it
+                // was, not in a window that opens while it runs.
+                let desktop = cx.global::<Desktop>();
+                if terminating(cx) || desktop.quitting || desktop.quit_pending {
+                    return None;
+                }
+                #[cfg(test)]
+                if std::mem::take(
+                    &mut cx.global_mut::<Desktop>().cross.fail_window,
+                ) {
+                    return None;
+                }
+                let before = cx.windows();
+                cx.global_mut::<Desktop>().cross.opening = Some(content_size);
+                open_window_inner(cx, false);
+                cx.global_mut::<Desktop>().cross.opening = None;
+                let handle = cx
+                    .windows()
+                    .into_iter()
+                    .find(|handle| !before.contains(handle))?;
+                handle
+                    .update(cx, |root, window, cx| {
+                        root.downcast::<WorkspaceView>().ok()?.update(
+                            cx,
+                            |view, cx| {
+                                view.busy = true;
+                                checkpoints::set_transfer_reserved(
+                                    cx,
+                                    view.window,
+                                    true,
+                                );
+                                // Installing from the start: the move has
+                                // committed, so the reservation ends once
+                                // the workspace's panes show.
+                                view.transfer = Some(PendingTransfer {
+                                    panes: payload.panes.clone(),
+                                    focus: payload.focus,
+                                    show: None,
+                                    touched: Vec::new(),
+                                    installing: true,
+                                    created: true,
+                                    closes: Vec::new(),
+                                    preview: None,
+                                });
+                                view.adopt_attachment(
+                                    attachment, created, workspace, cx,
+                                );
+                                view.finish_transfer_install(window, cx);
+                            },
+                        );
+                        Some(())
+                    })
+                    .ok()
+                    .flatten()?;
+                Some(handle)
+            });
+            if let Some(destination) = destination {
+                #[cfg(target_os = "macos")]
+                if let Some((pointer, grab)) = placement {
+                    let number = app.update(|cx| {
+                        cx.global::<Desktop>()
+                            .cross
+                            .windows
+                            .iter()
+                            .find(|(id, _)| *id == destination.window_id())
+                            .map(|(_, native)| *native)
+                    });
+                    if let Some(number) = number {
+                        window_locator::place(number, pointer, grab);
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = destination;
+                let _ = source.update_in(cx, |view, window, cx| {
+                    view.busy = false;
+                    checkpoints::set_transfer_reserved(cx, view.window, false);
+                    view.reconcile_own(window, cx);
+                    view.resume_close(window, cx);
+                    cx.notify();
+                });
+                return;
+            }
+            // No window shows the session: the workspace goes back, so
+            // nothing is left where no window reaches it.
+            cx.background_executor()
+                .spawn(async move {
+                    put_back(
+                        &mut cleanup_runtime.lock(),
+                        created,
+                        Some(attachment),
+                        session,
+                        workspace,
+                        before,
+                    );
+                })
+                .await;
+            let _ = source.update_in(cx, |view, window, cx| {
+                view.busy = false;
+                checkpoints::set_transfer_reserved(cx, view.window, false);
+                if !terminating(cx) {
+                    view.report_failure(
+                        "Move workspace",
+                        "Cannot open the destination window",
+                        cx,
+                    );
+                }
+                view.reconcile_own(window, cx);
+                view.resume_close(window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Puts back the bar scroll and spring-loaded tab a failed tear-off's
     /// drag left behind.
     fn restore_tear_off(
@@ -1147,9 +1492,13 @@ impl WorkspaceView {
         let drag = self.drag.as_ref()?;
         let pointer = window_locator::screen_point(window, drag.pointer())?;
         let pane = match drag.payload {
-            Dragged::Tab { .. } => return Some((pointer, drag.origin())),
+            // A row keeps its grab point too, which in the new window,
+            // whose sidebar starts hidden, lands on its content.
+            Dragged::Tab { .. } | Dragged::Workspace { .. } => {
+                return Some((pointer, drag.origin()));
+            }
             Dragged::Pane { pane, .. } => pane,
-            Dragged::Workspace { .. } | Dragged::Session(_) => return None,
+            Dragged::Session(_) => return None,
         };
         let grabbed = self
             .drawn_panes
@@ -1243,6 +1592,49 @@ impl WorkspaceView {
         pane_tear_off_availability(self.tabs.len(), self.pane_count(tab))
     }
 
+    /// Refuses Move Workspace to New Window as a drag's release would, and
+    /// returns the workspace: `workspace`, else the window's, while its
+    /// session has another.
+    pub(super) fn check_workspace_tear_off_available(
+        &self,
+        workspace: Option<WorkspaceId>,
+        cx: &App,
+    ) -> Result<(SessionId, WorkspaceId), CommandError> {
+        self.check_new_tab_available(cx)?;
+        self.check_runtime_available(cx)?;
+        let session = self.attached_session(cx).ok_or_else(|| {
+            CommandError::Unavailable("window has no session".to_owned())
+        })?;
+        let workspace = workspace
+            .or_else(|| self.workspace_id(cx))
+            .filter(|workspace| {
+                cx.global::<Desktop>()
+                    .hierarchy
+                    .state()
+                    .workspace_session(*workspace)
+                    == Some(session)
+            })
+            .ok_or(CommandError::StaleTarget)?;
+        workspace_tear_off_availability(self.session_workspaces(cx).len())?;
+        Ok((session, workspace))
+    }
+
+    pub(super) fn move_workspace_to_new_window(
+        &mut self,
+        workspace: Option<WorkspaceId>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> Result<CommandOutcome, CommandError> {
+        let (session, workspace) =
+            self.check_workspace_tear_off_available(workspace, cx)?;
+        let payload = self
+            .workspace_payload(session, workspace, cx)
+            .ok_or(CommandError::StaleTarget)?;
+        self.cancel_drag(window, cx);
+        self.tear_off_workspace(payload, window, cx);
+        Ok(CommandOutcome::Accepted)
+    }
+
     pub(super) fn move_pane_to_new_window(
         &mut self,
         window: &mut Window,
@@ -1286,6 +1678,42 @@ pub(super) fn tear_off_label(bounds: Bounds<Pixels>) -> &'static str {
         "↗"
     } else {
         "↗ New window"
+    }
+}
+
+/// Moves a torn-off `workspace` from session `created` back into `session`
+/// before `before`, or last when that slot went, and closes `created` once
+/// empty. A source session closed meanwhile keeps the workspace in
+/// `created`, detached, so its terminals keep running and the session
+/// switcher still reaches them.
+fn put_back(
+    mux: &mut huterm_core::Mux,
+    created: SessionId,
+    attachment: Option<AttachmentId>,
+    session: SessionId,
+    workspace: WorkspaceId,
+    before: Option<WorkspaceId>,
+) {
+    let moved = mux
+        .move_workspace(created, workspace, session, before)
+        .or_else(|_| mux.move_workspace(created, workspace, session, None));
+    if moved.is_ok() {
+        let _ = mux.close_session(created);
+    } else if let Some(attachment) = attachment {
+        let _ = mux.detach_session(attachment);
+    }
+}
+
+/// A workspace tears off unless it is its session's only one.
+pub(super) fn workspace_tear_off_availability(
+    workspaces: usize,
+) -> Result<(), CommandError> {
+    if workspaces < 2 {
+        Err(CommandError::Unavailable(
+            "The workspace is its session's only one.".to_owned(),
+        ))
+    } else {
+        Ok(())
     }
 }
 

@@ -113,6 +113,25 @@ pub(super) enum RowKey {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SpringKey {
     Tab(TabId),
+    /// A sidebar row's workspace, which the window then shows.
+    Workspace(WorkspaceId),
+}
+
+/// What a window shows: its workspace, and that workspace's active tab.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Shown {
+    pub(super) workspace: Option<WorkspaceId>,
+    pub(super) tab: Option<TabId>,
+}
+
+impl Shown {
+    /// Whether the window showing `now` shows this: the same workspace,
+    /// and the same tab unless this names none, as while a sprung
+    /// workspace has not picked its tab yet.
+    pub(super) fn matches(self, now: Self) -> bool {
+        self.workspace == now.workspace
+            && self.tab.is_none_or(|tab| now.tab == Some(tab))
+    }
 }
 
 /// Where a release would land.
@@ -136,6 +155,16 @@ pub(super) enum DropTarget {
     Spring(SpringKey),
     /// The sidebar list slot before a row, or after the last.
     RowSlot(Option<RowKey>),
+    /// A sidebar workspace row under a tab or pane, which a drop moves
+    /// into; `spring` when the window does not show it, so resting there
+    /// shows it.
+    Workspace {
+        workspace: WorkspaceId,
+        spring: bool,
+    },
+    /// Another window's content under a dragged workspace, which a drop
+    /// moves into that window's session, last.
+    Window,
 }
 
 impl DropTarget {
@@ -143,6 +172,10 @@ impl DropTarget {
     pub(super) fn spring(self) -> Option<SpringKey> {
         match self {
             Self::Spring(key) => Some(key),
+            Self::Workspace {
+                workspace,
+                spring: true,
+            } => Some(SpringKey::Workspace(workspace)),
             _ => None,
         }
     }
@@ -153,6 +186,8 @@ impl DropTarget {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Destination<'a> {
     pub(super) workspace: Option<WorkspaceId>,
+    /// The session the target window attaches to.
+    pub(super) session: Option<SessionId>,
     /// The target is in another window than the gesture's source.
     pub(super) cross: bool,
     pub(super) tabs: &'a [TabId],
@@ -177,9 +212,11 @@ pub(super) enum Operation {
     },
     /// Swaps or moves a pane, or nests a tab beside a pane.
     Pane(PaneMove),
+    /// Moves a workspace within its session, or into session `to`.
     MoveWorkspace {
         session: SessionId,
         workspace: WorkspaceId,
+        to: SessionId,
         before: Option<WorkspaceId>,
     },
     MoveSession {
@@ -201,12 +238,37 @@ impl Operation {
             Self::MoveWorkspace { .. } | Self::MoveSession { .. } => None,
         }
     }
+
+    /// The workspace a tab or pane leaves, when it moves into another.
+    pub(super) fn source_workspace(self) -> Option<WorkspaceId> {
+        match self {
+            Self::MoveTab { workspace, to, .. } => {
+                (workspace != to).then_some(workspace)
+            }
+            Self::Pane(PaneMove::Move {
+                from,
+                to: MoveDestination::NewTab { workspace, .. },
+            }) => (from.workspace != workspace).then_some(from.workspace),
+            Self::Pane(PaneMove::Move {
+                from,
+                to: MoveDestination::Beside(beside),
+            }) => (from.workspace != beside.target.workspace)
+                .then_some(from.workspace),
+            Self::Pane(PaneMove::TabInto { workspace, to, .. }) => {
+                (workspace != to.target.workspace).then_some(workspace)
+            }
+            Self::ReorderTab { .. }
+            | Self::Pane(PaneMove::Swap { .. })
+            | Self::MoveWorkspace { .. }
+            | Self::MoveSession { .. } => None,
+        }
+    }
 }
 
 /// The operation a drop of `payload` on `target` commits, or `None` when
 /// the pair takes no drop: a refused zone, a spring-loading target, a
-/// centre outside the dragged pane's own tab, or a row dropped where it
-/// already sits.
+/// centre outside the dragged pane's own tab, the row of the dragged tab's
+/// or pane's own workspace, or a row dropped where it already sits.
 pub(super) fn operation(
     payload: Payload,
     target: DropTarget,
@@ -236,24 +298,7 @@ pub(super) fn operation(
             tab_operation(workspace, tab, target, to)
         }
         Payload::Workspace { session, workspace } => {
-            let DropTarget::RowSlot(before) = target else {
-                return None;
-            };
-            let before = match before {
-                Some(RowKey::Workspace(before)) => Some(before),
-                Some(RowKey::Session(_)) => return None,
-                None => None,
-            };
-            moves(
-                to.rows,
-                RowKey::Workspace(workspace),
-                before.map(RowKey::Workspace),
-            )
-            .then_some(Operation::MoveWorkspace {
-                session,
-                workspace,
-                before,
-            })
+            workspace_operation(session, workspace, target, to)
         }
         Payload::Session(session) => {
             let DropTarget::RowSlot(before) = target else {
@@ -274,9 +319,46 @@ pub(super) fn operation(
     }
 }
 
+/// A workspace row dropped on `target`: a slot of its own session's list
+/// reorders it, and a slot or the content of a window attached to
+/// another session moves it into that session.
+fn workspace_operation(
+    session: SessionId,
+    workspace: WorkspaceId,
+    target: DropTarget,
+    to: &Destination<'_>,
+) -> Option<Operation> {
+    let before = match target {
+        DropTarget::RowSlot(Some(RowKey::Workspace(before))) => Some(before),
+        DropTarget::RowSlot(None) | DropTarget::Window => None,
+        _ => return None,
+    };
+    let into = to.session.filter(|into| to.cross && *into != session);
+    if let Some(into) = into {
+        return Some(Operation::MoveWorkspace {
+            session,
+            workspace,
+            to: into,
+            before,
+        });
+    }
+    (target != DropTarget::Window
+        && moves(
+            to.rows,
+            RowKey::Workspace(workspace),
+            before.map(RowKey::Workspace),
+        ))
+    .then_some(Operation::MoveWorkspace {
+        session,
+        workspace,
+        to: session,
+        before,
+    })
+}
+
 /// A pane `from` dropped on `target`: a centre swaps within its own tab
-/// here, an edge moves it beside the pane, and a slot or the title row
-/// opens a new tab.
+/// here, an edge moves it beside the pane, and a slot, the title row, or
+/// another workspace's row opens a new tab.
 fn pane_operation(
     from: PaneRef,
     target: DropTarget,
@@ -328,20 +410,38 @@ fn pane_operation(
                 },
             },
         },
-        DropTarget::Spring(_) | DropTarget::RowSlot(_) => return None,
+        DropTarget::Workspace { workspace, .. } => {
+            if workspace == from.workspace {
+                return None;
+            }
+            PaneMove::Move {
+                from,
+                to: MoveDestination::NewTab {
+                    workspace,
+                    before: None,
+                },
+            }
+        }
+        DropTarget::Spring(_) | DropTarget::RowSlot(_) | DropTarget::Window => {
+            return None;
+        }
     };
     Some(Operation::Pane(change))
 }
 
 /// A tab dropped on `target`: an edge nests it beside the pane, a slot
-/// reorders it here or moves it into another window, as the title row
-/// does.
+/// reorders it in its own workspace or moves it into the one shown, as the
+/// title row does, and another workspace's row moves it to that
+/// workspace's end.
 fn tab_operation(
     workspace: WorkspaceId,
     tab: TabId,
     target: DropTarget,
     to: &Destination<'_>,
 ) -> Option<Operation> {
+    // The window shows another workspace than the tab's: another window's,
+    // or one a row drag sprang to.
+    let away = to.cross || to.workspace != Some(workspace);
     match target {
         DropTarget::Pane {
             tab: other_tab,
@@ -362,7 +462,7 @@ fn tab_operation(
         })),
         DropTarget::Slot(index) => {
             let before = to.tabs.get(index).copied();
-            Some(if to.cross {
+            Some(if away {
                 Operation::MoveTab {
                     workspace,
                     tab,
@@ -377,17 +477,26 @@ fn tab_operation(
                 }
             })
         }
-        DropTarget::TitleRow => to.cross.then_some(Operation::MoveTab {
+        DropTarget::TitleRow => away.then_some(Operation::MoveTab {
             workspace,
             tab,
             to: to.workspace?,
+            before: None,
+        }),
+        DropTarget::Workspace {
+            workspace: into, ..
+        } => (into != workspace).then_some(Operation::MoveTab {
+            workspace,
+            tab,
+            to: into,
             before: None,
         }),
         DropTarget::Pane {
             zone: Zone::Centre, ..
         }
         | DropTarget::Spring(_)
-        | DropTarget::RowSlot(_) => None,
+        | DropTarget::RowSlot(_)
+        | DropTarget::Window => None,
     }
 }
 
@@ -473,6 +582,7 @@ impl SpringLoad {
     pub(super) fn tab(&self) -> Option<TabId> {
         match self.key()? {
             SpringKey::Tab(tab) => Some(tab),
+            SpringKey::Workspace(_) => None,
         }
     }
 
@@ -492,14 +602,13 @@ impl SpringLoad {
     }
 }
 
-/// The tabs a drag that spring-loaded switches between when it ends
-/// without a drop.
+/// What a drag that spring-loaded switches between when it ends without a
+/// drop: the workspace and tab shown when it began, and those shown after
+/// its last spring load.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SpringBack {
-    /// The tab the drag started over.
-    pub(super) origin: TabId,
-    /// The tab spring-loading activated.
-    pub(super) sprung: TabId,
+    pub(super) origin: Shown,
+    pub(super) sprung: Shown,
 }
 
 /// A drag over one window: the source's own gesture, or a destination's
@@ -510,10 +619,11 @@ pub(super) struct Hover {
     pub(super) pointer: gpui::Point<Pixels>,
     pub(super) target: Option<DropTarget>,
     pub(super) spring: SpringLoad,
-    /// The tab active when the drag began over the window.
-    origin: Option<TabId>,
-    /// The last tab spring-loading activated, unless that was `origin`.
-    sprung: Option<TabId>,
+    /// What the window showed when the drag began over it.
+    origin: Shown,
+    /// What the window showed after the last spring load, unless that was
+    /// `origin`.
+    sprung: Option<Shown>,
     /// The bar scroll when the drag began, which an ending without a drop
     /// puts back.
     pub(super) scroll: Pixels,
@@ -526,7 +636,7 @@ pub(super) struct Hover {
 impl Hover {
     pub(super) fn new(
         pointer: gpui::Point<Pixels>,
-        origin: Option<TabId>,
+        origin: Shown,
         scroll: Pixels,
         strip: TabStrip,
     ) -> Self {
@@ -567,20 +677,22 @@ impl Hover {
         self.spring = SpringLoad::default();
     }
 
-    /// Records that spring-loading activated `key`.
-    pub(super) fn sprang(&mut self, key: SpringKey) {
-        let SpringKey::Tab(tab) = key;
-        self.sprung = (Some(tab) != self.origin).then_some(tab);
+    /// Records that spring-loading made the window show `shown`, which
+    /// names no tab while a sprung workspace has not picked one yet.
+    pub(super) fn sprang(&mut self, shown: Shown) {
+        self.sprung = (shown != self.origin).then_some(shown);
         self.spring = SpringLoad::default();
     }
 
-    pub(super) fn sprung(&self) -> Option<TabId> {
-        self.sprung
+    /// What the drag expects the window to show: what it spring-loaded,
+    /// else what it began over.
+    pub(super) fn expected(&self) -> Shown {
+        self.sprung.unwrap_or(self.origin)
     }
 
     pub(super) fn back(&self) -> Option<SpringBack> {
         Some(SpringBack {
-            origin: self.origin?,
+            origin: self.origin,
             sprung: self.sprung?,
         })
     }
@@ -730,10 +842,10 @@ impl Gesture {
         starts
     }
 
-    /// The tab the drag expects active: the one it spring-loaded, else the
-    /// one it started over.
-    pub(super) fn expected_active(&self) -> Option<TabId> {
-        self.hover.sprung().or(self.hover.origin)
+    /// What the drag expects the window to show: what it spring-loaded,
+    /// else what it started over.
+    pub(super) fn expected(&self) -> Shown {
+        self.hover.expected()
     }
 
     pub(super) fn back(&self) -> Option<SpringBack> {
@@ -775,22 +887,31 @@ impl Gesture {
         }
     }
 
-    /// Whether a dragged row rests at the edge of the list `scroll`.
+    /// Whether the drag scrolls the list `scroll`: a dragged row anywhere,
+    /// a tab or pane only while over the list inside its window.
+    fn in_list(&self, scroll: &gpui::ScrollHandle) -> bool {
+        self.payload.row().is_some()
+            || (self.payload.in_bar()
+                && !self.outside
+                && scroll.bounds().contains(&self.pointer()))
+    }
+
+    /// Whether the drag rests at the edge of the list `scroll`.
     pub(super) fn list_scrolls(&self, scroll: &gpui::ScrollHandle) -> bool {
         self.dragging()
-            && self.payload.row().is_some()
+            && self.in_list(scroll)
             && ListScroll::direction(self.pointer(), scroll).is_some()
     }
 
-    /// Scrolls the list under a dragged row resting at its edge. Returns
-    /// whether it scrolled.
+    /// Scrolls the list under a drag resting at its edge. Returns whether
+    /// it scrolled.
     pub(super) fn advance_list(
         &mut self,
         now: Instant,
         scroll: &gpui::ScrollHandle,
     ) -> bool {
         self.dragging()
-            && self.payload.row().is_some()
+            && self.in_list(scroll)
             && self.list.advance(now, self.press.pointer, scroll)
     }
 }
@@ -844,6 +965,12 @@ mod tests {
         assert_eq!(spring.armed_at(), Some(later + Duration::from_millis(100)));
         spring.hover(None, later);
         assert_eq!(spring, SpringLoad::default());
+        // A workspace row arms the same way and names its workspace.
+        let row = SpringKey::Workspace(workspace());
+        spring.hover(Some(row), later);
+        assert_eq!(spring.key(), Some(row));
+        assert_eq!(spring.tab(), None);
+        assert_eq!(spring.due(later + SPRING_LOAD_DELAY), Some(row));
     }
 
     #[test]
@@ -899,6 +1026,7 @@ mod tests {
             Some(Operation::MoveWorkspace {
                 session: SessionId::new(1),
                 workspace: one,
+                to: SessionId::new(1),
                 before: Some(three),
             })
         );
@@ -907,6 +1035,7 @@ mod tests {
             Some(Operation::MoveWorkspace {
                 session: SessionId::new(1),
                 workspace: one,
+                to: SessionId::new(1),
                 before: None,
             })
         );
@@ -1036,5 +1165,216 @@ mod tests {
             operation(tab_drag, zone(other_tab, Zone::Centre, false), &local),
             None
         );
+    }
+
+    #[test]
+    fn a_workspace_row_takes_tabs_and_panes_from_other_workspaces_only() {
+        let (own, other) = (workspace(), WorkspaceId::new(2));
+        let (tab, pane) = (TabId::new(1), PaneId::new(1));
+        let tabs = [tab];
+        let to = Destination {
+            workspace: Some(own),
+            tabs: &tabs,
+            ..Destination::default()
+        };
+        let row =
+            |workspace, spring| DropTarget::Workspace { workspace, spring };
+        let tab_drag = Payload::Tab {
+            workspace: own,
+            tab,
+        };
+        let pane_drag = Payload::Pane {
+            workspace: own,
+            tab,
+            pane,
+        };
+        assert_eq!(
+            operation(tab_drag, row(other, true), &to),
+            Some(Operation::MoveTab {
+                workspace: own,
+                tab,
+                to: other,
+                before: None,
+            })
+        );
+        assert_eq!(
+            operation(pane_drag, row(other, false), &to),
+            Some(Operation::Pane(PaneMove::Move {
+                from: PaneRef {
+                    workspace: own,
+                    tab,
+                    pane,
+                },
+                to: MoveDestination::NewTab {
+                    workspace: other,
+                    before: None,
+                },
+            }))
+        );
+        // The item's own workspace takes no drop, shown or not.
+        for spring in [false, true] {
+            assert_eq!(operation(tab_drag, row(own, spring), &to), None);
+            assert_eq!(operation(pane_drag, row(own, spring), &to), None);
+        }
+        // Only a row that is not shown spring-loads.
+        assert_eq!(
+            row(other, true).spring(),
+            Some(SpringKey::Workspace(other))
+        );
+        assert_eq!(row(other, false).spring(), None);
+        // Rows and windows take no row drags this way.
+        let row_drag = Payload::Workspace {
+            session: SessionId::new(1),
+            workspace: own,
+        };
+        assert_eq!(operation(row_drag, row(other, true), &to), None);
+        assert_eq!(operation(tab_drag, DropTarget::Window, &to), None);
+    }
+
+    #[test]
+    fn a_tab_in_a_window_showing_another_workspace_moves_there() {
+        let (own, shown) = (workspace(), WorkspaceId::new(2));
+        let (tab, there) = (TabId::new(1), TabId::new(5));
+        let tabs = [there];
+        // A row drag sprang the window to `shown`: the tab is not in its
+        // bar, so a slot or the title row moves the tab instead of
+        // reordering it.
+        let sprung = Destination {
+            workspace: Some(shown),
+            tabs: &tabs,
+            ..Destination::default()
+        };
+        let drag = Payload::Tab {
+            workspace: own,
+            tab,
+        };
+        assert_eq!(
+            operation(drag, DropTarget::Slot(0), &sprung),
+            Some(Operation::MoveTab {
+                workspace: own,
+                tab,
+                to: shown,
+                before: Some(there),
+            })
+        );
+        assert_eq!(
+            operation(drag, DropTarget::TitleRow, &sprung),
+            Some(Operation::MoveTab {
+                workspace: own,
+                tab,
+                to: shown,
+                before: None,
+            })
+        );
+    }
+
+    #[test]
+    fn a_workspace_dropped_on_another_session_moves_there() {
+        let (session, other) = (SessionId::new(1), SessionId::new(2));
+        let [one, two, three] = [1, 2, 3].map(WorkspaceId::new);
+        let rows = [two, three].map(RowKey::Workspace);
+        let drag = Payload::Workspace {
+            session,
+            workspace: one,
+        };
+        let there = Destination {
+            session: Some(other),
+            cross: true,
+            rows: &rows,
+            ..Destination::default()
+        };
+        for (target, before) in [
+            (
+                DropTarget::RowSlot(Some(RowKey::Workspace(three))),
+                Some(three),
+            ),
+            (DropTarget::RowSlot(None), None),
+            (DropTarget::Window, None),
+        ] {
+            assert_eq!(
+                operation(drag, target, &there),
+                Some(Operation::MoveWorkspace {
+                    session,
+                    workspace: one,
+                    to: other,
+                    before,
+                }),
+                "{target:?}"
+            );
+        }
+        // Another window of the same session reorders it, and its
+        // content takes no drop.
+        let own_rows = [one, two, three].map(RowKey::Workspace);
+        let same = Destination {
+            session: Some(session),
+            cross: true,
+            rows: &own_rows,
+            ..Destination::default()
+        };
+        assert_eq!(
+            operation(
+                drag,
+                DropTarget::RowSlot(Some(RowKey::Workspace(three))),
+                &same
+            ),
+            Some(Operation::MoveWorkspace {
+                session,
+                workspace: one,
+                to: session,
+                before: Some(three),
+            })
+        );
+        assert_eq!(operation(drag, DropTarget::Window, &same), None);
+        // The source's own content takes no drop either.
+        let local = Destination {
+            session: Some(session),
+            rows: &own_rows,
+            ..Destination::default()
+        };
+        assert_eq!(operation(drag, DropTarget::Window, &local), None);
+    }
+
+    #[test]
+    fn a_spring_back_returns_to_the_workspace_and_tab_the_drag_began_over() {
+        let (own, other) = (workspace(), WorkspaceId::new(2));
+        let origin = Shown {
+            workspace: Some(own),
+            tab: Some(TabId::new(1)),
+        };
+        let mut hover = Hover::new(
+            point(px(0.0), px(0.0)),
+            origin,
+            px(0.0),
+            TabStrip::new(
+                Bounds::default(),
+                false,
+                super::super::tab_strip::TabExtents::Uniform(0),
+                px(0.0),
+                px(0.0),
+            ),
+        );
+        assert_eq!(hover.back(), None);
+        assert_eq!(hover.expected(), origin);
+        // A row spring names its workspace before the tab is known; any
+        // tab of it matches until the drag records the one it shows.
+        let pending = Shown {
+            workspace: Some(other),
+            tab: None,
+        };
+        hover.sprang(pending);
+        assert!(hover.expected().matches(Shown {
+            workspace: Some(other),
+            tab: Some(TabId::new(7)),
+        }));
+        assert!(!hover.expected().matches(origin));
+        let sprung = Shown {
+            workspace: Some(other),
+            tab: Some(TabId::new(7)),
+        };
+        hover.sprang(sprung);
+        assert_eq!(hover.back(), Some(SpringBack { origin, sprung }));
+        // Springing back onto the origin leaves nothing to switch back.
+        hover.sprang(origin);
+        assert_eq!(hover.back(), None);
     }
 }

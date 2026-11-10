@@ -236,7 +236,7 @@ impl WorkspaceView {
     }
 
     /// Whether the projection puts `pane` in this window's workspace.
-    fn projects(&self, pane: PaneId, cx: &App) -> bool {
+    pub(super) fn projects(&self, pane: PaneId, cx: &App) -> bool {
         let state = cx.global::<Desktop>().hierarchy.state();
         let workspace = state
             .pane_tab(pane)
