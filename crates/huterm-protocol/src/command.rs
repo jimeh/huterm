@@ -847,6 +847,10 @@ pub mod ids {
     /// Moves a tab into a new desktop window without restarting it.
     pub const MOVE_TAB_TO_NEW_WINDOW: CommandId =
         CommandId::new("move_tab_to_new_window");
+    /// Moves a workspace into a new session shown by a new desktop window,
+    /// without restarting its terminals.
+    pub const MOVE_WORKSPACE_TO_NEW_WINDOW: CommandId =
+        CommandId::new("move_workspace_to_new_window");
     /// Arranges the active tab's panes into a named layout.
     pub const ARRANGE_PANES: CommandId = CommandId::new("arrange_panes");
     /// Arranges the active tab's panes into the next layout of the cycle.
@@ -1892,6 +1896,14 @@ const CATALOG: &[CommandSpec] = &[
         "Move the focused pane into a new window, keeping its terminal \
          running.",
         &[],
+    ),
+    spec(
+        ids::MOVE_WORKSPACE_TO_NEW_WINDOW,
+        CommandScope::Window,
+        "Move Workspace to New Window",
+        "Move a workspace into a new window and session, keeping its \
+         terminals running.",
+        OWN_WORKSPACE,
     ),
     spec(
         ids::MOVE_TAB_TO_NEW_WINDOW,

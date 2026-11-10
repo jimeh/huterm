@@ -571,3 +571,44 @@ fn narrow_pane_bars_drop_splits_then_zoom_and_keep_close() {
         );
     }
 }
+
+#[test]
+fn a_tab_body_matches_the_pill_or_row_inside_its_slot() {
+    let slot =
+        Bounds::new(point(px(100.0), px(0.0)), size(px(120.0), px(34.0)));
+    let config = |style, position| TabsConfig {
+        position,
+        ..tabs(style, false, 80.0, 200.0)
+    };
+    // A strip tab fills its slot.
+    assert_eq!(
+        tab_body(slot, config(TabStyle::Strip, TabPosition::Top)).0,
+        slot
+    );
+    // A pill sits between its margins, PILL_HEIGHT tall and centred.
+    let (pill, padding) =
+        tab_body(slot, config(TabStyle::Pill, TabPosition::Top));
+    assert_eq!(
+        pill,
+        Bounds::new(
+            point(px(100.0) + PILL_MARGIN_LEFT, px(4.0)),
+            size(
+                px(120.0) - PILL_MARGIN_LEFT - PILL_MARGIN_RIGHT,
+                PILL_HEIGHT
+            )
+        )
+    );
+    assert_eq!(padding, PILL_PADDING_LEFT);
+    // A vertical row keeps its row margins on every side.
+    let row = Bounds::new(point(px(0.0), px(64.0)), size(px(160.0), px(32.0)));
+    assert_eq!(
+        tab_body(row, config(TabStyle::Pill, TabPosition::Left)).0,
+        Bounds::new(
+            point(VERTICAL_ROW_MARGIN_X, px(64.0) + VERTICAL_ROW_MARGIN_Y),
+            size(
+                px(160.0) - VERTICAL_ROW_MARGIN_X * 2.0,
+                px(32.0) - VERTICAL_ROW_MARGIN_Y * 2.0
+            )
+        )
+    );
+}

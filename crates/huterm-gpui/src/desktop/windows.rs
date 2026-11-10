@@ -877,17 +877,20 @@ impl DesktopRuntime {
         huterm_core::execute(mux, &invocation)
     }
 
+    /// Moves `workspace` of `session` before `before` in session `to`, or
+    /// last.
     fn move_workspace(
         &self,
         session: SessionId,
         workspace: WorkspaceId,
+        to: SessionId,
         before: Option<WorkspaceId>,
     ) -> Committed<Result<(), MuxError>> {
         let mut mux = self.lock();
         let result = if self.terminating.load(Ordering::Acquire) {
             Err(RuntimeError::Stopped.into())
         } else {
-            mux.move_workspace(session, workspace, session, before)
+            mux.move_workspace(session, workspace, to, before)
         };
         Committed {
             result,
@@ -10039,6 +10042,9 @@ impl WorkspaceView {
                 ids::MOVE_PANE_TO_NEW_WINDOW => {
                     self.check_pane_tear_off_available(cx)
                 }
+                ids::MOVE_WORKSPACE_TO_NEW_WINDOW => self
+                    .check_workspace_tear_off_available(target.workspace, cx)
+                    .map(|_| ()),
                 ids::NEW_TAB => self.check_new_tab_available(cx),
                 ids::NEW_SESSION
                 | ids::SELECT_SESSION
@@ -10871,6 +10877,12 @@ impl WorkspaceView {
             ids::MOVE_PANE_TO_NEW_WINDOW => {
                 self.move_pane_to_new_window(window, cx)
             }
+            ids::MOVE_WORKSPACE_TO_NEW_WINDOW => self
+                .move_workspace_to_new_window(
+                    invocation.workspace("workspace"),
+                    window,
+                    cx,
+                ),
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
             ids::OPEN_SESSION_MENU => self.open_session_menu(window, cx),
@@ -13287,9 +13299,10 @@ impl WorkspaceView {
             self.close_menu(MenuFocusReturn::Terminal, window, cx);
             self.resizing_sidebar = false;
             self.resizing_workspace = false;
-            self.drop_row_drag(|payload| {
-                matches!(payload, Payload::Workspace { .. })
-            });
+            self.drop_row_drag(
+                |payload| matches!(payload, Payload::Workspace { .. }),
+                cx,
+            );
             if self.close_session_list(window, cx) {
                 self.focus_terminal(window, cx);
             }
@@ -14360,10 +14373,12 @@ impl Render for WorkspaceView {
         self.progress_step = super::progress::phase(Instant::now());
         let active_tab = self.active_tab(cx);
         // A pane drag whose pane left its tab, or under a tab switch it did
-        // not make, ends even while the pointer rests.
-        if self.pane_dragging() && !self.pane_drag_valid(cx) {
+        // not make, ends even while the pointer rests, as does a tab drag
+        // sprang away from its workspace.
+        if self.drag_checks_each_frame(cx) && !self.pane_drag_valid(cx) {
             cx.defer_in(window, |view, window, cx| {
-                if view.pane_dragging() && !view.pane_drag_valid(cx) {
+                if view.drag_checks_each_frame(cx) && !view.pane_drag_valid(cx)
+                {
                     view.cancel_drag(window, cx);
                 }
             });
@@ -15925,7 +15940,9 @@ impl Render for WorkspaceView {
             );
         }
         root = root.children(marks);
-        if let Some((drag, dragged)) = self
+        // A tab drag sprang away from its workspace has no label in this
+        // bar; the drag overlay draws its chip and slot marker instead.
+        if let Some((drag, dragged, source)) = self
             .drag
             .as_ref()
             .filter(|drag| drag.dragging())
@@ -15933,20 +15950,25 @@ impl Render for WorkspaceView {
                 Payload::Tab { tab, .. } => Some((drag, tab)),
                 _ => None,
             })
+            .and_then(|(drag, tab)| {
+                let source =
+                    self.tabs.iter().position(|view| view.id == tab)?;
+                Some((drag, tab, source))
+            })
         {
             let nesting = drag.nesting();
             let marker = strip.marker(strip.slot(drag.pointer()));
-            let source = self
-                .tabs
-                .iter()
-                .position(|tab| tab.id == dragged)
-                .unwrap_or_default();
             // In pane mode the preview returns to the tab's slot, dimmed.
-            let preview = if nesting || drag.outside {
-                strip.label(source)
-            } else {
-                strip.preview(drag.pointer(), source)
-            };
+            // It takes the tab's own shape within its slot, so a pill
+            // preview is no larger than the pill.
+            let (preview, padding) = tab_bar::tab_body(
+                if nesting || drag.outside {
+                    strip.label(source)
+                } else {
+                    strip.preview(drag.pointer(), source)
+                },
+                self.layout_tabs(),
+            );
             let title = self
                 .tabs
                 .iter()
@@ -15955,6 +15977,7 @@ impl Render for WorkspaceView {
                 .unwrap_or_default();
             root = root.child(
                 div()
+                    .debug_selector(|| "tab-drag-preview".to_owned())
                     .absolute()
                     .left(preview.origin.x)
                     .top(preview.origin.y)
@@ -15963,7 +15986,8 @@ impl Render for WorkspaceView {
                     .overflow_hidden()
                     .flex()
                     .items_center()
-                    .px(px(12.0))
+                    .pl(padding)
+                    .pr(px(12.0))
                     .rounded(px(7.0))
                     .bg(colors.active)
                     .border_1()

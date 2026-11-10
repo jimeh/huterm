@@ -1286,6 +1286,43 @@ fn pill_target_outline(id: TabId, colors: TabColors) -> Div {
         .debug_selector(move || format!("tab-pill-target-{}", id.get()))
 }
 
+/// Where a tab drawn in `slot` shows: the slot itself for a strip, and the
+/// pill or row inset within it as `pill_tab` and `vertical_pill_tab` draw
+/// it otherwise. A drag preview takes these bounds, so it matches the tab
+/// it stands for. Also returns the left padding before the tab's content.
+pub(super) fn tab_body(
+    slot: Bounds<Pixels>,
+    tabs: TabsConfig,
+) -> (Bounds<Pixels>, Pixels) {
+    if tabs.style == TabStyle::Strip {
+        return (slot, STRIP_PADDING_LEFT);
+    }
+    let padding = pill_padding_left(tabs.pill_accent);
+    let body = if tabs.position.vertical() {
+        Bounds::new(
+            slot.origin + point(VERTICAL_ROW_MARGIN_X, VERTICAL_ROW_MARGIN_Y),
+            gpui::size(
+                (slot.size.width - VERTICAL_ROW_MARGIN_X * 2.0).max(px(0.0)),
+                (slot.size.height - VERTICAL_ROW_MARGIN_Y * 2.0).max(px(0.0)),
+            ),
+        )
+    } else {
+        let height = PILL_HEIGHT.min(slot.size.height);
+        Bounds::new(
+            point(
+                slot.origin.x + PILL_MARGIN_LEFT,
+                slot.origin.y + (slot.size.height - height) / 2.0,
+            ),
+            gpui::size(
+                (slot.size.width - PILL_MARGIN_LEFT - PILL_MARGIN_RIGHT)
+                    .max(px(0.0)),
+                height,
+            ),
+        )
+    };
+    (body, padding)
+}
+
 fn pill_padding_left(accent: bool) -> Pixels {
     if accent {
         PILL_ACCENT_PADDING_LEFT

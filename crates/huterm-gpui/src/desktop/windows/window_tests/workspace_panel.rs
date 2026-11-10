@@ -100,7 +100,7 @@ impl DesktopHarness {
     }
 
     /// Waits until `window` lays out chrome that `expected` accepts.
-    fn wait_chrome(
+    pub(super) fn wait_chrome(
         &mut self,
         window: AnyWindowHandle,
         what: &str,
@@ -125,7 +125,7 @@ impl DesktopHarness {
     }
 
     /// The painted bounds of `workspace`'s row.
-    fn row_bounds(
+    pub(super) fn row_bounds(
         &mut self,
         window: AnyWindowHandle,
         workspace: WorkspaceId,
@@ -541,6 +541,7 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
             [
                 format!("workspace-rename:{raw}"),
                 format!("workspace-pin:{raw}"),
+                format!("workspace-window:{raw}"),
                 format!("workspace-close:{raw}"),
             ]
         );

@@ -25,7 +25,7 @@ fn entities(
 }
 
 /// The tab `window` shows as active.
-fn active(cx: &mut App, window: AnyWindowHandle) -> Option<TabId> {
+pub(super) fn active(cx: &mut App, window: AnyWindowHandle) -> Option<TabId> {
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
@@ -55,7 +55,7 @@ fn pane_drag(
         .flatten()
 }
 
-fn no_drag(cx: &mut App, window: AnyWindowHandle) -> bool {
+pub(super) fn no_drag(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>().is_ok_and(|view| {
@@ -81,7 +81,7 @@ fn target_is(
 
 impl DesktopHarness {
     /// The drawn frame of `pane` in `window`'s active tab.
-    fn frame(
+    pub(super) fn frame(
         &mut self,
         window: AnyWindowHandle,
         pane: PaneId,
@@ -98,7 +98,7 @@ impl DesktopHarness {
     }
 
     /// Where a press grabs `pane`'s title bar for a drag.
-    fn grab(
+    pub(super) fn grab(
         &mut self,
         window: AnyWindowHandle,
         pane: PaneId,
@@ -135,7 +135,7 @@ impl DesktopHarness {
     }
 
     /// The centre of tab `index`'s label in `window`'s tab bar.
-    fn label(
+    pub(super) fn label(
         &mut self,
         window: AnyWindowHandle,
         index: usize,
@@ -145,7 +145,11 @@ impl DesktopHarness {
         })
     }
 
-    fn press_at(&mut self, window: AnyWindowHandle, at: gpui::Point<Pixels>) {
+    pub(super) fn press_at(
+        &mut self,
+        window: AnyWindowHandle,
+        at: gpui::Point<Pixels>,
+    ) {
         VisualTestContext::from_window(window, &self.cx).simulate_mouse_down(
             at,
             MouseButton::Left,
@@ -153,7 +157,11 @@ impl DesktopHarness {
         );
     }
 
-    fn move_to(&mut self, window: AnyWindowHandle, at: gpui::Point<Pixels>) {
+    pub(super) fn move_to(
+        &mut self,
+        window: AnyWindowHandle,
+        at: gpui::Point<Pixels>,
+    ) {
         VisualTestContext::from_window(window, &self.cx).simulate_mouse_move(
             at,
             Some(MouseButton::Left),
@@ -161,7 +169,11 @@ impl DesktopHarness {
         );
     }
 
-    fn release_at(&mut self, window: AnyWindowHandle, at: gpui::Point<Pixels>) {
+    pub(super) fn release_at(
+        &mut self,
+        window: AnyWindowHandle,
+        at: gpui::Point<Pixels>,
+    ) {
         VisualTestContext::from_window(window, &self.cx).simulate_mouse_up(
             at,
             MouseButton::Left,
@@ -197,14 +209,14 @@ impl DesktopHarness {
     }
 
     /// Runs `window`'s animation step at `now`, as its frame clock would.
-    fn advance(&mut self, window: AnyWindowHandle, now: Instant) {
+    pub(super) fn advance(&mut self, window: AnyWindowHandle, now: Instant) {
         self.update_view(window, |view, window, cx| {
             view.advance_animation(now, false, window, cx);
         });
     }
 
     /// When the armed spring load began, with the schedule's deadline.
-    fn armed(
+    pub(super) fn armed(
         &mut self,
         window: AnyWindowHandle,
     ) -> (Instant, AnimationSchedule) {
@@ -814,7 +826,7 @@ fn a_tab_switch_the_drag_did_not_make_cancels_it_without_switching_back(
 
 impl DesktopHarness {
     /// Waits for `tab`, already active in `window`, to draw its panes.
-    fn show_drawn(&mut self, window: AnyWindowHandle, tab: TabId) {
+    pub(super) fn show_drawn(&mut self, window: AnyWindowHandle, tab: TabId) {
         self.wait_for("the tab's panes to draw", |cx| {
             window
                 .update(cx, |root, _, cx| {
@@ -1118,4 +1130,39 @@ fn a_lone_bar_drag_has_no_targets_with_a_hidden_tab_bar(
     harness.cx.update(|cx| {
         assert_eq!(panes_shown(cx, window, tab), Some((vec![pane], pane)));
     });
+}
+
+#[gpui::test]
+fn a_tab_drag_preview_matches_the_pill_it_stands_for(cx: &mut TestAppContext) {
+    for position in [TabPosition::Top, TabPosition::Left] {
+        let mut harness = DesktopHarness::with_config(cx, |config| {
+            config.tabs.style = TabStyle::Pill;
+            config.tabs.position = position;
+        });
+        let (window, _, _, _, other, _) = two_tabs(&mut harness);
+        harness.cx.run_until_parked();
+        // Debug selectors are static; a test may leak the one it builds.
+        let selector: &'static str =
+            Box::leak(format!("tab-pill-{}", other.get()).into_boxed_str());
+        let pill = VisualTestContext::from_window(window, &harness.cx)
+            .debug_bounds(selector)
+            .expect("a drawn pill");
+        // A drag along the bar: the preview has the pill's size, not its
+        // slot's.
+        let label = harness.label(window, 1);
+        harness.press_at(window, label);
+        let along = if position.vertical() {
+            gpui::point(px(0.0), px(6.0))
+        } else {
+            gpui::point(px(6.0), px(0.0))
+        };
+        harness.move_to(window, label + along);
+        harness.cx.run_until_parked();
+        let preview = VisualTestContext::from_window(window, &harness.cx)
+            .debug_bounds("tab-drag-preview")
+            .expect("a drawn preview");
+        assert_eq!(preview.size, pill.size, "{position:?}");
+        harness.press(window, "escape");
+        harness.release_at(window, label + along);
+    }
 }

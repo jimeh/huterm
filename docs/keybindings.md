@@ -289,6 +289,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `move_pane_to_pane` | Window | `pane` and `side` (`left`, `right`, `up`, or `down`). Moves the focused pane beside a pane in any tab, workspace, or session. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `move_pane_to_new_tab` | Window | Optional `workspace`; defaults to the window's, where the new tab opens after the pane's tab. A tab's only pane moves its whole tab to another workspace. |
 | `move_pane_to_new_window` | Window | Moves the focused pane into a new regular window, as its only tab, without restarting its terminal. Available in the palette and pane context menu, with no default binding. The only pane of a window's only tab does nothing. |
+| `move_workspace_to_new_window` | Window | Optional `workspace`, defaulting to the window's. Moves it into a new session shown by a new regular window, without restarting its terminals; a window that showed it moves to another workspace of its session. Available in the palette and a workspace row's menu, with no default binding. Unavailable for a session's only workspace. |
 | `move_tab_to_new_window` | Window | Optional `tab`, defaulting to the active tab. Moves it into a new regular window without restarting its terminals. Available in the palette and tab context menu, with no default binding. A window with one tab does nothing. |
 | `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`, or a name from `[panes.layouts]` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. A split tab's terminal menu lists every layout under Arrange Panes, disabling those that cannot hold its panes. |
@@ -671,7 +672,8 @@ session switcher, which comes after the rows at the bottom or before them at
 the top; Return or Space shows the focused workspace or opens the session
 menu. A click on a row shows its workspace, a double-click renames it in the
 docked sidebar, a right press opens its context menu, which acts on that
-row's workspace, and a drag reorders the workspaces; Escape cancels a drag.
+row's workspace, and a drag reorders the workspaces, or moves one to a new
+or another window; Escape cancels a drag.
 
 | Command | macOS | Linux |
 | --- | --- | --- |

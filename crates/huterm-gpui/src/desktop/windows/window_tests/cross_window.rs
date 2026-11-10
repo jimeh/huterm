@@ -6,7 +6,7 @@ use crate::desktop::notices::NOTICE_LIFETIME;
 use huterm_core::{Beside, MoveDestination, PaneRef};
 use std::cell::Cell;
 
-struct Locator(Cell<Located>);
+pub(super) struct Locator(pub(super) Cell<Located>);
 impl WindowLocator for Locator {
     fn locate(
         &self,
@@ -19,7 +19,9 @@ impl WindowLocator for Locator {
     }
 }
 impl DesktopHarness {
-    fn private_window(&mut self) -> (AnyWindowHandle, WorkspaceId, TabId) {
+    pub(super) fn private_window(
+        &mut self,
+    ) -> (AnyWindowHandle, WorkspaceId, TabId) {
         let (session, workspace, tab, attachment) = {
             let mut mux = self.runtime.lock();
             let session = mux.create_session(None).unwrap();
@@ -60,7 +62,7 @@ impl DesktopHarness {
         });
         (handle, workspace, tab)
     }
-    fn cross_locator(&mut self) -> Rc<Locator> {
+    pub(super) fn cross_locator(&mut self) -> Rc<Locator> {
         let locator = Rc::new(Locator(Cell::new(Located::Outside)));
         self.cx.update(|cx| {
             cx.global_mut::<Desktop>().cross.locator = locator.clone();

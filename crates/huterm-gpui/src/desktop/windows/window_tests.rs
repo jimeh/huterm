@@ -5487,5 +5487,6 @@ mod terminal_notifications;
 
 mod transparency;
 mod transparency_panel;
+mod workspace_drags;
 mod workspace_panel;
 mod workspaces;

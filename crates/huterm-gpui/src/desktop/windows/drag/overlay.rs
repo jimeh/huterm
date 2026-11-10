@@ -14,6 +14,13 @@ use super::super::pane_geometry::{Zone, zone_preview};
 use super::super::*;
 use super::{DropTarget, Payload, SpringKey};
 
+/// A sidebar list a dragged row lifts in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in super::super) enum RowList {
+    Workspaces,
+    Sessions,
+}
+
 /// How far a drawn drop box sits inside the region it stands for, so it
 /// never touches the pane's edges or a neighbouring box.
 const DROP_BOX_INSET: Pixels = px(4.0);
@@ -66,10 +73,6 @@ impl WorkspaceView {
         *self.drawn_pane_tear_off.borrow_mut() = None;
         // The floating preview draws the chip while it shows one.
         let mut chip = true;
-        let gesture = self
-            .drag
-            .as_ref()
-            .filter(|drag| drag.dragging() && drag.payload.in_bar());
         let (target, pointer, title, source) = if let Some(incoming) =
             &self.incoming
         {
@@ -93,34 +96,24 @@ impl WorkspaceView {
                 elements.extend(self.pane_tear_off_cue(frame, colors));
             }
             return elements;
-        } else if let Some((drag, Payload::Pane { tab, pane, .. })) =
-            gesture.map(|drag| (drag, drag.payload))
-        {
-            let tab = self.tabs.iter().find(|view| view.id == tab);
-            let title = tab
-                .and_then(|tab| {
-                    let pane = tab.pane(pane)?;
-                    Some(tab.pane_label(pane, self.config.tabs, cx))
-                })
-                .unwrap_or_default();
-            (drag.target(), drag.pointer(), title, self.drawn_frame(pane))
-        } else if let Some((drag, Payload::Tab { tab, .. })) = gesture
-            .filter(|drag| drag.nesting())
-            .map(|drag| (drag, drag.payload))
-        {
-            let title = self
-                .tabs
-                .iter()
-                .find(|view| view.id == tab)
-                .map(|tab| tab.title(self.config.tabs, cx))
-                .unwrap_or_default();
-            (drag.target(), drag.pointer(), title, None)
+        } else if let Some(local) = self.local_chip(cx) {
+            local
         } else {
             *self.drawn_drop.borrow_mut() = None;
             return elements;
         };
         *self.drawn_drop.borrow_mut() = Some(drop_label(target, &self.tabs));
         elements.extend(self.target_elements(target, source, colors, window));
+        // A row this window drags lifts in its own list instead
+        // (`lifted_row`).
+        if self.incoming.is_none()
+            && self
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.payload.row().is_some())
+        {
+            chip = false;
+        }
         if !chip {
             return elements;
         }
@@ -160,6 +153,158 @@ impl WorkspaceView {
             .into_any_element(),
         );
         elements
+    }
+
+    /// This window's own gesture as its chip shows it: the target, the
+    /// pointer, the title, and the dragged pane's frame. A pane, a tab
+    /// nesting into a pane or sprang away from its workspace, and a row
+    /// show one; a tab in its own bar draws itself there.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the four values the overlay reads, named at its one caller"
+    )]
+    pub(in super::super) fn local_chip(
+        &self,
+        cx: &App,
+    ) -> Option<(
+        Option<DropTarget>,
+        gpui::Point<Pixels>,
+        String,
+        Option<Bounds<Pixels>>,
+    )> {
+        let drag = self.drag.as_ref().filter(|drag| drag.dragging())?;
+        let title = match drag.payload {
+            Payload::Pane { tab, pane, .. } => {
+                // A row spring may have hidden the pane's tab.
+                let title = self
+                    .all_tab_views()
+                    .find(|view| view.id == tab)
+                    .and_then(|tab| {
+                        let pane = tab.pane(pane)?;
+                        Some(tab.pane_label(pane, self.config.tabs, cx))
+                    })
+                    .unwrap_or_default();
+                return Some((
+                    drag.target(),
+                    drag.pointer(),
+                    title,
+                    self.drawn_frame(pane),
+                ));
+            }
+            Payload::Tab { tab, .. }
+                if drag.nesting() || self.drag_away(drag.payload, cx) =>
+            {
+                self.all_tab_views()
+                    .find(|view| view.id == tab)
+                    .map(|tab| tab.title(self.config.tabs, cx))
+                    .unwrap_or_default()
+            }
+            Payload::Tab { .. } => return None,
+            // A row's target, for the drop label: the row itself lifts in
+            // its list (RC2), and the rows draw its slot.
+            Payload::Workspace { .. } | Payload::Session(_) => {
+                self.row_title(drag.payload, cx)
+            }
+        };
+        Some((drag.target(), drag.pointer(), title, None))
+    }
+
+    /// The lifted copy of a row this window drags in `list`'s rows, the
+    /// workspace list or the session list: the dragged row's width,
+    /// centred on the pointer and kept within the list's visible part,
+    /// while the drag is inside the window.
+    pub(in super::super) fn lifted_row(
+        &self,
+        list: RowList,
+        colors: TabColors,
+        cx: &App,
+    ) -> Option<gpui::AnyElement> {
+        use super::super::sidebar_rows::{LiftedRow, ROW_HEIGHT, lifted_row};
+        let drag = self
+            .drag
+            .as_ref()
+            .filter(|drag| drag.dragging() && !drag.outside)?;
+        let (row, scroll) = match (list, drag.payload) {
+            (RowList::Workspaces, Payload::Workspace { workspace, .. }) => {
+                let row = self
+                    .workspace_rows(cx)
+                    .into_iter()
+                    .find(|row| row.workspace == workspace)?;
+                let painted = self
+                    .workspace_row_bounds
+                    .borrow()
+                    .get(&workspace)
+                    .copied()?;
+                (
+                    (
+                        LiftedRow {
+                            icon: Icon::LayoutGrid,
+                            name: row.name.clone(),
+                            automatic: row.automatic,
+                            detail: row.detail(),
+                        },
+                        painted,
+                    ),
+                    self.workspace_drag_scroll(),
+                )
+            }
+            (RowList::Sessions, Payload::Session(session)) => {
+                let row = self
+                    .session_rows(cx)
+                    .into_iter()
+                    .find(|row| row.session == session)?;
+                let painted =
+                    self.session_row_bounds.borrow().get(&session).copied()?;
+                (
+                    (
+                        LiftedRow {
+                            icon: Icon::Layers,
+                            name: row.name.clone(),
+                            automatic: row.automatic,
+                            detail: row.detail(),
+                        },
+                        painted,
+                    ),
+                    self.session_list_scroll.clone(),
+                )
+            }
+            _ => return None,
+        };
+        let ((lifted, painted), list) = (row, scroll.bounds());
+        let top = (drag.pointer().y - ROW_HEIGHT / 2.0)
+            .clamp(list.top(), (list.bottom() - ROW_HEIGHT).max(list.top()));
+        Some(lifted_row(
+            lifted,
+            Bounds::new(
+                point(painted.origin.x, top),
+                size(painted.size.width, ROW_HEIGHT),
+            ),
+            colors,
+        ))
+    }
+
+    /// The name a dragged row shows in other windows' chips and the
+    /// floating preview.
+    pub(in super::super) fn row_title(
+        &self,
+        payload: Payload,
+        cx: &App,
+    ) -> String {
+        match payload {
+            Payload::Workspace { workspace, .. } => self
+                .workspace_rows(cx)
+                .into_iter()
+                .find(|row| row.workspace == workspace)
+                .map(|row| row.name)
+                .unwrap_or_default(),
+            Payload::Session(session) => self
+                .session_rows(cx)
+                .into_iter()
+                .find(|row| row.session == session)
+                .map(|row| row.name)
+                .unwrap_or_default(),
+            Payload::Tab { .. } | Payload::Pane { .. } => String::new(),
+        }
     }
 
     /// The source pane while a release would tear it off (S1): its contents
@@ -287,9 +432,19 @@ impl WorkspaceView {
                 let row = self.title_row_layout(&self.chrome_layout(window));
                 elements.push(region(row.drop_region, colors.accent));
             }
-            // The armed label draws its own outline, and a row slot its
-            // line.
-            Some(DropTarget::Spring(_) | DropTarget::RowSlot(_)) | None => {}
+            Some(DropTarget::Window) => {
+                // Beside the docked sidebar, whose list marks slots.
+                let area = self.chrome_layout(window).area;
+                elements.push(region(area, colors.accent));
+            }
+            // The armed label draws its own outline, a row slot its line,
+            // and a workspace row its drop region.
+            Some(
+                DropTarget::Spring(_)
+                | DropTarget::RowSlot(_)
+                | DropTarget::Workspace { .. },
+            )
+            | None => {}
         }
         elements
     }
@@ -327,6 +482,15 @@ pub(in super::super) fn drop_label(
         Some(DropTarget::Slot(index)) => format!("slot:{index}"),
         Some(DropTarget::TitleRow) => "title_row".to_owned(),
         Some(DropTarget::RowSlot(_)) => "row_slot".to_owned(),
+        Some(DropTarget::Window) => "window".to_owned(),
+        Some(DropTarget::Workspace { workspace, spring }) => format!(
+            "workspace:{}{}",
+            workspace.get(),
+            if spring { ":spring" } else { "" }
+        ),
+        Some(DropTarget::Spring(SpringKey::Workspace(workspace))) => {
+            format!("spring_workspace:{}", workspace.get())
+        }
         Some(DropTarget::Spring(SpringKey::Tab(tab))) => format!(
             "spring:{}",
             tabs.iter()

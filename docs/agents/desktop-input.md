@@ -264,23 +264,28 @@ and scrollbar drags, and OS file drops, keep their own paths.
   and its `Press` applies the one `DRAG_THRESHOLD`.
 - `resolve_drop` (`drag/gesture.rs`) is the only target resolver. It
   returns a `DropTarget`: a pane zone, a tab-bar `Slot`, the `TitleRow`, a
-  `Spring` key, or a sidebar `RowSlot`. It runs as the source
-  (`Side::Source`) and as another window's preview (`Side::Incoming`), and
-  keeps each payload's rules: a tab reorder projects onto the bar outside
-  pane mode, a lone pane offers no slot or title row in its own window, and
-  only the dragged pane's own tab offers a centre.
+  `Spring` key, a sidebar `RowSlot`, a sidebar `Workspace` row under a tab
+  or pane, or another window's content (`Window`) under a workspace row.
+  It runs as the source (`Side::Source`) and as another window's preview
+  (`Side::Incoming`), and keeps each payload's rules: a tab reorder
+  projects onto the bar outside pane mode, a lone pane offers no slot or
+  title row in its own window, and only the dragged pane's own tab offers
+  a centre.
 - `operation` is the only table from a payload and a target to a Mux
   operation, `None` refusing the drop. Local drops commit through
   `commit_drop` and cross-window ones through `dispatch_transfer` with the
   same `Operation`; `DesktopRuntime::commit_drop` runs each under the Mux
   lock. A tear-off is the table's title-row drop into the new window.
-  Cross-window code reads only a tab or pane gesture: a busy window still
-  takes a row press, so a row gesture can exist while a tear-off's window
-  opens.
+  Cross-window code reads tab, pane, and workspace gestures, never a
+  session row's: a busy window still takes a row press, so a row gesture
+  can exist while a tear-off's window opens, and restoring after a failed
+  transfer reads only a tab or pane gesture.
 - `Hover` holds what a drag over one window shares with a destination's
   preview (`cross_window::Incoming`): the target, `SpringLoad` over a
-  `SpringKey`, the spring-back, the bar scroll to restore, and the tab
-  strip's autoscroll. A sidebar row's `ListScroll` scrolls its list.
+  `SpringKey` (a tab or a workspace row), the spring-back as `Shown`
+  workspace and tab pairs, the bar scroll to restore, and the tab strip's
+  autoscroll. `ListScroll` scrolls a sidebar list under a dragged row, and
+  under a tab or pane over the workspace list.
 - The capture listeners send motion and release to `update_drag` and
   `finish_drag`; Escape, blur, menus, switches, and window close end a
   gesture through `cancel_drag`. Escape ends a tab press at once and every
@@ -380,11 +385,8 @@ the minimum size is drawn refused and takes no drop. A release commits one
 Mux operation through the move commands' `commit_pane_move`.
 
 A workspace switch cancels every drag first (`switch_workspace`), as a
-session switch and New Tab do. The window already holds every workspace's
-views (see the [window model](desktop-client.md#threading-and-the-window-model)),
-so spring-loading a workspace row would only be a visibility change, like a
-tab's, and a tab dropped on a hidden workspace keeps its view; neither is
-built yet.
+session switch and New Tab do; only a drag's own spring load of a workspace
+row switches under it (see "Workspace drags").
 
 A lone pane's title bar, enabled by `title_bar_always_show`, uses the same
 spring-load and edge-drop path to join another tab. Its own pane is skipped,
@@ -489,7 +491,8 @@ window's workspace. Release drops the gesture before the window opens, so
 `dispatch_transfer`, restores them. While a release would tear a pane off, the
 source pane draws S1 (`pane_tear_off_cue`): the terminal colour at 55% over its
 drawn frame, a full-contrast dashed outline, and the centred pill, compact in a
-pane too narrow for the label. Modifier-grab drags get it too.
+pane too narrow for the label. Modifier-grab drags get it too. A workspace
+row that would tear off draws the same cue on itself (W1, `sidebar_rows`).
 The tear-off pill follows the labels and add button in the bar's free trailing
 space. A horizontal bar too short for its label, such as a narrow title strip,
 gets the icon-only pill there. Only when neither fits does it cover the strip's
@@ -528,6 +531,71 @@ Native input fixtures use window-addressed AppKit events, including negative
 source-local coordinates, and XTest root coordinates on X11. Publish per-window
 identities and cross-window drop labels. X11 smoke coordinates use the client's
 TranslateCoordinates root origin, since window-manager frame geometry can differ.
+
+### Workspace drags
+
+See [the plan](../plans/workspace-drags.md) for the interleavings and their
+tests.
+
+- A tab or pane over another workspace's sidebar row targets
+  `DropTarget::Workspace`; a drop moves it to that workspace's end and the
+  window keeps showing its workspace. The item's own workspace's row takes
+  nothing, and the shown row takes drops but never springs. Rows resolve
+  from `workspace_row_bounds` only while the list draws and the pointer is
+  inside its visible scroll bounds, since rows scrolled out keep stale
+  bounds. The corner switcher takes nothing.
+- A dragged workspace or session row lifts: `lifted_row` draws a copy of
+  the row, centred on the pointer and kept within the list's visible part,
+  while the drag is inside its window, and the overlay draws no chip for
+  it. The copy goes inside each list's own element tree, because a
+  popover's list draws above the window's overlay; a canvas places it in
+  window coordinates there. Other windows and the floating preview show
+  the chip, as for tabs. A tab's drag preview takes the tab's own shape
+  in its slot (`tab_bar::tab_body`), so a pill's preview is pill-sized.
+- A row spring is a visibility switch that keeps the gesture.
+  `spring_load` checks `check_switch_guard` (the switch guard without its
+  tab-drag refusal), then records the expected `Shown` (workspace, no tab)
+  before `show_workspace_focused` runs, because the switch's `select_tab`
+  calls `interrupt_pane_drag`, then records the tab it shows. An incoming
+  spring passes `focus = false`, so a destination never takes focus.
+  `spring_back` shows the origin workspace before selecting its tab.
+- A tab or pane gesture whose workspace is no longer shown (`drag_away`)
+  stays valid while the window holds its views hidden, is checked each
+  frame like a pane drag, resolves with another window's rules (no reorder
+  projection, no centre, no lone-pane rule), and draws the chip. A slot or
+  title row in the shown workspace is then `MoveTab`, not a reorder. Its
+  cross-window payload and its tear-off availability (`tears_off`) come from
+  its own workspace through `all_tab_views` and the projection, not the
+  shown one. A failed drop springs back only once the window is no longer
+  busy, since a spring-back to another workspace is a switch.
+- A pane moved into another workspace of the same window gets a fresh view:
+  reconcile adopts pane views only within one workspace, and whole tabs
+  between held workspaces (`adopt_moved_tabs`). The move focuses the pane
+  once its view installs (`restore_focus`) and records an undo entry, as
+  Move Pane to New Tab into another workspace does. A committed move that
+  empties a hidden origin closes it unless pinned (`close_emptied_hidden`).
+- A workspace row routes through the cross-window sampler. Over another
+  window it slots into that window's list, or takes its content
+  (`Window`), and commits `MoveWorkspace` into that session through
+  `dispatch_transfer`; `PendingTransfer::show` makes the destination show
+  it, and `finish_transfer_install` waits for panes that land in any
+  workspace the window holds, hidden ones included. A source that showed
+  it follows through its emptied close, and a pane close it queued during
+  the move runs there, since its record still names the workspace. A busy
+  source refuses the release and shows no tear-off cue, since a transfer
+  would end its own operation's `busy`. A window on the workspace's own
+  session takes it only in its list. A row outside the window never
+  edge-scrolls its list.
+- Workspace tear-off (`tear_off_workspace`) moves first, with
+  `Mux::move_workspace_to_new_session` and an attach under one lock, then
+  opens the window, which adopts the attachment and installs. The source
+  holds a transfer reservation from the start, so no checkpoint saves it
+  half moved. A failure puts the workspace back in its slot (`put_back`),
+  else last, and closes the new session only when it is empty under the
+  same lock; otherwise it detaches it, so nothing another client put there
+  stops. A session's only
+  workspace never tears off. Dropping a row drag (`drop_row_drag`) also
+  ends its cross-window record.
 
 ## Modifier pane drags
 

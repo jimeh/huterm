@@ -33,6 +33,7 @@ fn a_row_menu_acts_on_its_own_workspace() {
             "workspace-rename:2 Rename Workspace…",
             "workspace-clear:2 Clear Name",
             "workspace-pin:2 Pin Workspace",
+            "workspace-window:2 Move Workspace to New Window",
             "-",
             "workspace-close:2 Close Workspace…",
         ]
@@ -65,6 +66,10 @@ fn picks_round_trip_through_their_ids() {
     assert_eq!(
         parse_pick("workspace-pin:7"),
         Some(WorkspacePick::TogglePin(7))
+    );
+    assert_eq!(
+        parse_pick("workspace-window:7"),
+        Some(WorkspacePick::NewWindow(7))
     );
     assert_eq!(
         parse_pick("workspace-close:7"),

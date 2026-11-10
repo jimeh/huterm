@@ -12,7 +12,7 @@ use huterm_ui::components::popover::Placement;
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::typography;
 
-use super::drag::{DropTarget, Payload, RowKey};
+use super::drag::{DropTarget, Gesture, Payload, RowKey, RowList};
 use super::session_control::{SessionLabel, SessionListAnchor, switcher_label};
 use super::sidebar_rows::{self, ListRow, ROW_GAP, ROW_HEIGHT};
 use super::workspace_chrome::{CornerHost, Edge};
@@ -339,7 +339,7 @@ impl WorkspaceView {
 
     /// Whether any surface draws the rows this frame: the docked sidebar,
     /// the switcher's popover, or the sheet.
-    fn rows_drawn(&self, layout: &ChromeLayout) -> bool {
+    pub(super) fn rows_drawn(&self, layout: &ChromeLayout) -> bool {
         layout.workspace_chrome.docked() || self.switcher_mode.is_some()
     }
 
@@ -386,14 +386,16 @@ impl WorkspaceView {
             .retain(|workspace, _| rows.contains(workspace));
         // A drag whose workspace or session went, or whose rows no longer
         // draw, ends without moving anything (W41).
-        if let Some(Payload::Workspace { session, workspace }) =
-            self.drag.as_ref().map(|drag| drag.payload)
-            && (!drawn
-                || !rows.contains(&workspace)
-                || self.attached_session(cx) != Some(session))
-        {
-            self.drag = None;
-        }
+        let attached = self.attached_session(cx);
+        self.drop_row_drag(
+            |payload| {
+                matches!(payload, Payload::Workspace { session, workspace }
+                    if !drawn
+                        || !rows.contains(&workspace)
+                        || attached != Some(session))
+            },
+            cx,
+        );
         // A workspace the window starts to show, as one New Workspace just
         // made past the end of a long list, scrolls into view.
         let shown = self.workspace_id(cx);
@@ -697,6 +699,7 @@ impl WorkspaceView {
             RowAction::Rename => ids::RENAME_WORKSPACE,
             RowAction::ClearName => ids::CLEAR_WORKSPACE_NAME,
             RowAction::TogglePin => ids::TOGGLE_WORKSPACE_PIN,
+            RowAction::NewWindow => ids::MOVE_WORKSPACE_TO_NEW_WINDOW,
             RowAction::Close => ids::CLOSE_WORKSPACE,
         };
         let invocation = CommandInvocation::new(
@@ -886,9 +889,10 @@ impl WorkspaceView {
         if self.switcher_mode.take().is_none() {
             return false;
         }
-        self.drop_row_drag(|payload| {
-            matches!(payload, Payload::Workspace { .. })
-        });
+        self.drop_row_drag(
+            |payload| matches!(payload, Payload::Workspace { .. }),
+            cx,
+        );
         // A menu opened from its rows goes with them, and hands focus back
         // to the terminal, since nothing it opened from is left to take it.
         // So does a session list opened from the sheet's session row.
@@ -977,6 +981,7 @@ impl WorkspaceView {
             WorkspacePick::Rename(raw) => (RowAction::Rename, raw),
             WorkspacePick::ClearName(raw) => (RowAction::ClearName, raw),
             WorkspacePick::TogglePin(raw) => (RowAction::TogglePin, raw),
+            WorkspacePick::NewWindow(raw) => (RowAction::NewWindow, raw),
             WorkspacePick::Close(raw) => (RowAction::Close, raw),
         };
         let Some(workspace) = resolve(state, raw) else {
@@ -1017,7 +1022,7 @@ impl WorkspaceView {
     ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         let task = cx.background_executor().spawn(async move {
-            runtime.move_workspace(session, workspace, before)
+            runtime.move_workspace(session, workspace, session, before)
         });
         let app = cx.to_async();
         cx.spawn(async move |view, cx| {
@@ -1344,18 +1349,37 @@ impl WorkspaceView {
         let swatch = tokens(&self.config.theme);
         // The row's menu is open, native or Huterm's own.
         let targeted = self.menu_targets(&MenuKind::WorkspaceRow(workspace));
-        let drag = self
-            .drag
-            .as_ref()
-            .filter(|drag| drag.dragging())
+        let gesture = self.drag.as_ref().filter(|drag| drag.dragging());
+        let drag = gesture
             .filter(|drag| matches!(drag.payload, Payload::Workspace { .. }));
         let dragged = drag.is_some_and(|drag| {
             drag.payload.row() == Some(RowKey::Workspace(workspace))
         });
-        let slot = drag.and_then(|drag| match drag.target() {
-            Some(DropTarget::RowSlot(before)) => Some(before),
-            _ => None,
+        // This window's own workspace drag, or another window's over it.
+        let incoming = self.incoming.as_ref().filter(|incoming| {
+            matches!(incoming.payload.drag, Payload::Workspace { .. })
         });
+        let slot = drag
+            .and_then(Gesture::target)
+            .or_else(|| incoming.and_then(|incoming| incoming.hover.target))
+            .and_then(|target| match target {
+                DropTarget::RowSlot(before) => Some(before),
+                _ => None,
+            });
+        // A tab or pane over this row, here or from another window.
+        let target = gesture
+            .filter(|drag| drag.payload.in_bar() && !drag.outside)
+            .and_then(Gesture::target)
+            .or_else(|| {
+                self.incoming
+                    .as_ref()
+                    .and_then(|incoming| incoming.hover.target)
+            });
+        let drop_target = matches!(
+            target,
+            Some(DropTarget::Workspace { workspace: over, .. }) if over == workspace
+        );
+        let tearing_off = dragged && self.tear_off_pill(cx);
         let bounds_cell = Rc::clone(&self.workspace_row_bounds);
         let more = (surface == Surface::Popover).then(|| {
             sidebar_rows::more_button(
@@ -1393,6 +1417,8 @@ impl WorkspaceView {
                 selected: self.workspace_id(cx) == Some(workspace),
                 targeted,
                 dragged,
+                drop_target,
+                tearing_off,
                 line_above: slot == Some(Some(RowKey::Workspace(workspace))),
                 line_below: last && !dragged && slot == Some(None),
                 badges: Vec::new(),
@@ -1704,6 +1730,7 @@ impl WorkspaceView {
         content.push(header.into_any_element());
         content.push(list.into_any_element());
         content.extend(session);
+        content.extend(self.lifted_row(RowList::Workspaces, colors, cx));
         content
     }
 
@@ -2126,5 +2153,7 @@ pub(super) enum RowAction {
     ClearName,
     /// Workspaces only: pins or unpins the row's workspace.
     TogglePin,
+    /// Workspaces only: moves the row's workspace into a new window.
+    NewWindow,
     Close,
 }

@@ -61,7 +61,7 @@ type Fixture = {
 };
 
 /** Function keys the Linux fixture binds, since X11 has no command channel. */
-const linuxKeys: Record<string, string> = { new_window: "F1", new_tab: "F2", split_right: "F3" };
+const linuxKeys: Record<string, string> = { new_window: "F1", new_tab: "F2", split_right: "F3", new_workspace: "F5" };
 
 /**
  * The fixture's config. Windows are 36 columns wide, about 296 points, so
@@ -69,13 +69,17 @@ const linuxKeys: Record<string, string> = { new_window: "F1", new_tab: "F2", spl
  * sidebar button that leads the bar, `+`, and the menu button fit without
  * scrolling the strip, which would move the tab a drag aims at.
  */
-export function fixtureConfig(options: { preview: boolean; alwaysShow: boolean }): string {
-  return `[window]\ninitial_columns=36\ninitial_rows=12\nmacos_drag_preview=${options.preview}\n[tabs]\nposition="top"\nalways_show=${options.alwaysShow}\nmax_width=100\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f3"\ncommand="split_right"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n`;
+export function fixtureConfig(options: { preview: boolean; alwaysShow: boolean; sidebar?: boolean; tabWidth?: number }): string {
+  // A docked sidebar needs a window wide enough to keep the terminal's
+  // minimum width beside it.
+  const columns = options.sidebar ? 72 : 36;
+  const sidebar = options.sidebar ? "[sidebar]\nvisible=true\n" : "";
+  return `[window]\ninitial_columns=${columns}\ninitial_rows=12\nmacos_drag_preview=${options.preview}\n${sidebar}[tabs]\nposition="top"\nalways_show=${options.alwaysShow}\nmax_width=${options.tabWidth ?? 100}\n[panes]\ntitle_bar_always_show=true\n[terminal]\nclose_on_exit=false\n[[keybinding]]\nkey="f1"\ncommand="new_window"\n[[keybinding]]\nkey="f2"\ncommand="new_tab"\n[[keybinding]]\nkey="f3"\ncommand="split_right"\n[[keybinding]]\nkey="f4"\ncommand="quit"\n[[keybinding]]\nkey="f5"\ncommand="new_workspace"\n`;
 }
 
 /** Launches one fixture app with recorder shells, runs `body`, and always
  * shuts the app, its shells, and Openbox down, reporting the last state. */
-async function withFixture(executable: string, body: (fixture: Fixture) => Promise<void>): Promise<void> {
+async function withFixture(executable: string, body: (fixture: Fixture) => Promise<void>, initialConfig = fixtureConfig({ preview: true, alwaysShow: true })): Promise<void> {
   const macos = process.platform === "darwin";
   const directory = await mkdtemp(join(tmpdir(), "huterm-cross-input-"));
   let wm: ReturnType<typeof Bun.spawn> | undefined;
@@ -150,7 +154,7 @@ clearInterval(stop); clearTimeout(timer);
 `);
     const shell = join(directory, "shell");
     await writeFile(shell, `#!/bin/sh\nstty -echo\nexec ${quote(process.execPath)} ${quote(recorder)}\n`, { mode: 0o700 });
-    await writeFile(config, fixtureConfig({ preview: true, alwaysShow: true }));
+    await writeFile(config, initialConfig);
     const launched = Bun.spawn([executable], { env: { ...process.env, WAYLAND_DISPLAY: undefined, HUTERM_INPUT_STATE: directory, HUTERM_INPUT_SMOKE: directory, HUTERM_CONFIG_FILE: config, HUTERM_STATE_DIR: join(directory, "saved-state"), SHELL: shell }, stdout: "pipe", stderr: "pipe" });
     app = launched;
     diagnostic = Promise.all([new Response(launched.stdout).text(), new Response(launched.stderr).text()]);
@@ -428,4 +432,125 @@ export async function checkCrossWindowTargets(executable: string): Promise<void>
     }
     console.log(`CROSS_WINDOW_TARGETS_SMOKE spring-load=ok spring-back=ok pane-centre=refused lone-pane-slot=ok title-row=${macos ? "ok" : "none"} sampled-paths=ok`);
   });
+}
+
+/** A point local to window 0 that lies outside both windows: below,
+ * beside, or above window 0, whichever window 1 leaves free. */
+export function clearOf(current: string, rootOrigin: (current: string, index: number) => Point, macos: boolean): Point {
+  const size = point(smokeField(current, "w0.size"));
+  const other = point(smokeField(current, "w1.size"));
+  const corner = crossWindowPoint(rootOrigin(current, 0), rootOrigin(current, 1), { x: 0, y: 0 }, macos);
+  const inside = (at: Point) => at.x >= corner.x - 20 && at.x <= corner.x + other.x + 20 && at.y >= corner.y - 20 && at.y <= corner.y + other.y + 20;
+  const candidates = [{ x: 30, y: size.y + 100 }, { x: size.x + 60, y: 40 }, { x: -60, y: 40 }, { x: 30, y: -80 }];
+  const found = candidates.find(at => !inside(at));
+  if (found === undefined) throw new Error("no point outside both windows");
+  return found;
+}
+
+/** Workspace drags through native input: a tab dropped on another
+ * workspace's sidebar row, a row's own drag cue, and a workspace dragged out
+ * into a window of its own, with its preview or in-window cue. */
+export async function checkWorkspaceDrags(executable: string): Promise<void> {
+  await withFixture(executable, async f => {
+    const { macos, state, until, activate, invoke, mouse, escape, writeConfig } = f;
+    const row = (current: string, index: number) => rectCenter(smokeField(current, "w0.workspace_rows"), index);
+    const idle = (current: string) => smokeField(current, "w0.busy") === "false";
+    await until("first window", current => smokeField(current, "windows") === "1" && smokeField(current, "w0.tabs") === "1" && smokeField(current, "w0.workspace_rows") !== "none");
+    await invoke("new_workspace");
+    await until("second workspace shown", current => smokeField(current, "w0.workspaces") === "2" && smokeField(current, "w0.workspace") === "1" && smokeField(current, "w0.tabs") === "1" && idle(current));
+    await invoke("new_tab");
+    await until("its second tab", current => smokeField(current, "w0.tabs") === "2" && idle(current) && tabsDrawn(current, 0));
+    await activate(0);
+
+    // A tab dropped on the first workspace's row moves there; the window
+    // keeps showing the second workspace. The state lists only shown
+    // workspaces' terminals, so the moved one is followed by its ID.
+    let current = await state();
+    const [kept, movedTerminal] = smokeField(current, "w0.terminals").split(",");
+    await drag(f, 0, rectCenter(smokeField(current, "w0.tabs_rects"), 1), row(current, 0));
+    await until("the row takes the tab", next => /^workspace:\d+:spring$/.test(smokeField(next, "w0.drop")));
+    await mouse(0, "up", row(await state(), 0));
+    await until("the tab moved into the other workspace", next => smokeField(next, "w0.tabs") === "1" && smokeField(next, "w0.workspace") === "1" && idle(next) && smokeField(next, "w0.drop") === "none");
+    if (smokeField(await state(), "w0.terminals") !== kept) throw new Error("the row drop changed the shown terminals");
+
+    // A dragged row shows its chip and marks a slot; Escape moves nothing.
+    current = await state();
+    const below = { ...row(current, 1), y: row(current, 1).y + 12 };
+    await drag(f, 0, row(current, 0), below);
+    await until("a row drag targets a slot", next => smokeField(next, "w0.drop") === "row_slot");
+    await escape(); await mouse(0, "up", below);
+    await until("Escape ended the row drag", next => smokeField(next, "w0.drop") === "none" && smokeField(next, "w0.workspaces") === "2");
+
+    // The hidden first workspace, dragged outside, tears off into a new
+    // window and session with its two tabs, the moved one among them. The
+    // press lands away from the last one on this row, which would
+    // otherwise count as a double click and rename the row.
+    current = await state();
+    const outside = { x: 30, y: point(smokeField(current, "w0.size")).y + 100 };
+    const aside = (at: Point) => ({ x: at.x - 40, y: at.y });
+    await drag(f, 0, aside(row(current, 0)), outside);
+    await until("the workspace tear-off cue", next => {
+      if (smokeField(next, "w0.drop") !== "tear_off") return false;
+      if (!macos) return smokeField(next, "preview") === "none" && smokeField(next, "w0.workspace_tear_off") !== "none";
+      return smokeField(next, "preview") === "window" && smokeField(next, "w0.workspace_tear_off") === "none";
+    });
+    await mouse(0, "up", outside);
+    await until("the workspace opened in its own window", next => smokeField(next, "windows") === "2" && smokeField(next, "w0.workspaces") === "1" && smokeField(next, "w1.workspaces") === "1"
+      && smokeField(next, "w1.tabs") === "2" && smokeField(next, "w0.busy") === "false" && smokeField(next, "w1.busy") === "false" && smokeField(next, "preview") === "none");
+    const moved = await state();
+    if (smokeField(moved, "w0.terminals") !== kept || !smokeField(moved, "w1.terminals").split(",").includes(movedTerminal!)) {
+      throw new Error("the workspace tear-off lost or restarted a terminal");
+    }
+
+    // Stack the windows, window 0 above window 1 with a gap. The screen may
+    // clamp window 0's top, so window 1 goes below where window 0 landed.
+    const place = async (index: number, top: number) => {
+      const native = smokeField(await state(), `w${index}.native`);
+      if (macos) await f.send(`place-window\t${native}\t20\t${top}`); else run(["xdotool", "windowmove", native, "20", String(top)]);
+    };
+    await place(0, macos ? 880 : 20);
+    // A window manager's frame can offset the client origin by its border.
+    const first = await until("window 0 placed", next => Math.abs(f.rootOrigin(next, 0).x - 20) < 30);
+    const height = point(smokeField(first, "w0.size")).y;
+    const lowerTop = macos ? f.rootOrigin(first, 0).y - height - 60 : f.rootOrigin(first, 0).y + height + 60;
+    await place(1, lowerTop);
+    await until("stacked windows", next => Math.abs(f.rootOrigin(next, 0).y - f.rootOrigin(next, 1).y) > height + 40 && Math.abs(f.rootOrigin(next, 1).x - 20) < 30);
+
+    // A session's only workspace stays: no cue, and a release does nothing.
+    // The torn-off window opened under the last release, so this one aims
+    // where neither window is.
+    await activate(0); current = await state();
+    const clear = clearOf(current, f.rootOrigin, macos);
+    await drag(f, 0, row(current, 0), clear);
+    await until("no tear-off for a lone workspace", next => smokeField(next, "w0.drop") === "none" && smokeField(next, "w0.workspace_tear_off") === "none" && (!macos || smokeField(next, "preview") === "dimmed"));
+    await mouse(0, "up", clear);
+    await until("the lone workspace stayed", next => smokeField(next, "windows") === "2" && smokeField(next, "w0.workspaces") === "1" && smokeField(next, "preview") === "none" && idle(next));
+
+    await invoke("new_workspace");
+    await until("a second workspace again", next => smokeField(next, "w0.workspaces") === "2" && idle(next) && smokeField(next, "w0.workspace_rows") !== "none");
+    if (macos) {
+      // With the preview off, the leaving row draws its own cue (W1). A
+      // reload ends a row drag, so the drag waits until the reload shows
+      // in the tab width it also changes.
+      await writeConfig(fixtureConfig({ preview: false, alwaysShow: true, sidebar: true, tabWidth: 120 }));
+      await until("the reload applied", next => smokeField(next, "w0.tabs_rects").split(",")[2] === "120");
+      current = await state();
+      await drag(f, 0, row(current, 0), clear);
+      // W1 alone: the bar's pill marks only a tab's tear-off.
+      await until("preview off draws W1", next => smokeField(next, "w0.drop") === "tear_off" && smokeField(next, "preview") === "none" && smokeField(next, "w0.workspace_tear_off") !== "none"
+        && smokeField(next, "w0.tear_off_pill") === "none");
+      await escape(); await mouse(0, "up", clear);
+      await until("Escape cancelled the workspace tear-off", next => smokeField(next, "w0.drop") === "none" && smokeField(next, "w0.workspace_tear_off") === "none" && smokeField(next, "windows") === "2");
+    }
+    // A workspace dropped on the other window's content joins its session
+    // there, last, and shows (X1).
+    current = await state();
+    const content = crossWindowPoint(f.rootOrigin(current, 0), f.rootOrigin(current, 1), rectCenter(smokeField(current, "w1.pane_rects")), macos);
+    await drag(f, 0, aside(row(current, 0)), content);
+    await until("the other window takes the workspace", next => smokeField(next, "w1.drop") === "window:1:window");
+    await mouse(0, "up", content);
+    await until("the workspace moved into the other window", next => smokeField(next, "w0.workspaces") === "1" && smokeField(next, "w1.workspaces") === "2" && smokeField(next, "w1.workspace") === "1"
+      && smokeField(next, "w0.busy") === "false" && smokeField(next, "w1.busy") === "false" && smokeField(next, "preview") === "none");
+    console.log(`WORKSPACE_DRAGS_SMOKE row-drop=ok row-drag=ok tear-off=ok lone=ok window-drop=ok row-cue=${macos ? "ok" : "linux"}`);
+  }, fixtureConfig({ preview: true, alwaysShow: true, sidebar: true }));
 }

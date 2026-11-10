@@ -299,6 +299,24 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        let focus = !self.overlay_holds_focus();
+        self.show_workspace_focused(
+            session, workspace, recovers, focus, window, cx,
+        );
+    }
+
+    /// [`Self::show_workspace`], moving keyboard focus to the shown tab
+    /// only when `focus`, as another window's drag spring-loading a row
+    /// must not.
+    pub(super) fn show_workspace_focused(
+        &mut self,
+        session: SessionId,
+        workspace: WorkspaceId,
+        recovers: bool,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let left = self.workspace_id(cx);
         let desktop = cx.global_mut::<Desktop>();
         // Bells the left workspace rang while shown were seen there.
@@ -320,7 +338,6 @@ impl WorkspaceView {
         self.reconcile_own(window, cx);
         self.measure_tab_widths(window, cx);
         if let Some(tab) = self.active_tab(cx) {
-            let focus = !self.overlay_holds_focus();
             self.select_tab(tab, focus, window, cx);
             self.reveal_tab_activity(window, cx);
         } else if self.attached_session_gone(cx)
@@ -328,7 +345,7 @@ impl WorkspaceView {
             || (recovers && self.has_nothing_to_install(cx))
         {
             self.owe_emptied_close(cx);
-        } else if self.has_nothing_to_install(cx) {
+        } else if focus && self.has_nothing_to_install(cx) {
             self.focus_empty_state(window, cx);
         }
         self.publish_pane_focus(cx);
@@ -381,14 +398,29 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         self.reconcile_own(window, cx);
+        self.close_emptied_hidden(workspace, cx);
+        if !self.resume_close(window, cx) {
+            cx.notify();
+        }
+    }
+
+    /// Closes hidden `workspace` when it holds no tab, unless pinned or its
+    /// session's last, decided under the Mux lock
+    /// (`Mux::close_emptied_workspace`): an exit-close or a drag emptied it.
+    pub(super) fn close_emptied_hidden(
+        &self,
+        workspace: WorkspaceId,
+        cx: &mut Context<'_, Self>,
+    ) {
         let emptied = cx
             .global::<Desktop>()
             .hierarchy
             .state()
             .workspace_tabs(workspace)
             .is_some_and(<[TabId]>::is_empty);
-        // Scoped to the session that held the workspace when the exit-close
-        // finished, so a later session switch does not change the decision.
+        // Scoped to the session that held the workspace when the move or
+        // exit-close finished, so a later session switch does not change
+        // the decision.
         if emptied
             && !terminating(cx)
             && let Some(session) = self.attached_session(cx)
@@ -407,9 +439,6 @@ impl WorkspaceView {
                     }
                 })
                 .detach();
-        }
-        if !self.resume_close(window, cx) {
-            cx.notify();
         }
     }
 

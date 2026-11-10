@@ -1158,6 +1158,36 @@ impl Mux {
         });
         Ok(())
     }
+    /// Moves a workspace out of `source` into a new session of its own, last
+    /// in session order, as one step: a refusal creates no session. The
+    /// workspace keeps its tabs, terminals, and name; its viewers are
+    /// revoked, as for any move across sessions, and `source` remains even
+    /// when this empties it.
+    /// # Errors
+    /// Rejects foreign, missing, or nonmember targets, and what
+    /// [`Self::create_session`] rejects, before changing structure.
+    pub fn move_workspace_to_new_session(
+        &mut self,
+        source: SessionId,
+        workspace: WorkspaceId,
+    ) -> Result<SessionId, MuxError> {
+        self.select_session(source)?;
+        self.validate_scope(workspace.runtime())?;
+        if !self
+            .session(source)
+            .is_some_and(|session| session.workspaces.contains(&workspace))
+        {
+            return Err(MuxError::UnknownWorkspace(workspace));
+        }
+        let session = self.create_session(None)?;
+        if let Err(error) =
+            self.move_workspace(source, workspace, session, None)
+        {
+            let _ = self.close_session(session);
+            return Err(error);
+        }
+        Ok(session)
+    }
     /// The crate-private client close assessment uses for job queries.
     pub(crate) fn attach(
         &self,
