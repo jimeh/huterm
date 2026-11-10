@@ -253,11 +253,21 @@ switcher_style = "full"             # full (icon and name) or icon
   while other windows show it, and an "exited" tag once all its shells
   exited. A click shows the workspace or session, and a right-click opens
   the row's menu: Rename, Clear Name, and Close, and for a workspace, Pin
-  Workspace or Unpin Workspace, and for a session, Open in New Window.
+  Workspace or Unpin Workspace and Move Workspace to New Window, and for a
+  session, Open in New Window.
   In the popovers each row also has a "⋯" button that opens the
   same menu. Drag a row up or down to reorder the session's workspaces or
   the sessions, holding it at the list's edge to scroll; Escape cancels the
-  drag. A double-click renames a workspace row in the sidebar; in the
+  drag. A dragged row shows its name under the pointer. A workspace row
+  dragged out of the window opens the workspace in a new window and
+  session, as Move Workspace to New Window in its menu does, and one
+  dropped on another window moves into that window's session, which then
+  shows it; a session's only workspace does neither but can still move to
+  another window. A tab or pane dropped on another workspace's row moves
+  into it, last, and the window keeps showing its workspace; resting on a
+  row for half a second shows that workspace, so the drag can go on into
+  its tab bar or panes, and a drag that then ends without a drop goes back.
+  A double-click renames a workspace row in the sidebar; in the
   popovers and the sheet a click shows the workspace and closes them, so
   rename there with F2 or the row's menu. `focus_sidebar` moves keyboard
   focus to the shown workspace's row; see
@@ -832,14 +842,18 @@ A tab or pane dragged onto another Huterm window drops into its tab bar, its
 title bar while the tab bar is hidden, or an edge of one of its panes.
 Released outside every Huterm window, it opens in a new window as that
 window's only tab. A window's only tab, and the only pane of a window's only
-tab, stay where they are.
+tab, stay where they are. Over another window's sidebar, a tab or pane drops
+on a workspace row and moves into that workspace, and resting there shows it.
+A dragged workspace row drops into another window's workspace list, or
+anywhere else on it, and joins that window's session.
 
 On macOS a small preview follows the pointer once the drag leaves its window:
 the dragged title over another Huterm window, a miniature window where a
 release opens a new one, and the title dimmed where a release does nothing.
 `macos_drag_preview = false` turns it off. Without it, and on Linux, the source
 window shows the outcome itself: a `↗ New window` pill after its tabs for a tab,
-and the dragged pane dimmed with the pill in its middle. The setting applies on
+the dragged pane dimmed with the pill in its middle, and for a workspace its
+row, dimmed and outlined with the pill in its middle. The setting applies on
 reload, including to a drag under way. In Settings it is **Floating drag
 preview** under Windows, among the advanced settings.
 

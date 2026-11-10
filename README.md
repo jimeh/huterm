@@ -147,7 +147,10 @@ them, each window on its own and back to the tab and pane it left there.
 A left or right sidebar lists the window's workspaces, reorders them by
 dragging, and holds the session switcher; its button sits in the window's
 corner, with a workspace switcher, and optionally a session switcher, beside
-it while the sidebar is hidden.
+it while the sidebar is hidden. Tabs and panes dropped on a workspace's row
+move into it, and resting on the row shows it. A workspace dragged out of
+its window opens in a new window and session, and one dropped on another
+window moves into that window's session.
 See [Sidebar and workspaces](docs/configuration.md#sidebar-and-workspaces).
 Each tab holds one or more panes, each with its own terminal and
 shell. Hidden tabs keep processing output without building snapshots or
