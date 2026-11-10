@@ -20,10 +20,13 @@ type Attempt = { code: number; timedOut: boolean };
 
 const describe = (command: string[]) => command.join(" ");
 
+const forwardedSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+
 /**
  * Each attempt runs in its own process group, so a timeout also ends any
  * process the command started, rather than leaving it to compete with the
- * next attempt.
+ * next attempt. That group no longer receives signals sent to the helper's
+ * group, such as a terminal's Ctrl-C, so the helper forwards them.
  */
 function runAttempt(command: string[], timeoutMs: number, graceMs: number): Promise<Attempt> {
   const [executable, ...args] = command;
@@ -41,19 +44,27 @@ function runAttempt(command: string[], timeoutMs: number, graceMs: number): Prom
         if (code !== "ESRCH" && code !== "EPERM") throw error;
       }
     };
+    const forward = (value: NodeJS.Signals) => {
+      signal(value);
+      process.exit(128 + constants.signals[value]);
+    };
+    for (const value of forwardedSignals) process.on(value, forward);
+    const settle = () => {
+      clearTimeout(deadline);
+      clearTimeout(force);
+      for (const value of forwardedSignals) process.off(value, forward);
+    };
     const deadline = setTimeout(() => {
       timedOut = true;
       signal("SIGTERM");
       force = setTimeout(() => signal("SIGKILL"), graceMs);
     }, timeoutMs);
     child.once("error", (error) => {
-      clearTimeout(deadline);
-      clearTimeout(force);
+      settle();
       reject(error);
     });
     child.once("exit", (code, signalCode) => {
-      clearTimeout(deadline);
-      clearTimeout(force);
+      settle();
       // The command may have exited on SIGTERM while its group lives on.
       if (timedOut) signal("SIGKILL");
       resolve({ code: code ?? 128 + (signalCode ? constants.signals[signalCode] : 0), timedOut });
@@ -76,10 +87,11 @@ export async function retryCommand(command: string[], options: RetryOptions): Pr
     const next = attempt < options.attempts ? "; retrying" : "";
     log(`retry-command: attempt ${attempt} of ${options.attempts} of \`${describe(command)}\` ${outcome}${next}`);
   }
+  const attempts = options.attempts === 1 ? "1 attempt" : `${options.attempts} attempts`;
   // The ci-zig-install-hang known-flake signature matches "has timed out after".
   const summary = last.timedOut
-    ? `has timed out after ${options.attempts} attempts of ${seconds} s`
-    : `failed after ${options.attempts} attempts`;
+    ? `has timed out after ${attempts} of ${seconds} s`
+    : `failed after ${attempts}`;
   log(`retry-command: \`${describe(command)}\` ${summary}`);
   return last.timedOut ? 124 : last.code;
 }

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { retryCommand } from "./retry-command.ts";
@@ -12,6 +13,15 @@ function alive(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Polls until `condition` holds; a killed orphan stays visible until init reaps it. */
+async function eventually(condition: () => boolean, describe: () => string, timeoutMs = 3_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
+  while (!condition()) {
+    if (performance.now() > deadline) throw new Error(`timed out waiting: ${describe()}`);
+    await Bun.sleep(20);
   }
 }
 
@@ -51,8 +61,20 @@ test("ends a timed-out attempt's whole process group and reports the timeout", a
   expect(code).toBe(124);
   const children = readFileSync(pids, "utf8").trim().split("\n").map(Number);
   expect(children).toHaveLength(2);
-  for (const pid of children) expect(alive(pid)).toBe(false);
+  for (const pid of children) await eventually(() => !alive(pid), () => `pid ${pid} still alive`);
   expect(messages[0]).toContain("attempt 1 of 2 of `sh -c");
   expect(messages[0]).toContain("timed out after 0.3 s; retrying");
   expect(messages.at(-1)).toContain("has timed out after 2 attempts of 0.3 s");
+});
+
+test("forwards a signal it receives to the attempt's process group", async () => {
+  const pidFile = join(scratch(), "pid");
+  const helper = spawn("bun", [join(import.meta.dir, "retry-command.ts"), "--attempts", "1", "--timeout", "60", "--",
+    "sh", "-c", `echo $$ > "$1"; exec sleep 30`, "sh", pidFile], { stdio: "ignore" });
+  const exited = new Promise<number | null>((resolve) => helper.once("exit", (code) => resolve(code)));
+  await eventually(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n"), () => "the command never started");
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  helper.kill("SIGTERM");
+  expect(await exited).toBe(143);
+  await eventually(() => !alive(pid), () => `pid ${pid} outlived the helper`);
 });
