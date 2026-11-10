@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.1](https://github.com/jimeh/huterm/compare/v0.33.0...v0.33.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **release:** install release build tools reliably again, so the 0.32.0 and 0.33.0 changes ship ([#454](https://github.com/jimeh/huterm/issues/454)) ([5e2b093](https://github.com/jimeh/huterm/commit/5e2b093ca2f8172ed9ebefadb635b627be6f0b73))
+
 ## [0.33.0](https://github.com/jimeh/huterm/compare/v0.32.0...v0.33.0) (2026-11-09)
 
 
