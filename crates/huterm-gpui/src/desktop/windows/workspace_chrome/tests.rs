@@ -339,6 +339,7 @@ fn linux_frame(layout: &str) -> WindowFrame {
         inset: gpui::Edges::all(px(10.0)),
         controls: true,
         buttons: ButtonLayout::parse(layout),
+        traffic_lights: None,
     }
 }
 

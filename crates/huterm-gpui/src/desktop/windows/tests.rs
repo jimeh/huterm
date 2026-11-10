@@ -2168,6 +2168,26 @@ fn merged_traffic_lights_centre_any_button_size_at_the_native_inset() {
 }
 
 #[test]
+fn the_strip_starts_a_fixed_gap_past_any_traffic_lights() {
+    let span = |x: f64, width: f64| Bounds {
+        origin: point(x, 9.0),
+        size: gpui::size(width, 14.0),
+    };
+    // A span like macOS 26's, read from a screenshot, and macOS 27's
+    // measured one: the first control keeps the same gap after either.
+    assert_eq!(
+        traffic_light_inset(span(7.0, 53.0)),
+        Some(px(60.0) + TRAFFIC_LIGHT_GAP)
+    );
+    assert_eq!(
+        traffic_light_inset(span(9.0, 60.0)),
+        Some(px(69.0) + TRAFFIC_LIGHT_GAP)
+    );
+    // A span that ends at the window's edge measured nothing.
+    assert_eq!(traffic_light_inset(span(0.0, 0.0)), None);
+}
+
+#[test]
 fn the_title_bar_row_holds_tabs_after_the_traffic_lights() {
     let viewport = size(px(800.0), px(600.0));
     let strip = px(32.0);

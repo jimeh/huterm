@@ -1694,3 +1694,66 @@ fn a_tab_column_beside_the_sidebar_resizes_from_its_own_edge(
         });
     }
 }
+
+/// The sidebar button follows the traffic lights a window measured in every
+/// host that puts it beside them, and a merged row's tabs move with it. Only
+/// macOS has the title strip and its traffic lights.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn the_sidebar_button_follows_the_measured_traffic_lights(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = corner_harness(cx);
+    let (window, tab) = harness.workspace_window();
+    harness.add_workspace(1);
+    // About where macOS 26's buttons put it: 16 points before the fallback.
+    let lights = px(68.0);
+    for tabs in [TabPosition::Titlebar, TabPosition::Top, TabPosition::Left] {
+        for visible in [false, true] {
+            let mut fallback_strip = None;
+            for measured in [None, Some(lights)] {
+                harness.reload_config(window, |config| {
+                    config.tabs.position = tabs;
+                });
+                harness.update_view(window, |view, window, cx| {
+                    view.traffic_lights = measured;
+                    if view.workspace_visible != visible {
+                        view.toggle_sidebar(window, cx);
+                    }
+                    cx.notify();
+                });
+                harness.wait_for("the frame to draw", |cx| {
+                    mapped(cx, window, tab) == Some(chrome(cx, window).terminal)
+                });
+                harness.cx.run_until_parked();
+                let label = format!("{tabs:?} {visible} {measured:?}");
+                harness.update_view(window, |view, window, _| {
+                    let button = view.sidebar_button_bounds.get().unwrap();
+                    assert_eq!(
+                        button.left(),
+                        measured.unwrap_or(TRAFFIC_LIGHT_INSET),
+                        "{label}"
+                    );
+                    let strip = view
+                        .chrome_layout(window)
+                        .strip_bounds(view.layout_tabs())
+                        .left();
+                    match fallback_strip {
+                        None => fallback_strip = Some(strip),
+                        // Beside a hidden sidebar the merged row starts
+                        // after the button, so it moves with the lights.
+                        Some(fallback) => assert_eq!(
+                            fallback - strip,
+                            if tabs == TabPosition::Titlebar && !visible {
+                                TRAFFIC_LIGHT_INSET - lights
+                            } else {
+                                px(0.0)
+                            },
+                            "{label}"
+                        ),
+                    }
+                });
+            }
+        }
+    }
+}

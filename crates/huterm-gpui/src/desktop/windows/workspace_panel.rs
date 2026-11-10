@@ -2105,7 +2105,7 @@ impl WorkspaceView {
                 group = group.pl(if frame.controls {
                     TITLE_ROW_LEAD
                 } else {
-                    TRAFFIC_LIGHT_INSET
+                    frame.traffic_light_inset()
                 });
             } else {
                 group = group.child(self.window_controls_element(
