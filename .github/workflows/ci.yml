@@ -800,8 +800,9 @@ jobs:
 
       # No pull request runs the Release workflow, so install each Mise tool
       # list that its jobs on this runner install, read from release.yml, into
-      # an empty data directory as release's uncached installs do. The Zig
-      # download store from setup-zig spares a second Zig mirror fetch.
+      # an empty data directory as release's uncached installs do. Sharing
+      # setup-zig's download store reuses the Zig archive, though Mise still
+      # fetches Zig's release index and signature.
       - name: Install release tools in a clean Mise state
         timeout-minutes: 8
         env:

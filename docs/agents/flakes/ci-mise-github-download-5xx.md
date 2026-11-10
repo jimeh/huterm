@@ -16,7 +16,8 @@ step_names = [
   "Install macOS release tools with Mise",
   "Install Linux release tools with Mise",
   "Install assembly tools with Mise",
-  "Install publication tools with Mise",
+  "Install release tools in a clean Mise state",
+  "Prepare and verify exact release candidate",
 ]
 
 [signature]

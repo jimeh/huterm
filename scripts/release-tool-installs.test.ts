@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseToolInstalls } from "./release-tool-installs.ts";
 
-type Step = { name?: string; run?: string; env?: Record<string, string>; with?: { install_args?: string } };
+type Step = { name?: string; if?: string; "continue-on-error"?: unknown; run?: string; env?: Record<string, string>; with?: { install_args?: string } };
 type Workflow = { jobs: Record<string, { strategy?: { matrix?: { include?: { runner?: string }[] } }; steps: Step[] }> };
 
 const root = join(import.meta.dir, "..");
@@ -21,6 +21,9 @@ test("CI installs every release runner's tool lists on that runner", () => {
   const packageJob = ci.jobs.package!;
   const step = packageJob.steps.find(step => step.name === "Install release tools in a clean Mise state");
   expect(step?.env?.RELEASE_RUNNER).toBe("${{ matrix.runner }}");
+  // A condition or tolerated failure would let a runner's coverage lapse silently.
+  expect(step?.if).toBeUndefined();
+  expect(step?.["continue-on-error"]).toBeUndefined();
   expect(step?.run).toContain('bun scripts/release-tool-installs.ts "$RELEASE_RUNNER"');
   const ciRunners = (packageJob.strategy?.matrix?.include ?? []).map(entry => entry.runner);
   // Every CI job already installs Bun, so a Bun-only release runner needs no package job.

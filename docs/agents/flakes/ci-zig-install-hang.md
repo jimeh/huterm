@@ -8,7 +8,11 @@ retries = 0
 review_by = "2027-01-15"
 
 [selector]
-step_names = ["Install Zig", "Retry Zig installation"]
+step_names = [
+  "Install Zig",
+  "Retry Zig installation",
+  "Install release tools in a clean Mise state",
+]
 
 [signature]
 match = [

@@ -14,6 +14,7 @@ step_names = [
   "Install job tools with Mise",
   "Install macOS release tools with Mise",
   "Install Linux release tools with Mise",
+  "Install release tools in a clean Mise state",
 ]
 
 [signature]
