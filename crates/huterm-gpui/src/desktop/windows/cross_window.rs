@@ -314,7 +314,8 @@ impl WorkspaceView {
 
     /// The tab bar's pill marks a tab tear-off. A pane's cue is S1 on the
     /// pane itself; the bar pill stands in only while the pane is not drawn,
-    /// as after the drag spring-loaded another tab.
+    /// as after the drag spring-loaded another tab. A workspace's cue is W1
+    /// on its row.
     pub(super) fn bar_tear_off_pill(&self, cx: &App) -> bool {
         self.tear_off_pill(cx)
             && cx
@@ -322,11 +323,12 @@ impl WorkspaceView {
                 .cross
                 .drag
                 .as_ref()
-                .is_some_and(|drag| {
-                    drag.payload
-                        .drag
-                        .pane()
-                        .is_none_or(|pane| self.drawn_frame(pane).is_none())
+                .is_some_and(|drag| match drag.payload.drag {
+                    Dragged::Tab { .. } => true,
+                    Dragged::Pane { pane, .. } => {
+                        self.drawn_frame(pane).is_none()
+                    }
+                    Dragged::Workspace { .. } | Dragged::Session(_) => false,
                 })
     }
 

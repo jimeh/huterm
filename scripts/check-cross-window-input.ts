@@ -526,7 +526,9 @@ export async function checkWorkspaceDrags(executable: string): Promise<void> {
       await until("the reload applied", next => smokeField(next, "w0.tabs_rects").split(",")[2] === "120");
       current = await state();
       await drag(f, 0, row(current, 0), clear);
-      await until("preview off draws W1", next => smokeField(next, "w0.drop") === "tear_off" && smokeField(next, "preview") === "none" && smokeField(next, "w0.workspace_tear_off") !== "none");
+      // W1 alone: the bar's pill marks only a tab's tear-off.
+      await until("preview off draws W1", next => smokeField(next, "w0.drop") === "tear_off" && smokeField(next, "preview") === "none" && smokeField(next, "w0.workspace_tear_off") !== "none"
+        && smokeField(next, "w0.tear_off_pill") === "none");
       await escape(); await mouse(0, "up", clear);
       await until("Escape cancelled the workspace tear-off", next => smokeField(next, "w0.drop") === "none" && smokeField(next, "w0.workspace_tear_off") === "none" && smokeField(next, "windows") === "2");
     }
