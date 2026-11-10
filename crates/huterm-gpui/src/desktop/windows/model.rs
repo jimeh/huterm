@@ -143,8 +143,10 @@ pub(super) struct PendingFocus {
     /// The whole remembered activation history, most recent first, which
     /// the window's history follows while the user has not chosen another
     /// tab, so a tab activated only because nothing else had arrived
-    /// reorders nothing.
+    /// reorders nothing. Kept only while something is pending.
     pub(super) order: Vec<TabId>,
+    /// The active tab changed since the switch: the user chose one.
+    pub(super) touched: bool,
 }
 
 impl PendingFocus {
@@ -164,7 +166,7 @@ impl PendingFocus {
     /// `active` is still the tab the switch activated, or the switch had
     /// none to activate.
     fn untouched(&self, active: Option<TabId>) -> bool {
-        self.chosen.is_none() || active == self.chosen
+        !self.touched && (self.chosen.is_none() || active == self.chosen)
     }
 
     /// The remembered active tab while the user has not chosen another.
@@ -273,19 +275,20 @@ impl WindowRecord {
     /// activations of tabs still installing after the window's own.
     fn navigated_history(&self) -> Vec<TabId> {
         let pending = &self.pending;
-        let mut history = if pending.untouched(self.active) {
-            pending.remembered_order(&self.history, |tab| {
-                self.contains(tab) || pending.names(tab)
-            })
-        } else {
-            let mut history = self.history.clone();
-            for tab in &pending.history {
-                if !history.contains(tab) {
-                    history.push(*tab);
+        let mut history =
+            if !pending.is_empty() && pending.untouched(self.active) {
+                pending.remembered_order(&self.history, |tab| {
+                    self.contains(tab) || pending.names(tab)
+                })
+            } else {
+                let mut history = self.history.clone();
+                for tab in &pending.history {
+                    if !history.contains(tab) {
+                        history.push(*tab);
+                    }
                 }
-            }
-            history
-        };
+                history
+            };
         if let Some(active) = pending.active_over(self.active) {
             record_tab_activation(&mut history, active);
         }
@@ -507,7 +510,7 @@ impl WindowModel {
         if let Some(active) = record.active {
             record_tab_activation(&mut record.history, active);
         }
-        record.pending = PendingFocus {
+        let mut pending = PendingFocus {
             active: active.filter(|tab| !shows(tab)),
             chosen: record.active,
             panes: panes
@@ -521,7 +524,12 @@ impl WindowModel {
                 .filter(|tab| !shows(tab))
                 .collect(),
             order: history.to_vec(),
+            touched: false,
         };
+        if pending.is_empty() {
+            pending = PendingFocus::default();
+        }
+        record.pending = pending;
         record.tabs = tabs;
     }
 
@@ -560,15 +568,13 @@ impl WindowModel {
             .copied()
             .partition(|tab| arrived(*tab));
         pending.history = waiting;
+        let untouched = pending.untouched(shown_active);
         let active = if pending.active.is_some_and(&arrived) {
-            let remembered = pending.active.take();
-            remembered.filter(|_| {
-                pending.chosen.is_none() || shown_active == pending.chosen
-            })
+            pending.active.take().filter(|_| untouched)
         } else {
             None
         };
-        if record.pending.untouched(shown_active) {
+        if untouched {
             let held: Vec<TabId> =
                 record.tabs.iter().map(|entry| entry.id).collect();
             record.history = record
@@ -581,7 +587,13 @@ impl WindowModel {
                 }
             }
         }
-        if settled {
+        // The remembered tab takes over here, so the window's selection of
+        // it changes nothing and counts as no choice of the user's.
+        if let Some(tab) = active {
+            record.active = Some(tab);
+            record_tab_activation(&mut record.history, tab);
+        }
+        if settled || record.pending.is_empty() {
             record.pending = PendingFocus::default();
         }
         (active, panes)
@@ -724,6 +736,7 @@ impl WindowModel {
         record.tabs.retain(|existing| existing.id != tab);
         record.tabs.push(entry);
         record.active = Some(tab);
+        record.pending.touched = true;
         record_tab_activation(&mut record.history, tab);
     }
 
@@ -747,6 +760,12 @@ impl WindowModel {
         }
         let changed =
             record.active != Some(tab) || record.history.first() != Some(&tab);
+        // Choosing another tab than the one a switch showed ends what the
+        // switch remembered for tabs still installing; activating one when
+        // none was active is the window's fallback, not a choice.
+        if record.active.is_some_and(|active| active != tab) {
+            record.pending.touched = true;
+        }
         record.active = Some(tab);
         record_tab_activation(&mut record.history, tab);
         if changed {

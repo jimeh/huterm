@@ -772,3 +772,43 @@ fn leaving_before_tabs_arrive_files_the_remembered_order() {
     assert_eq!(filed(None), [a, c, d]);
     assert_eq!(filed(Some(d)), [d, a, c]);
 }
+
+/// A switch whose remembered tabs all had views keeps no remembered order,
+/// and once the user chose another tab, returning to the first is still
+/// the user's history: neither departure nor capture restores the old one.
+#[test]
+fn the_users_own_choices_outlast_a_switchs_remembered_order() {
+    let [a, b, c] = [TabId::new(1), TabId::new(2), TabId::new(3)];
+    let filed = |installing: bool| {
+        let mut model = attached(0);
+        let shown = if installing {
+            vec![entry(1), entry(2)]
+        } else {
+            vec![entry(1), entry(2), entry(3)]
+        };
+        model.show_tabs(window(1), shown, Some(a), &[a, c, b], &[]);
+        assert!(model.select(window(1), b));
+        assert!(model.select(window(1), a));
+        if installing {
+            model.add_tab(window(1), entry(3));
+            let (active, _) = model.take_pending(window(1), |_| true, true);
+            assert_eq!(active, None);
+        }
+        let saved = model.desktop_layout(None, |_| false);
+        let saved: Vec<u64> = saved.windows[0]
+            .tab_history
+            .iter()
+            .map(|tab| tab.get())
+            .collect();
+        model.switch_to(window(1), SessionId::new(1), WorkspaceId::new(2));
+        let history =
+            model.record(window(1)).unwrap().memory[0].history.clone();
+        (saved, history)
+    };
+    for installing in [false, true] {
+        let (saved, history) = filed(installing);
+        assert_eq!(history, [a, b, c], "installing: {installing}");
+        // Saved most recent last.
+        assert_eq!(saved, [3, 2, 1], "installing: {installing}");
+    }
+}
