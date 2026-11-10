@@ -5453,6 +5453,7 @@ mod buttons;
 mod chrome;
 mod cross_window;
 mod dialogs;
+mod hidden_workspaces;
 mod layout_undo;
 mod menus;
 mod native_menus;

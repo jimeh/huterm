@@ -593,6 +593,35 @@ impl Mux {
             Ok(())
         }
     }
+    /// Closes `workspace` when it still belongs to `session`, holds no
+    /// tab, is not pinned, and the session holds another workspace: the
+    /// workspace an emptied window's [`CloseEffect::LeaveWorkspace`] would
+    /// close, for a window that emptied a workspace it does not show.
+    /// Decided under the lock, so a tab that arrived meanwhile, or a move
+    /// to another session, keeps the workspace. Stops no terminal. Returns
+    /// whether it closed the workspace.
+    /// # Errors
+    /// Rejects a foreign session or workspace.
+    pub fn close_emptied_workspace(
+        &mut self,
+        session: SessionId,
+        workspace: WorkspaceId,
+    ) -> Result<bool, MuxError> {
+        self.validate_scope(session.runtime())?;
+        self.validate_scope(workspace.runtime())?;
+        let empty_member = self.workspaces.get(&workspace).is_some_and(|w| {
+            w.session_id == session && w.tabs.is_empty() && !w.pinned
+        });
+        let sibling = self
+            .workspaces
+            .values()
+            .any(|w| w.session_id == session && w.id != workspace);
+        if empty_member && sibling {
+            self.close_workspace(workspace)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
     /// Validates that a tab currently belongs to the workspace.
     pub(super) fn select_workspace_tab(
         &self,

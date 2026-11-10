@@ -76,6 +76,11 @@ impl ExitCloses {
         Some(*pane)
     }
 
+    /// The pane whose close `window` holds, if any.
+    pub(super) fn held_by(&self, window: WindowId) -> Option<PaneId> {
+        self.held(window).map(|index| self.0[index].0)
+    }
+
     /// Marks the close `window` holds as committing and returns its pane.
     pub(super) fn begin_commit(&mut self, window: WindowId) -> Option<PaneId> {
         let index = self.held(window)?;

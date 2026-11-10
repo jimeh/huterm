@@ -718,3 +718,97 @@ fn memory_is_kept_per_workspace_and_saved_once_per_workspace() {
     );
     assert_eq!(model.record(window(1)).unwrap().memory, before);
 }
+
+/// A tab a window activated only because nothing else had arrived yet
+/// reorders no remembered activation: once the remembered tabs arrive, the
+/// history follows the remembered order and the remembered active tab.
+#[test]
+fn arriving_tabs_restore_the_remembered_order_over_a_fallback_activation() {
+    let mut model = attached(0);
+    let [a, b, c] = [TabId::new(1), TabId::new(2), TabId::new(3)];
+    // The switch shows nothing yet: every remembered tab is installing.
+    model.show_tabs(window(1), Vec::new(), Some(a), &[a, c, b], &[]);
+    // They arrive in display order B, C, A; the first one takes over as
+    // active, as an install does when the window has none.
+    model.add_tab(window(1), entry(2));
+    assert!(model.select(window(1), b));
+    let arrived = |tab: TabId| tab == b;
+    assert_eq!(
+        model.take_pending(window(1), arrived, false),
+        (None, vec![])
+    );
+    model.add_tab(window(1), entry(3));
+    model.add_tab(window(1), entry(1));
+    let (active, _) = model.take_pending(window(1), |_| true, true);
+    assert_eq!(active, Some(a));
+    assert!(model.select(window(1), a));
+    let record = model.record(window(1)).unwrap();
+    assert_eq!(record.history, [a, c, b]);
+    assert_eq!(model.recent_tab(window(1)), Some(c));
+}
+
+/// Leaving a workspace whose remembered tabs are partly installing files
+/// their activations in the remembered order, interleaved with the shown
+/// ones; after the user chose another tab, theirs comes first.
+#[test]
+fn leaving_before_tabs_arrive_files_the_remembered_order() {
+    let [a, c, d] = [TabId::new(1), TabId::new(3), TabId::new(4)];
+    let filed = |chosen: Option<TabId>| {
+        let mut model = attached(0);
+        // A and D have views; C is still installing.
+        model.show_tabs(
+            window(1),
+            vec![entry(1), entry(4)],
+            Some(a),
+            &[a, c, d],
+            &[],
+        );
+        if let Some(tab) = chosen {
+            assert!(model.select(window(1), tab));
+        }
+        model.switch_to(window(1), SessionId::new(1), WorkspaceId::new(2));
+        model.record(window(1)).unwrap().memory[0].history.clone()
+    };
+    assert_eq!(filed(None), [a, c, d]);
+    assert_eq!(filed(Some(d)), [d, a, c]);
+}
+
+/// A switch whose remembered tabs all had views keeps no remembered order,
+/// and once the user chose another tab, returning to the first is still
+/// the user's history: neither departure nor capture restores the old one.
+#[test]
+fn the_users_own_choices_outlast_a_switchs_remembered_order() {
+    let [a, b, c] = [TabId::new(1), TabId::new(2), TabId::new(3)];
+    let filed = |installing: bool| {
+        let mut model = attached(0);
+        let shown = if installing {
+            vec![entry(1), entry(2)]
+        } else {
+            vec![entry(1), entry(2), entry(3)]
+        };
+        model.show_tabs(window(1), shown, Some(a), &[a, c, b], &[]);
+        assert!(model.select(window(1), b));
+        assert!(model.select(window(1), a));
+        if installing {
+            model.add_tab(window(1), entry(3));
+            let (active, _) = model.take_pending(window(1), |_| true, true);
+            assert_eq!(active, None);
+        }
+        let saved = model.desktop_layout(None, |_| false);
+        let saved: Vec<u64> = saved.windows[0]
+            .tab_history
+            .iter()
+            .map(|tab| tab.get())
+            .collect();
+        model.switch_to(window(1), SessionId::new(1), WorkspaceId::new(2));
+        let history =
+            model.record(window(1)).unwrap().memory[0].history.clone();
+        (saved, history)
+    };
+    for installing in [false, true] {
+        let (saved, history) = filed(installing);
+        assert_eq!(history, [a, b, c], "installing: {installing}");
+        // Saved most recent last.
+        assert_eq!(saved, [3, 2, 1], "installing: {installing}");
+    }
+}

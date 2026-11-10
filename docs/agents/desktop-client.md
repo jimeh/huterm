@@ -31,6 +31,20 @@ workspace, active tab, and history. `WorkspaceView` keeps its tab entities
 aligned with the model through `push_tab_view`, `apply_tab_view_order`, and
 `drop_tab_views`.
 
+A window also holds hidden views of every other workspace of its attached
+session (`windows/hidden_workspaces.rs`, `WorkspaceView::hidden`). They have
+no model entries; a hidden workspace's active tab, history, and pane focus
+live in its `NavigationMemory`. `with_hidden` swaps one hidden workspace's
+views into `tabs` and names it in `scope` while reconcile or an install
+works on them, so the view operations apply to it; code that writes model
+entries checks `tabs_shown` first, and code that must find any view the
+window holds, such as the activity drain or a notification's Show Tab, uses
+`all_tab_views`. Reconcile runs every hidden workspace through the same
+rules as the shown one, drops the views of a workspace that left the
+session, and first moves the view of a tab that moved between two held
+workspaces (`adopt_moved_tabs`), so it keeps its viewer. Install
+completions route each tab to the workspace the projection places it in.
+
 Each `TabView` holds one `PaneView` per pane of its layout, with the
 window's own focused pane and focus history, so two windows showing one tab
 focus its panes independently. Reconcile installs views for tabs a window did
@@ -119,21 +133,32 @@ Quit). A switch also counts in
 `DesktopRuntime::transfers`. Tier 2 tests hold `Stage::Switch` before the
 lock (a failure there fails the shell the switch would spawn) and
 `Stage::Switched` after the commit. A tab whose shell exits while no window
-shows it records no exit-close, since only a view's exit transition does,
-and a view installed later keeps the exited tab.
+holds a view of it, shown or hidden, records no exit-close, since only a
+view's exit transition does, and a view installed later keeps the exited
+tab.
 
-A workspace switch (`windows/workspace_switch.rs`) runs the same phases
-without the worker: the guard, then `install_session` with a target in the
-shown session, holding the spawn and the checkpoint deferral from the
-install, then the settle. New Workspace keeps the worker, which runs
+A workspace switch (`windows/workspace_switch.rs`) is the guard, which still
+cancels drags, and then `show_workspace` in the same update: it marks the left
+workspace's bells seen, files its memory (`switch_to`), swaps the views
+(`swap_shown`), gives the model the target's entries, active tab, history, and
+pane focus, and selects the active tab. It holds no spawn and defers no
+checkpoint, because the model is consistent when the update ends. Tabs whose
+views are still installing, as right after the window attached, join as they
+arrive; the window model keeps their remembered navigation in
+`WindowRecord::pending` until then, which a departure files and a capture saves.
+A `LeaveWorkspace` or own-workspace close follows the same way
+(`follow_left_workspace`) and releases the commit's hold only after the window
+names its new workspace, so a deferred checkpoint or Quit never saves the
+workspace that went. New Workspace keeps the worker, which runs
 `Mux::create_workspace_with_tab` under one lock so a failed shell leaves no
-workspace. `install_session` takes `recovers`: a session switch and a
+workspace, and the install and settle; its install keeps the left workspace's
+views hidden. `install_session` takes `recovers`: a session switch and a
 follow-up that chose its target for its tabs pass true, a workspace the user
-selected false. `settle_switch` owes the emptied close only when the session
-or workspace went (`shown_workspace_gone`), or when a recovering target holds
-no tab any more; a selected empty workspace stays and draws the empty state
-(`windows/empty_state.rs`), whose buttons take the `Panel` key context and
-reach `run_empty_state_command` before the transparency panel.
+selected false. Both `settle_switch` and `show_workspace` owe the emptied close
+only when the session or workspace went (`shown_workspace_gone`), or when a
+recovering target holds no tab any more; a selected empty workspace stays and
+draws the empty state (`windows/empty_state.rs`), whose buttons take the `Panel`
+key context and reach `run_empty_state_command` before the transparency panel.
 
 What a window draws for a tab comes from `shown_layout` and `shown_zoom`. The
 layout is the projection's, with the window's divider drag and the resizes it
@@ -264,7 +289,10 @@ Pushing does not resize: views resize where they did before. A shown view
 resizes on render. Hidden views resize through the layout sync, when the
 layout is pending, the scale or cell size changed, the geometry differs, or
 the tab bar appeared or hid; through the fullscreen sync; and otherwise on
-activation. Inside those bounds, `TerminalLayout`
+activation. A hidden workspace's views are outside those syncs: they keep
+their geometry until the switch that shows them marks the layout pending,
+so a window resize costs no more with more workspaces, while a
+configuration reload still reaches them. Inside those bounds, `TerminalLayout`
 computes the requested grid, which the view reports and the PTY follows while
 the view controls; `requested_grid` is never what the view draws.
 `GridGeometry` maps between window positions and the displayed grid, the
@@ -299,23 +327,28 @@ validate once before side effects, then capture before teardown. A second
 freshness check after capture can strand a half-accepted Quit.
 
 `Desktop::exit_closes` owns exit-closes, one record per pane, and the window
-close pipeline is the only actor that assesses and commits them. The first
-view to report a pane's exit transition records it, owed under that window's
-`close_on_exit` and settled otherwise, so a reload changes only future exits.
-An idle window that shows an owed pane takes it in `next_request` as a
-`CloseTarget::Pane`, after queued user closes, and starts its assessment at
-once; any window showing the pane may take it, and a window holds one at a
-time. Core closes a tab with its last pane. Keep automatic exit
-requests separate from the merged manual close intent, so canceling one prompt
-does not lose inactive siblings. A close that never reached Mux for its pane
-(cancelled, merged into a wider target that left the tab, or found gone on a
-stale retry) returns to owed and is offered to the other windows through
-`cx.defer` and window handles, never by reading their entities from inside an
-update. Once its commit starts, the commit's completion records the result by
-pane in application context, so closing the window cannot let a second window
-close the same pane. Removing a window returns a close it took but had not
-started committing. A failed assessment or commit settles with one notice and
-is not retried. Tier 2 tests hold and fail both stages through
+close pipeline is the only actor that assesses and commits them. The first view
+to report a pane's exit transition records it, owed under that window's
+`close_on_exit` and settled otherwise, so a reload changes only future exits. An
+idle window that holds a view of an owed pane, shown or in a hidden workspace,
+takes it in `next_request` as a `CloseTarget::Pane`, after queued user closes,
+and starts its assessment at once; any window holding the pane may take it, and
+a window holds one at a time. Only the exit-close a window took reaches a hidden
+pane (`pane_close_tab`): a user's close of a pane that moved into a hidden
+workspace ends quietly. A committed close in a hidden workspace
+(`finish_hidden_close`) touches no emptied edge; when it emptied the workspace,
+`Mux::close_emptied_workspace` closes it under the lock unless it is pinned,
+holds a tab again, or is its session's last. Core closes a tab with its last
+pane. Keep automatic exit requests separate from the merged manual close intent,
+so canceling one prompt does not lose inactive siblings. A close that never
+reached Mux for its pane (cancelled, merged into a wider target that left the
+tab, or found gone on a stale retry) returns to owed and is offered to the other
+windows through `cx.defer` and window handles, never by reading their entities
+from inside an update. Once its commit starts, the commit's completion records
+the result by pane in application context, so closing the window cannot let a
+second window close the same pane. Removing a window returns a close it took but
+had not started committing. A failed assessment or commit settles with one
+notice and is not retried. Tier 2 tests hold and fail both stages through
 `windows/worker_hooks.rs`, which compiles only for tests with `test-support`;
 `Stage::Assessed` holds a returned assessment before the window sees it, and
 `Desktop::close_failures` counts close failure notices, so a "no notice" claim
@@ -1056,8 +1089,10 @@ drawn where the notice would go, and
 `Notifier::availability`, since the test binary has no bundle. Show Tab is the
 private `SHOW_PANE` notice action, handled before the catalog like
 `RETRY_INSTALL`; `reveal_pane` runs from `cx.defer`, because it updates
-windows, the notice's own included, and it summons a hidden Quake window and
-clears a zoom that hides the pane. Program notices use
+windows, the notice's own included, and it summons a hidden Quake window,
+switches to a hidden workspace that holds the pane, and clears a zoom that
+hides the pane. A hidden workspace's views deliver notifications as a
+hidden tab's do. Program notices use
 `NoticeSource::Program`, one per tab, so failures never replace them.
 System notification tags name the pane and a serial number, and their click
 handler reveals the pane the same way. Linux bodies escape markup.
@@ -1997,11 +2032,12 @@ time into `Desktop::statuses`, and moves every window record's
 attach and switch, since a terminal can ring before the projection lists
 it and a window can open between reads; `Statuses::note_followed` records
 which terminals a pass already saw, so only a terminal the projection lists
-for the first time counts its earlier bells; `install_session` marks the left
-workspace's bells seen before `switch_to`, so a bell seen while shown never
-marks the row after the window leaves. Rows read the dot at render from
-the projection, the statuses, and the record, and the shown workspace's row
-never shows a bell.
+for the first time counts its earlier bells; `install_session` and
+`show_workspace` mark the left workspace's bells seen before `switch_to`, so
+a bell seen while shown never marks the row after the window leaves. A
+hidden workspace's views mark their tabs as hidden tabs do, never as seen.
+Rows read the dot at render from the projection, the statuses, and the
+record, and the shown workspace's row never shows a bell.
 A pinned refusal of an emptied close waits for the projection, as a
 `ViewNotEmpty` one does, and owes the close again when the workspace went.
 Row menus (`MenuKind::WorkspaceRow`,

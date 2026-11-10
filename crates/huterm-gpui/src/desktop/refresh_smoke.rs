@@ -525,34 +525,31 @@ async fn check(cx: &mut AsyncApp) -> anyhow::Result<()> {
     check_detachment(cx).await
 }
 
-/// Subscribes a separate viewer that outlives the window's view, as another
-/// client would, then moves the tab to another workspace of its session.
-/// Reconcile drops the window's view as it would after another client's
-/// move, and the core tab stays alive, so shutdown or a later event cannot
-/// rescue a leak. A view dropped while its tab stayed in the window's
-/// workspace would be installed again.
+/// Moves the tab to a workspace of another session, then subscribes a
+/// separate viewer there that outlives the window's view, as another client
+/// of that session would. Reconcile drops the window's view as it would
+/// after another client's move, and the core tab stays alive, so shutdown
+/// or a later event cannot rescue a leak. A view dropped while its tab
+/// stayed in a workspace of the window's session would be installed again,
+/// since the window keeps views of every workspace of its session.
 fn detach_by_move(
     runtime: &super::DesktopRuntime,
-    attachment: huterm_protocol::AttachmentId,
     workspace: huterm_protocol::WorkspaceId,
     tab: huterm_protocol::TabId,
     terminal: huterm_protocol::TerminalId,
 ) -> anyhow::Result<huterm_core::TerminalViewer> {
     let mut mux = runtime.lock();
-    let viewer = mux.subscribe_terminal(
+    let session = mux.create_session(None)?;
+    let elsewhere = mux.create_workspace(session, None)?;
+    let attachment = mux.attach_session(session)?;
+    mux.move_tab(workspace, tab, elsewhere, None)?;
+    Ok(mux.subscribe_terminal(
         attachment,
         terminal,
         huterm_core::ViewerOptions::new(
             huterm_protocol::ViewerCapabilities::NONE,
         ),
-    )?;
-    let session = mux
-        .workspace(workspace)
-        .context("window workspace")?
-        .session_id;
-    let elsewhere = mux.create_workspace(session, None)?;
-    mux.move_tab(workspace, tab, elsewhere, None)?;
-    Ok(viewer)
+    )?)
 }
 
 /// Opens a second tab and selects the probed first tab again. A window whose
@@ -602,23 +599,21 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
         },
     )
     .await?;
-    let (attachment, workspace_id, tab, terminal, runtime) =
-        cx.update(|cx| {
-            workspace(cx, |view, _, cx| {
-                let desktop = cx.global::<super::Desktop>();
-                let record = desktop
-                    .windows
-                    .record(view.window)
-                    .context("window record")?;
-                anyhow::Ok((
-                    record.attachment.context("window attachment")?,
-                    record.workspace.context("window workspace")?,
-                    view.tabs[0].id,
-                    view.tabs[0].focused().terminal,
-                    std::sync::Arc::clone(&desktop.runtime),
-                ))
-            })
-        })??;
+    let (workspace_id, tab, terminal, runtime) = cx.update(|cx| {
+        workspace(cx, |view, _, cx| {
+            let desktop = cx.global::<super::Desktop>();
+            let record = desktop
+                .windows
+                .record(view.window)
+                .context("window record")?;
+            anyhow::Ok((
+                record.workspace.context("window workspace")?,
+                view.tabs[0].id,
+                view.tabs[0].focused().terminal,
+                std::sync::Arc::clone(&desktop.runtime),
+            ))
+        })
+    })??;
     let (id, weak, pending_wake) = cx.update(|cx| {
         workspace(cx, |view, _, cx| {
             let tab = &view.tabs[0];
@@ -627,12 +622,12 @@ async fn check_detachment(cx: &mut AsyncApp) -> anyhow::Result<()> {
         })
     })?;
     // The UI thread never takes the Mux lock.
-    let retained_viewer = cx
-        .background_executor()
-        .spawn(async move {
-            detach_by_move(&runtime, attachment, workspace_id, tab, terminal)
-        })
-        .await?;
+    let retained_viewer =
+        cx.background_executor()
+            .spawn(async move {
+                detach_by_move(&runtime, workspace_id, tab, terminal)
+            })
+            .await?;
     wait(cx, "idle task canceled without a runtime wake", |cx| {
         let stage = cx.global::<Probes>().0.borrow()[&id].get();
         Ok((

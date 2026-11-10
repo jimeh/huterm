@@ -8,10 +8,11 @@
 
 use super::super::empty_state::EmptyStateModel;
 use super::super::session_switch::quit_underway;
+use super::hidden_workspaces::hidden_view;
 use super::pane_moves::active;
 use super::sessions::{
-    confirm_quit, confirmation, installing, shown_session, shown_tabs,
-    switching, undo_label, wait_quit_dialog,
+    confirm_quit, confirmation, shown_session, shown_tabs, switching,
+    undo_label, wait_quit_dialog,
 };
 use super::worker_hooks::Stage;
 use super::*;
@@ -329,28 +330,50 @@ fn two_windows_on_one_session_switch_workspaces_independently(
 }
 
 #[gpui::test]
-fn quit_waits_for_a_workspace_switch_and_saves_both_workspaces(
+fn a_workspace_switch_completes_at_once_and_quit_saves_both_workspaces(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     let (second, others) = harness.add_workspace(1);
-    harness.wait_projection();
+    harness.wait_hidden(window, second, &others);
     let runtime = Arc::clone(&harness.runtime);
-    runtime.worker_hooks.hold(Stage::Subscribe);
-    harness.select_workspace(window, second).unwrap();
-    harness.wait_for("the switch to install its views", |cx| {
-        runtime.worker_hooks.held(Stage::Subscribe) > 0
-            && installing(cx, window)
+    let kept = harness
+        .cx
+        .update(|cx| hidden_view(cx, window, others[0]))
+        .unwrap();
+    let subscribed = runtime.worker_hooks.entered(Stage::Subscribe);
+    // The switch shows the views the window already holds, in this update.
+    assert!(matches!(
+        harness.select_workspace(window, second),
+        Ok(CommandOutcome::Completed)
+    ));
+    harness.cx.update(|cx| {
+        assert_eq!(shown_workspace(cx, window), Some(second));
+        assert!(!switching(cx, window) && !busy(cx, window));
+        assert_eq!(shown_tabs(cx, window), others);
+        assert_eq!(cx.global::<Desktop>().pending_spawns, 0);
+        assert_eq!(
+            terminal(cx, window, others[0]).map(|view| view.entity_id()),
+            Some(kept.entity_id()),
+            "the switch rebuilt the view"
+        );
+        assert!(terminal(cx, window, others[0]).unwrap().read(cx).visible);
+        assert!(!hidden_view(cx, window, tab).unwrap().read(cx).visible);
     });
+    assert_eq!(
+        runtime.worker_hooks.entered(Stage::Subscribe),
+        subscribed,
+        "the switch subscribed a viewer"
+    );
+    harness.answers(window, others[0], "shown");
+    // Quit right after it waits for nothing and saves both workspaces.
     harness.resume_quits();
     harness.cx.update(request_quit);
-    harness.cx.update(|cx| {
-        assert!(cx.global::<Desktop>().quit_pending);
-        assert!(!terminating(cx));
-    });
-    runtime.worker_hooks.release(Stage::Subscribe);
+    harness
+        .cx
+        .update(|cx| assert!(!cx.global::<Desktop>().quit_pending));
     harness.wait_quit(harness.session);
     let (captured, layout) = harness.recorder.saved().remove(0);
     assert_eq!(captured.sessions[0].workspaces.len(), 2);
@@ -369,133 +392,86 @@ fn quit_waits_for_a_workspace_switch_and_saves_both_workspaces(
 }
 
 #[gpui::test]
-fn quit_from_another_window_waits_for_a_workspace_switch(
+fn a_checkpoint_right_after_a_workspace_switch_saves_the_new_workspace(
     cx: &mut TestAppContext,
 ) {
-    let mut harness = DesktopHarness::new(cx);
-    let first = harness.open_tab(ECHO);
-    let split = harness.open_tab(ECHO);
-    let left = harness.first_pane(split);
-    let right = harness.split(split, left, SplitDirection::Right, ECHO);
-    let one = harness.attach_showing(&[first, split]);
-    harness.focus(one, split, right);
-    let (second, others) = harness.add_workspace(1);
-    harness.show_workspace(one, second, &others);
-    let two = harness.attach_showing(&[first, split]);
-    harness.show_workspace(two, second, &others);
-    let runtime = Arc::clone(&harness.runtime);
-    // The switch back installs its views, which wait for their viewers.
-    runtime.worker_hooks.hold(Stage::Subscribe);
-    harness.select_workspace(one, harness.workspace).unwrap();
-    harness.wait_for("the switch to install its views", |cx| {
-        runtime.worker_hooks.held(Stage::Subscribe) > 0 && installing(cx, one)
-    });
-    harness.resume_quits();
-    harness.activate_window(two);
-    harness.cx.update(request_quit);
-    harness.cx.update(|cx| {
-        assert!(
-            cx.global::<Desktop>().quit_pending,
-            "Quit ran before the switch restored its navigation"
-        );
-        assert!(!terminating(cx));
-    });
-    runtime.worker_hooks.release(Stage::Subscribe);
-    harness.wait_quit(harness.session);
-    let (_, layout) = harness.recorder.saved().remove(0);
-    let saved = layout
-        .windows
-        .iter()
-        .find(|saved| saved.workspace.get() == harness.workspace.get())
-        .expect("the switching window was not saved on its workspace");
-    assert_eq!(saved.active_tab.map(TabId::get), Some(split.get()));
-    assert!(
-        saved.focused_panes.iter().any(|focused| {
-            focused.tab.get() == split.get()
-                && focused.pane.get() == right.get()
-        }),
-        "{:?}",
-        saved.focused_panes
-    );
-}
-
-#[gpui::test]
-fn a_checkpoint_waits_for_a_workspace_switch(cx: &mut TestAppContext) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
     let (second, others) = harness.add_workspace(1);
-    harness.wait_projection();
+    harness.wait_hidden(window, second, &others);
     let runtime = Arc::clone(&harness.runtime);
     let recorder = harness.recorder.clone();
-    let deferred = |harness: &mut DesktopHarness| {
+    let checkpoint = |harness: &mut DesktopHarness| {
         let before = recorder.saved().len();
         harness.cx.update(|cx| {
             take_checkpoint(cx);
-            assert!(cx.global::<Desktop>().checkpoints.waiting_transfer);
+            assert!(!cx.global::<Desktop>().checkpoints.waiting_transfer);
         });
-        runtime.persistence.flush();
-        assert_eq!(recorder.saved().len(), before, "saved mid-switch");
-        before
+        harness.wait_for("the checkpoint", |_| recorder.saved().len() > before);
+        recorder.saved().pop().unwrap().1
     };
 
-    // A selected workspace's install.
-    runtime.worker_hooks.hold(Stage::Subscribe);
     harness.select_workspace(window, second).unwrap();
-    harness.wait_for("the switch to install", |cx| {
-        runtime.worker_hooks.held(Stage::Subscribe) > 0
-            && installing(cx, window)
-    });
-    let before = deferred(&mut harness);
-    runtime.worker_hooks.release(Stage::Subscribe);
-    harness.wait_for("the checkpoint after the switch settles", |_| {
-        recorder.saved().len() > before
-    });
-    let (_, layout) = recorder.saved().pop().unwrap();
+    let layout = checkpoint(&mut harness);
     assert_eq!(layout.windows[0].workspace.get(), second.get());
-    harness.wait_workspace(window, second, &others);
 
-    // An L1 follow-up's install, after the workspace's last tab closed.
-    runtime.worker_hooks.hold(Stage::Subscribe);
+    // An L1 follow-up, after the workspace's last tab closed, defers the
+    // checkpoint only while its emptied close commits.
     harness.close_tab_in(second, others[0]);
-    harness.wait_for("the follow-up to install", |cx| {
-        runtime.worker_hooks.held(Stage::Subscribe) > 0
-            && installing(cx, window)
-    });
-    let before = deferred(&mut harness);
-    runtime.worker_hooks.release(Stage::Subscribe);
-    harness.wait_for("the checkpoint after the follow-up settles", |_| {
-        recorder.saved().len() > before
-    });
-    let (_, layout) = recorder.saved().pop().unwrap();
+    harness.wait_workspace(window, harness.workspace, &[tab]);
+    let layout = checkpoint(&mut harness);
     assert_eq!(layout.windows[0].workspace.get(), harness.workspace.get());
     runtime.terminate().unwrap();
 }
 
 #[gpui::test]
-fn a_window_close_queued_behind_a_workspace_switch_runs_once_it_settles(
+fn a_switch_to_a_workspace_still_installing_applies_its_memory_as_tabs_arrive(
     cx: &mut TestAppContext,
 ) {
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[tab]);
-    let (second, _) = harness.add_workspace(1);
-    harness.wait_projection();
     let runtime = Arc::clone(&harness.runtime);
+    // The new workspace's hidden views wait for their viewers.
     runtime.worker_hooks.hold(Stage::Subscribe);
-    harness.select_workspace(window, second).unwrap();
-    harness.wait_for("the switch to install", |cx| {
+    let (second, others) = harness.add_workspace(2);
+    harness.wait_for("the hidden install to start", |_| {
         runtime.worker_hooks.held(Stage::Subscribe) > 0
-            && installing(cx, window)
     });
-    harness.update_view(window, |view, window, cx| {
-        view.request_close(CloseTarget::Window, window, cx);
+    // The window remembers the second tab there, as a restored one would.
+    let session = harness.session;
+    harness.cx.update(|cx| {
+        cx.global_mut::<Desktop>().windows.restore_memory(
+            window.window_id(),
+            vec![super::super::model::NavigationMemory {
+                session,
+                workspace: second,
+                active: Some(others[1]),
+                history: vec![others[1]],
+                panes: Vec::new(),
+                layout_history:
+                    super::super::layout_history::LayoutHistory::default(),
+            }],
+        );
     });
-    assert_eq!(runtime.worker_hooks.entered(Stage::Assess), 0, "not queued");
+    // The switch completes with nothing to show yet, and no empty state.
+    assert!(matches!(
+        harness.select_workspace(window, second),
+        Ok(CommandOutcome::Completed)
+    ));
+    harness.cx.update(|cx| {
+        assert_eq!(shown_workspace(cx, window), Some(second));
+        assert!(!switching(cx, window) && !busy(cx, window));
+        assert_eq!(shown_tabs(cx, window), []);
+        assert!(empty_state(cx, window).is_none());
+    });
     runtime.worker_hooks.release(Stage::Subscribe);
-    harness.wait_closed(window);
-    // The window's attachment was the session's only one.
-    assert!(!session_exists(&harness));
+    harness.wait_workspace(window, second, &others);
+    harness
+        .cx
+        .update(|cx| assert_eq!(active(cx, window), Some(others[1])));
+    harness.answers(window, others[1], "remembered");
 }
 
 #[gpui::test]
@@ -1199,7 +1175,9 @@ fn leaving_a_workspace_never_becomes_quit_on_linux(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn an_l1_follow_up_whose_target_went_resolves_again(cx: &mut TestAppContext) {
+fn an_l1_follow_up_passes_over_a_remembered_workspace_that_emptied(
+    cx: &mut TestAppContext,
+) {
     let mut harness = DesktopHarness::new(cx);
     let first = harness.open_tab(ECHO);
     let window = harness.attach_showing(&[first]);
@@ -1208,20 +1186,19 @@ fn an_l1_follow_up_whose_target_went_resolves_again(cx: &mut TestAppContext) {
     harness.show_workspace(window, second, &seconds);
     harness.show_workspace(window, third, &thirds);
     let runtime = Arc::clone(&harness.runtime);
-    // The follow-up chooses the second workspace, which it remembers and
-    // which holds a tab, and waits for its viewers there.
-    runtime.worker_hooks.hold(Stage::Subscribe);
+    // The leave waits at its commit while the workspace the window
+    // remembers first empties, so the follow-up chooses another.
+    runtime.worker_hooks.hold(Stage::Commit);
     harness.close_tab_in(third, thirds[0]);
-    harness.wait_for("the follow-up to install the second workspace", |cx| {
-        shown_workspace(cx, window) == Some(second)
-            && installing(cx, window)
-            && runtime.worker_hooks.held(Stage::Subscribe) > 0
+    harness.wait_for("the leave to commit", |_| {
+        runtime.worker_hooks.held(Stage::Commit) == 1
     });
-    // Its target empties before the follow-up settles.
     harness.close_tab_in(second, seconds[0]);
-    runtime.worker_hooks.release(Stage::Subscribe);
+    harness.wait_projection();
+    runtime.worker_hooks.release(Stage::Commit);
     harness.wait_workspace(window, harness.workspace, &[first]);
-    assert_eq!(harness.workspaces(), [harness.workspace]);
+    // No window showed the second workspace as it emptied, so it stays.
+    assert_eq!(harness.workspaces(), [harness.workspace, second]);
     harness.answers(window, first, "resolved");
 }
 
@@ -1248,17 +1225,9 @@ fn quit_waits_for_a_leave_workspace_follow_up(cx: &mut TestAppContext) {
             "Quit ran while the leave committed"
         );
     });
-    runtime.worker_hooks.hold(Stage::Subscribe);
+    // The follow-up shows the first workspace in the commit's own
+    // completion, which ends the hold and lets the Quit run.
     runtime.worker_hooks.release(Stage::Commit);
-    harness.wait_for("the follow-up to install", |cx| {
-        installing(cx, window)
-            && runtime.worker_hooks.held(Stage::Subscribe) > 0
-    });
-    harness.cx.update(|cx| {
-        assert!(cx.global::<Desktop>().quit_pending);
-        assert!(!terminating(cx));
-    });
-    runtime.worker_hooks.release(Stage::Subscribe);
     harness.wait_quit(harness.session);
     let (captured, layout) = harness.recorder.saved().pop().unwrap();
     assert_eq!(captured.sessions[0].workspaces.len(), 1);
@@ -1439,18 +1408,9 @@ fn quit_waits_for_a_committing_workspace_close_and_its_follow_up(
         assert!(cx.global::<Desktop>().quit_pending);
         assert!(!terminating(cx));
     });
-    runtime.worker_hooks.hold(Stage::Subscribe);
+    // The follow-up restores the first workspace's navigation in the
+    // commit's completion, before the hold the Quit waits for ends.
     runtime.worker_hooks.release(Stage::Commit);
-    harness.wait_for("the follow-up to install", |cx| {
-        installing(cx, one) && runtime.worker_hooks.held(Stage::Subscribe) > 0
-    });
-    harness.cx.update(|cx| {
-        assert!(
-            cx.global::<Desktop>().quit_pending,
-            "Quit ran before the follow-up restored its navigation"
-        );
-    });
-    runtime.worker_hooks.release(Stage::Subscribe);
     harness.wait_quit(other.session);
     let (captured, layout) = harness.recorder.saved().pop().unwrap();
     let workspaces: Vec<u64> = captured
@@ -1995,15 +1955,21 @@ fn workspace_switches_respect_the_structural_guard(cx: &mut TestAppContext) {
     refused(&mut harness);
     runtime.worker_hooks.release(Stage::Layout);
 
-    // A switch in flight refuses another.
-    runtime.worker_hooks.hold(Stage::Subscribe);
+    // A New Workspace in flight refuses a switch.
+    runtime.worker_hooks.hold(Stage::Switch);
     harness.wait_for("the arrangement to end", |cx| harness_idle(cx, window));
-    harness.select_workspace(window, second).unwrap();
+    harness.invoke(window, ids::NEW_WORKSPACE).unwrap();
     assert!(matches!(
-        harness.select_workspace(window, harness.workspace),
+        harness.select_workspace(window, second),
         Err(CommandError::Unavailable(_))
     ));
-    runtime.worker_hooks.release(Stage::Subscribe);
+    runtime.worker_hooks.release(Stage::Switch);
+    harness.wait_for("the new workspace to settle", |cx| {
+        !switching(cx, window) && shown_workspace(cx, window) != Some(second)
+    });
+    // A switch completes at once, so nothing is left in flight to refuse
+    // the next one.
+    harness.select_workspace(window, second).unwrap();
     harness.wait_workspace(window, second, &seconds);
 }
 
@@ -2094,24 +2060,26 @@ fn a_leave_workspace_commits_while_a_quit_confirms(cx: &mut TestAppContext) {
     harness.wait_for("the Quit to assess", |_| {
         runtime.worker_hooks.held(Stage::Assessed) == 2
     });
-    // The leave's follow-up waits for its viewers once it commits.
-    runtime.worker_hooks.hold(Stage::Subscribe);
+    // The leave waits at its commit, which holds the window until its
+    // follow-up shows another workspace.
+    runtime.worker_hooks.hold(Stage::Commit);
     runtime.worker_hooks.release(Stage::Assessed);
     wait_quit_dialog(&mut harness, two);
-    harness.wait_for("the leave to follow", |cx| {
-        installing(cx, one) && runtime.worker_hooks.held(Stage::Subscribe) > 0
+    harness.wait_for("the leave to commit", |_| {
+        runtime.worker_hooks.held(Stage::Commit) == 1
     });
-    assert!(
-        !harness.workspace_exists(second),
-        "the leave did not commit"
-    );
-    // Confirmed while the follow-up holds it, the Quit waits for it.
+    // Confirmed while the leave holds the window, the Quit waits for it.
     confirm_quit(&mut harness, two);
     harness.cx.update(|cx| {
         assert!(cx.global::<Desktop>().quit_pending);
         assert!(!terminating(cx));
     });
-    runtime.worker_hooks.release(Stage::Subscribe);
+    runtime.worker_hooks.release(Stage::Commit);
+    harness.wait_workspace(one, harness.workspace, &[first]);
+    assert!(
+        !harness.workspace_exists(second),
+        "the leave did not commit"
+    );
     // The Quit asks again once the follow-up settled.
     wait_quit_dialog(&mut harness, two);
     confirm_quit(&mut harness, two);

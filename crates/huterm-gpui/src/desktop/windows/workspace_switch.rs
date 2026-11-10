@@ -1,13 +1,13 @@
 //! Workspace switching: a window shows another workspace of its session,
 //! creates one, and moves on when the workspace it shows empties or goes.
 //!
-//! A workspace switch runs the session switch's phases without the worker
-//! step, since nothing changes in core: the guard, the install, which files
-//! the left workspace's navigation memory and reconciles with removals
-//! allowed, and the settle once installs are idle. It holds
-//! `pending_spawns` and defers checkpoints from install to settle. New
-//! Workspace adds a worker that creates the workspace and its shell under
-//! one Mux lock, closing the workspace again when the shell fails.
+//! The window already holds every workspace's views
+//! (`hidden_workspaces.rs`), so a workspace switch is the guard and then
+//! one update that files the left workspace's navigation memory, swaps the
+//! views, and shows the remembered tab; nothing changes in core, and
+//! nothing waits. New Workspace runs the session switch's phases: a worker
+//! creates the workspace and its shell under one Mux lock, closing the
+//! workspace again when the shell fails, then the install and the settle.
 //!
 //! When the shown workspace empties or goes, core answers the window's
 //! emptied close with `LeaveWorkspace`, and an own-workspace Close
@@ -158,9 +158,9 @@ impl WorkspaceView {
     }
 
     /// Switches this window to `workspace` of its session: the switch
-    /// guard, then the install and settle a session switch runs. Showing
-    /// the current workspace changes nothing; a workspace that is gone or
-    /// belongs to another session is refused.
+    /// guard, then [`WorkspaceView::show_workspace`] in this update.
+    /// Showing the current workspace changes nothing; a workspace that is
+    /// gone or belongs to another session is refused.
     pub(super) fn switch_workspace(
         &mut self,
         workspace: WorkspaceId,
@@ -190,17 +190,8 @@ impl WorkspaceView {
                 "Workspace no longer exists".to_owned(),
             ));
         }
-        self.busy = true;
-        self.switch = Some(SwitchPhase::Installing);
-        hold_switch_spawn(cx, self.window);
-        checkpoints::set_switching(cx, self.window, true);
-        let switched = Switched {
-            session,
-            workspace,
-            spawned: None,
-        };
-        self.install_session(switched, None, false, window, cx);
-        Ok(CommandOutcome::Accepted)
+        self.show_workspace(session, workspace, false, window, cx);
+        Ok(CommandOutcome::Completed)
     }
 
     /// Switches to the next or previous workspace of the session, wrapping.
@@ -303,9 +294,9 @@ impl WorkspaceView {
 
     /// Moves this window off the workspace it shows, after a committed
     /// `LeaveWorkspace` or own-workspace close, on its existing attachment:
-    /// to [`follow_target`], keeping the commit's switch hold until the
-    /// install settles. A window with nowhere to go releases the hold and
-    /// takes its emptied close.
+    /// to [`follow_target`], shown in this update, which ends the commit's
+    /// switch hold. A window with nowhere to go releases the hold and takes
+    /// its emptied close.
     pub(super) fn follow_left_workspace(
         &mut self,
         window: &mut Window,
@@ -341,18 +332,12 @@ impl WorkspaceView {
             cx.notify();
             return;
         };
-        // The install's `end_switch` releases the hold and the checkpoint
-        // deferral.
-        self.close_hold = false;
-        hold_switch_spawn(cx, self.window);
-        checkpoints::set_switching(cx, self.window, true);
-        self.busy = true;
-        let switched = Switched {
-            session,
-            workspace,
-            spawned: None,
-        };
-        self.install_session(switched, None, recovers, window, cx);
+        self.show_workspace(session, workspace, recovers, window, cx);
+        // Released once the window names its new workspace, so a deferred
+        // checkpoint or Quit never saves the one that went.
+        self.release_close_hold(cx);
+        self.resume_close(window, cx);
+        cx.notify();
     }
 
     /// Ends a committed Close Workspace: a window whose own workspace went

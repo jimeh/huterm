@@ -67,6 +67,13 @@ fn window_handle(cx: &App, id: gpui::WindowId) -> Option<AnyWindowHandle> {
         .find(|handle| handle.window_id() == id)
 }
 
+/// Where an install completion puts a tab's views.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstallPlace {
+    Shown,
+    Hidden(WorkspaceId),
+}
+
 /// One viewer a subscription asks for: a pane of a tab, its terminal, the
 /// state the viewer starts with, and whether it replaces a revoked viewer.
 #[derive(Clone)]
@@ -235,11 +242,36 @@ impl WorkspaceView {
             }
         }
         for (tab, entries) in by_tab {
-            let held = current && self.shows_projected_tab(tab, cx);
-            let (added, removed) = self
-                .apply_tab_viewers(tab, entries, held, committed, window, cx);
-            pushed |= added;
-            removed_any |= removed;
+            // A view of the tab elsewhere in this window, which a busy
+            // window has not adopted yet, takes the new panes once it moves;
+            // a second view of one tab is never built.
+            let place = self.install_place(tab, cx).filter(|place| {
+                current
+                    && self.held_place(tab).is_none_or(|held| held == *place)
+            });
+            match place {
+                Some(InstallPlace::Shown) => {
+                    let (added, removed) = self.apply_tab_viewers(
+                        tab, entries, true, committed, window, cx,
+                    );
+                    pushed |= added;
+                    removed_any |= removed;
+                }
+                // A hidden workspace's views install hidden, and its tab
+                // bar is not drawn.
+                Some(InstallPlace::Hidden(workspace)) => {
+                    self.with_hidden(workspace, |view| {
+                        view.apply_tab_viewers(
+                            tab, entries, true, committed, window, cx,
+                        )
+                    });
+                }
+                None => {
+                    self.apply_tab_viewers(
+                        tab, entries, false, committed, window, cx,
+                    );
+                }
+            }
         }
         if removed_any {
             self.measure_tab_widths(window, cx);
@@ -267,6 +299,7 @@ impl WorkspaceView {
             self.reconcile_own(window, cx);
         }
         self.apply_reopen(window, cx);
+        self.apply_arriving(window, cx);
     }
 
     /// Selects a tab for a window that had none once views arrived, or
@@ -369,35 +402,52 @@ impl WorkspaceView {
     }
 
     /// Withdraws the install failure notices once no failed install leaves
-    /// a pane the projection places in this window's workspace without a
-    /// view: a retry or a batch touching the workspace cleared the failures,
-    /// or the failed panes left.
+    /// a pane the projection places in a workspace this window holds
+    /// without a view: a retry or a batch touching the workspace cleared
+    /// the failures, or the failed panes left.
     pub(super) fn withdraw_install_notices(
         &mut self,
         cx: &mut Context<'_, Self>,
     ) {
         let outstanding = self.installs.failed_panes().any(|pane| {
-            self.tab_showing(pane).is_none()
-                && self.projected_pane_tab(pane, cx).is_some()
+            let state = cx.global::<Desktop>().hierarchy.state();
+            self.tab_holding(pane).is_none()
+                && state
+                    .pane_tab(pane)
+                    .and_then(|tab| self.install_place(tab, cx))
+                    .is_some()
         });
         if !outstanding && self.notices.dismiss_where(is_install_failure) {
             cx.notify();
         }
     }
 
-    /// Whether the projection holds `tab` in this window's workspace and
-    /// attached session.
-    fn shows_projected_tab(&self, tab: TabId, cx: &App) -> bool {
-        projection::installs(
-            cx.global::<Desktop>().hierarchy.state(),
-            self.workspace_id(cx),
-            self.attached_session(cx),
-            &[],
-            &[],
-            false,
-            false,
-        )
-        .contains(&tab)
+    /// Where this window holds a view of `tab`, if it holds one.
+    fn held_place(&self, tab: TabId) -> Option<InstallPlace> {
+        if self.tabs.iter().any(|view| view.id == tab) {
+            Some(InstallPlace::Shown)
+        } else {
+            self.hidden_workspace_of(tab).map(InstallPlace::Hidden)
+        }
+    }
+
+    /// Where the projection places `tab` among the workspaces this window
+    /// holds in its attached session: the shown one, a hidden one, or
+    /// none, when its view no longer has a place here.
+    fn install_place(&self, tab: TabId, cx: &App) -> Option<InstallPlace> {
+        let state = cx.global::<Desktop>().hierarchy.state();
+        let workspace = state.tab_workspace(tab)?;
+        let session = self.attached_session(cx)?;
+        if state.workspace_session(workspace) != Some(session) {
+            return None;
+        }
+        if Some(workspace) == self.workspace_id(cx) {
+            Some(InstallPlace::Shown)
+        } else {
+            self.hidden
+                .contains_key(&workspace)
+                .then_some(InstallPlace::Hidden(workspace))
+        }
     }
 
     /// Whether a subscribed viewer still has a place: its pane is in the

@@ -200,6 +200,7 @@ mod drag_preview;
 mod exit_closes;
 mod field_menu;
 mod frame_limits;
+mod hidden_workspaces;
 mod input_sync;
 pub(super) use input_sync::terminal_syncs_input;
 mod empty_state;
@@ -2189,7 +2190,8 @@ fn reconcile(cx: &mut App, touched: &Touched) {
     }
     let desktop = cx.global::<Desktop>();
     let terminating = desktop.runtime.terminating.load(Ordering::Acquire);
-    let windows = windows_to_visit(&desktop.windows, touched);
+    let windows =
+        windows_to_visit(&desktop.windows, desktop.hierarchy.state(), touched);
     let mut retitled = HashSet::new();
     let mut activate = Vec::new();
     update_windows(cx, &windows, |view, cx| {
@@ -3308,6 +3310,8 @@ fn open_window_with_profile(
                 focus: cx.focus_handle(),
                 busy: false,
                 installs: PendingInstalls::default(),
+                hidden: HashMap::new(),
+                scope: None,
                 restore_focus: None,
                 reopen: None,
                 switch: None,
@@ -4804,7 +4808,14 @@ struct WorkspaceView {
     #[cfg(target_os = "macos")]
     native_fullscreen: Option<crate::native_fullscreen::Adapter>,
     /// Tab views in display order, aligned with the window model's entries.
+    /// While `scope` names a hidden workspace, its views stand here instead.
     tabs: Vec<TabView>,
+    /// The views of every other workspace of the attached session, hidden,
+    /// so showing one is a visibility change (`hidden_workspaces.rs`).
+    hidden: HashMap<WorkspaceId, Vec<TabView>>,
+    /// The hidden workspace whose views `tabs` holds while reconcile or an
+    /// install works on them; `None` outside that.
+    scope: Option<WorkspaceId>,
     tab_scroll: Pixels,
     scroll_target: Option<Pixels>,
     last_scroll: Instant,
@@ -5422,9 +5433,9 @@ fn finish_exit_commit(
 }
 
 /// Offers the owed exit-closes, once no window is being updated, to the
-/// windows other than `except` that show their tabs; the first whose close
-/// pipeline is idle takes each. Never reads another window's view from
-/// inside an update.
+/// windows other than `except` that hold views of their tabs, shown or
+/// hidden; the first whose close pipeline is idle takes each. Never reads
+/// another window's view from inside an update.
 fn offer_exit_closes(cx: &mut App, except: Option<gpui::WindowId>) {
     cx.defer(move |cx| {
         if terminating(cx) {
@@ -5437,12 +5448,27 @@ fn offer_exit_closes(cx: &mut App, except: Option<gpui::WindowId>) {
             .owed()
             .filter_map(|pane| state.pane_tab(pane))
             .collect();
+        // A window holds views of every workspace of its attached session,
+        // hidden ones included.
+        let holds = |session: SessionId, tab: TabId| {
+            state
+                .tab_workspace(tab)
+                .and_then(|workspace| state.workspace_session(workspace))
+                == Some(session)
+        };
         let windows: Vec<gpui::WindowId> = desktop
             .windows
             .records()
             .filter(|record| {
                 Some(record.id) != except
-                    && record.tabs.iter().any(|entry| owed.contains(&entry.id))
+                    && (record
+                        .tabs
+                        .iter()
+                        .any(|entry| owed.contains(&entry.id))
+                        || record.attachment.is_some()
+                            && record.session.is_some_and(|session| {
+                                owed.iter().any(|tab| holds(session, *tab))
+                            }))
             })
             .map(|record| record.id)
             .collect();
@@ -5769,7 +5795,7 @@ impl WorkspaceView {
 
     /// Appends a tab's view and model entry, activating a spawned tab, then
     /// applies the installed order, so a tab the projection placed earlier
-    /// lands in its position.
+    /// lands in its position. A hidden workspace's tab has no entry.
     fn push_tab_view(&mut self, tab: TabView, spawned: bool, cx: &mut App) {
         let entry = TabEntry {
             id: tab.id,
@@ -5778,14 +5804,16 @@ impl WorkspaceView {
             focused: Some(tab.focused().pane),
         };
         self.tabs.push(tab);
-        self.set_emptied(EmptiedClose::None, cx);
-        let windows = &mut cx.global_mut::<Desktop>().windows;
-        if spawned {
-            windows.open_tab(self.window, entry);
-        } else {
-            windows.add_tab(self.window, entry);
+        if self.tabs_shown() {
+            self.set_emptied(EmptiedClose::None, cx);
+            let windows = &mut cx.global_mut::<Desktop>().windows;
+            if spawned {
+                windows.open_tab(self.window, entry);
+            } else {
+                windows.add_tab(self.window, entry);
+            }
+            mark_titles_changed(self.window, cx);
         }
-        mark_titles_changed(self.window, cx);
         self.debug_assert_tabs_aligned(cx);
         self.sync_tab_order(cx);
     }
@@ -5798,7 +5826,7 @@ impl WorkspaceView {
         let order = {
             let state = cx.global::<Desktop>().hierarchy.state();
             let projected = self
-                .workspace_id(cx)
+                .view_workspace(cx)
                 .and_then(|workspace| state.workspace_tabs(workspace))
                 .unwrap_or(&[]);
             installed_order(projected, &current)
@@ -5841,11 +5869,22 @@ impl WorkspaceView {
         terminating: bool,
         cx: &mut Context<'_, Self>,
     ) -> WindowChange {
-        let change = reconcile_window(
+        let had_tabs = !self.tabs.is_empty();
+        let adopted = self.adopt_moved_tabs(terminating, cx);
+        let mut change = reconcile_window(
             &mut WindowReconcile { view: self, cx },
             touched,
             terminating,
         );
+        self.reconcile_hidden(touched, terminating, cx);
+        if adopted {
+            // A tab that moved to or from a hidden workspace kept its
+            // view; the window reapplies which views show.
+            change.changed = true;
+            change.titles = true;
+            change.adopted = true;
+            change.emptied |= had_tabs && self.tabs.is_empty();
+        }
         if !terminating {
             self.withdraw_install_notices(cx);
             self.note_emptied(change.emptied, touched, cx);
@@ -5937,6 +5976,9 @@ impl WorkspaceView {
     /// Applies canonical order to the model entries and tab views; returns
     /// false and changes neither when `order` does not match the tabs.
     fn apply_tab_view_order(&mut self, order: &[TabId], cx: &mut App) -> bool {
+        if !self.tabs_shown() {
+            return apply_tab_order(&mut self.tabs, order, |tab| tab.id);
+        }
         // The model decides, so a rejected order can never leave the tab bar
         // reordered while palette order and Quit capture keep the old one.
         if !cx
@@ -5992,7 +6034,9 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.reopen.is_none() || !self.installs.idle() {
+        if self.reopen.is_none()
+            || !self.installs.idle_in(self.workspace_id(cx))
+        {
             return;
         }
         let Some(focus) = self.reopen.take() else {
@@ -6085,10 +6129,12 @@ impl WorkspaceView {
             return;
         }
         self.tabs.retain(|tab| !ids.contains(&tab.id));
-        cx.global_mut::<Desktop>()
-            .windows
-            .close_tabs(self.window, ids);
-        mark_titles_changed(self.window, cx);
+        if self.tabs_shown() {
+            cx.global_mut::<Desktop>()
+                .windows
+                .close_tabs(self.window, ids);
+            mark_titles_changed(self.window, cx);
+        }
         self.debug_assert_tabs_aligned(cx);
         self.sync_tab_order(cx);
     }
@@ -7106,7 +7152,7 @@ impl WorkspaceView {
         }
         if emptied {
             // The tab that took the last pane takes over as active.
-            if self.active_tab(cx) == Some(from) {
+            if self.tabs_shown() && self.active_tab(cx) == Some(from) {
                 cx.global_mut::<Desktop>().windows.select(self.window, to);
             }
             self.drop_tab_views(&[from], cx);
@@ -7213,13 +7259,14 @@ impl WorkspaceView {
 
     fn debug_assert_tabs_aligned(&self, cx: &App) {
         debug_assert!(
-            self.record(cx).is_none_or(|record| {
-                record
-                    .tabs
-                    .iter()
-                    .map(|entry| entry.id)
-                    .eq(self.tabs.iter().map(|tab| tab.id))
-            }),
+            !self.tabs_shown()
+                || self.record(cx).is_none_or(|record| {
+                    record
+                        .tabs
+                        .iter()
+                        .map(|entry| entry.id)
+                        .eq(self.tabs.iter().map(|tab| tab.id))
+                }),
             "tab views and window model entries diverged"
         );
     }
@@ -7237,7 +7284,7 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
     }
 
     fn workspace(&self) -> Option<WorkspaceId> {
-        self.view.workspace_id(self.cx)
+        self.view.view_workspace(self.cx)
     }
 
     fn session(&self) -> Option<SessionId> {
@@ -7255,13 +7302,7 @@ impl ReconcileTarget for WindowReconcile<'_, '_> {
     fn busy(&self) -> bool {
         // Installation reconciles membership while commands and close stay
         // reserved through the view's own busy flag.
-        self.view.busy
-            && !self
-                .view
-                .transfer
-                .as_ref()
-                .is_some_and(|pending| pending.installing)
-            && !self.view.switch_installing()
+        self.view.reconcile_busy()
     }
 
     fn drop_tabs(&mut self, tabs: &[TabId]) {
@@ -9003,12 +9044,12 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<bool> {
+        // A hidden workspace's panes drain as a hidden tab's do.
         let tab = self
-            .tabs
-            .iter()
+            .all_tab_views()
             .find(|tab| tab.id == tab_id && tab.pane(pane_id).is_some())
             .or_else(|| {
-                self.tabs.iter().find(|tab| tab.pane(pane_id).is_some())
+                self.all_tab_views().find(|tab| tab.pane(pane_id).is_some())
             })?;
         let tab_id = tab.id;
         let pane = tab.pane(pane_id)?;
@@ -9093,8 +9134,7 @@ impl WorkspaceView {
         // A revocation emits no hierarchy event; reconcile replaces the
         // viewer, or removes the view once its pane has left.
         if self
-            .tabs
-            .iter()
+            .all_tab_views()
             .filter(|tab| tab.id == tab_id)
             .filter_map(|tab| tab.pane(pane_id))
             .any(|pane| pane.view.read(cx).revoked)
@@ -12678,11 +12718,16 @@ impl WorkspaceView {
                 workspace: self.workspace_id(cx)?,
                 tab: *tab,
             },
-            CloseTarget::Pane { tab, pane } => CloseRequest::Pane {
-                workspace: self.workspace_id(cx)?,
-                tab: self.pane_close_tab(*pane, cx).unwrap_or(*tab),
-                pane: *pane,
-            },
+            CloseTarget::Pane { tab, pane } => {
+                let tab = self.pane_close_tab(*pane, cx).unwrap_or(*tab);
+                CloseRequest::Pane {
+                    workspace: self
+                        .hidden_workspace_of(tab)
+                        .or_else(|| self.workspace_id(cx))?,
+                    tab,
+                    pane: *pane,
+                }
+            }
             CloseTarget::Tabs(tabs) => CloseRequest::Tabs {
                 workspace: self.workspace_id(cx)?,
                 tabs: tabs.clone(),
@@ -12721,13 +12766,20 @@ impl WorkspaceView {
     }
 
     /// The tab a pane close targets: the tab whose view in this window
-    /// shows `pane`, which a busy transfer source keeps after the projection
-    /// moved the pane away, or else the tab the projection places it in
-    /// within this workspace, which covers a pane whose view failed to
-    /// install.
+    /// shows `pane`, which a busy transfer source keeps after the
+    /// projection moved the pane away, or else the tab the projection
+    /// places it in within this workspace, which covers a pane whose view
+    /// failed to install. A pane in a hidden workspace is a target only of
+    /// the exit-close this window took, never of a user's close.
     fn pane_close_tab(&self, pane: PaneId, cx: &App) -> Option<TabId> {
         self.tab_showing(pane)
             .or_else(|| self.projected_pane_tab(pane, cx))
+            .or_else(|| {
+                (cx.global::<Desktop>().exit_closes.held_by(self.window)
+                    == Some(pane))
+                .then(|| self.tab_holding(pane))
+                .flatten()
+            })
     }
 
     /// Restricts tab targets to current tabs, in window order, and points a
@@ -12849,6 +12901,7 @@ impl WorkspaceView {
         }
         let id = self.window;
         let tabs = &self.tabs;
+        let hidden = &self.hidden;
         let shows = |tab: TabId| tabs.iter().any(|view| view.id == tab);
         // A closing window or teardown takes no automatic close.
         let can_take = !terminating(cx)
@@ -12861,11 +12914,13 @@ impl WorkspaceView {
                 }
                 let desktop = cx.global_mut::<Desktop>();
                 let state = desktop.hierarchy.state();
+                // A hidden workspace's exited pane closes as a hidden
+                // tab's does.
                 let pane_tab = |pane: PaneId| {
                     state.pane_tab(pane).filter(|tab| {
-                        tabs.iter().any(|view| {
-                            view.id == *tab && view.pane(pane).is_some()
-                        })
+                        tabs.iter().chain(hidden.values().flatten()).any(
+                            |view| view.id == *tab && view.pane(pane).is_some(),
+                        )
                     })
                 };
                 let owed: Vec<(PaneId, TabId)> = desktop
@@ -13055,6 +13110,15 @@ impl WorkspaceView {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        // Only an exit-close reaches a hidden workspace's pane.
+        if let CloseEffect::Pane { workspace, .. }
+        | CloseEffect::Tab { workspace, .. }
+        | CloseEffect::Tabs { workspace, .. } = effect
+            && Some(*workspace) != self.workspace_id(cx)
+        {
+            self.finish_hidden_close(*workspace, window, cx);
+            return;
+        }
         match target {
             CloseTarget::Application => {
                 settle_waiters(cx);
@@ -13454,9 +13518,9 @@ impl WorkspaceView {
     /// that changes only the theme does.
     fn apply_theme(&mut self, theme: &Theme, cx: &mut Context<'_, Self>) {
         self.config.theme = theme.clone();
+        // Hidden workspaces' views follow too, as hidden tabs' do.
         let views: Vec<_> = self
-            .tabs
-            .iter()
+            .all_tab_views()
             .flat_map(|tab| tab.panes.iter().map(|pane| pane.view.clone()))
             .collect();
         for view in views {
@@ -13529,7 +13593,15 @@ impl WorkspaceView {
             self.metrics = *metrics;
             // `layout_pending` resizes the views at the next sync.
             let transparency = self.transparency;
-            for (view, geometry) in self.pane_views_with_geometry(window, cx) {
+            // Hidden workspaces' views keep their geometry until shown.
+            let views = self
+                .pane_views_with_geometry(window, cx)
+                .into_iter()
+                .map(|(view, geometry)| (view, Some(geometry)))
+                .chain(
+                    self.hidden_views().into_iter().map(|view| (view, None)),
+                );
+            for (view, geometry) in views.collect::<Vec<_>>() {
                 view.update(cx, |view, cx| {
                     let metrics = metrics.at_scale(view.metrics.scale_factor);
                     view.renderer.borrow_mut().reconfigure(
@@ -13547,7 +13619,9 @@ impl WorkspaceView {
                     view.font_size = metrics.font_size;
                     view.metrics = metrics;
                     view.window_config = config.window;
-                    view.geometry = geometry;
+                    if let Some(geometry) = geometry {
+                        view.geometry = geometry;
+                    }
                     view.reload_terminal_config(config.terminal, cx);
                     view.publish_presentation(&config.theme);
                     view.theme = config.theme.clone();

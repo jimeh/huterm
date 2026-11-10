@@ -220,19 +220,25 @@ pub(super) fn install(cx: &mut App) {
 
 /// Brings the window holding pane number `pane` forward, summoning a
 /// hidden Quake window, selects its tab, clears a zoom that hides the
-/// pane, and focuses it. Returns whether a window held it.
+/// pane, and focuses it. A window that shows the pane's workspace goes
+/// first; only then does one that holds it hidden switch to it. Returns
+/// whether a window held it.
 pub(super) fn reveal_pane(pane: u64, cx: &mut App) -> bool {
-    for handle in cx.windows() {
-        let revealed = handle
-            .update(cx, |root, window, cx| {
-                let Ok(view) = root.downcast::<WorkspaceView>() else {
-                    return false;
-                };
-                view.update(cx, |view, cx| view.reveal(pane, window, cx))
-            })
-            .unwrap_or(false);
-        if revealed {
-            return true;
+    for hidden in [false, true] {
+        for handle in cx.windows() {
+            let revealed = handle
+                .update(cx, |root, window, cx| {
+                    let Ok(view) = root.downcast::<WorkspaceView>() else {
+                        return false;
+                    };
+                    view.update(cx, |view, cx| {
+                        view.reveal(pane, hidden, window, cx)
+                    })
+                })
+                .unwrap_or(false);
+            if revealed {
+                return true;
+            }
         }
     }
     false
@@ -255,14 +261,16 @@ fn active_window(window: &Window, cx: &mut App) -> Option<AnyWindowHandle> {
 }
 
 impl WorkspaceView {
-    /// Reveals pane number `pane` if this window holds it.
+    /// Reveals pane number `pane` if this window shows its workspace, or,
+    /// with `hidden`, holds it in a hidden workspace, which it then shows.
     fn reveal(
         &mut self,
         pane: u64,
+        hidden: bool,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> bool {
-        let Some((tab_id, pane_id)) = self.tabs.iter().find_map(|tab| {
+        let Some((tab_id, pane_id)) = self.all_tab_views().find_map(|tab| {
             tab.panes
                 .iter()
                 .find(|shown| shown.pane.get() == pane)
@@ -270,6 +278,14 @@ impl WorkspaceView {
         }) else {
             return false;
         };
+        // A pane in a hidden workspace shows its workspace first, which
+        // only a window free to switch does.
+        if let Some(workspace) = self.hidden_workspace_of(tab_id)
+            && (!hidden
+                || self.switch_workspace(workspace, window, cx).is_err())
+        {
+            return false;
+        }
         let hidden_quake = self
             .quake
             .as_ref()
@@ -283,13 +299,13 @@ impl WorkspaceView {
             cx.activate(true);
         }
         self.select_tab(tab_id, true, window, cx);
-        let hidden = self
+        let zoomed_away = self
             .tabs
             .iter()
             .find(|tab| tab.id == tab_id)
             .and_then(|tab| self.shown_zoom(tab, cx))
             .is_some_and(|zoomed| zoomed != pane_id);
-        if hidden {
+        if zoomed_away {
             self.set_zoom(tab_id, None, window, cx);
         }
         self.focus_pane(tab_id, pane_id, window, cx);
@@ -308,8 +324,7 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let Some(view) = self
-            .tabs
-            .iter()
+            .all_tab_views()
             .find(|shown| shown.id == tab)
             .and_then(|shown| shown.pane(pane))
             .map(|shown| shown.view.clone())
