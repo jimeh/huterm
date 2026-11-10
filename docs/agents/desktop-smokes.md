@@ -346,16 +346,28 @@ frame as `x,y,w,h` in `AppKit` coordinates, `none` without a window), and
 source-local point's screen point is `origin.x + x` and `origin.y - y` on
 macOS. Window indices count terminal windows only, never the preview.
 `w<i>.active_tab` is the active tab's index, which spring-load and spring-back
-steps read.
+steps read. `w<i>.workspaces` and `w<i>.workspace` give the session's
+workspace count and the shown one's index, `w<i>.workspace_rows` the painted
+rows in session order (`none` while the list does not draw), and
+`w<i>.workspace_tear_off` the row W1 marks, or `none`. Terminal lists cover
+shown workspaces only, so a step that moves a tab into a hidden workspace
+follows the moved terminal by its ID.
 
 `checkCrossWindowInput` runs the main transfer sequence. A second fixture
 session, `checkCrossWindowTargets`, covers destination targets in a fresh app:
 spring-loading another window's tab without taking focus and springing back on
 Escape, a refused pane centre, a lone pane into another window's bar, and, on
 macOS, the title row of a window whose bar is hidden. Its drags move through
-intermediate samples (`dragPath`) rather than one jump. Add a step to the
-session whose window and tab bookkeeping it fits, and give a new kind of
-target its own session rather than lengthening the main sequence.
+intermediate samples (`dragPath`) rather than one jump. A third session,
+`checkWorkspaceDrags`, starts with a docked sidebar in wider windows and
+drives a tab onto a workspace row, a row's chip and Escape, a workspace
+tear-off and its cue, a lone workspace's no-op, and a workspace dropped on
+another window. A reload ends a row drag, so a step that rewrites the
+config waits until the reload shows before it presses a row. X11 counts two
+presses at one point in quick succession as a double click, which renames a
+row, so consecutive row presses land apart. Add a step to the session whose
+window and tab bookkeeping it fits, and give a new kind of target its own
+session rather than lengthening the main sequence.
 
 A torn-off window opens under the release point on macOS, so a later step
 that needs that empty space moves it aside with `place-window` first.

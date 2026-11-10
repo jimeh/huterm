@@ -82,7 +82,7 @@ checked against the code:
 - The shown row takes drops; only spring-loading skips it.
 - An empty pinned workspace drags and tears off (no focus pane).
 - A tab or pane over the workspace list scrolls it at the edges, as a row
-  does. Native smokes are not extended; see the PR's gaps.
+  does. The native input smokes gained `checkWorkspaceDrags`.
 
 ## Interleavings
 
@@ -118,9 +118,15 @@ Tests are in `window_tests/workspace_drags.rs` unless noted.
   springing into a bar, the row chip, a workspace over another window's
   list, tear-off by drag and by command, a pinned empty tear-off, and edge
   scrolling under a tab.
-- `mise run check`, `mise run test`, `smoke:macos-input`, and
-  `smoke:linux-input` (Docker). A UX review through computer use on a
-  scratch bundle compares the running app with the mockup.
+- `mise run check`, `mise run test`, and `smoke:macos-input` and
+  `smoke:linux-input` (Docker), whose `checkWorkspaceDrags` session drives a
+  tab onto a row, a row's chip, tear-off with its preview or W1, a lone
+  workspace, and a workspace dropped on another window through native
+  input.
+- A UX review through Codex computer use on a scratch bundle covered
+  discovery and the menu command; its background driver cannot hold a drag,
+  so the drag cues were captured from the macOS smoke fixture instead and
+  compared with the mockup.
 
 ## Non-goals
 
