@@ -15,7 +15,7 @@ use super::pane_drag::SpringBack;
 use super::*;
 
 /// One rearrangement a command or a drop commits.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PaneMove {
     /// Swaps two panes of one tab.
     Swap {

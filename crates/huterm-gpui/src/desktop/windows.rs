@@ -196,6 +196,11 @@ mod button_layout;
 mod checkpoints;
 mod client_frame;
 mod cross_window;
+#[expect(
+    dead_code,
+    reason = "the next commit moves every drag onto this model"
+)]
+mod drag;
 mod drag_preview;
 mod exit_closes;
 mod field_menu;
