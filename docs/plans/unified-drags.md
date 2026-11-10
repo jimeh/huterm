@@ -81,10 +81,11 @@ listeners, ahead of and behind the unified gesture as today.
 
 Sharing one record removes these small inconsistencies:
 
-- Opening a menu or the palette, switching sessions or workspaces,
-  New Tab, a sidebar resize press, and closing the source window now end a
-  sidebar row drag too; before they ended only tab and pane drags. The
-  palette path that ended only a pane drag ends a tab drag as well.
+- Opening a menu, the palette, or About, switching sessions or
+  workspaces, New Tab, a sidebar resize press, a tab, pane, or window close
+  request, and closing the source window now end a sidebar row drag too;
+  before they ended only tab and pane drags. The palette path that ended
+  only a pane drag ends a tab drag as well.
 - A tab drag that ends without a drop (Escape, blur, a refused nest, a
   release outside the window that tears nothing off) restores the bar
   scroll and refocuses the terminal only when no overlay holds focus, as a
@@ -94,5 +95,14 @@ Sharing one record removes these small inconsistencies:
   it already did under a pane drag.
 - A failed cross-window pane move restores the source tab bar's scroll, as
   a failed tab move and a failed tear-off already did.
+- A tab drag resolves its target again after each frame and after
+  autoscroll, as a pane drag did, so pane mode and the slot follow a
+  resting pointer. A release already resolved again, so drops are
+  unchanged.
+
+D generalises `SpringBack` and `Hover::sprang`, which hold tabs today, to
+spring-load workspace rows, and widens `cross_window::Payload` for a
+workspace tear-off. Adding the targets themselves is a new `DropTarget`
+variant and table rows.
 
 [issue-27]: https://github.com/jimeh/huterm/issues/27

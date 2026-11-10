@@ -274,6 +274,9 @@ and scrollbar drags, and OS file drops, keep their own paths.
   `commit_drop` and cross-window ones through `dispatch_transfer` with the
   same `Operation`; `DesktopRuntime::commit_drop` runs each under the Mux
   lock. A tear-off is the table's title-row drop into the new window.
+  Cross-window code reads only a tab or pane gesture: a busy window still
+  takes a row press, so a row gesture can exist while a tear-off's window
+  opens.
 - `Hover` holds what a drag over one window shares with a destination's
   preview (`cross_window::Incoming`): the target, `SpringLoad` over a
   `SpringKey`, the spring-back, the bar scroll to restore, and the tab
