@@ -716,11 +716,17 @@ command = "open_context_menu"
     // the focused pane's shell, the pane keys move focus, application mouse
     // reports use the focused pane's own cells, and a title bar's close
     // button closes its idle pane without asking.
+    // Pane geometry fields such as `pane_rects` and `pane_grab` follow the
+    // projected layout, but GPUI hit-tests a press against the last drawn
+    // frame, which can still show the previous layout, tab, or window size.
+    // Each gesture reads its points from a state whose frame shows the panes.
+    const panesDrawn = (text: string) => field(text, "pane_rects_drawn") === "true";
+    const drawnPanes = (label: string) => stateWhere(panesDrawn, label);
     await key("split-right");
     await stateWhere((text) => field(text, "panes") === "2" && field(text, "pane_focus") === "1"
       && (quoted(text, "w0.text") ?? "").includes("READY"), "the split pane's shell");
     await ack("ackpaneright");
-    const [leftPane] = field(await current(), "pane_rects").split(";").map(parseRect);
+    const [leftPane] = field(await drawnPanes("the drawn split"), "pane_rects").split(";").map(parseRect);
     await click(leftPane!.x + leftPane!.w / 2, leftPane!.y + leftPane!.h / 2);
     await state("w0.pane_focus=0");
     await ack("ackpaneleft");
@@ -733,7 +739,7 @@ command = "open_context_menu"
     await state("w0.pane_focus=1", "ACK:ackpaneright");
     await typeText("mouse");
     await key("enter");
-    const tracking = await state("MOUSE-ON", "w0.mouse=Buttons");
+    const tracking = await state("MOUSE-ON", "w0.mouse=Buttons", "w0.pane_rects_drawn=true");
     const paneGrid = parseRect(field(tracking, "grid_bounds"));
     const [paneCellWidth, paneCellHeight] = field(tracking, "cell").split(",").map(Number);
     await click(paneGrid.x + paneCellWidth! * 2.5, paneGrid.y + paneCellHeight! * 1.5);
@@ -765,20 +771,20 @@ command = "open_context_menu"
       await native().dragTo(to.x, to.y);
       await state(`w0.drop=${drop}`);
     };
-    let dragged = await current();
+    let dragged = await drawnPanes("the drawn panes before the first pane drag");
     const rightPane = paneOf(dragged, 1);
     const rightEdge = { x: rightPane.x + rightPane.w - 8, y: rightPane.y + rightPane.h / 2 };
     await dragPane(grabOf(dragged, 0), rightEdge, "pane:1:right");
     await native().release(rightEdge.x, rightEdge.y);
     await state("w0.drop=none", "w0.busy=false", "w0.panes=2", "w0.pane_focus=1");
     await ack("ackpanemoved");
-    dragged = await current();
+    dragged = await drawnPanes("the drawn moved pane");
     const swapped = rectCentre(field(dragged, "pane_rects").split(";")[0]!);
     await dragPane(grabOf(dragged, 1), swapped, "pane:0:centre");
     await native().release(swapped.x, swapped.y);
     await state("w0.drop=none", "w0.busy=false", "w0.panes=2", "w0.pane_focus=0");
     await ack("ackpaneswapped");
-    dragged = await current();
+    dragged = await drawnPanes("the drawn swapped panes");
     const kept = rectCentre(field(dragged, "pane_rects").split(";")[1]!);
     await dragPane(grabOf(dragged, 0), kept, "pane:1:centre");
     await native().keyHeld("escape");
@@ -797,7 +803,7 @@ command = "open_context_menu"
     await click(originLabel.x, originLabel.y);
     await state(`w0.active_index=${origin}`, "w0.panes=2");
     const spring = async () => {
-      const text = await current();
+      const text = await drawnPanes("the drawn origin tab before a spring");
       const label = rectCentre(field(text, "tabs_rects").split(";")[tabsBefore]!);
       await dragPane(grabOf(text, 1), label, `spring:${tabsBefore}`);
       await state(`w0.spring=${tabsBefore}`);
@@ -810,7 +816,7 @@ command = "open_context_menu"
     await state(`w0.active_index=${origin}`, "w0.drop=none", "w0.panes=2", "w0.pane_focus=1", "w0.terminal_focused=true");
     await ack("ackspringback");
     const sprung = await spring();
-    const lone = paneOf(await stateWhere((text) => field(text, "panes") === "1", "the sprung tab's pane"), 0);
+    const lone = paneOf(await stateWhere((text) => field(text, "panes") === "1" && panesDrawn(text), "the sprung tab's drawn pane"), 0);
     const loneEdge = { x: lone.x + lone.w - 8, y: lone.y + lone.h / 2 };
     await native().dragTo((sprung.x + loneEdge.x) / 2, (sprung.y + loneEdge.y) / 2);
     await native().dragTo(loneEdge.x, loneEdge.y);
@@ -820,7 +826,7 @@ command = "open_context_menu"
     await ack("ackspringdropped");
     // The title bar's zoom toggle zooms its pane and unzooms it again.
     const clickZoom = async () => {
-      const [, zoom] = field(await current(), "pane_zoom").split(";");
+      const [, zoom] = field(await drawnPanes("the drawn panes before a zoom click"), "pane_zoom").split(";");
       const [zoomX, zoomY] = zoom!.split(",").map(Number);
       await click(zoomX!, zoomY!);
     };
@@ -828,7 +834,7 @@ command = "open_context_menu"
     await state("w0.pane_zoomed=1");
     await clickZoom();
     await state("w0.pane_zoomed=none");
-    const [, closeButton] = field(await current(), "pane_close").split(";");
+    const [, closeButton] = field(await drawnPanes("the drawn panes before the close click"), "pane_close").split(";");
     const [closeX, closeY] = closeButton!.split(",").map(Number);
     await click(closeX!, closeY!);
     await state("w0.panes=1", "w0.pane_focus=0", "w0.confirming=false");
@@ -852,7 +858,7 @@ command = "open_context_menu"
     const hostLabel = await tabLabel(tabsBefore);
     await click(hostLabel.x, hostLabel.y);
     await state(`w0.active_index=${tabsBefore}`, "w0.panes=1");
-    const host = paneOf(await current(), 0);
+    const host = paneOf(await drawnPanes("the drawn receiving tab"), 0);
     const hostEdge = { x: host.x + host.w - 8, y: host.y + host.h / 2 };
     await native().press(guestLabel.x, guestLabel.y);
     await native().dragTo(guestLabel.x, (guestLabel.y + hostEdge.y) / 2);
@@ -878,12 +884,8 @@ command = "open_context_menu"
       await invoke(`arrange_panes\tlayout=${layout}`);
       return settledLayout(expected, `the ${layout} layout`);
     };
-    // `pane_rects` follows the projected layout, but GPUI hit-tests a click
-    // against the last drawn frame, which can still show the previous
-    // layout or window size. Clicks wait for the frame to show the panes.
-    const panesDrawn = (text: string) => field(text, "pane_rects_drawn") === "true";
     const focusPane = async (index: number) => {
-      const drawn = await stateWhere(panesDrawn, `the drawn panes before focusing pane ${index}`);
+      const drawn = await drawnPanes(`the drawn panes before focusing pane ${index}`);
       const centre = rectCentre(field(drawn, "pane_rects").split(";")[index]!);
       await click(centre.x, centre.y);
       await state(`w0.pane_focus=${index}`);
