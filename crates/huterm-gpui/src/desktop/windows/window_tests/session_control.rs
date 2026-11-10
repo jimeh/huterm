@@ -373,6 +373,30 @@ fn dragging_a_session_row_reorders_the_sessions(cx: &mut TestAppContext) {
     harness.wait_switched(window, first.session, &first.tabs);
 }
 
+#[gpui::test]
+fn a_session_row_past_the_windows_edge_stops_scrolling_its_list(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = switcher_harness(cx);
+    let (window, _) = harness.named_window("main");
+    let other = harness.other_session("other", 1);
+    harness.wait_projection();
+    harness.invoke(window, ids::OPEN_SESSION_MENU).unwrap();
+    harness
+        .wait_for("the session list to paint", |cx| list_painted(cx, window));
+    let from = harness.session_row(window, other.session);
+    // Above the window's top, beyond the list's top edge.
+    let beyond = gpui::point(from.center().x, px(-40.0));
+    harness.drag_row(window, from.center(), beyond);
+    harness.update_view(window, |view, _, _| {
+        let drag = view.drag.as_ref().expect("a drag");
+        assert!(drag.dragging() && drag.outside);
+        assert!(!view.drag_list_scrolls(), "the list scrolls from outside");
+    });
+    harness.press(window, "escape");
+    harness.release(window, beyond);
+}
+
 /// The title row Huterm draws on both platforms when a window takes
 /// client decorations, with tabs in the title bar and one tab, so the
 /// strip shows the title, the corner controls, and the menu button.

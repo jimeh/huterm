@@ -316,6 +316,14 @@ impl WorkspaceView {
                     cx.notify();
                     return;
                 }
+            } else if let Some(drag) = &mut self.drag {
+                // A session row stays in its window, but past its edge it
+                // must not keep scrolling the list.
+                drag.outside = !Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    window.viewport_size(),
+                )
+                .contains(&pointer);
             }
             self.retarget_drag(Instant::now(), false, window, cx);
             cx.notify();
