@@ -38,6 +38,7 @@ runs:
       shell: bash
       env:
         MISE_ZIG_USE_COMMUNITY_MIRRORS: "false"
+        MISE_LOG_LEVEL: debug
       run: MISE_CACHE_DIR="$RUNNER_TEMP/mise-zig-cache" mise install --locked zig
 
     - name: Save the Zig download
