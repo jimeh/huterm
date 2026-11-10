@@ -482,10 +482,13 @@ export async function checkWorkspaceDrags(executable: string): Promise<void> {
     await until("Escape ended the row drag", next => smokeField(next, "w0.drop") === "none" && smokeField(next, "w0.workspaces") === "2");
 
     // The hidden first workspace, dragged outside, tears off into a new
-    // window and session with its two tabs, the moved one among them.
+    // window and session with its two tabs, the moved one among them. The
+    // press lands away from the last one on this row, which would
+    // otherwise count as a double click and rename the row.
     current = await state();
     const outside = { x: 30, y: point(smokeField(current, "w0.size")).y + 100 };
-    await drag(f, 0, row(current, 0), outside);
+    const aside = (at: Point) => ({ x: at.x - 40, y: at.y });
+    await drag(f, 0, aside(row(current, 0)), outside);
     await until("the workspace tear-off cue", next => {
       if (smokeField(next, "w0.drop") !== "tear_off") return false;
       if (!macos) return smokeField(next, "preview") === "none" && smokeField(next, "w0.workspace_tear_off") !== "none";
@@ -536,7 +539,7 @@ export async function checkWorkspaceDrags(executable: string): Promise<void> {
     // there, last, and shows (X1).
     current = await state();
     const content = crossWindowPoint(f.rootOrigin(current, 0), f.rootOrigin(current, 1), rectCenter(smokeField(current, "w1.pane_rects")), macos);
-    await drag(f, 0, row(current, 0), content);
+    await drag(f, 0, aside(row(current, 0)), content);
     await until("the other window takes the workspace", next => smokeField(next, "w1.drop") === "window:1:window");
     await mouse(0, "up", content);
     await until("the workspace moved into the other window", next => smokeField(next, "w0.workspaces") === "1" && smokeField(next, "w1.workspaces") === "2" && smokeField(next, "w1.workspace") === "1"
