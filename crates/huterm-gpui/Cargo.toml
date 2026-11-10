@@ -68,7 +68,7 @@ x11rb = { version = "=0.14.0", features = ["randr"] }
 # Accessibility model tests load the tree GPUI would send into AccessKit's own
 # consumer, the version GPUI's platform adapters use.
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dev-dependencies]
-accesskit_consumer = "=0.38.0"
+accesskit_consumer = "=0.39.2"
 
 # Real text-system registration tests use the same pinned native backends as GPUI.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
