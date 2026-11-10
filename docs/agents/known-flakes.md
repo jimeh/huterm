@@ -77,6 +77,7 @@ delete the entry once the review date passes without a recurrence.
 | --- | --- | --- | --- | --- | --- | --- |
 | [GitHub API 403 during CI tool installation](flakes/ci-mise-github-api-403.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
 | [Zig mirror rate limit during CI tool installation](flakes/ci-zig-mirror-rate-limit.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
+| [macOS clipboard smoke witness loses the app's pid](flakes/macos-clipboard-witness-missing-pid.md) | smoke | macos-arm64 | 1 CI | 2026-11-10 | 0 | 2026-12-10 |
 | [huterm-core command markers queued behind the exit](flakes/core-record-markers-after-exit.md) | rust | macos-arm64 | 1 local | 2026-11-06 | 0 | 2026-12-06 |
 | [huterm-gpui inactive tab close button](flakes/gpui-inactive-tab-close-button.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 4 CI | 2026-11-06 | 2 | 2026-12-06 |
 | [Linux renderer smoke startup hang](flakes/linux-renderer-startup-hang.md) | smoke | linux-x86_64, linux-aarch64 | 10 CI | 2026-11-05 | 1 | 2026-12-06 |
