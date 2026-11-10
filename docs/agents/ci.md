@@ -43,6 +43,13 @@ names a `pipx:` tool. Adding `uv` for the Nerd Font tasks broke both release
 installs of `pipx:spdx-tools` until they listed it, and no pull request check
 runs the Release workflow. `scripts/ci-toolchain.test.ts` checks the lists.
 
+CI's package jobs run on the release build runners, and each one installs
+every Mise tool list that release jobs on its runner install, into an empty
+data directory as release's uncached installs do. `release-tool-installs.ts`
+reads those lists from `release.yml` and the local actions it uses, so they
+cannot drift; its test fails when a release runner that installs more than
+Bun has no package job.
+
 ## Jobs and caches
 
 CI disables Mise auto-install so nested tasks retain each job's explicit tool
