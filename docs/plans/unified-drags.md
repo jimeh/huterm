@@ -1,6 +1,6 @@
 # Unified drags
 
-Status: in progress. Refs [issue #27][issue-27]. Second of three stacked
+Status: implemented. Refs [issue #27][issue-27]. Second of three stacked
 changes: [retained workspace views](retained-workspace-views.md) (R1), this
 one (R2), then D, which adds drops on sidebar workspace rows,
 spring-loaded rows, and workspace tear-off.
@@ -59,15 +59,11 @@ listeners, ahead of and behind the unified gesture as today.
 
 ## Stages
 
-1. Introduce the model, and move the sidebar row drags onto it.
-2. Move pane drags onto `Gesture` and the shared resolver and table.
-3. Move tab reorder and pane mode.
-4. Move cross-window previews and transfers onto the shared payload,
-   resolver, table, and hover state.
-5. Route capture, cancellation, and the cursor through the gesture; update
-   the agent guides.
-
-Each stage keeps the existing tests green.
+1. Introduce the model and its table, unit-tested on their own.
+2. Move tab, pane, row, and cross-window drags onto it in one step, since
+   the capture listeners, cancellation, and cross-window transfer read all
+   four records together.
+3. Update the agent guides.
 
 ## Verification
 
@@ -83,7 +79,20 @@ Each stage keeps the existing tests green.
 
 ## Behaviour changes
 
-None intended. Any small inconsistency the unification removes is listed in
-the pull request.
+Sharing one record removes these small inconsistencies:
+
+- Opening a menu or the palette, switching sessions or workspaces,
+  New Tab, a sidebar resize press, and closing the source window now end a
+  sidebar row drag too; before they ended only tab and pane drags. The
+  palette path that ended only a pane drag ends a tab drag as well.
+- A tab drag that ends without a drop (Escape, blur, a refused nest, a
+  release outside the window that tears nothing off) restores the bar
+  scroll and refocuses the terminal only when no overlay holds focus, as a
+  pane drag already did. Before, a refused nest kept the scroll and every
+  tab cancellation took focus back from an overlay.
+- A pending tab-bar scroll animation keeps running under a tab press, as
+  it already did under a pane drag.
+- A failed cross-window pane move restores the source tab bar's scroll, as
+  a failed tab move and a failed tear-off already did.
 
 [issue-27]: https://github.com/jimeh/huterm/issues/27

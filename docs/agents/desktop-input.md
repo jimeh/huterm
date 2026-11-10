@@ -253,6 +253,43 @@ does not leave scroll debt that affects later reversal. Clear any satisfied
 pending scroll intent after authoritative completion, including absolute/live
 intents, so later invalidation cannot replay a stale target.
 
+## The drag model
+
+Tab, pane, and sidebar row drags share one model (`windows/drag.rs`; see
+[the plan](../plans/unified-drags.md)). Divider, tab-column, sidebar-resize,
+and scrollbar drags, and OS file drops, keep their own paths.
+
+- `WorkspaceView::drag` holds the window's one `Gesture` from the press on.
+  Its `Payload` is a `Tab`, a `Pane`, a `Workspace` row, or a `Session` row,
+  and its `Press` applies the one `DRAG_THRESHOLD`.
+- `resolve_drop` (`drag/gesture.rs`) is the only target resolver. It
+  returns a `DropTarget`: a pane zone, a tab-bar `Slot`, the `TitleRow`, a
+  `Spring` key, or a sidebar `RowSlot`. It runs as the source
+  (`Side::Source`) and as another window's preview (`Side::Incoming`), and
+  keeps each payload's rules: a tab reorder projects onto the bar outside
+  pane mode, a lone pane offers no slot or title row in its own window, and
+  only the dragged pane's own tab offers a centre.
+- `operation` is the only table from a payload and a target to a Mux
+  operation, `None` refusing the drop. Local drops commit through
+  `commit_drop` and cross-window ones through `dispatch_transfer` with the
+  same `Operation`; `DesktopRuntime::commit_drop` runs each under the Mux
+  lock. A tear-off is the table's title-row drop into the new window.
+- `Hover` holds what a drag over one window shares with a destination's
+  preview (`cross_window::Incoming`): the target, `SpringLoad` over a
+  `SpringKey`, the spring-back, the bar scroll to restore, and the tab
+  strip's autoscroll. A sidebar row's `ListScroll` scrolls its list.
+- The capture listeners send motion and release to `update_drag` and
+  `finish_drag`; Escape, blur, menus, switches, and window close end a
+  gesture through `cancel_drag`. Escape ends a tab press at once and every
+  other press only once it drags (`Gesture::escape_cancels`), so an
+  unmoved pane press still lets Escape reach the terminal. A row drag that
+  ends without a drop puts nothing back; a tab or pane drag restores the
+  bar scroll, springs back, and refocuses the terminal unless an overlay
+  holds focus.
+
+A new payload or target goes into the model, the resolver, and the table;
+a new drag must not grow its own record or capture branch.
+
 ## Tab reordering and the sidebar
 
 Tab reorder uses source-window capture listeners registered before terminal
@@ -291,7 +328,8 @@ window's capture listeners own motion and release once a drag starts.
 macOS GPUI turns a Left release with Control held into a Right release, so
 Control pressed mid-drag would leave a drag running. The release listener
 asks `pane_grab::release_ends_drag`: a Left release ends any of the window's
-drags (divider, sidebar, reorder, pane drag, tab scrollbar), and on macOS so
+drags (divider, sidebar, the drag gesture of any payload, tab scrollbar),
+and on macOS so
 does a Right release while no real Right press is held. While a drag runs,
 the press capture listener records a macOS Right press in
 `drag_right_press` and stops it, so no context menu opens and cancels the
@@ -324,7 +362,7 @@ sync alike, asks `zoom_shows`.
 ## Pane drags, tab nesting, and spring-loaded tabs
 
 A press on a pane title bar's title, not its buttons, focuses the pane and
-starts a `PaneDrag` once it moves past the tab drag threshold. The window's
+starts a pane gesture once it moves past the drag threshold. The window's
 capture listeners own its motion and release, as they do for a reorder, and
 the drag keeps terminal focus, so no application sees a focus report. Each
 motion resolves the target from the last drawn frame (`drawn_panes`, only
@@ -442,7 +480,7 @@ unavailable in its palette, tab menu, and command invocation with the same reaso
 A pane tears off unless it is the only pane of the window's only tab
 (`pane_tear_off_availability`, shared by the release, the cues, Move Pane to New
 Window, and the pane menu), moving through `move_pane` to `NewTab` in the new
-window's workspace. Release drops the `PaneDrag` before the window opens, so
+window's workspace. Release drops the gesture before the window opens, so
 `tear_off` captures its spring-back and bar scroll in `transfer_back` and
 `transfer_scroll`; every failure, including a failed move in
 `dispatch_transfer`, restores them. While a release would tear a pane off, the
