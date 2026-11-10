@@ -1778,6 +1778,14 @@ pub(super) fn smoke_state(cx: &mut App) -> String {
             let rect = |bounds: Option<Bounds<Pixels>>| bounds.map_or_else(|| "none".to_owned(), |bounds| format!("{},{},{},{}", f32::from(bounds.origin.x), f32::from(bounds.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height)));
             let active_tab = view.tabs.iter().position(|tab| Some(tab.id) == view.active_tab(cx)).map_or_else(|| "none".to_owned(), |index| index.to_string());
             let _ = writeln!(output, "w{index}.tear_off_pill={} w{index}.pane_tear_off={} w{index}.active_tab={active_tab}", rect(*view.drawn_tear_off.borrow()), rect(*view.drawn_pane_tear_off.borrow()));
+            // The session's workspace rows in order, painted while the list
+            // draws, and the row a release would tear off (W1).
+            let rows = view.session_workspaces(cx);
+            let painted = view.workspace_row_bounds.borrow();
+            let row_rects = if view.rows_drawn(&view.chrome_layout(window)) { rows.iter().map(|row| rect(painted.get(row).copied())).collect::<Vec<_>>().join(";") } else { "none".to_owned() };
+            let shown = rows.iter().position(|row| Some(*row) == view.workspace_id(cx)).map_or_else(|| "none".to_owned(), |index| index.to_string());
+            let tearing = view.drag.as_ref().and_then(|drag| match drag.payload { Dragged::Workspace { workspace, .. } if view.tear_off_pill(cx) => painted.get(&workspace).copied(), _ => None });
+            let _ = writeln!(output, "w{index}.workspaces={} w{index}.workspace={shown} w{index}.workspace_rows={row_rects} w{index}.workspace_tear_off={}", rows.len(), rect(tearing));
         });
     }
     output

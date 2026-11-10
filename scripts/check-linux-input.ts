@@ -1,5 +1,5 @@
 /** Drive X11 keyboard conversion into a raw PTY on an isolated Xvfb display. */
-import { checkCrossWindowInput, checkCrossWindowTargets } from "./check-cross-window-input";
+import { checkCrossWindowInput, checkCrossWindowTargets, checkWorkspaceDrags } from "./check-cross-window-input";
 import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -233,5 +233,6 @@ if (import.meta.main) {
     if (Bun.argv[3]) await checkKittyLinuxInput(resolve(Bun.argv[3]));
     await checkCrossWindowInput(executable);
     await checkCrossWindowTargets(executable);
+    await checkWorkspaceDrags(executable);
   }
 }
