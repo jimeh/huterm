@@ -707,6 +707,7 @@ impl Gesture {
     }
 
     /// Where the press began, in window coordinates.
+    #[cfg(target_os = "macos")]
     pub(super) fn origin(&self) -> gpui::Point<Pixels> {
         self.press.origin
     }
