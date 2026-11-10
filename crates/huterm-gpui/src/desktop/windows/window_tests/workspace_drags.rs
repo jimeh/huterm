@@ -571,39 +571,61 @@ fn a_session_switch_ends_a_spring_loaded_drag(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn the_row_chip_follows_a_dragged_workspace_and_session_row(
+fn a_dragged_workspace_row_lifts_and_follows_the_pointer(
     cx: &mut TestAppContext,
 ) {
     let mut f = Fixture::new(cx);
     let window = f.window;
-    let from = f.row(f.second);
+    let dragged = f.h.row_bounds(window, f.second);
     // Above the first row's middle, so the slot is before it.
     let to = f.row(f.h.workspace) - gpui::point(px(0.0), px(6.0));
-    f.h.drag_row(window, from, to);
+    f.h.drag_row(window, dragged.center(), to);
     f.h.cx.run_until_parked();
-    let chip = VisualTestContext::from_window(window, &f.h.cx)
-        .debug_bounds("drag-title-chip")
-        .expect("a row drag draws the chip");
-    // The chip sits 12 points past the pointer, as the tab chip does.
-    assert_eq!(chip.origin, to + gpui::point(px(12.0), px(12.0)));
+    let mut visual = VisualTestContext::from_window(window, &f.h.cx);
+    // The row itself lifts, its own width, centred on the pointer, and no
+    // chip follows the pointer.
+    let lifted = visual
+        .debug_bounds("row-drag-lift")
+        .expect("a row drag lifts its row");
+    let list =
+        f.h.update_view(window, |view, _, _| view.workspace_scroll.bounds());
+    assert_eq!(lifted.origin.x, dragged.origin.x);
+    assert_eq!(lifted.size.width, dragged.size.width);
+    assert_eq!(lifted.size.height, dragged.size.height);
+    assert_eq!(
+        lifted.top(),
+        (to.y - dragged.size.height / 2.0).max(list.top())
+    );
+    assert!(visual.debug_bounds("drag-title-chip").is_none());
     let own = f.h.workspace;
-    f.h.update_view(window, |view, _, cx| {
+    f.h.update_view(window, |view, _, _| {
         let drag = view.drag.as_ref().unwrap();
         assert!(matches!(drag.payload, Payload::Workspace { .. }));
-        assert_eq!(view.row_title(drag.payload, cx), "Workspace 2");
         assert_eq!(
             drag.target(),
             Some(DropTarget::RowSlot(Some(RowKey::Workspace(own))))
         );
     });
+    // Past the list's bottom, it stays inside the list's visible part.
+    let below = gpui::point(to.x, list.bottom() + px(40.0));
+    VisualTestContext::from_window(window, &f.h.cx).simulate_mouse_move(
+        below,
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    f.h.cx.run_until_parked();
+    let clamped = VisualTestContext::from_window(window, &f.h.cx)
+        .debug_bounds("row-drag-lift")
+        .expect("the lifted row stays while the drag is in the window");
+    assert_eq!(clamped.bottom(), list.bottom());
     f.h.press(window, "escape");
-    f.h.release(window, to);
+    f.h.release(window, below);
     f.h.cx.run_until_parked();
     assert!(
         VisualTestContext::from_window(window, &f.h.cx)
-            .debug_bounds("drag-title-chip")
+            .debug_bounds("row-drag-lift")
             .is_none(),
-        "the chip outlives the drag"
+        "the lifted row outlives the drag"
     );
 }
 

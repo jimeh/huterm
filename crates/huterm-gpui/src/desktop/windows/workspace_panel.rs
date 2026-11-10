@@ -12,7 +12,7 @@ use huterm_ui::components::popover::Placement;
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::typography;
 
-use super::drag::{DropTarget, Gesture, Payload, RowKey};
+use super::drag::{DropTarget, Gesture, Payload, RowKey, RowList};
 use super::session_control::{SessionLabel, SessionListAnchor, switcher_label};
 use super::sidebar_rows::{self, ListRow, ROW_GAP, ROW_HEIGHT};
 use super::workspace_chrome::{CornerHost, Edge};
@@ -1730,6 +1730,7 @@ impl WorkspaceView {
         content.push(header.into_any_element());
         content.push(list.into_any_element());
         content.extend(session);
+        content.extend(self.lifted_row(RowList::Workspaces, colors, cx));
         content
     }
 

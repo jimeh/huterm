@@ -14,6 +14,13 @@ use super::super::pane_geometry::{Zone, zone_preview};
 use super::super::*;
 use super::{DropTarget, Payload, SpringKey};
 
+/// A sidebar list a dragged row lifts in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in super::super) enum RowList {
+    Workspaces,
+    Sessions,
+}
+
 /// How far a drawn drop box sits inside the region it stands for, so it
 /// never touches the pane's edges or a neighbouring box.
 const DROP_BOX_INSET: Pixels = px(4.0);
@@ -97,6 +104,16 @@ impl WorkspaceView {
         };
         *self.drawn_drop.borrow_mut() = Some(drop_label(target, &self.tabs));
         elements.extend(self.target_elements(target, source, colors, window));
+        // A row this window drags lifts in its own list instead
+        // (`lifted_row`).
+        if self.incoming.is_none()
+            && self
+                .drag
+                .as_ref()
+                .is_some_and(|drag| drag.payload.row().is_some())
+        {
+            chip = false;
+        }
         if !chip {
             return elements;
         }
@@ -183,7 +200,8 @@ impl WorkspaceView {
                     .unwrap_or_default()
             }
             Payload::Tab { .. } => return None,
-            // A row's chip (RC1); the rows draw its slot.
+            // A row's target, for the drop label: the row itself lifts in
+            // its list (RC2), and the rows draw its slot.
             Payload::Workspace { .. } | Payload::Session(_) => {
                 self.row_title(drag.payload, cx)
             }
@@ -191,7 +209,82 @@ impl WorkspaceView {
         Some((drag.target(), drag.pointer(), title, None))
     }
 
-    /// The name a dragged row's chip shows.
+    /// The lifted copy of a row this window drags in `list`'s rows, the
+    /// workspace list or the session list: the dragged row's width,
+    /// centred on the pointer and kept within the list's visible part,
+    /// while the drag is inside the window.
+    pub(in super::super) fn lifted_row(
+        &self,
+        list: RowList,
+        colors: TabColors,
+        cx: &App,
+    ) -> Option<gpui::AnyElement> {
+        use super::super::sidebar_rows::{LiftedRow, ROW_HEIGHT, lifted_row};
+        let drag = self
+            .drag
+            .as_ref()
+            .filter(|drag| drag.dragging() && !drag.outside)?;
+        let (row, scroll) = match (list, drag.payload) {
+            (RowList::Workspaces, Payload::Workspace { workspace, .. }) => {
+                let row = self
+                    .workspace_rows(cx)
+                    .into_iter()
+                    .find(|row| row.workspace == workspace)?;
+                let painted = self
+                    .workspace_row_bounds
+                    .borrow()
+                    .get(&workspace)
+                    .copied()?;
+                (
+                    (
+                        LiftedRow {
+                            icon: Icon::LayoutGrid,
+                            name: row.name.clone(),
+                            automatic: row.automatic,
+                            detail: row.detail(),
+                        },
+                        painted,
+                    ),
+                    self.workspace_drag_scroll(),
+                )
+            }
+            (RowList::Sessions, Payload::Session(session)) => {
+                let row = self
+                    .session_rows(cx)
+                    .into_iter()
+                    .find(|row| row.session == session)?;
+                let painted =
+                    self.session_row_bounds.borrow().get(&session).copied()?;
+                (
+                    (
+                        LiftedRow {
+                            icon: Icon::Layers,
+                            name: row.name.clone(),
+                            automatic: row.automatic,
+                            detail: row.detail(),
+                        },
+                        painted,
+                    ),
+                    self.session_list_scroll.clone(),
+                )
+            }
+            _ => return None,
+        };
+        let ((lifted, painted), list) = (row, scroll.bounds());
+        let top = (drag.pointer().y - ROW_HEIGHT / 2.0)
+            .clamp(list.top(), (list.bottom() - ROW_HEIGHT).max(list.top()));
+        Some(lifted_row(
+            lifted,
+            Bounds::new(
+                point(painted.origin.x, top),
+                size(painted.size.width, ROW_HEIGHT),
+            ),
+            colors,
+        ))
+    }
+
+    /// The name a dragged row shows in other windows' chips and the
+    /// floating preview.
     pub(in super::super) fn row_title(
         &self,
         payload: Payload,

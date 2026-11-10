@@ -20,7 +20,7 @@ mod gesture;
 mod overlay;
 
 pub(super) use gesture::Side;
-pub(super) use overlay::drop_label;
+pub(super) use overlay::{RowList, drop_label};
 
 /// How far a press moves before it becomes a drag.
 pub(super) const DRAG_THRESHOLD: f64 = 4.0;

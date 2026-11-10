@@ -20,13 +20,14 @@ The maintainer asked on 2026-11-09:
 
 ## Decisions
 
-Picked from the mockups (H1, RC1, W1, M1, X1) and the coordinator's
-defaults; each awaits the maintainer's confirmation.
+Picked from the mockups (H1, RC2, W1, M1, X1) and the coordinator's
+defaults; each awaits the maintainer's confirmation. The maintainer chose RC2
+over RC1 on 2026-11-10, after trying the chip.
 
 | Topic | Decision |
 | --- | --- |
 | Row drop look | H1: the row takes the drop region the pane edges use, accent at 22% with a 2 pt accent border, also while it spring-loads. |
-| Row drag cue | RC1: the shared title chip with the row's name, 12 pt from the pointer; the row stays dimmed and the line marks its slot. |
+| Row drag cue | RC2: the row itself lifts and follows the pointer along its list, as a dragged tab's label follows it along the bar: the row's width, centred on the pointer, kept within the list's visible part. The row stays dimmed in place and the line marks its slot. Other windows and the macOS floating preview show the chip, as for tabs. |
 | Tear-off cue | W1: S1 on the source row (contents at 45%, dashed outline, centred "↗ New window" pill). macOS with the preview on shows M1, titled with the workspace's name. |
 | Drop on another window | X1: over its workspace list a line marks the slot; elsewhere the content beside its sidebar takes the drop region and the workspace goes last. The destination then shows it. |
 | Follow | A tab or pane dropped on a row does not change the shown workspace; spring-loading follows. |
@@ -53,9 +54,10 @@ defaults; each awaits the maintainer's confirmation.
   optional focus, name); `tear_off_workspace` and `put_back`.
 - `huterm-core`: `Mux::move_workspace_to_new_session` creates a session
   around the moved workspace in one step, refusing without creating one.
-- Drawing: the row chip (`drag/overlay.rs`), H1 and W1 on rows
-  (`sidebar_rows.rs`), the X1 region and row line for an incoming
-  workspace.
+- Drawing: the lifted row (`lifted_row` in `sidebar_rows.rs` and
+  `drag/overlay.rs`, placed inside each list's tree so a popover holds it),
+  H1 and W1 on rows (`sidebar_rows.rs`), and the X1 region and row line for
+  an incoming workspace.
 
 ## Review revisions
 
@@ -126,12 +128,12 @@ Tests are in `window_tests/workspace_drags.rs` unless noted.
   (moves with live terminals, events, revoked viewers, refusals and the
   item limit that create nothing).
 - Window tests: the rows above, plus local row drops for tabs and panes,
-  springing into a bar, the row chip, a workspace over another window's
+  springing into a bar, the lifted row, a workspace over another window's
   list, tear-off by drag and by command, a pinned empty tear-off, and edge
   scrolling under a tab.
 - `mise run check`, `mise run test`, and `smoke:macos-input` and
   `smoke:linux-input` (Docker), whose `checkWorkspaceDrags` session drives a
-  tab onto a row, a row's chip, tear-off with its preview or W1, a lone
+  tab onto a row, a row's slot, tear-off with its preview or W1, a lone
   workspace, and a workspace dropped on another window through native
   input.
 - A UX review through Codex computer use on a scratch bundle covered

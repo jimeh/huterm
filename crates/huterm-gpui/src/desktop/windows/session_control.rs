@@ -16,7 +16,7 @@ use huterm_ui::components::menu_trigger::{self, MenuTrigger};
 use huterm_ui::components::scroll_area::ScrollArea;
 use huterm_ui::typography;
 
-use super::drag::{DropTarget, Payload, RowKey};
+use super::drag::{DropTarget, Payload, RowKey, RowList};
 use super::session_menu::{
     SessionControlState, SessionPick, SessionRow, parse_pick, resolve,
     row_menu, session_rows,
@@ -943,7 +943,8 @@ impl WorkspaceView {
             .text_size(tab_bar::TAB_TEXT_SIZE)
             .text_color(colors.foreground)
             .child(header)
-            .child(list);
+            .child(list)
+            .children(self.lifted_row(RowList::Sessions, colors, cx));
         self.session_list_popover.render(placement, viewport, panel)
     }
 

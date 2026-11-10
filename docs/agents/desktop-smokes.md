@@ -360,7 +360,7 @@ Escape, a refused pane centre, a lone pane into another window's bar, and, on
 macOS, the title row of a window whose bar is hidden. Its drags move through
 intermediate samples (`dragPath`) rather than one jump. A third session,
 `checkWorkspaceDrags`, starts with a docked sidebar in wider windows and
-drives a tab onto a workspace row, a row's chip and Escape, a workspace
+drives a tab onto a workspace row, a row's slot and Escape, a workspace
 tear-off and its cue, a lone workspace's no-op, and a workspace dropped on
 another window. A reload ends a row drag, so a step that rewrites the
 config waits until the reload shows before it presses a row. X11 counts two

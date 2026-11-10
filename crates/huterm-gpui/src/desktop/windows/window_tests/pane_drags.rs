@@ -1131,3 +1131,38 @@ fn a_lone_bar_drag_has_no_targets_with_a_hidden_tab_bar(
         assert_eq!(panes_shown(cx, window, tab), Some((vec![pane], pane)));
     });
 }
+
+#[gpui::test]
+fn a_tab_drag_preview_matches_the_pill_it_stands_for(cx: &mut TestAppContext) {
+    for position in [TabPosition::Top, TabPosition::Left] {
+        let mut harness = DesktopHarness::with_config(cx, |config| {
+            config.tabs.style = TabStyle::Pill;
+            config.tabs.position = position;
+        });
+        let (window, _, _, _, other, _) = two_tabs(&mut harness);
+        harness.cx.run_until_parked();
+        // Debug selectors are static; a test may leak the one it builds.
+        let selector: &'static str =
+            Box::leak(format!("tab-pill-{}", other.get()).into_boxed_str());
+        let pill = VisualTestContext::from_window(window, &harness.cx)
+            .debug_bounds(selector)
+            .expect("a drawn pill");
+        // A drag along the bar: the preview has the pill's size, not its
+        // slot's.
+        let label = harness.label(window, 1);
+        harness.press_at(window, label);
+        let along = if position.vertical() {
+            gpui::point(px(0.0), px(6.0))
+        } else {
+            gpui::point(px(6.0), px(0.0))
+        };
+        harness.move_to(window, label + along);
+        harness.cx.run_until_parked();
+        let preview = VisualTestContext::from_window(window, &harness.cx)
+            .debug_bounds("tab-drag-preview")
+            .expect("a drawn preview");
+        assert_eq!(preview.size, pill.size, "{position:?}");
+        harness.press(window, "escape");
+        harness.release_at(window, label + along);
+    }
+}

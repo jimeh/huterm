@@ -263,6 +263,104 @@ pub(super) fn list_row(
         .when(line_below, |row| row.child(line(false)))
 }
 
+/// What a dragged row's lifted copy shows: the row's icon, name, and
+/// detail.
+pub(super) struct LiftedRow {
+    pub(super) icon: Icon,
+    pub(super) name: String,
+    pub(super) automatic: bool,
+    pub(super) detail: String,
+}
+
+/// A dragged row's lifted copy, which follows the pointer along its list as
+/// a dragged tab's label follows it along the bar, at `bounds` in window
+/// coordinates. It is placed directly in the window, so a popover's list
+/// can hold it above its rows.
+pub(super) fn lifted_row(
+    row: LiftedRow,
+    bounds: Bounds<Pixels>,
+    colors: TabColors,
+) -> AnyElement {
+    gpui::canvas(
+        move |_, window, cx| {
+            let mut lifted = lifted_row_element(row, colors).into_any_element();
+            lifted.layout_as_root(
+                size(
+                    gpui::AvailableSpace::Definite(bounds.size.width),
+                    gpui::AvailableSpace::Definite(bounds.size.height),
+                ),
+                window,
+                cx,
+            );
+            lifted.prepaint_at(bounds.origin, window, cx);
+            lifted
+        },
+        |_, mut lifted, window, cx| lifted.paint(window, cx),
+    )
+    .absolute()
+    .size_0()
+    .into_any_element()
+}
+
+/// The lifted copy: the row's own layout on the selected row's fill, raised
+/// by a border and a shadow.
+fn lifted_row_element(row: LiftedRow, colors: TabColors) -> gpui::Div {
+    let LiftedRow {
+        icon,
+        name,
+        automatic,
+        detail,
+    } = row;
+    div()
+        .debug_selector(|| "row-drag-lift".to_owned())
+        .size_full()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .pl(px(8.0))
+        .pr(px(8.0))
+        .rounded(px(7.0))
+        .bg(colors.active)
+        .border_1()
+        .border_color(colors.border)
+        .shadow(vec![gpui::BoxShadow {
+            color: gpui::black().opacity(0.4),
+            offset: point(px(0.0), px(6.0)),
+            blur_radius: px(16.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .opacity(0.95)
+        .child(
+            icon_element(icon, colors.foreground)
+                .size(px(14.0))
+                .flex_none(),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(colors.foreground)
+                        .when(!automatic, |name| {
+                            name.font_weight(gpui::FontWeight::SEMIBOLD)
+                        })
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(typography::ui(10.5))
+                        .text_color(colors.inactive)
+                        .child(detail),
+                ),
+        )
+}
+
 /// S1 on a row a release would tear off (W1): the row's own colour at 55%
 /// over its contents, a dashed outline at full contrast, and the
 /// "↗ New window" pill centred, the arrow alone where the row is narrow.

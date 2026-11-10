@@ -15959,11 +15959,16 @@ impl Render for WorkspaceView {
             let nesting = drag.nesting();
             let marker = strip.marker(strip.slot(drag.pointer()));
             // In pane mode the preview returns to the tab's slot, dimmed.
-            let preview = if nesting || drag.outside {
-                strip.label(source)
-            } else {
-                strip.preview(drag.pointer(), source)
-            };
+            // It takes the tab's own shape within its slot, so a pill
+            // preview is no larger than the pill.
+            let (preview, padding) = tab_bar::tab_body(
+                if nesting || drag.outside {
+                    strip.label(source)
+                } else {
+                    strip.preview(drag.pointer(), source)
+                },
+                self.layout_tabs(),
+            );
             let title = self
                 .tabs
                 .iter()
@@ -15981,7 +15986,8 @@ impl Render for WorkspaceView {
                     .overflow_hidden()
                     .flex()
                     .items_center()
-                    .px(px(12.0))
+                    .pl(padding)
+                    .pr(px(12.0))
                     .rounded(px(7.0))
                     .bg(colors.active)
                     .border_1()

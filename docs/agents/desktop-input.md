@@ -544,6 +544,14 @@ tests.
   from `workspace_row_bounds` only while the list draws and the pointer is
   inside its visible scroll bounds, since rows scrolled out keep stale
   bounds. The corner switcher takes nothing.
+- A dragged workspace or session row lifts: `lifted_row` draws a copy of
+  the row, centred on the pointer and kept within the list's visible part,
+  while the drag is inside its window, and the overlay draws no chip for
+  it. The copy goes inside each list's own element tree, because a
+  popover's list draws above the window's overlay; a canvas places it in
+  window coordinates there. Other windows and the floating preview show
+  the chip, as for tabs. A tab's drag preview takes the tab's own shape
+  in its slot (`tab_bar::tab_body`), so a pill's preview is pill-sized.
 - A row spring is a visibility switch that keeps the gesture.
   `spring_load` checks `check_switch_guard` (the switch guard without its
   tab-drag refusal), then records the expected `Shown` (workspace, no tab)

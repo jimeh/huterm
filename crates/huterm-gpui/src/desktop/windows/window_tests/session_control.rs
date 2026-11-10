@@ -374,7 +374,7 @@ fn dragging_a_session_row_reorders_the_sessions(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_session_row_past_the_windows_edge_stops_scrolling_its_list(
+fn a_session_row_lifts_in_its_list_and_past_the_windows_edge_stops_scrolling_it(
     cx: &mut TestAppContext,
 ) {
     let mut harness = switcher_harness(cx);
@@ -385,9 +385,22 @@ fn a_session_row_past_the_windows_edge_stops_scrolling_its_list(
     harness
         .wait_for("the session list to paint", |cx| list_painted(cx, window));
     let from = harness.session_row(window, other.session);
+    // Inside the window the row lifts in the list, a popover over the
+    // window.
+    let inside = from.center() - gpui::point(px(0.0), px(10.0));
+    harness.drag_row(window, from.center(), inside);
+    harness.cx.run_until_parked();
+    let lifted = VisualTestContext::from_window(window, &harness.cx)
+        .debug_bounds("row-drag-lift")
+        .expect("a session row lifts in its list");
+    assert_eq!(lifted.size.width, from.size.width);
     // Above the window's top, beyond the list's top edge.
     let beyond = gpui::point(from.center().x, px(-40.0));
-    harness.drag_row(window, from.center(), beyond);
+    VisualTestContext::from_window(window, &harness.cx).simulate_mouse_move(
+        beyond,
+        Some(MouseButton::Left),
+        Modifiers::none(),
+    );
     harness.update_view(window, |view, _, _| {
         let drag = view.drag.as_ref().expect("a drag");
         assert!(drag.dragging() && drag.outside);

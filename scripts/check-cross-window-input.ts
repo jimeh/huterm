@@ -551,6 +551,6 @@ export async function checkWorkspaceDrags(executable: string): Promise<void> {
     await mouse(0, "up", content);
     await until("the workspace moved into the other window", next => smokeField(next, "w0.workspaces") === "1" && smokeField(next, "w1.workspaces") === "2" && smokeField(next, "w1.workspace") === "1"
       && smokeField(next, "w0.busy") === "false" && smokeField(next, "w1.busy") === "false" && smokeField(next, "preview") === "none");
-    console.log(`WORKSPACE_DRAGS_SMOKE row-drop=ok row-chip=ok tear-off=ok lone=ok window-drop=ok row-cue=${macos ? "ok" : "linux"}`);
+    console.log(`WORKSPACE_DRAGS_SMOKE row-drop=ok row-drag=ok tear-off=ok lone=ok window-drop=ok row-cue=${macos ? "ok" : "linux"}`);
   }, fixtureConfig({ preview: true, alwaysShow: true, sidebar: true }));
 }
