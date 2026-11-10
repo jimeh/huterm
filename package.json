@@ -6,7 +6,7 @@
     "@conventional-commits/parser": "0.4.1",
     "@types/bun": "1.4.4",
     "ajv": "8.20.0",
-    "lucide-static": "1.66.0",
+    "lucide-static": "1.70.0",
     "typescript": "7.0.2"
   }
 }

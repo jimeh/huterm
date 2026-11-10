@@ -89,6 +89,18 @@ moves those pins to the versions it resolves, along with the `gpui-pre-apple`
 and `gpui-pre-wgpu` dev-dependencies that the font registration tests use.
 Both are also vendored for their `nerd-font-symbols` patches, so the upgrade
 moves their vendor directories and Cargo overrides too.
+Dependabot also ignores two version ranges. `accesskit_consumer` 0.39 and newer
+need AccessKit 0.25, while GPUI and the vendored `accesskit_macos` use 0.24 and
+the accessibility tests feed GPUI's tree into the consumer; it moves with a
+GPUI upgrade. `skrifa` 0.45 and newer exceed swash's cap under GPUI's Linux
+text stack, so a bump would stop sharing swash's copy and compile another;
+move it when swash accepts the newer release.
+Dependabot ignores the vendored `gpui-pre*`, `global-hotkey`, and
+`portable-pty` crates entirely: a version bump would leave the
+`[patch.crates-io]` override unused, which Cargo only warns about, and silently
+drop the patches.
+Dependabot opens one grouped pull request per ecosystem, so one bump that needs
+a regeneration commit or a code change holds back the rest of its group.
 A bump that changes lint behavior, such as `syn`, may also need code changes
 before Clippy passes. AccessKit's macOS adapter, `accesskit_macos`, is vendored
 at the version GPUI resolves with Huterm's terminal accessibility patches, so a

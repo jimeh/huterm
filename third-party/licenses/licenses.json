@@ -4426,7 +4426,7 @@
     {
       "id": "lucide",
       "name": "Lucide",
-      "version": "1.66.0",
+      "version": "1.70.0",
       "kind": "Icons",
       "license": "ISC AND MIT",
       "url": "https://lucide.dev",
@@ -7213,9 +7213,9 @@
       ]
     },
     {
-      "id": "serde_spanned@1.1.2",
+      "id": "serde_spanned@1.1.3",
       "name": "serde_spanned",
-      "version": "1.1.2",
+      "version": "1.1.3",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -8121,9 +8121,9 @@
       ]
     },
     {
-      "id": "toml@1.1.8+spec-1.1.0",
+      "id": "toml@1.2.1+spec-1.1.0",
       "name": "toml",
-      "version": "1.1.8+spec-1.1.0",
+      "version": "1.2.1+spec-1.1.0",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -8142,9 +8142,9 @@
       ]
     },
     {
-      "id": "toml_datetime@1.1.2+spec-1.1.0",
+      "id": "toml_datetime@1.1.3+spec-1.1.0",
       "name": "toml_datetime",
-      "version": "1.1.2+spec-1.1.0",
+      "version": "1.1.3+spec-1.1.0",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -8163,9 +8163,9 @@
       ]
     },
     {
-      "id": "toml_edit@0.25.17+spec-1.1.0",
+      "id": "toml_edit@0.25.19+spec-1.1.0",
       "name": "toml_edit",
-      "version": "0.25.17+spec-1.1.0",
+      "version": "0.25.19+spec-1.1.0",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",
@@ -8205,9 +8205,9 @@
       ]
     },
     {
-      "id": "toml_writer@1.1.3+spec-1.1.0",
+      "id": "toml_writer@1.2.0+spec-1.1.0",
       "name": "toml_writer",
-      "version": "1.1.3+spec-1.1.0",
+      "version": "1.2.0+spec-1.1.0",
       "kind": "Rust crate",
       "license": "MIT OR Apache-2.0",
       "used": "MIT",

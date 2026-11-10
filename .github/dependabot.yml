@@ -1,4 +1,7 @@
 version: 2
+# Each ecosystem opens one grouped pull request for all of its version
+# updates, majors included. Security updates are not grouped, so an advisory
+# fix lands on its own instead of waiting behind unrelated bumps.
 updates:
   - package-ecosystem: cargo
     directory: "/"
@@ -14,6 +17,10 @@ updates:
       # Snapshot crates pin each other exactly and three are vendored with
       # patches; upgrade them together through the vendor workflow.
       - dependency-name: "gpui-pre*"
+      # Vendored with patches too: a version bump would leave the patch unused,
+      # which Cargo only warns about. Upgrade through the vendor workflow.
+      - dependency-name: global-hotkey
+      - dependency-name: portable-pty
       # Must match GPUI's font-kit requirement so the dlopen feature unifies.
       - dependency-name: zed-font-kit
       # Pinned to the versions GPUI uses (see crates/huterm-gpui/Cargo.toml);
@@ -21,6 +28,17 @@ updates:
       - dependency-name: core-foundation
       - dependency-name: core-text
       - dependency-name: fontdb
+      # Its 0.39 line needs accesskit 0.25, while GPUI and the vendored
+      # accesskit_macos use 0.24; it moves with a gpui-pre upgrade.
+      - dependency-name: accesskit_consumer
+        versions: [">= 0.39"]
+      # swash, under GPUI's Linux text stack, accepts skrifa up to 0.44; a newer
+      # pin would stop sharing swash's copy and compile another.
+      - dependency-name: skrifa
+        versions: [">= 0.45"]
+    groups:
+      cargo:
+        patterns: ["*"]
 
   - package-ecosystem: github-actions
     # "/" covers only workflows and a root action.yml, not local composite actions.
@@ -31,14 +49,11 @@ updates:
     # pinact, Mise, and Bun require a full 72 hours.
     cooldown:
       default-days: 4
-    # The init and analyze steps must run the same codeql-action release.
+    # One PR across workflows and local composite actions, which also keeps
+    # codeql-action's init and analyze steps on the same release.
     groups:
-      codeql-action:
-        patterns: ["github/codeql-action*"]
-      # One PR per action bump across workflows and local composite actions.
       actions:
         patterns: ["*"]
-        group-by: dependency-name
 
   - package-ecosystem: bun
     directory: "/"
@@ -48,3 +63,6 @@ updates:
     # pinact, Mise, and Bun require a full 72 hours.
     cooldown:
       default-days: 4
+    groups:
+      bun:
+        patterns: ["*"]
