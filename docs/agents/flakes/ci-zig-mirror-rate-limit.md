@@ -30,7 +30,8 @@ note = "Release v0.16.0, Build Linux x86_64 package, Mise 2026.9.14"
 
 - **Label:** `Install Zig`, `Retry Zig installation`, or an older `Install job
   tools with Mise` step fails on a Zig community-mirror rate limit (HTTP
-  429).
+  429). The package jobs' `Install release tools in a clean Mise state` step
+  installs other tools too, so check that the 429 came from a Zig mirror.
 - **Evidence:** the bootstrap and its limits are in
   [the CI guide](../ci.md#jobs-and-caches). Repeated failures usually follow
   Actions cache eviction: the repository has exceeded GitHub's 10 GB cache
