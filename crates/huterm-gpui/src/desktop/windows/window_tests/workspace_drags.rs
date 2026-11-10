@@ -1519,11 +1519,6 @@ fn a_tab_sprung_away_tears_off_by_its_own_workspace(cx: &mut TestAppContext) {
 fn a_pane_sprung_away_keeps_its_chip_title(cx: &mut TestAppContext) {
     let mut f = Fixture::new(cx);
     let window = f.window;
-    let title = f.h.update_view(window, |view, _, cx| {
-        let tab = view.tabs.iter().find(|view| view.id == f.tab).unwrap();
-        let pane = tab.pane(f.right).unwrap();
-        tab.pane_label(pane, view.config.tabs, cx)
-    });
     let second_row = f.row(f.second);
     f.drag_pane(second_row);
     f.h.wait_for("the row to arm", |cx| {
@@ -1534,8 +1529,17 @@ fn a_pane_sprung_away_keeps_its_chip_title(cx: &mut TestAppContext) {
     f.h.wait_for("the workspace to show", |cx| {
         shown_workspace(cx, window) == Some(second)
     });
-    let chip = f.h.update_view(window, |view, _, cx| view.local_chip(cx));
-    assert_eq!(chip.map(|(_, _, title, _)| title), Some(title));
+    // The label follows the pane's process, so it is read in the same
+    // update as the chip, from the now hidden view.
+    let (tab, right) = (f.tab, f.right);
+    let (chip, label) = f.h.update_view(window, |view, _, cx| {
+        let held = view.all_tab_views().find(|view| view.id == tab).unwrap();
+        let label =
+            held.pane_label(held.pane(right).unwrap(), view.config.tabs, cx);
+        (view.local_chip(cx).map(|(_, _, title, _)| title), label)
+    });
+    assert_ne!(label, "");
+    assert_eq!(chip, Some(label));
     f.h.press(window, "escape");
     f.h.release_at(window, second_row);
 }
