@@ -121,6 +121,7 @@ fn window_radii_follow_the_current_presentation_and_platform() {
         inset: gpui::Edges::all(px(10.0)),
         controls: true,
         buttons: ButtonLayout::default(),
+        traffic_lights: None,
     };
     let layout =
         ChromeLayout::with_frame(VIEWPORT, TabPosition::Titlebar, frame);

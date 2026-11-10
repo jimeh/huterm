@@ -306,9 +306,13 @@ const CONTROL_SLOT: Pixels = TAB_HEIGHT;
 /// gives them the pill's inset.
 const CONTROL_SIZE: Pixels = PILL_HEIGHT;
 const CONTROL_INSET: Pixels = px(3.0);
-/// Width the macOS traffic lights take at the start of the title strip; the
-/// strip's title and a merged tab row start after it.
+/// Width the macOS traffic lights take at the start of the title strip when
+/// a window cannot measure them (`WindowFrame::traffic_light_inset`), as in
+/// tests, whose windows have no `AppKit` handle.
 const TRAFFIC_LIGHT_INSET: Pixels = px(84.0);
+/// The space between the macOS zoom button and the first control or tab
+/// after it in the title strip.
+const TRAFFIC_LIGHT_GAP: Pixels = px(8.0);
 /// Where the tabs start in the title row Huterm draws on Linux, which has
 /// no traffic lights.
 const TITLE_ROW_LEAD: Pixels = px(8.0);
@@ -2816,6 +2820,28 @@ fn clamp_initial_window_size(
     })
 }
 
+/// Where `window`'s title strip content starts after its traffic lights,
+/// measured from `AppKit`'s buttons wherever they last moved, or `previous`
+/// while there is nothing to measure. Fullscreen moves the buttons out of
+/// the window, so the strip keeps its windowed inset there; a borderless
+/// Quake window and a test window have no buttons.
+fn measured_traffic_lights(
+    window: &Window,
+    previous: Option<Pixels>,
+) -> Option<Pixels> {
+    #[cfg(target_os = "macos")]
+    if !window.is_fullscreen()
+        && let Some(inset) = crate::native_titlebar::buttons_in_window(window)
+            .ok()
+            .and_then(traffic_light_inset)
+    {
+        return Some(inset);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+    previous
+}
+
 /// The decoration facts GPUI reports for `window`, sampled together.
 fn frame_state(window: &Window) -> FrameState {
     FrameState {
@@ -3226,6 +3252,7 @@ fn open_window_with_profile(
                 test_platform: None,
                 native_radii,
                 applied_frame: None,
+                traffic_lights: measured_traffic_lights(window, None),
                 button_layout,
                 tabs: Vec::new(),
                 tab_scroll: px(0.0),
@@ -4784,6 +4811,10 @@ struct WorkspaceView {
     /// The frame last pushed to GPUI as the client inset and background
     /// appearance; `None` before the first sample.
     applied_frame: Option<WindowFrame>,
+    /// Where the title strip's content starts after the traffic lights, as
+    /// `sync_frame` last measured them; `None` before a measurement and
+    /// where a window has no buttons to measure.
+    traffic_lights: Option<Pixels>,
     /// The window buttons the desktop last published.
     button_layout: ButtonLayout,
     fullscreen_insets: gpui::Edges<Pixels>,
@@ -7402,12 +7433,15 @@ impl WorkspaceView {
     /// The frame this window's chrome sits in, for its resolved position
     /// and the decorations GPUI last reported.
     fn window_frame(&self) -> WindowFrame {
-        WindowFrame::resolve(
-            self.frame_platform(),
-            self.layout_tabs().position,
-            self.frame_state,
-            self.button_layout,
-        )
+        WindowFrame {
+            traffic_lights: self.traffic_lights,
+            ..WindowFrame::resolve(
+                self.frame_platform(),
+                self.layout_tabs().position,
+                self.frame_state,
+                self.button_layout,
+            )
+        }
     }
 
     /// The title row above the terminal, if the window has one.
@@ -7465,7 +7499,7 @@ impl WorkspaceView {
                 layout.frame.buttons.leading.width()
             }
         } else {
-            TRAFFIC_LIGHT_INSET
+            layout.frame.traffic_light_inset()
         } + corner_lead;
         let trailing = if trail_held {
             px(0.0)
@@ -7520,6 +7554,8 @@ impl WorkspaceView {
         };
         let state_changed = self.frame_state != state;
         self.frame_state = state;
+        self.traffic_lights =
+            measured_traffic_lights(window, self.traffic_lights);
         let frame = self.window_frame();
         self.transparency = crate::transparency::resolve(
             self.transparency_values,
@@ -13524,12 +13560,16 @@ fn strip_bounds(
 /// whether the title row is Huterm's own, and the window buttons it draws
 /// at the row's ends. They are zero, false, and none on macOS, in
 /// fullscreen, in Quake windows, and wherever the window manager draws the
-/// title bar.
+/// title bar. On macOS it also carries where the title strip's content
+/// starts after the traffic lights.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct WindowFrame {
     pub(super) inset: gpui::Edges<Pixels>,
     pub(super) controls: bool,
     pub(super) buttons: ButtonLayout,
+    /// The measured `traffic_light_inset`, or `None` when the window has
+    /// not measured its traffic lights.
+    pub(super) traffic_lights: Option<Pixels>,
 }
 
 impl WindowFrame {
@@ -13552,7 +13592,14 @@ impl WindowFrame {
             inset: state.frame().edges(),
             controls,
             buttons,
+            traffic_lights: None,
         }
+    }
+
+    /// Where the macOS title strip's content starts: past the traffic
+    /// lights the window measured, or a fixed width when it could not.
+    pub(super) fn traffic_light_inset(self) -> Pixels {
+        self.traffic_lights.unwrap_or(TRAFFIC_LIGHT_INSET)
     }
 
     /// The shadow and rounded corners are drawn only around a border.
@@ -13584,9 +13631,6 @@ fn content_inside(
     )
 }
 
-/// The height of the title row above the terminal: `AppKit`'s strip on
-/// macOS, or the row Huterm draws inside its own frame on Linux, which is
-/// the tab bar's height.
 /// Where a merged tab row puts the macOS traffic lights: centred in the title
 /// strip, at `AppKit`'s own left inset. Their size depends on the macOS release
 /// and window style, so this starts from the native close button's frame.
@@ -13600,6 +13644,20 @@ fn merged_traffic_lights(native: Bounds<f64>) -> gpui::Point<Pixels> {
     )
 }
 
+/// Where the title strip's content starts after the macOS traffic lights,
+/// from their span in window points: a fixed gap past the zoom button, so
+/// the space is the same whatever size and inset the macOS release gives
+/// the buttons. `None` for a span that ends at the window's edge.
+#[cfg(any(target_os = "macos", test))]
+fn traffic_light_inset(lights: Bounds<f64>) -> Option<Pixels> {
+    #[expect(clippy::cast_possible_truncation, reason = "point-sized geometry")]
+    let end = (lights.origin.x + lights.size.width) as f32;
+    (end > 0.0).then(|| px(end) + TRAFFIC_LIGHT_GAP)
+}
+
+/// The height of the title row above the terminal: `AppKit`'s strip on
+/// macOS, or the row Huterm draws inside its own frame on Linux, which is
+/// the tab bar's height.
 pub(super) fn title_row_height(
     chrome_hidden: bool,
     frame: WindowFrame,
@@ -14099,7 +14157,7 @@ impl ChromeLayout {
                     frame.buttons.leading.width()
                 }
             } else {
-                TRAFFIC_LIGHT_INSET
+                frame.traffic_light_inset()
             };
             if frame.controls && corners.trailing {
                 strip_trailing = frame.buttons.trailing.width();
@@ -14900,7 +14958,7 @@ impl Render for WorkspaceView {
                 div().flex_none().w(if frame.controls {
                     TITLE_ROW_LEAD
                 } else {
-                    TRAFFIC_LIGHT_INSET
+                    frame.traffic_light_inset()
                 })
             })
             .filter(|_| title_corner_left.is_some());
@@ -15702,7 +15760,7 @@ impl Render for WorkspaceView {
                             frame.buttons.leading.width()
                         }
                     } else {
-                        TRAFFIC_LIGHT_INSET
+                        frame.traffic_light_inset()
                     };
                     chrome = chrome.child(
                         self.sidebar_button_element(colors, cx)

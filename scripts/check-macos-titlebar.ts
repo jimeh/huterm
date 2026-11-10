@@ -57,6 +57,20 @@ const trafficLightsEnd = (text: string): number => {
   const lights = parseRect(field(text, "traffic_lights"));
   return lights.x + lights.w;
 };
+/** The space after the zoom button, from `TRAFFIC_LIGHT_GAP`. */
+const LIGHTS_GAP = 8;
+
+/**
+ * The sidebar button's distance from the zoom button, which every macOS
+ * release keeps at `LIGHTS_GAP` whatever size and inset it gives the
+ * buttons, or a problem naming both.
+ */
+function lightsGapProblem(text: string): string | undefined {
+  const gap = parseRect(field(text, "sidebar_button")).x - trafficLightsEnd(text);
+  return Math.abs(gap - LIGHTS_GAP) <= 0.5
+    ? undefined
+    : `the sidebar button ${field(text, "sidebar_button")} is ${gap} points after the traffic lights ${field(text, "traffic_lights")}, not ${LIGHTS_GAP}`;
+}
 
 /**
  * The window's corner radii, `top,bottom`, which the pane indicator's
@@ -295,6 +309,9 @@ session_switcher_in_corner = true
       ? { x: 0, y: ROW, w: terminal.x, h: frame().h - ROW }
       : { x: trafficLightsEnd(laid), y: 0, w: (position === "right" ? terminal.x + terminal.w : frame().w) - trafficLightsEnd(laid), h: ROW };
     assertNone(`${engine}: ${position} session switcher`, placementProblems(control, host, row, position === "left" ? undefined : sidebarButton));
+    // The sidebar button follows the traffic lights in every position.
+    const hiddenGap = lightsGapProblem(laid);
+    if (hiddenGap) throw new Error(`${engine}: ${position}: ${hiddenGap}`);
     if (quoted(laid, "w0.session_name") !== "Session 1" || field(laid, "session_automatic") !== "true") {
       throw new Error(`${engine}: the control names ${quoted(laid, "w0.session_name")}, not the automatic Session 1`);
     }
@@ -421,6 +438,19 @@ session_switcher_in_corner = true
     } else {
       console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=${position} layout=strip menu-button=opens session-switcher=${field(laid, "session_rect")}@${field(laid, "session_host")},click-opens,keyboard-opens empty-drag=moves double-click=once`);
     }
+
+    // 9. A docked sidebar's strip keeps the button the same gap after the
+    // traffic lights. Last, since docking widens the window.
+    await command("invoke\ttoggle_sidebar");
+    let docked = "";
+    await waitFor(async () => {
+      docked = await current();
+      return docked.includes("w0.workspace_chrome=panel_left") && field(docked, "sidebar_button") !== "none" && !lightsGapProblem(docked);
+    }, `a docked sidebar's button ${LIGHTS_GAP} points after the traffic lights`).catch((error) => {
+      throw new Error(`${engine}: ${position}: ${lightsGapProblem(docked) ?? "the sidebar did not dock"}`, { cause: error });
+    });
+    console.log(`MACOS_TITLEBAR_SMOKE ${engine} position=${position} lights-gap=${LIGHTS_GAP} sidebar-button=${field(laid, "sidebar_button")} docked-sidebar-button=${field(docked, "sidebar_button")}`);
+
     await command("quit");
     await waitFor(async () => app.exitCode !== null, "desktop cleanup");
     if ((await app.exited) !== 0) throw new Error(`desktop exit ${app.exitCode}`);
