@@ -4,6 +4,7 @@
 //! interleavings of `docs/plans/workspace-drags.md`.
 
 use super::super::drag::{DropTarget, Payload, RowKey, SPRING_LOAD_DELAY};
+use super::super::refresh::Animated;
 use super::super::window_locator::Located;
 use super::super::worker_hooks::Stage;
 use super::pane_drags::{active, no_drag};
@@ -774,7 +775,28 @@ fn a_workspace_dropped_on_another_window_moves_and_shows_there(
         .0
         .set(Located::Window(destination.window_id(), content));
     let moved = h.workspace;
+    // A window on the workspace's own session takes it only in its list,
+    // so its content offers nothing.
+    let mirror_content = h.update_view(mirror, |view, window, _| {
+        view.chrome_layout(window).terminal.center()
+    });
+    locator
+        .0
+        .set(Located::Window(mirror.window_id(), mirror_content));
     h.begin_workspace_drag(source, moved);
+    assert!(h.update_view(mirror, |view, _, _| {
+        view.incoming
+            .as_ref()
+            .is_some_and(|incoming| incoming.hover.target.is_none())
+    }));
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), content));
+    h.update_view(source, |view, window, cx| {
+        let at = view.drag.as_ref().unwrap().pointer();
+        view.update_drag(at + gpui::point(px(1.0), px(0.0)), window, cx);
+    });
+    h.cx.run_until_parked();
     assert!(h.update_view(destination, |view, _, _| {
         view.incoming.as_ref().is_some_and(|incoming| {
             incoming.hover.target == Some(DropTarget::Window)
@@ -817,16 +839,43 @@ fn a_closing_window_takes_no_workspace_drop(cx: &mut TestAppContext) {
         destination.window_id(),
         gpui::point(px(200.0), px(200.0)),
     ));
+    let session = h.session;
+    let unchanged = |h: &mut DesktopHarness| {
+        h.cx.update(|cx| {
+            assert_eq!(order(cx, session), [h.workspace, second]);
+            assert_eq!(order(cx, target_session), [shown]);
+        });
+    };
+    // The destination previews the drop, then turns busy before release.
     h.begin_workspace_drag(source, second);
+    assert!(h.update_view(destination, |view, _, _| {
+        view.incoming.as_ref().is_some_and(|incoming| {
+            incoming.hover.target == Some(DropTarget::Window)
+        })
+    }));
     h.update_view(destination, |view, _, _| view.busy = true);
     h.finish_workspace_drag(source);
     h.cx.run_until_parked();
-    let session = h.session;
-    h.cx.update(|cx| {
-        assert_eq!(order(cx, session), [h.workspace, second]);
-        assert_eq!(order(cx, target_session), [shown]);
-    });
+    unchanged(&mut h);
     h.update_view(destination, |view, _, _| view.busy = false);
+    // A busy source refuses too: its release would start a transfer beside
+    // its own operation in flight, and outside it offers no tear-off.
+    h.begin_workspace_drag(source, second);
+    h.update_view(source, |view, _, _| view.busy = true);
+    h.finish_workspace_drag(source);
+    h.cx.run_until_parked();
+    unchanged(&mut h);
+    locator.0.set(Located::Outside);
+    h.update_view(source, |view, _, _| view.busy = false);
+    h.begin_workspace_drag(source, second);
+    h.update_view(source, |view, _, _| view.busy = true);
+    assert!(!h.update_view(source, |view, _, cx| view.tear_off_cue(cx)));
+    let before = h.cx.update(|cx| cx.windows());
+    h.finish_workspace_drag(source);
+    h.cx.run_until_parked();
+    assert_eq!(h.cx.update(|cx| cx.windows()), before);
+    unchanged(&mut h);
+    h.update_view(source, |view, _, _| view.busy = false);
 }
 
 #[gpui::test]
@@ -1029,6 +1078,8 @@ fn a_workspace_tear_off_reserves_its_window_until_its_tabs_show(
     });
     // A checkpoint waits while the window holds the transfer reservation.
     h.cx.update(|cx| {
+        checkpoints::take_checkpoint(cx);
+        assert!(cx.global::<Desktop>().checkpoints.waiting_transfer);
         assert!(
             cx.global::<Desktop>()
                 .cross
@@ -1261,4 +1312,220 @@ fn a_tab_held_at_the_workspace_lists_edge_scrolls_it(cx: &mut TestAppContext) {
     });
     h.press(window, "escape");
     h.release_at(window, edge);
+}
+
+#[gpui::test]
+fn a_pane_close_queued_during_a_workspace_transfer_follows_it(
+    cx: &mut TestAppContext,
+) {
+    let mut h = sidebar_harness(cx);
+    let tab = h.open_tab(ECHO);
+    let _ = h.add_workspace(1);
+    let source = h.attach_showing(&[tab]);
+    let pane = h.first_pane(tab);
+    let (destination, shown, _) = h.private_window();
+    let target_session = workspace_session(&mut h, shown);
+    let locator = h.cross_locator();
+    let content = h.update_view(destination, |view, window, _| {
+        view.chrome_layout(window).terminal.center()
+    });
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), content));
+    let moved = h.workspace;
+    let runtime = Arc::clone(&h.runtime);
+    runtime.worker_hooks.hold(Stage::LayoutCommitted);
+    h.begin_workspace_drag(source, moved);
+    h.finish_workspace_drag(source);
+    h.wait_for("the move to commit and project", |cx| {
+        runtime.worker_hooks.held(Stage::LayoutCommitted) == 1
+            && order(cx, target_session) == [shown, moved]
+    });
+    h.update_view(source, |view, window, cx| {
+        assert!(view.busy);
+        view.close_focused_pane(window, cx).unwrap();
+        assert!(matches!(
+            view.close.pending,
+            Some(CloseTarget::Pane { pane: queued, .. }) if queued == pane
+        ));
+    });
+    runtime.worker_hooks.release(Stage::LayoutCommitted);
+    h.wait_for("the queued close to run", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .pane_tab(pane)
+            .is_none()
+            && !busy(cx, destination)
+            && !busy(cx, source)
+    });
+    assert_eq!(h.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_pane_close_queued_during_a_workspace_tear_off_follows_it(
+    cx: &mut TestAppContext,
+) {
+    let mut h = sidebar_harness(cx);
+    let tab = h.open_tab(ECHO);
+    // A second tab keeps the new window open after the close.
+    let kept = h.open_tab(ECHO);
+    let _ = h.add_workspace(1);
+    let source = h.attach_showing(&[tab, kept]);
+    h.activate(source, tab);
+    let pane = h.first_pane(tab);
+    let runtime = Arc::clone(&h.runtime);
+    runtime.worker_hooks.hold(Stage::Transfer);
+    let before = h.cx.update(|cx| cx.windows());
+    h.invoke(source, ids::MOVE_WORKSPACE_TO_NEW_WINDOW).unwrap();
+    h.wait_for("the tear-off worker to start", |_| {
+        runtime.worker_hooks.held(Stage::Transfer) == 1
+    });
+    h.update_view(source, |view, window, cx| {
+        view.close_focused_pane(window, cx).unwrap();
+        assert!(matches!(
+            view.close.pending,
+            Some(CloseTarget::Pane { pane: queued, .. }) if queued == pane
+        ));
+    });
+    runtime.worker_hooks.release(Stage::Transfer);
+    let torn = new_window(&mut h, &before);
+    h.wait_for("the queued close to run", |cx| {
+        cx.global::<Desktop>()
+            .hierarchy
+            .state()
+            .pane_tab(pane)
+            .is_none()
+            && !busy(cx, source)
+            && !busy(cx, torn)
+            && terminal(cx, torn, kept).is_some()
+    });
+    assert_eq!(h.close_failures(), 0);
+}
+
+#[gpui::test]
+fn a_failed_drop_after_an_incoming_row_spring_shows_the_origin_again(
+    cx: &mut TestAppContext,
+) {
+    let mut h = sidebar_harness(cx);
+    let tab = h.open_tab(ECHO);
+    let moving = h.open_tab(ECHO);
+    let source = h.attach_showing(&[tab, moving]);
+    let (destination, shown, anchor) = h.private_window();
+    let target_session = workspace_session(&mut h, shown);
+    let (hidden, hidden_tab) = {
+        let mut mux = h.runtime.lock();
+        let hidden = mux.create_workspace(target_session, None).unwrap();
+        let tab = mux.open_tab(hidden, &fixture(ECHO)).unwrap().tab.id;
+        (hidden, tab)
+    };
+    h.wait_projection();
+    h.wait_chrome(destination, "its sidebar", WorkspaceChrome::docked);
+    h.wait_for("the hidden tab to install", |cx| {
+        super::hidden_workspaces::hidden_tabs(cx, destination, hidden)
+            == Some(vec![hidden_tab])
+    });
+    let locator = h.cross_locator();
+    let over = h.row_bounds(destination, hidden).center();
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), over));
+    h.update_view(source, |view, window, cx| {
+        let at = view.tab_strip(window).label(1).center();
+        view.begin_reorder(moving, at, window, cx);
+        view.update_drag(at + gpui::point(px(8.0), px(8.0)), window, cx);
+    });
+    h.cx.run_until_parked();
+    let armed = h.update_view(destination, |view, _, _| {
+        view.incoming
+            .as_ref()
+            .and_then(|incoming| incoming.hover.spring.armed_at())
+            .expect("the row arms")
+    });
+    h.update_view(destination, |view, window, cx| {
+        view.advance_animation(armed + SPRING_LOAD_DELAY, false, window, cx);
+    });
+    h.wait_for("the destination to show the sprung workspace", |cx| {
+        shown_workspace(cx, destination) == Some(hidden)
+    });
+    // Release into the sprung workspace's bar, and fail the move.
+    let slot = h.update_view(destination, |view, window, _| {
+        view.tab_strip(window).label(0).origin + gpui::point(px(1.0), px(1.0))
+    });
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), slot));
+    h.update_view(source, |view, window, cx| {
+        let at = view.drag.as_ref().unwrap().pointer();
+        view.update_drag(at + gpui::point(px(1.0), px(0.0)), window, cx);
+    });
+    h.cx.run_until_parked();
+    h.runtime.worker_hooks.fail(Stage::Transfer);
+    h.finish_workspace_drag(source);
+    h.wait_for(
+        "the destination to spring back to its workspace and tab",
+        |cx| {
+            !busy(cx, destination)
+                && !busy(cx, source)
+                && shown_workspace(cx, destination) == Some(shown)
+                && active(cx, destination) == Some(anchor)
+        },
+    );
+    assert_eq!(tabs_of(&h, h.workspace), [tab, moving]);
+}
+
+#[gpui::test]
+fn a_tab_sprung_away_tears_off_by_its_own_workspace(cx: &mut TestAppContext) {
+    let mut f = Fixture::new(cx);
+    let window = f.window;
+    // Its workspace has two tabs; the one it springs to has one.
+    let label = f.h.label(window, 1);
+    f.h.press_at(window, label);
+    let second_row = f.row(f.second);
+    f.h.move_to(window, second_row);
+    f.h.wait_for("the row to arm", |cx| {
+        target(cx, window) == Some(row(f.second, true))
+    });
+    f.spring();
+    let second = f.second;
+    f.h.wait_for("the workspace to show", |cx| {
+        shown_workspace(cx, window) == Some(second)
+    });
+    let _locator = f.h.cross_locator();
+    f.h.move_to(window, second_row + gpui::point(px(4.0), px(4.0)));
+    f.h.cx.run_until_parked();
+    assert!(f.h.update_view(window, |view, _, cx| view.tear_off_cue(cx)));
+    let before = f.h.cx.update(|cx| cx.windows());
+    f.h.release_at(window, second_row);
+    let torn = new_window(&mut f.h, &before);
+    let other = f.other;
+    f.h.wait_for("the tab to open in its own window", |cx| {
+        terminal(cx, torn, other).is_some() && !busy(cx, torn)
+    });
+    assert_eq!(tabs_of(&f.h, f.h.workspace), [f.tab]);
+}
+
+#[gpui::test]
+fn a_pane_sprung_away_keeps_its_chip_title(cx: &mut TestAppContext) {
+    let mut f = Fixture::new(cx);
+    let window = f.window;
+    let title = f.h.update_view(window, |view, _, cx| {
+        let tab = view.tabs.iter().find(|view| view.id == f.tab).unwrap();
+        let pane = tab.pane(f.right).unwrap();
+        tab.pane_label(pane, view.config.tabs, cx)
+    });
+    let second_row = f.row(f.second);
+    f.drag_pane(second_row);
+    f.h.wait_for("the row to arm", |cx| {
+        target(cx, window) == Some(row(f.second, true))
+    });
+    f.spring();
+    let second = f.second;
+    f.h.wait_for("the workspace to show", |cx| {
+        shown_workspace(cx, window) == Some(second)
+    });
+    let chip = f.h.update_view(window, |view, _, cx| view.local_chip(cx));
+    assert_eq!(chip.map(|(_, _, title, _)| title), Some(title));
+    f.h.press(window, "escape");
+    f.h.release_at(window, second_row);
 }

@@ -556,8 +556,10 @@ tests.
   frame like a pane drag, resolves with another window's rules (no reorder
   projection, no centre, no lone-pane rule), and draws the chip. A slot or
   title row in the shown workspace is then `MoveTab`, not a reorder. Its
-  cross-window payload comes from `all_tab_views` and the projection, not
-  the shown workspace.
+  cross-window payload and its tear-off availability (`tears_off`) come from
+  its own workspace through `all_tab_views` and the projection, not the
+  shown one. A failed drop springs back only once the window is no longer
+  busy, since a spring-back to another workspace is a switch.
 - A pane moved into another workspace of the same window gets a fresh view:
   reconcile adopts pane views only within one workspace, and whole tabs
   between held workspaces (`adopt_moved_tabs`). The move focuses the pane
@@ -570,14 +572,20 @@ tests.
   `dispatch_transfer`; `PendingTransfer::show` makes the destination show
   it, and `finish_transfer_install` waits for panes that land in any
   workspace the window holds, hidden ones included. A source that showed
-  it follows through its emptied close.
+  it follows through its emptied close, and a pane close it queued during
+  the move runs there, since its record still names the workspace. A busy
+  source refuses the release and shows no tear-off cue, since a transfer
+  would end its own operation's `busy`. A window on the workspace's own
+  session takes it only in its list. A row outside the window never
+  edge-scrolls its list.
 - Workspace tear-off (`tear_off_workspace`) moves first, with
   `Mux::move_workspace_to_new_session` and an attach under one lock, then
   opens the window, which adopts the attachment and installs. The source
   holds a transfer reservation from the start, so no checkpoint saves it
   half moved. A failure puts the workspace back in its slot (`put_back`),
-  else last, and closes the new session only once it is empty; it never
-  closes a session that still holds the workspace. A session's only
+  else last, and closes the new session only when it is empty under the
+  same lock; otherwise it detaches it, so nothing another client put there
+  stops. A session's only
   workspace never tears off. Dropping a row drag (`drop_row_drag`) also
   ends its cross-window record.
 

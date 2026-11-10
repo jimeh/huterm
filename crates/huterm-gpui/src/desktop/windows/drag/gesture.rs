@@ -526,7 +526,13 @@ impl WorkspaceView {
     ) -> Option<DropTarget> {
         let row = payload.row()?;
         if !self.workspace_list_at(pointer, window) {
-            return Some(DropTarget::Window);
+            // A window on the workspace's own session takes it only in its
+            // list, as a reorder.
+            let Payload::Workspace { session, .. } = payload else {
+                return None;
+            };
+            return (self.attached_session(cx) != Some(session))
+                .then_some(DropTarget::Window);
         }
         let order: Vec<RowKey> = self
             .session_workspaces(cx)
@@ -901,7 +907,7 @@ impl WorkspaceView {
                 self.commit_pane_move(change, focus, back, window, cx);
             }
             Operation::ReorderTab { .. } | Operation::MoveTab { .. } => {
-                self.commit_tab_move(change, window, cx);
+                self.commit_tab_move(change, back, window, cx);
             }
             Operation::MoveWorkspace {
                 session,
@@ -915,9 +921,12 @@ impl WorkspaceView {
         }
     }
 
+    /// Commits a tab reorder or move on a worker; a refused move that
+    /// spring-loaded switches `back`.
     fn commit_tab_move(
         &mut self,
         change: Operation,
+        back: Option<SpringBack>,
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
@@ -951,6 +960,8 @@ impl WorkspaceView {
                 view.reconcile_own(window, cx);
                 if moved {
                     view.settle_moved(change, window, cx);
+                } else if let Some(back) = back {
+                    view.switch_back(back, window, cx);
                 }
                 view.restore_tab_focus(window, cx);
                 view.resume_close(window, cx);

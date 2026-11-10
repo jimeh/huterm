@@ -84,6 +84,17 @@ checked against the code:
 - A tab or pane over the workspace list scrolls it at the edges, as a row
   does. The native input smokes gained `checkWorkspaceDrags`.
 
+The PR's dual review (Codex and Claude) then found, and this change fixes:
+`put_back` closing a new session that something joined meanwhile; a failed
+cross-window drop springing a destination back while still busy, which the
+switch guard refused; tear-off availability of a sprung-away tab or pane
+read from the shown workspace; a busy source releasing a workspace on
+another window; a blank chip for a pane sprung away; a row outside its
+window still edge-scrolling its list; and a window on the workspace's own
+session drawing a drop region it refuses. A reported loss of a pane close
+queued during a workspace transfer did not reproduce: the source still names
+the workspace and runs the close itself, which two tests now hold.
+
 ## Interleavings
 
 Tests are in `window_tests/workspace_drags.rs` unless noted.

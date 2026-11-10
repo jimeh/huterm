@@ -146,7 +146,7 @@ impl WorkspaceView {
         clippy::type_complexity,
         reason = "the four values the overlay reads, named at its one caller"
     )]
-    fn local_chip(
+    pub(in super::super) fn local_chip(
         &self,
         cx: &App,
     ) -> Option<(
@@ -158,9 +158,9 @@ impl WorkspaceView {
         let drag = self.drag.as_ref().filter(|drag| drag.dragging())?;
         let title = match drag.payload {
             Payload::Pane { tab, pane, .. } => {
+                // A row spring may have hidden the pane's tab.
                 let title = self
-                    .tabs
-                    .iter()
+                    .all_tab_views()
                     .find(|view| view.id == tab)
                     .and_then(|tab| {
                         let pane = tab.pane(pane)?;

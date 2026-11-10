@@ -152,12 +152,7 @@ impl WorkspaceView {
         if state.workspace_session(workspace) != Some(session) {
             return None;
         }
-        let tabs = state.workspace_tabs(workspace)?;
-        let panes: Vec<PaneId> = tabs
-            .iter()
-            .filter_map(|tab| state.tab(*tab))
-            .flat_map(|tab| tab.layout.panes().into_iter().map(|pane| pane.id))
-            .collect();
+        let panes = workspace_panes(cx, workspace);
         let focus = if Some(workspace) == self.workspace_id(cx) {
             self.active_pane(cx).map(|(_, pane)| pane)
         } else {
@@ -335,20 +330,37 @@ impl WorkspaceView {
     /// Whether `payload` can leave this window for a new one: a tab when
     /// the window has others, a pane unless it is alone in the only tab,
     /// and a workspace unless it is its session's only one.
+    ///
+    /// A tab or pane counts against its own workspace, which a row spring
+    /// may have hidden, and a workspace waits while the window is busy,
+    /// since its release would start a transfer.
     pub(super) fn tears_off(&self, payload: &Payload, cx: &App) -> bool {
+        let tabs = |workspace: WorkspaceId| {
+            cx.global::<Desktop>()
+                .hierarchy
+                .state()
+                .workspace_tabs(workspace)
+                .map_or(0, <[TabId]>::len)
+        };
+        let panes = |tab: TabId| {
+            self.all_tab_views()
+                .find(|view| view.id == tab)
+                .map_or(0, |view| view.panes.len())
+        };
         match payload.drag {
-            Dragged::Tab { .. } => {
-                tab_tear_off_availability(self.tabs.len()).is_ok()
+            Dragged::Tab { workspace, .. } => {
+                tab_tear_off_availability(tabs(workspace)).is_ok()
             }
-            Dragged::Pane { tab, .. } => pane_tear_off_availability(
-                self.tabs.len(),
-                self.pane_count(tab),
-            )
-            .is_ok(),
-            Dragged::Workspace { .. } => workspace_tear_off_availability(
-                self.session_workspaces(cx).len(),
-            )
-            .is_ok(),
+            Dragged::Pane { workspace, tab, .. } => {
+                pane_tear_off_availability(tabs(workspace), panes(tab)).is_ok()
+            }
+            Dragged::Workspace { .. } => {
+                !self.busy
+                    && workspace_tear_off_availability(
+                        self.session_workspaces(cx).len(),
+                    )
+                    .is_ok()
+            }
             Dragged::Session(_) => false,
         }
     }
@@ -570,6 +582,18 @@ impl WorkspaceView {
                 self.end_cross_drag(true, cx);
                 false
             }
+            // A workspace release starts a transfer, which waits for this
+            // window's own operation in flight.
+            Located::Window(..)
+                if self.busy
+                    && matches!(
+                        drag.payload.drag,
+                        Dragged::Workspace { .. }
+                    ) =>
+            {
+                self.end_cross_drag(true, cx);
+                true
+            }
             Located::Window(id, pointer) => {
                 let payload = drag.payload.clone();
                 let reserved = handle(cx, id).and_then(|handle| {
@@ -691,11 +715,14 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) {
         let source_tab = change.source_tab();
+        // The panes a queued close of this window follows to the
+        // destination: the moved pane, or the moved tab's, shown or hidden
+        // after a row spring. A moved workspace's close stays here, where
+        // the window still names it until it follows.
         let moving: Vec<PaneId> = match change {
             Operation::Pane(PaneMove::Move { from, .. }) => vec![from.pane],
             _ => self
-                .tabs
-                .iter()
+                .all_tab_views()
                 .find(|tab| Some(tab.id) == source_tab)
                 .map(|tab| tab.panes.iter().map(|pane| pane.pane).collect())
                 .unwrap_or_default(),
@@ -820,6 +847,9 @@ impl WorkspaceView {
                                     let created = pending
                                         .as_ref()
                                         .is_some_and(|pending| pending.created);
+                                    // Not busy first: a spring-back to
+                                    // another workspace is a switch.
+                                    view.busy = false;
                                     if let Some(preview) = pending
                                         .and_then(|pending| pending.preview)
                                     {
@@ -830,7 +860,6 @@ impl WorkspaceView {
                                             );
                                         }
                                     }
-                                    view.busy = false;
                                     if created {
                                         view.request_close(
                                             CloseTarget::Window,
@@ -1423,8 +1452,6 @@ impl WorkspaceView {
                         window_locator::place(number, pointer, grab);
                     }
                 }
-                #[cfg(not(target_os = "macos"))]
-                let _ = destination;
                 let _ = source.update_in(cx, |view, window, cx| {
                     view.busy = false;
                     checkpoints::set_transfer_reserved(cx, view.window, false);
@@ -1686,7 +1713,8 @@ pub(super) fn tear_off_label(bounds: Bounds<Pixels>) -> &'static str {
 /// Moves a torn-off `workspace` from session `created` back into `session`
 /// before `before`, or last when that slot went, and closes `created` once
 /// empty. A source session closed meanwhile keeps the workspace in
-/// `created`, detached, so its terminals keep running and the session
+/// `created`, and anything another client put there meanwhile stays; the
+/// session is then detached, so its terminals keep running and the session
 /// switcher still reaches them.
 fn put_back(
     mux: &mut huterm_core::Mux,
@@ -1699,11 +1727,26 @@ fn put_back(
     let moved = mux
         .move_workspace(created, workspace, session, before)
         .or_else(|_| mux.move_workspace(created, workspace, session, None));
-    if moved.is_ok() {
+    let empty = mux
+        .session(created)
+        .is_some_and(|record| record.workspaces.is_empty());
+    if moved.is_ok() && empty {
         let _ = mux.close_session(created);
     } else if let Some(attachment) = attachment {
         let _ = mux.detach_session(attachment);
     }
+}
+
+/// Every pane of `workspace`, from the projection.
+fn workspace_panes(cx: &App, workspace: WorkspaceId) -> Vec<PaneId> {
+    let state = cx.global::<Desktop>().hierarchy.state();
+    state
+        .workspace_tabs(workspace)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|tab| state.tab(*tab))
+        .flat_map(|tab| tab.layout.panes().into_iter().map(|pane| pane.id))
+        .collect()
 }
 
 /// A workspace tears off unless it is its session's only one.
@@ -1877,5 +1920,74 @@ impl WorkspaceView {
             .iter()
             .position(|handle| handle.window_id() == destination)?;
         Some(format!("window:{index}:{label}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn put_back_closes_the_new_session_only_once_it_is_empty() {
+        let mut mux = huterm_core::Mux::default();
+        let session = mux.create_session(None).unwrap();
+        let first = mux.create_workspace(session, None).unwrap();
+        let moved = mux.create_workspace(session, None).unwrap();
+        let last = mux.create_workspace(session, None).unwrap();
+        // An empty new session closes once the workspace is back in its
+        // slot.
+        let created =
+            mux.move_workspace_to_new_session(session, moved).unwrap();
+        let attachment = mux.attach_session(created).unwrap();
+        put_back(
+            &mut mux,
+            created,
+            Some(attachment),
+            session,
+            moved,
+            Some(last),
+        );
+        assert_eq!(
+            mux.session(session).unwrap().workspaces,
+            [first, moved, last]
+        );
+        assert!(mux.session(created).is_none());
+        // One that gained a workspace meanwhile keeps it, detached.
+        let created =
+            mux.move_workspace_to_new_session(session, moved).unwrap();
+        let attachment = mux.attach_session(created).unwrap();
+        let joined = mux.create_workspace(created, None).unwrap();
+        put_back(
+            &mut mux,
+            created,
+            Some(attachment),
+            session,
+            moved,
+            Some(last),
+        );
+        assert_eq!(
+            mux.session(session).unwrap().workspaces,
+            [first, moved, last]
+        );
+        assert_eq!(mux.session(created).unwrap().workspaces, [joined]);
+        assert!(mux.attachment_session(attachment).is_err());
+        // A source session gone meanwhile leaves the workspace where it is.
+        let other = mux.create_session(None).unwrap();
+        let kept = mux.create_workspace(other, None).unwrap();
+        let spare = mux.create_workspace(other, None).unwrap();
+        let created = mux.move_workspace_to_new_session(other, kept).unwrap();
+        let attachment = mux.attach_session(created).unwrap();
+        mux.close_session(other).unwrap();
+        put_back(
+            &mut mux,
+            created,
+            Some(attachment),
+            other,
+            kept,
+            Some(spare),
+        );
+        assert_eq!(mux.session(created).unwrap().workspaces, [kept]);
+        assert!(mux.attachment_session(attachment).is_err());
+        mux.shutdown().unwrap();
     }
 }

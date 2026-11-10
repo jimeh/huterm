@@ -887,13 +887,14 @@ impl Gesture {
         }
     }
 
-    /// Whether the drag scrolls the list `scroll`: a dragged row anywhere,
-    /// a tab or pane only while over the list inside its window.
+    /// Whether the drag scrolls the list `scroll`, always inside its
+    /// window: a dragged row anywhere there, a tab or pane only over the
+    /// list.
     fn in_list(&self, scroll: &gpui::ScrollHandle) -> bool {
-        self.payload.row().is_some()
-            || (self.payload.in_bar()
-                && !self.outside
-                && scroll.bounds().contains(&self.pointer()))
+        !self.outside
+            && (self.payload.row().is_some()
+                || (self.payload.in_bar()
+                    && scroll.bounds().contains(&self.pointer())))
     }
 
     /// Whether the drag rests at the edge of the list `scroll`.
