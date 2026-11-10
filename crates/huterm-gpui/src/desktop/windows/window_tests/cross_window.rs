@@ -1,5 +1,5 @@
 //! Private sessions make these transfers exercise viewer revocation.
-use super::super::pane_drag::{DropTarget, SPRING_LOAD_DELAY};
+use super::super::drag::{DropTarget, SPRING_LOAD_DELAY};
 use super::super::window_locator::{Located, WindowLocator};
 use super::*;
 use crate::desktop::notices::NOTICE_LIFETIME;
@@ -78,13 +78,13 @@ impl DesktopHarness {
                 view.tabs.iter().position(|view| view.id == tab).unwrap();
             let at = view.tab_strip(window).label(index).center();
             view.begin_reorder(tab, at, window, cx);
-            view.update_reorder(at + point(px(8.0), px(8.0)), window, cx);
+            view.update_drag(at + point(px(8.0), px(8.0)), window, cx);
         });
         self.cx.run_until_parked();
     }
     fn cross_release(&mut self, source: AnyWindowHandle) {
         self.update_view(source, |view, window, cx| {
-            view.finish_reorder(point(px(-100.0), px(-100.0)), window, cx);
+            view.finish_drag(point(px(-100.0), px(-100.0)), window, cx);
         });
     }
     fn cross_idle(&mut self, destination: AnyWindowHandle, pane: PaneId) {
@@ -150,7 +150,7 @@ fn cross_window_tabs_keep_ids_processes_and_slot_order(
     h.cross_begin(source, tab);
     assert!(h.update_view(destination, |view, _, _| {
         view.incoming.as_ref().is_some_and(|incoming| {
-            incoming.target == Some(DropTarget::Slot(0))
+            incoming.hover.target == Some(DropTarget::Slot(0))
         })
     }));
     h.cross_release(source);
@@ -178,7 +178,7 @@ fn cross_window_cancel_rejects_late_preview_callbacks(cx: &mut TestAppContext) {
     h.cross_begin(source, tab);
     let late =
         h.cx.update(|cx| cx.global::<Desktop>().cross.drag.clone().unwrap());
-    h.update_view(source, super::super::WorkspaceView::cancel_reorder);
+    h.update_view(source, super::super::WorkspaceView::cancel_drag);
     h.cx.run_until_parked();
     assert!(h.update_view(destination, |view, _, _| view.incoming.is_none()));
     // Deliver the captured callback only after the deferred clear has run.
@@ -187,8 +187,9 @@ fn cross_window_cancel_rejects_late_preview_callbacks(cx: &mut TestAppContext) {
         view.receive_incoming(late, pointer, window, cx);
     });
     assert!(h.update_view(destination, |view, _, _| view.incoming.is_none()));
-    assert!(h.update_view(source, |view, _, _| view.reorder.is_none()
-        && !view.busy));
+    assert!(
+        h.update_view(source, |view, _, _| !view.reordering() && !view.busy)
+    );
     let mux = h.runtime.lock();
     assert!(contains(&mux, h.workspace, tab));
     assert!(!contains(&mux, workspace, tab));
@@ -364,7 +365,7 @@ fn cross_window_spring_load_and_back_keep_source_focus(
         Some(sprung)
     );
     assert!(h.cx.update(|cx| focused(cx, source, tab)));
-    h.update_view(source, super::super::WorkspaceView::cancel_reorder);
+    h.update_view(source, super::super::WorkspaceView::cancel_drag);
     h.cx.run_until_parked();
     assert_eq!(
         h.update_view(destination, |view, _, cx| view.active_tab(cx)),
@@ -441,13 +442,13 @@ impl DesktopHarness {
         self.update_view(source, |view, window, cx| {
             let at = view.drawn_frame(pane).unwrap().center();
             view.begin_pane_drag(tab, pane, at, false, window, cx);
-            view.update_pane_drag(at + point(px(8.0), px(8.0)), window, cx);
+            view.update_drag(at + point(px(8.0), px(8.0)), window, cx);
         });
         self.cx.run_until_parked();
     }
     fn cross_release_pane(&mut self, source: AnyWindowHandle) {
         self.update_view(source, |view, window, cx| {
-            view.finish_pane_drag(point(px(-100.0), px(-100.0)), window, cx);
+            view.finish_drag(point(px(-100.0), px(-100.0)), window, cx);
         });
     }
 }
@@ -482,7 +483,7 @@ fn cross_window_panes_refuse_centres_then_nest_at_edges(
         .set(Located::Window(destination.window_id(), frame.center()));
     h.cross_begin_pane(source, tab, pane);
     assert!(h.update_view(destination, |view, _, _| {
-        view.incoming.as_ref().unwrap().target.is_none()
+        view.incoming.as_ref().unwrap().hover.target.is_none()
     }));
     h.cross_release_pane(source);
     h.cx.run_until_parked();
@@ -597,7 +598,8 @@ fn cross_window_title_row_accepts_a_lone_pane_only_when_the_bar_is_hidden(
         .set(Located::Window(destination.window_id(), row.center()));
     h.cross_begin_pane(source, tab, pane);
     assert!(h.update_view(destination, |view, _, _| {
-        view.incoming.as_ref().unwrap().target == Some(DropTarget::TitleRow)
+        view.incoming.as_ref().unwrap().hover.target
+            == Some(DropTarget::TitleRow)
     }));
     h.cross_release_pane(source);
     h.cross_idle(destination, pane);
@@ -666,7 +668,7 @@ fn cross_window_destination_closure_cancels_the_source_gesture(
     h.cross_begin(source, tab);
     h.remove_window(destination);
     h.cx.run_until_parked();
-    assert!(h.update_view(source, |view, _, _| view.reorder.is_none()));
+    assert!(h.update_view(source, |view, _, _| !view.reordering()));
     assert!(contains(&h.runtime.lock(), h.workspace, tab));
 }
 
@@ -1012,13 +1014,13 @@ fn cross_window_blur_and_opening_a_menu_cancel_incoming_cues(
     h.cross_begin(source, tab);
     h.deactivate(source);
     h.cx.run_until_parked();
-    assert!(h.update_view(source, |view, _, _| view.reorder.is_none()));
+    assert!(h.update_view(source, |view, _, _| !view.reordering()));
     assert!(h.update_view(destination, |view, _, _| view.incoming.is_none()));
     h.activate(source, tab);
     h.cross_begin(source, tab);
     h.invoke(source, ids::OPEN_MENU).unwrap();
     h.cx.run_until_parked();
-    assert!(h.update_view(source, |view, _, _| view.reorder.is_none()));
+    assert!(h.update_view(source, |view, _, _| !view.reordering()));
     assert!(h.update_view(destination, |view, _, _| view.incoming.is_none()));
     assert!(contains(&h.runtime.lock(), h.workspace, tab));
 }
@@ -1176,7 +1178,7 @@ fn cross_window_release_refreshes_membership_after_a_source_pane_closes(
     h.wait_for("another client closes the focused source pane", |cx| {
         pane_view(cx, source, tab, second).is_none()
     });
-    assert!(h.update_view(source, |view, _, _| view.reorder.is_some()));
+    assert!(h.update_view(source, |view, _, _| view.reordering()));
     h.cross_release(source);
     h.cross_idle(destination, first);
     assert!(h.update_view(destination, |view, _, _| {
@@ -1532,7 +1534,7 @@ fn cross_window_navigation_interrupt_ends_the_pane_gesture(
     );
     h.invoke(source, ids::NEXT_TAB).unwrap();
     h.cx.run_until_parked();
-    assert!(h.update_view(source, |view, _, _| view.pane_drag.is_none()));
+    assert!(h.update_view(source, |view, _, _| !view.pane_dragging()));
     assert!(
         h.cx.update(|cx| cx.global::<Desktop>().cross.drag.is_none()),
         "navigation must end the shared gesture"
@@ -1566,7 +1568,7 @@ fn cross_window_navigation_interrupt_ends_the_pane_gesture(
         h.update_view(destination, |view, _, cx| view.active_tab(cx)),
         Some(origin)
     );
-    h.update_view(source, super::super::WorkspaceView::cancel_pane_drag);
+    h.update_view(source, super::super::WorkspaceView::cancel_drag);
     h.cx.run_until_parked();
     assert_eq!(
         h.update_view(destination, |view, _, cx| view.active_tab(cx)),
@@ -1863,7 +1865,7 @@ fn cross_window_new_gesture_from_same_source_rejects_an_old_generation(
     h.cross_begin(source, tab);
     let late =
         h.cx.update(|cx| cx.global::<Desktop>().cross.drag.clone().unwrap());
-    h.update_view(source, super::super::WorkspaceView::cancel_reorder);
+    h.update_view(source, super::super::WorkspaceView::cancel_drag);
     h.cx.run_until_parked();
     locator.0.set(Located::Blocked);
     h.cross_begin(source, tab);
@@ -1875,7 +1877,7 @@ fn cross_window_new_gesture_from_same_source_rejects_an_old_generation(
         h.update_view(destination, |view, _, _| view.incoming.is_none()),
         "an old gesture from the same source must not restore its preview"
     );
-    h.update_view(source, super::super::WorkspaceView::cancel_reorder);
+    h.update_view(source, super::super::WorkspaceView::cancel_drag);
 }
 
 #[gpui::test]
@@ -2488,7 +2490,7 @@ fn cross_window_s1_marks_the_pane_only_while_outside_and_tearing_off(
     );
     locator.0.set(Located::Outside);
     h.update_view(source, |view, window, cx| {
-        view.update_pane_drag(point(px(-50.0), px(-50.0)), window, cx);
+        view.update_drag(point(px(-50.0), px(-50.0)), window, cx);
     });
     h.cx.run_until_parked();
     let (pill, frame) = h.update_view(source, |view, _, _| {
@@ -2525,7 +2527,7 @@ fn cross_window_s1_marks_the_pane_only_while_outside_and_tearing_off(
     );
     locator.0.set(Located::Blocked);
     h.update_view(source, |view, window, cx| {
-        view.update_pane_drag(point(px(-60.0), px(-60.0)), window, cx);
+        view.update_drag(point(px(-60.0), px(-60.0)), window, cx);
     });
     h.cx.run_until_parked();
     assert!(
@@ -2535,7 +2537,7 @@ fn cross_window_s1_marks_the_pane_only_while_outside_and_tearing_off(
             .is_none()),
         "no cue where a release does nothing"
     );
-    h.update_view(source, WorkspaceView::cancel_pane_drag);
+    h.update_view(source, WorkspaceView::cancel_drag);
     h.cx.run_until_parked();
     assert!(h.update_view(source, |view, _, _| {
         view.drawn_pane_tear_off.borrow().is_none()
@@ -2615,7 +2617,7 @@ fn cross_window_pane_tear_off_failures_restore_spring_back_and_scroll(
         h.update_view(source, |view, window, cx| {
             let at = view.drawn_frame(pane).unwrap().center();
             view.begin_pane_drag(tab, pane, at, false, window, cx);
-            view.update_pane_drag(label, window, cx);
+            view.update_drag(label, window, cx);
             view.advance_spring(Instant::now() + SPRING_LOAD_DELAY, window, cx);
         });
         h.cx.run_until_parked();
@@ -2699,7 +2701,7 @@ fn cross_window_a_spring_loaded_pane_drag_keeps_a_tear_off_cue(
     h.update_view(source, |view, window, cx| {
         let at = view.drawn_frame(pane).unwrap().center();
         view.begin_pane_drag(tab, pane, at, false, window, cx);
-        view.update_pane_drag(label, window, cx);
+        view.update_drag(label, window, cx);
         view.advance_spring(Instant::now() + SPRING_LOAD_DELAY, window, cx);
     });
     h.cx.run_until_parked();
@@ -2710,7 +2712,7 @@ fn cross_window_a_spring_loaded_pane_drag_keeps_a_tear_off_cue(
     );
     locator.0.set(Located::Outside);
     h.update_view(source, |view, window, cx| {
-        view.update_pane_drag(point(px(-50.0), px(-50.0)), window, cx);
+        view.update_drag(point(px(-50.0), px(-50.0)), window, cx);
     });
     h.cx.run_until_parked();
     h.update_view(source, |view, _, cx| {

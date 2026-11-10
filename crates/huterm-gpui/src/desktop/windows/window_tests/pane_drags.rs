@@ -4,7 +4,7 @@
 
 use gpui::EntityId;
 
-use super::super::pane_drag::{DropTarget, SPRING_LOAD_DELAY};
+use super::super::drag::{DropTarget, SPRING_LOAD_DELAY};
 use super::super::pane_geometry::Zone;
 use super::super::refresh::Animated;
 use super::*;
@@ -43,8 +43,13 @@ fn pane_drag(
     window
         .update(cx, |root, _, cx| {
             let view = root.downcast::<WorkspaceView>().ok()?;
-            let drag = view.read(cx).pane_drag.as_ref()?;
-            drag.dragging.then_some((drag.target, drag.spring.tab()))
+            let drag = view
+                .read(cx)
+                .drag
+                .as_ref()
+                .filter(|drag| drag.payload.pane().is_some())?;
+            drag.dragging()
+                .then_some((drag.target(), drag.hover.spring.tab()))
         })
         .ok()
         .flatten()
@@ -55,7 +60,7 @@ fn no_drag(cx: &mut App, window: AnyWindowHandle) -> bool {
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>().is_ok_and(|view| {
                 let view = view.read(cx);
-                view.pane_drag.is_none() && view.reorder.is_none() && !view.busy
+                !view.pane_dragging() && !view.reordering() && !view.busy
             })
         })
         .unwrap_or(false)
@@ -205,9 +210,9 @@ impl DesktopHarness {
     ) -> (Instant, AnimationSchedule) {
         self.update_view(window, |view, _, _| {
             let armed = view
-                .pane_drag
+                .drag
                 .as_ref()
-                .and_then(|drag| drag.spring.armed_at())
+                .and_then(|drag| drag.hover.spring.armed_at())
                 .expect("an armed spring load");
             (armed, view.animation_schedule(armed))
         })
@@ -299,7 +304,7 @@ fn a_pane_dropped_on_the_title_row_opens_a_tab_when_the_bar_is_hidden(
         let lights = gpui::point(row.origin.x + px(4.0), row.center().y);
         harness.move_to(window, lights);
         harness.update_view(window, |view, _, _| {
-            assert_eq!(view.pane_drag.as_ref().unwrap().target, None);
+            assert_eq!(view.drag.as_ref().unwrap().target(), None);
         });
     }
     harness.move_to(window, at);
@@ -310,7 +315,7 @@ fn a_pane_dropped_on_the_title_row_opens_a_tab_when_the_bar_is_hidden(
         assert_eq!(view.drawn_drop.borrow().as_deref(), Some("title_row"));
         assert!(!view.title_row_press.get());
         assert_eq!(view.title_row_moves.get(), 0);
-        assert_eq!(view.pane_drag.as_ref().unwrap().spring.tab(), None);
+        assert_eq!(view.drag.as_ref().unwrap().hover.spring.tab(), None);
     });
     harness.release_at(window, at);
     harness.wait_for("the pane to open a new tab", |cx| {
@@ -371,9 +376,9 @@ fn title_row_controls_accept_no_pane_drop(cx: &mut TestAppContext) {
         harness.move_to(window, at);
         harness.cx.run_until_parked();
         harness.update_view(window, |view, _, _| {
-            let drag = view.pane_drag.as_ref().unwrap();
-            assert!(drag.dragging);
-            assert_eq!(drag.target, None);
+            let drag = view.drag.as_ref().unwrap();
+            assert!(drag.dragging());
+            assert_eq!(drag.target(), None);
             assert_eq!(view.drawn_drop.borrow().as_deref(), Some("none"));
             assert!(!view.title_row_press.get());
             assert_eq!(view.title_row_moves.get(), 0);
@@ -385,7 +390,7 @@ fn title_row_controls_accept_no_pane_drop(cx: &mut TestAppContext) {
     harness.cx.run_until_parked();
     harness.update_view(window, |view, _, _| {
         assert_eq!(
-            view.pane_drag.as_ref().unwrap().target,
+            view.drag.as_ref().unwrap().target(),
             Some(DropTarget::TitleRow)
         );
         assert_eq!(view.drawn_drop.borrow().as_deref(), Some("title_row"));
@@ -413,7 +418,7 @@ fn a_separate_title_row_accepts_no_pane_drop_while_the_bar_is_drawn(
     harness.cx.run_until_parked();
     harness.update_view(window, |view, _, _| {
         assert!(view.bar_drawn());
-        assert_eq!(view.pane_drag.as_ref().unwrap().target, None);
+        assert_eq!(view.drag.as_ref().unwrap().target(), None);
         assert_eq!(view.drawn_drop.borrow().as_deref(), Some("none"));
     });
     harness.release_at(window, row.center());
@@ -432,19 +437,19 @@ fn a_tab_reorder_keeps_the_closed_hand_from_press_until_release_or_escape(
     let label = harness.label(window, 1);
     harness.press_at(window, label);
     harness.update_view(window, |view, _, _| {
-        assert!(!view.reorder.as_ref().unwrap().dragging);
+        assert!(!view.drag.as_ref().unwrap().dragging());
         assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
     });
     let moved = label + gpui::point(px(40.0), px(0.0));
     harness.move_to(window, moved);
     harness.update_view(window, |view, _, _| {
-        let drag = view.reorder.as_ref().unwrap();
-        assert!(drag.dragging && !drag.nesting);
+        let drag = view.drag.as_ref().unwrap();
+        assert!(drag.dragging() && !drag.nesting());
         assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
     });
     harness.release_at(window, moved);
     harness.update_view(window, |view, _, _| {
-        assert!(view.reorder.is_none());
+        assert!(!view.reordering());
         assert_eq!(view.drag_cursor(), None);
     });
     harness.wait_for("the reorder to finish", |cx| no_drag(cx, window));
@@ -452,12 +457,12 @@ fn a_tab_reorder_keeps_the_closed_hand_from_press_until_release_or_escape(
     let centre = harness.frame(window, pane).center();
     harness.move_to(window, centre);
     harness.update_view(window, |view, _, _| {
-        assert!(view.reorder.as_ref().unwrap().nesting);
+        assert!(view.drag.as_ref().unwrap().nesting());
         assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
     });
     harness.release_at(window, centre);
     harness.update_view(window, |view, _, _| {
-        assert!(view.reorder.is_none());
+        assert!(!view.reordering());
         assert_eq!(view.drag_cursor(), None);
     });
     // Escape cancels both an unmoved press and a reorder past its threshold.
@@ -467,13 +472,13 @@ fn a_tab_reorder_keeps_the_closed_hand_from_press_until_release_or_escape(
             harness.move_to(window, label + gpui::point(px(40.0), px(0.0)));
         }
         harness.update_view(window, |view, _, _| {
-            assert_eq!(view.reorder.as_ref().unwrap().dragging, moving);
+            assert_eq!(view.drag.as_ref().unwrap().dragging(), moving);
             assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
         });
         VisualTestContext::from_window(window, &harness.cx)
             .simulate_keystrokes("escape");
         harness.update_view(window, |view, _, _| {
-            assert!(view.reorder.is_none());
+            assert!(!view.reordering());
             assert_eq!(view.drag_cursor(), None);
         });
         harness.release_at(window, label);
@@ -615,10 +620,9 @@ fn a_tab_dragged_deep_onto_a_pane_edge_nests_and_a_shallow_dip_reorders(
         window
             .update(cx, |root, _, cx| {
                 root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                    view.read(cx)
-                        .reorder
-                        .as_ref()
-                        .is_some_and(|drag| drag.nesting && drag.nest.is_none())
+                    view.read(cx).drag.as_ref().is_some_and(|drag| {
+                        drag.nesting() && drag.target().is_none()
+                    })
                 })
             })
             .unwrap_or(false)
@@ -635,10 +639,9 @@ fn a_tab_dragged_deep_onto_a_pane_edge_nests_and_a_shallow_dip_reorders(
         window
             .update(cx, |root, _, cx| {
                 root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                    view.read(cx)
-                        .reorder
-                        .as_ref()
-                        .is_some_and(|drag| drag.nest.is_some())
+                    view.read(cx).drag.as_ref().is_some_and(|drag| {
+                        drag.nesting() && drag.target().is_some()
+                    })
                 })
             })
             .unwrap_or(false)
@@ -890,10 +893,9 @@ fn blur_cancels_a_spring_loaded_pane_drag_and_a_held_tab_nest(
         window
             .update(cx, |root, _, cx| {
                 root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                    view.read(cx)
-                        .reorder
-                        .as_ref()
-                        .is_some_and(|drag| drag.nest.is_some())
+                    view.read(cx).drag.as_ref().is_some_and(|drag| {
+                        drag.nesting() && drag.target().is_some()
+                    })
                 })
             })
             .unwrap_or(false)
@@ -935,7 +937,7 @@ fn a_still_pointer_finds_its_target_once_the_sprung_tab_draws(
     let edge = gpui::point(content.right() - px(8.0), frame.center().y);
     harness.update_view(window, |view, window, cx| {
         view.advance_animation(armed + SPRING_LOAD_DELAY, false, window, cx);
-        view.update_pane_drag(edge, window, cx);
+        view.update_drag(edge, window, cx);
     });
     harness.wait_for("the drawn pane to become the target", |cx| {
         pane_drag(cx, window).is_some_and(|(target, _)| {
@@ -1081,7 +1083,7 @@ fn a_lone_bar_drag_has_no_targets_with_a_hidden_tab_bar(
     harness.move_to(window, row.center());
     harness.cx.run_until_parked();
     harness.update_view(window, |view, _, _| {
-        assert_eq!(view.pane_drag.as_ref().unwrap().target, None);
+        assert_eq!(view.drag.as_ref().unwrap().target(), None);
         assert_eq!(view.drawn_drop.borrow().as_deref(), Some("none"));
     });
     harness.release_at(window, row.center());

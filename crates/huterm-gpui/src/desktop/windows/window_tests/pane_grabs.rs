@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use gpui::Modifiers;
 use huterm_config::{PaneDrag, PaneDragModifiers, PaneTitleBarMode};
 
+use super::super::drag::{DropTarget, Gesture};
 use super::super::notices::{NoticeContent, NoticeSource, Severity};
-use super::super::pane_drag::DropTarget;
 use super::super::pane_geometry::Zone;
 use super::super::refresh::Animated;
 use super::*;
@@ -69,7 +69,7 @@ fn dragging(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>().is_ok_and(|view| {
-                view.read(cx).pane_drag.as_ref().is_some_and(|d| d.dragging)
+                view.read(cx).drag.as_ref().is_some_and(Gesture::dragging)
             })
         })
         .unwrap_or(false)
@@ -79,7 +79,7 @@ fn pressed(cx: &mut App, window: AnyWindowHandle) -> bool {
     window
         .update(cx, |root, _, cx| {
             root.downcast::<WorkspaceView>()
-                .is_ok_and(|view| view.read(cx).pane_drag.is_some())
+                .is_ok_and(|view| view.read(cx).pane_dragging())
         })
         .unwrap_or(false)
 }
@@ -234,7 +234,7 @@ fn a_modifier_press_drags_a_reporting_pane_without_reaching_it(
     harness.cx.run_until_parked();
     // The press shows the closed hand before it moves.
     harness.update_view(window, |view, _, _| {
-        assert!(view.pane_drag.is_some());
+        assert!(view.pane_dragging());
         assert_eq!(view.drag_cursor(), Some(gpui::CursorStyle::ClosedHand));
     });
     // Letting the modifiers go mid-drag changes nothing.
@@ -250,7 +250,7 @@ fn a_modifier_press_drags_a_reporting_pane_without_reaching_it(
             .update(cx, |root, _, cx| {
                 root.downcast::<WorkspaceView>().is_ok_and(|view| {
                     matches!(
-                        view.read(cx).pane_drag.as_ref().and_then(|d| d.target),
+                        view.read(cx).drag.as_ref().and_then(Gesture::target),
                         Some(DropTarget::Pane {
                             pane,
                             zone: Zone::Edge(SplitDirection::Right),
@@ -370,7 +370,7 @@ fn a_replayed_drag_move_does_not_rearm_after_the_modifiers_go(
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::none());
     harness.cx.run_until_parked();
     harness.update_view(window, |view, window, cx| {
-        assert!(view.pane_drag.is_none());
+        assert!(!view.pane_dragging());
         assert_eq!(view.pane_grab.held(), 0);
         view.refresh_tab_visibility(window, cx);
     });

@@ -1,8 +1,11 @@
 //! One drag model for tabs, panes, and sidebar rows. A [`Gesture`] carries
 //! what it drags as a [`Payload`]; the window resolves the [`DropTarget`]
-//! under the pointer, and [`operation`] maps the pair to one Mux
-//! operation, or to none, which refuses the drop. The press threshold,
-//! spring-loading, and edge autoscroll are shared by every payload.
+//! under the pointer (`WorkspaceView::resolve_drop`), and [`operation`]
+//! maps the pair to one Mux operation, or to none, which refuses the drop.
+//! The press threshold, spring-loading, and edge autoscroll are shared by
+//! every payload. The window's side lives in `drag/gesture.rs`, drawing in
+//! `drag/overlay.rs`, and cross-window previews and transfers in
+//! `cross_window`.
 
 // User input picks positions here, so a stale index must not panic.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
@@ -12,6 +15,12 @@ use huterm_core::{Beside, MoveDestination, PaneRef};
 use super::pane_geometry::Zone;
 use super::pane_moves::PaneMove;
 use super::*;
+
+mod gesture;
+mod overlay;
+
+pub(super) use gesture::Side;
+pub(super) use overlay::drop_label;
 
 /// How far a press moves before it becomes a drag.
 pub(super) const DRAG_THRESHOLD: f64 = 4.0;

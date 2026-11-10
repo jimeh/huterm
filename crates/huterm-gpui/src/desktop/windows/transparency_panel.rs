@@ -293,8 +293,7 @@ impl WorkspaceView {
                 "command palette is open".to_owned(),
             ));
         }
-        self.cancel_reorder(window, cx);
-        self.cancel_pane_drag(window, cx);
+        self.cancel_drag(window, cx);
         self.clear_incoming(true, window, cx);
         if let Some(terminal) = self.active_view(cx) {
             terminal.update(cx, super::TerminalView::clear_composition);

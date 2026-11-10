@@ -687,7 +687,7 @@ fn split_button_on_unfocused_pane(cx: &mut TestAppContext, down: bool) {
     });
     harness.update_view(window, |view, _, _| {
         assert!(
-            view.pane_drag.is_none(),
+            !view.pane_dragging(),
             "a button press must not start a title drag"
         );
     });

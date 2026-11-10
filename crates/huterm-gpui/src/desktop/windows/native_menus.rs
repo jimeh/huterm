@@ -112,8 +112,7 @@ impl WorkspaceView {
         // An opening menu ends a tab or pane drag and supersedes a
         // right-click still waiting for its link lookup, as Huterm's own
         // menu does.
-        self.cancel_reorder(window, cx);
-        self.cancel_pane_drag(window, cx);
+        self.cancel_drag(window, cx);
         let terminal = self.active_view(cx);
         if let Some(terminal) = &terminal {
             terminal.update(cx, |terminal, _| terminal.cancel_context_lookup());

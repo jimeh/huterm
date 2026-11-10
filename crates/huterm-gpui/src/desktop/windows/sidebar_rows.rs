@@ -1,10 +1,7 @@
 //! What the sidebar's lists share: the two-line row both the workspace and
-//! the session lists draw, its "⋯" button, and a row press that becomes a
-//! drag to reorder. The callers attach what a press, a right press, or the
-//! "⋯" button does, and move the dragged item themselves.
-
-use std::collections::HashMap;
-use std::hash::Hash;
+//! the session lists draw, and its "⋯" button. The callers attach what a
+//! press, a right press, or the "⋯" button does; a press starts a drag
+//! through `drag`.
 
 use huterm_ui::components::tooltip::Tooltip;
 use huterm_ui::typography;
@@ -21,10 +18,6 @@ pub(super) const ROW_HEIGHT: Pixels = px(40.0);
 pub(super) const ROW_GAP: Pixels = px(2.0);
 /// Space between rows and their list's edges.
 pub(super) const ROW_MARGIN: Pixels = px(6.0);
-/// A dragged row this close to its list's edge scrolls the list, at this
-/// speed in points per second, every frame while it rests there.
-const DRAG_SCROLL_EDGE: Pixels = px(16.0);
-const DRAG_SCROLL_SPEED: f32 = 480.0;
 
 /// A small tag after a row's text, such as the windows that show a session.
 pub(super) struct RowBadge {
@@ -246,126 +239,6 @@ pub(super) fn list_row(
         .children(more)
         .when(line_above, |row| row.child(line(true)))
         .when(line_below, |row| row.child(line(false)))
-}
-
-/// A row press, which becomes a drag once the pointer moves past the tab
-/// drag's threshold, of an item of kind `K` in `session`'s list.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct RowDrag<K> {
-    pub(super) item: K,
-    pub(super) session: SessionId,
-    origin: gpui::Point<Pixels>,
-    pointer: gpui::Point<Pixels>,
-    pub(super) dragging: bool,
-    /// Where a drop lands: before this item, or at the end.
-    pub(super) before: Option<K>,
-    /// When the edge scroll last moved the list.
-    scrolled_at: Instant,
-}
-
-impl<K: Copy + Eq + Hash> RowDrag<K> {
-    pub(super) fn new(
-        item: K,
-        session: SessionId,
-        pointer: gpui::Point<Pixels>,
-    ) -> Self {
-        Self {
-            item,
-            session,
-            origin: pointer,
-            pointer,
-            dragging: false,
-            before: None,
-            scrolled_at: Instant::now(),
-        }
-    }
-
-    /// Follows the pointer: past the threshold the press becomes a drag.
-    pub(super) fn follow(&mut self, pointer: gpui::Point<Pixels>) {
-        if !self.dragging
-            && (pointer - self.origin).magnitude() > TAB_DRAG_THRESHOLD
-        {
-            self.dragging = true;
-            self.scrolled_at = Instant::now();
-        }
-        self.pointer = pointer;
-    }
-
-    /// Points the drop target at the first row in `order` the pointer is
-    /// above, from the rows' painted bounds.
-    pub(super) fn retarget(
-        &mut self,
-        order: &[K],
-        painted: &HashMap<K, Bounds<Pixels>>,
-    ) {
-        if !self.dragging {
-            return;
-        }
-        let pointer = self.pointer;
-        self.before = order
-            .iter()
-            .copied()
-            .filter(|item| *item != self.item)
-            .find(|item| {
-                painted
-                    .get(item)
-                    .is_some_and(|bounds| pointer.y < bounds.center().y)
-            });
-    }
-
-    /// The direction a dragged row at the edge of the list `scroll` moves
-    /// scrolls it: positive towards the top, negative towards the bottom,
-    /// `None` away from an edge or where the list cannot move further.
-    pub(super) fn edge_scroll(
-        &self,
-        scroll: &gpui::ScrollHandle,
-    ) -> Option<f32> {
-        if !self.dragging {
-            return None;
-        }
-        let list = scroll.bounds();
-        let offset = scroll.offset().y;
-        if self.pointer.y < list.top() + DRAG_SCROLL_EDGE && offset < px(0.0) {
-            Some(1.0)
-        } else if self.pointer.y > list.bottom() - DRAG_SCROLL_EDGE
-            && offset > -scroll.max_offset().y
-        {
-            Some(-1.0)
-        } else {
-            None
-        }
-    }
-
-    /// Scrolls the list under a dragged row resting at its edge by the
-    /// time since the last frame. Returns whether it scrolled.
-    pub(super) fn scroll(
-        &mut self,
-        now: Instant,
-        scroll: &gpui::ScrollHandle,
-    ) -> bool {
-        let direction = self.edge_scroll(scroll);
-        let elapsed = now.saturating_duration_since(self.scrolled_at);
-        self.scrolled_at = now;
-        let Some(direction) = direction else {
-            return false;
-        };
-        // A long gap, such as the first frame, moves no more than a frame.
-        let seconds = elapsed.as_secs_f32().min(0.05);
-        let offset = scroll.offset();
-        let y = (offset.y + px(DRAG_SCROLL_SPEED * seconds * direction))
-            .clamp(-scroll.max_offset().y, px(0.0));
-        scroll.set_offset(point(offset.x, y));
-        true
-    }
-
-    /// Whether a drop moves the item in `order`: not where it already sits,
-    /// and not once the item left the list.
-    pub(super) fn moves(&self, order: &[K]) -> bool {
-        let Some(at) = order.iter().position(|item| *item == self.item) else {
-            return false;
-        };
-        self.before != order.get(at + 1).copied()
-    }
 }
 
 /// The "⋯" button at a popover row's end, which opens the row's menu as a
