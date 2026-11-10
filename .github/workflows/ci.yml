@@ -171,9 +171,9 @@ jobs:
 
       - name: Install Zig
         id: zig
-        # A silent mirror costs Mise about two minutes and a slow one can use the
-        # whole attempt; a retry reshuffles the mirrors. actionlint rejects the
-        # $/ self-repository syntax.
+        # A silent server costs Mise about two minutes and a slow download can
+        # use the whole attempt; a retry starts it again. actionlint rejects
+        # the $/ self-repository syntax.
         continue-on-error: true
         timeout-minutes: 4
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
@@ -330,9 +330,9 @@ jobs:
 
       - name: Install Zig
         id: zig
-        # A silent mirror costs Mise about two minutes and a slow one can use the
-        # whole attempt; a retry reshuffles the mirrors. actionlint rejects the
-        # $/ self-repository syntax.
+        # A silent server costs Mise about two minutes and a slow download can
+        # use the whole attempt; a retry starts it again. actionlint rejects
+        # the $/ self-repository syntax.
         continue-on-error: true
         timeout-minutes: 4
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
@@ -598,9 +598,9 @@ jobs:
 
       - name: Install Zig
         id: zig
-        # A silent mirror costs Mise about two minutes and a slow one can use the
-        # whole attempt; a retry reshuffles the mirrors. actionlint rejects the
-        # $/ self-repository syntax.
+        # A silent server costs Mise about two minutes and a slow download can
+        # use the whole attempt; a retry starts it again. actionlint rejects
+        # the $/ self-repository syntax.
         continue-on-error: true
         timeout-minutes: 4
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
@@ -663,9 +663,9 @@ jobs:
 
       - name: Install Zig
         id: zig
-        # A silent mirror costs Mise about two minutes and a slow one can use the
-        # whole attempt; a retry reshuffles the mirrors. actionlint rejects the
-        # $/ self-repository syntax.
+        # A silent server costs Mise about two minutes and a slow download can
+        # use the whole attempt; a retry starts it again. actionlint rejects
+        # the $/ self-repository syntax.
         continue-on-error: true
         timeout-minutes: 4
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
@@ -786,9 +786,9 @@ jobs:
 
       - name: Install Zig
         id: zig
-        # A silent mirror costs Mise about two minutes and a slow one can use the
-        # whole attempt; a retry reshuffles the mirrors. actionlint rejects the
-        # $/ self-repository syntax.
+        # A silent server costs Mise about two minutes and a slow download can
+        # use the whole attempt; a retry starts it again. actionlint rejects
+        # the $/ self-repository syntax.
         continue-on-error: true
         timeout-minutes: 4
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
@@ -801,11 +801,15 @@ jobs:
       # No pull request runs the Release workflow, so install each Mise tool
       # list that its jobs on this runner install, read from release.yml, into
       # an empty data directory as release's uncached installs do. Sharing
-      # setup-zig's download store reuses the Zig archive, though Mise still
-      # fetches Zig's release index and signature.
+      # setup-zig's download store and its ziglang.org-only setting reuses the
+      # Zig archive, though Mise still fetches Zig's release index and
+      # signature. Each list gets three attempts of three minutes; an install
+      # normally takes under 30 seconds. The step limit covers macOS's two
+      # lists.
       - name: Install release tools in a clean Mise state
-        timeout-minutes: 8
+        timeout-minutes: 20
         env:
+          MISE_ZIG_USE_COMMUNITY_MIRRORS: "false"
           RELEASE_RUNNER: ${{ matrix.runner }}
         run: |
           set -euo pipefail
@@ -817,6 +821,7 @@ jobs:
             echo "::group::mise install --locked $tools"
             # shellcheck disable=SC2086 # Each list is space-separated tool names.
             MISE_DATA_DIR="$data_dir" MISE_CACHE_DIR="$RUNNER_TEMP/mise-zig-cache" \
+              bun scripts/retry-command.ts --attempts 3 --timeout 180 -- \
               mise install --locked $tools < /dev/null
             echo "::endgroup::"
           done < "$lists"
