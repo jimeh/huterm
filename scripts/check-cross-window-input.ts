@@ -502,12 +502,19 @@ export async function checkWorkspaceDrags(executable: string): Promise<void> {
       throw new Error("the workspace tear-off lost or restarted a terminal");
     }
 
-    // Stack the windows, window 0 above window 1, both fully on screen.
-    for (const [index, top] of [[0, macos ? 880 : 20], [1, macos ? 520 : 400]] as const) {
+    // Stack the windows, window 0 above window 1 with a gap. The screen may
+    // clamp window 0's top, so window 1 goes below where window 0 landed.
+    const place = async (index: number, top: number) => {
       const native = smokeField(await state(), `w${index}.native`);
       if (macos) await f.send(`place-window\t${native}\t20\t${top}`); else run(["xdotool", "windowmove", native, "20", String(top)]);
-    }
-    await until("stacked windows", next => Math.abs(f.rootOrigin(next, 0).y - f.rootOrigin(next, 1).y) > 300 && f.rootOrigin(next, 0).x === f.rootOrigin(next, 1).x);
+    };
+    await place(0, macos ? 880 : 20);
+    // A window manager's frame can offset the client origin by its border.
+    const first = await until("window 0 placed", next => Math.abs(f.rootOrigin(next, 0).x - 20) < 30);
+    const height = point(smokeField(first, "w0.size")).y;
+    const lowerTop = macos ? f.rootOrigin(first, 0).y - height - 60 : f.rootOrigin(first, 0).y + height + 60;
+    await place(1, lowerTop);
+    await until("stacked windows", next => Math.abs(f.rootOrigin(next, 0).y - f.rootOrigin(next, 1).y) > height + 40 && Math.abs(f.rootOrigin(next, 1).x - 20) < 30);
 
     // A session's only workspace stays: no cue, and a release does nothing.
     // The torn-off window opened under the last release, so this one aims
