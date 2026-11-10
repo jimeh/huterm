@@ -76,14 +76,15 @@ delete the entry once the review date passes without a recurrence.
 | Flake | Kind | Platforms | Seen | Last | Retries | Review by |
 | --- | --- | --- | --- | --- | --- | --- |
 | [GitHub API 403 during CI tool installation](flakes/ci-mise-github-api-403.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
-| [Zig mirror rate limit during CI tool installation](flakes/ci-zig-mirror-rate-limit.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | none recorded | never | 0 | 2027-01-15 |
 | [macOS clipboard smoke witness loses the app's pid](flakes/macos-clipboard-witness-missing-pid.md) | smoke | macos-arm64 | 1 CI | 2026-11-10 | 0 | 2026-12-10 |
 | [huterm-core command markers queued behind the exit](flakes/core-record-markers-after-exit.md) | rust | macos-arm64 | 1 local | 2026-11-06 | 0 | 2026-12-06 |
 | [huterm-gpui inactive tab close button](flakes/gpui-inactive-tab-close-button.md) | rust | macos-arm64, linux-x86_64, linux-aarch64 | 4 CI | 2026-11-06 | 2 | 2026-12-06 |
+| [GitHub release download 5xx during tool installation](flakes/ci-mise-github-download-5xx.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | 2 CI | 2026-11-05 | 0 | 2027-01-15 |
 | [Linux renderer smoke startup hang](flakes/linux-renderer-startup-hang.md) | smoke | linux-x86_64, linux-aarch64 | 10 CI | 2026-11-05 | 1 | 2026-12-06 |
 | [macOS quake smoke departed-witness activation](flakes/macos-quake-departed-witness-activation.md) | smoke | macos-arm64 | 1 CI, 1 local | 2026-10-30 | 1 | 2026-12-06 |
 | [Install Zig hang](flakes/ci-zig-install-hang.md) | infra | macos-arm64, linux-x86_64, linux-aarch64 | 1 CI | 2026-10-28 | 0 | 2027-01-15 |
 | [Release stapler CloudKit ticket lookup](flakes/release-stapler-cloudkit-lookup.md) | infra | macos-arm64 | 3 CI | 2026-10-27 | 0 | 2027-01-15 |
+| [Zig mirror rate limit during CI tool installation](flakes/ci-zig-mirror-rate-limit.md) | infra | linux-x86_64, linux-aarch64, macos-arm64 | 1 CI | 2026-10-01 | 0 | 2027-01-15 |
 | [Linux client-frame smoke first key lost after a title-bar drag](flakes/linux-client-frame-first-key-after-drag.md) | smoke | linux-x86_64, linux-aarch64 | 1 CI | 2026-10-01 | 0 | 2026-12-06 |
 | [Linux integration smoke held-link hover timeout](flakes/linux-integration-held-link-hover.md) | smoke | linux-x86_64, linux-aarch64 | 2 CI | 2026-09-29 | 1 | 2026-12-06 |
 

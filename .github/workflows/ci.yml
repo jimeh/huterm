@@ -798,6 +798,29 @@ jobs:
         timeout-minutes: 6
         uses: ./.github/actions/setup-zig # zizmor: ignore[self-repository]
 
+      # No pull request runs the Release workflow, so install each Mise tool
+      # list that its jobs on this runner install, read from release.yml, into
+      # an empty data directory as release's uncached installs do. Sharing
+      # setup-zig's download store reuses the Zig archive, though Mise still
+      # fetches Zig's release index and signature.
+      - name: Install release tools in a clean Mise state
+        timeout-minutes: 8
+        env:
+          RELEASE_RUNNER: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          lists="$RUNNER_TEMP/release-tool-lists"
+          bun scripts/release-tool-installs.ts "$RELEASE_RUNNER" > "$lists"
+          test -s "$lists"
+          while IFS= read -r tools; do
+            data_dir="$(mktemp -d "$RUNNER_TEMP/release-tools.XXXXXX")"
+            echo "::group::mise install --locked $tools"
+            # shellcheck disable=SC2086 # Each list is space-separated tool names.
+            MISE_DATA_DIR="$data_dir" MISE_CACHE_DIR="$RUNNER_TEMP/mise-zig-cache" \
+              mise install --locked $tools < /dev/null
+            echo "::endgroup::"
+          done < "$lists"
+
       - name: Materialize Rust toolchain
         run: mise run ci:toolchain
 

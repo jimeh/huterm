@@ -8,7 +8,11 @@ retries = 0
 review_by = "2027-01-15"
 
 [selector]
-step_names = ["Install Zig", "Retry Zig installation"]
+step_names = [
+  "Install Zig",
+  "Retry Zig installation",
+  "Install release tools in a clean Mise state",
+]
 
 [signature]
 match = [
@@ -22,7 +26,10 @@ platform = "macos-arm64"
 note = "Package macOS arm64, about 45 minutes"
 +++
 
-- **Label:** `Install Zig` runs until the step or job time limit.
+- **Label:** `Install Zig` runs until the step or job time limit. The
+  package jobs' `Install release tools in a clean Mise state` step also
+  installs Bun, Syft, uv, and SPDX tools, so a timeout there can come from any
+  of them: check which install was still running.
 - **Evidence:** in run 40636655413 (2026-10-28), `Package macOS arm64`'s
   `Install Zig` ran from 05:19 until the job stopped at 06:04, about 45
   minutes, and no later step started. Rerunning the failed jobs passed. A

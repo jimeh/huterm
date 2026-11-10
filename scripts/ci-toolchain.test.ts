@@ -124,3 +124,30 @@ test("every Mise action step pins the same explicit mise release", () => {
   expect(files).toEqual(expect.arrayContaining([".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/actions/prepare-release-candidate/action.yml"]));
   expect([...pins]).toHaveLength(1);
 });
+
+test("Mise action steps that install pipx tools also install their configured installers", () => {
+  // Mise's pipx backend requires a configured uv or python to be installed
+  // first; `mise install <tools>` does not install unrequested dependencies.
+  type Step = { uses?: string; with?: { install_args?: string } };
+  type Workflow = { jobs?: Record<string, { steps?: Step[] }>; runs?: { steps: Step[] } };
+  const root = join(import.meta.dir, "..");
+  const config = Bun.TOML.parse(readFileSync(join(root, "mise.toml"), "utf8")) as { tools: Record<string, unknown> };
+  const installers = ["uv", "python"].filter(tool => tool in config.tools);
+  expect(installers).toContain("uv");
+  const files = [".github/workflows/*.{yml,yaml}", ".github/actions/*/action.{yml,yaml}"]
+    .flatMap(pattern => [...new Bun.Glob(pattern).scanSync({ cwd: root, dot: true })]).sort();
+  let checked = 0;
+  for (const file of files) {
+    const workflow = Bun.YAML.parse(readFileSync(join(root, file), "utf8")) as Workflow;
+    const groups = workflow.runs ? [workflow.runs] : Object.values(workflow.jobs ?? {});
+    for (const { steps = [] } of groups) {
+      for (const step of steps.filter(step => step.uses?.startsWith("jdx/mise-action@"))) {
+        const tools = step.with?.install_args?.split(/\s+/) ?? [];
+        if (!tools.some(tool => tool.startsWith("pipx:"))) continue;
+        checked++;
+        expect({ file, missing: installers.filter(installer => !tools.includes(installer)) }).toEqual({ file, missing: [] });
+      }
+    }
+  }
+  expect(checked).toBeGreaterThanOrEqual(2);
+});
