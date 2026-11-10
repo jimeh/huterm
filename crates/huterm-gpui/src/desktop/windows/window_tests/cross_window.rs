@@ -2576,7 +2576,11 @@ fn cross_window_s1_turns_compact_in_a_narrow_pane(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn cross_window_pane_tear_off_failures_restore_spring_back_and_scroll(
+#[expect(
+    clippy::too_many_lines,
+    reason = "three failure paths share one fixture, read top to bottom"
+)]
+fn cross_window_pane_move_failures_restore_spring_back_and_scroll(
     cx: &mut TestAppContext,
 ) {
     let mut h = DesktopHarness::with_config(cx, |config| {
@@ -2597,8 +2601,13 @@ fn cross_window_pane_tear_off_failures_restore_spring_back_and_scroll(
         pane_view(cx, source, tab, pane).is_some()
     });
     h.cx.run_until_parked();
+    let (destination, _, _) = h.private_window();
+    h.activate(source, tab);
+    let windows = h.cx.update(|cx| cx.windows().len());
     let locator = h.cross_locator();
-    for failure in ["window", "move"] {
+    // A spring-loaded tear-off that cannot open its window or move the
+    // pane, and a drop on another window's tab bar that cannot move it.
+    for failure in ["window", "move", "drop"] {
         let scroll = h.update_view(source, |view, window, _| {
             let strip = view.tab_strip(window);
             assert!(
@@ -2609,25 +2618,50 @@ fn cross_window_pane_tear_off_failures_restore_spring_back_and_scroll(
             strip.max_offset()
         });
         h.cx.run_until_parked();
-        // Spring-load the second tab inside the source, then leave.
-        let label = h.update_view(source, |view, window, _| {
-            view.tab_strip(window).label(1).center()
-        });
-        locator.0.set(Located::Window(source.window_id(), label));
-        h.update_view(source, |view, window, cx| {
-            let at = view.drawn_frame(pane).unwrap().center();
-            view.begin_pane_drag(tab, pane, at, false, window, cx);
-            view.update_drag(label, window, cx);
-            view.advance_spring(Instant::now() + SPRING_LOAD_DELAY, window, cx);
-        });
-        h.cx.run_until_parked();
-        assert_eq!(
-            h.update_view(source, |view, _, cx| view.active_tab(cx)),
-            Some(tabs[1]),
-            "{failure}: the drag spring-loaded"
-        );
+        if failure == "drop" {
+            // No spring load, whose spring-back would reveal the tab and
+            // hide whether the scroll itself comes back.
+            h.update_view(source, |view, window, cx| {
+                let at = view.drawn_frame(pane).unwrap().center();
+                locator.0.set(Located::Window(
+                    source.window_id(),
+                    at + point(px(8.0), px(8.0)),
+                ));
+                view.begin_pane_drag(tab, pane, at, false, window, cx);
+                view.update_drag(at + point(px(8.0), px(8.0)), window, cx);
+            });
+        } else {
+            // Spring-load the second tab inside the source, then leave.
+            let label = h.update_view(source, |view, window, _| {
+                view.tab_strip(window).label(1).center()
+            });
+            locator.0.set(Located::Window(source.window_id(), label));
+            h.update_view(source, |view, window, cx| {
+                let at = view.drawn_frame(pane).unwrap().center();
+                view.begin_pane_drag(tab, pane, at, false, window, cx);
+                view.update_drag(label, window, cx);
+                view.advance_spring(
+                    Instant::now() + SPRING_LOAD_DELAY,
+                    window,
+                    cx,
+                );
+            });
+            h.cx.run_until_parked();
+            assert_eq!(
+                h.update_view(source, |view, _, cx| view.active_tab(cx)),
+                Some(tabs[1]),
+                "{failure}: the drag spring-loaded"
+            );
+        }
         h.update_view(source, |view, _, _| view.tab_scroll = scroll);
-        locator.0.set(Located::Outside);
+        if failure == "drop" {
+            let slot = h.cross_slot(destination);
+            locator
+                .0
+                .set(Located::Window(destination.window_id(), slot));
+        } else {
+            locator.0.set(Located::Outside);
+        }
         if failure == "window" {
             h.cx.update(|cx| {
                 cx.global_mut::<Desktop>().cross.fail_window = true;
@@ -2636,8 +2670,8 @@ fn cross_window_pane_tear_off_failures_restore_spring_back_and_scroll(
             h.runtime.worker_hooks.fail(Stage::Transfer);
         }
         h.cross_release_pane(source);
-        h.wait_for("failed tear-off settles", |cx| {
-            cx.windows().len() == 1
+        h.wait_for("failed move settles", |cx| {
+            cx.windows().len() == windows
                 && source
                     .update(cx, |root, _, cx| {
                         !root.downcast::<WorkspaceView>().unwrap().read(cx).busy

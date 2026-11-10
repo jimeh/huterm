@@ -10,7 +10,7 @@ use gpui::{
 };
 use huterm_config::{SessionSwitcherPosition, SidebarPosition, TabPosition};
 
-use super::super::drag::{DropTarget, RowKey};
+use super::super::drag::{DropTarget, Gesture, RowKey};
 use super::super::workspace_panel::{SwitcherAnchor, SwitcherMode};
 use super::menus::a11y_node;
 use super::workspaces::shown_workspace;
@@ -632,6 +632,56 @@ fn dragging_a_row_reorders_the_sessions_workspaces_in_every_window(
             [second, third, harness.workspace]
         );
     }
+}
+
+#[gpui::test]
+fn escape_waits_for_a_row_press_to_drag_and_a_menu_ends_the_drag(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+    });
+    let first = harness.open_tab(ECHO);
+    let (second, _) = harness.add_workspace(1);
+    let window = harness.attach_showing(&[first]);
+    harness.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let session = harness.session;
+    let start = harness.cx.update(|cx| order(cx, session));
+    let from = harness.row_bounds(window, harness.workspace).center();
+    let to = harness.row_bounds(window, second);
+    let below = gpui::point(to.center().x, to.bottom() - px(2.0));
+    // Before the threshold, Escape leaves the press alone.
+    VisualTestContext::from_window(window, &harness.cx).simulate_event(
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers: Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        },
+    );
+    harness.press(window, "escape");
+    harness.update_view(window, |view, _, _| {
+        let drag = view.drag.as_ref().expect("the press survives Escape");
+        assert!(!drag.dragging());
+    });
+    // Once it drags, an opening menu ends it, and the release moves
+    // nothing.
+    VisualTestContext::from_window(window, &harness.cx).simulate_event(
+        MouseMoveEvent {
+            position: below,
+            modifiers: Modifiers::none(),
+            pressed_button: Some(MouseButton::Left),
+        },
+    );
+    harness.update_view(window, |view, window, cx| {
+        assert!(view.drag.as_ref().is_some_and(Gesture::dragging));
+        view.open_tab_menu(first, below, window, cx);
+        assert!(view.drag.is_none(), "the menu ends the row drag");
+    });
+    harness.release(window, below);
+    harness.cx.run_until_parked();
+    assert_eq!(harness.cx.update(|cx| order(cx, session)), start);
 }
 
 #[gpui::test]

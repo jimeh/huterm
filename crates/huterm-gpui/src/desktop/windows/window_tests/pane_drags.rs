@@ -521,6 +521,31 @@ fn a_pane_dropped_on_a_tab_bar_slot_opens_a_tab_there(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn escape_reaches_past_a_pane_press_until_it_drags(cx: &mut TestAppContext) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let (window, left, right) = harness.split_window(tab);
+    let grab = harness.grab(window, left);
+    harness.press_at(window, grab);
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("escape").unwrap());
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, _, _| {
+        let drag = view.drag.as_ref().expect("the press survives Escape");
+        assert!(!drag.dragging());
+    });
+    let centre = harness.frame(window, right).center();
+    harness.move_to(window, centre);
+    harness.wait_for("the drag to start", |cx| pane_drag(cx, window).is_some());
+    harness
+        .cx
+        .dispatch_keystroke(window, Keystroke::parse("escape").unwrap());
+    harness.wait_for("Escape to cancel the drag", |cx| no_drag(cx, window));
+    harness.release_at(window, centre);
+}
+
+#[gpui::test]
 fn escape_a_release_without_a_target_or_outside_the_window_change_nothing(
     cx: &mut TestAppContext,
 ) {

@@ -626,14 +626,13 @@ impl WorkspaceView {
                 .map(|tab| tab.panes.iter().map(|pane| pane.pane).collect())
                 .unwrap_or_default(),
         };
-        let scroll = self
-            .drag
-            .as_ref()
+        // A tear-off's gesture is gone by now, and a row press may have
+        // started another, so only a tab or pane gesture restores here.
+        let gesture = self.drag.as_ref().filter(|drag| drag.payload.in_bar());
+        let scroll = gesture
             .map(|drag| drag.hover.scroll)
             .or(self.transfer_scroll.take());
-        let back = self
-            .drag
-            .as_ref()
+        let back = gesture
             .and_then(Gesture::back)
             .or(self.transfer_back.take());
         self.busy = true;
