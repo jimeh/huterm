@@ -426,6 +426,98 @@ fn stale_and_foreign_structural_targets_reject_atomically() {
 }
 
 #[test]
+fn a_workspace_moves_into_a_new_session_of_its_own_with_live_terminals() {
+    let mut mux = Mux::default();
+    let source = mux.create_session(None).unwrap();
+    let first = mux.create_workspace(source, None).unwrap();
+    let moved = mux.create_workspace(source, Some("build")).unwrap();
+    let third = mux.create_workspace(source, None).unwrap();
+    let opened = mux
+        .open_test_tab(moved, &command("printf READY; read value; printf 'MOVED_%s' \"$value\"; read value"))
+        .unwrap();
+    wait_for_text(&opened.client, "READY");
+    let events = mux.subscribe_hierarchy().1;
+    let session = mux.move_workspace_to_new_session(source, moved).unwrap();
+    assert_eq!(mux.session(source).unwrap().workspaces, [first, third]);
+    assert_eq!(mux.session(session).unwrap().workspaces, [moved]);
+    assert_eq!(mux.sessions().last().unwrap().id, session);
+    let record = mux.workspace(moved).unwrap();
+    assert_eq!(record.display_name(), "build");
+    assert_eq!(record.tabs, std::slice::from_ref(&opened.tab));
+    let mut seen = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        seen.push(envelope.event);
+    }
+    assert!(
+        matches!(
+            seen.as_slice(),
+            [
+                HierarchyEvent::SessionCreated { session: created, .. },
+                HierarchyEvent::WorkspaceMoved { workspace, session: to, index: 0 },
+            ] if created.id == session && *workspace == moved && *to == session
+        ),
+        "{seen:?}"
+    );
+    // The move crossed sessions, so the old viewer is revoked, and the
+    // terminal keeps running.
+    assert!(opened.client.poll().revoked);
+    let client =
+        TestClient::new(&mux.terminals[&opened.tab.first_pane().terminal_id]);
+    client
+        .send_input(TerminalInput::Text("alive\n".into()))
+        .unwrap();
+    wait_for_text(&client, "MOVED_alive");
+    // The last workspace still moves; the emptied source stays.
+    mux.move_workspace_to_new_session(source, first).unwrap();
+    mux.move_workspace_to_new_session(source, third).unwrap();
+    assert_eq!(mux.session(source).unwrap().workspaces, []);
+    assert_eq!(mux.sessions().len(), 4);
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn a_refused_move_into_a_new_session_creates_nothing() {
+    let mut mux = Mux::default();
+    let source = mux.create_session(None).unwrap();
+    let other = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(source, None).unwrap();
+    let elsewhere = mux.create_workspace(other, None).unwrap();
+    let mut foreign = Mux::default();
+    let foreign_session = foreign.create_session(None).unwrap();
+    let foreign_workspace =
+        foreign.create_workspace(foreign_session, None).unwrap();
+    let stale_session = SessionId::in_runtime(mux.runtime_id(), u64::MAX);
+    let stale_workspace = WorkspaceId::in_runtime(mux.runtime_id(), u64::MAX);
+    let sessions = mux.sessions().to_vec();
+    let workspaces = mux.workspaces.clone();
+    let revision = mux.revision;
+    let next_id = mux.next_id;
+    for (session, target) in [
+        (source, elsewhere),
+        (source, stale_workspace),
+        (stale_session, workspace),
+        (source, foreign_workspace),
+        (foreign_session, workspace),
+    ] {
+        assert!(mux.move_workspace_to_new_session(session, target).is_err());
+        assert_eq!(mux.sessions(), sessions);
+        assert_eq!(mux.workspaces, workspaces);
+        assert_eq!(mux.revision, revision);
+        assert_eq!(mux.next_id, next_id);
+    }
+    // Exhausted identities refuse before anything moves.
+    mux.reserve_through(u64::MAX);
+    assert!(matches!(
+        mux.move_workspace_to_new_session(source, workspace),
+        Err(MuxError::IdExhausted)
+    ));
+    assert_eq!(mux.sessions(), sessions);
+    assert_eq!(mux.workspaces, workspaces);
+    mux.shutdown().unwrap();
+    foreign.shutdown().unwrap();
+}
+
+#[test]
 fn session_close_stops_its_workers_and_preserves_sibling_input() {
     let mut mux = Mux::default();
     let first_session = mux.create_session(None).unwrap();

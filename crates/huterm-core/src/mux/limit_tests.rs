@@ -216,6 +216,14 @@ fn creations_refuse_to_pass_the_hierarchy_item_limit_and_may_reach_it() {
 }
 
 #[test]
+fn a_workspace_moved_into_a_new_session_needs_room_for_the_session() {
+    let mut full = Full::new(0);
+    let (session, workspace) = (full.session, full.workspace);
+    full.refuses(|mux| mux.move_workspace_to_new_session(session, workspace));
+    full.mux.shutdown().unwrap();
+}
+
+#[test]
 fn rearrangements_moves_and_restores_refuse_to_grow_past_the_limit() {
     let mut full = Full::new(1);
     let (workspace, tab) = (full.workspace, full.tab);
