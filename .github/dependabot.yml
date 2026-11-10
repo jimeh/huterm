@@ -17,6 +17,10 @@ updates:
       # Snapshot crates pin each other exactly and three are vendored with
       # patches; upgrade them together through the vendor workflow.
       - dependency-name: "gpui-pre*"
+      # Vendored with patches too: a version bump would leave the patch unused,
+      # which Cargo only warns about. Upgrade through the vendor workflow.
+      - dependency-name: global-hotkey
+      - dependency-name: portable-pty
       # Must match GPUI's font-kit requirement so the dlopen feature unifies.
       - dependency-name: zed-font-kit
       # Pinned to the versions GPUI uses (see crates/huterm-gpui/Cargo.toml);
@@ -28,8 +32,8 @@ updates:
       # accesskit_macos use 0.24; it moves with a gpui-pre upgrade.
       - dependency-name: accesskit_consumer
         versions: [">= 0.39"]
-      # Matches the skrifa that swash, under GPUI's Linux text stack, accepts;
-      # a newer one would add a second copy.
+      # swash, under GPUI's Linux text stack, accepts skrifa up to 0.44; a newer
+      # pin would stop sharing swash's copy and compile another.
       - dependency-name: skrifa
         versions: [">= 0.45"]
     groups:

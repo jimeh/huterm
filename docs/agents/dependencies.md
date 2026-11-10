@@ -93,8 +93,12 @@ Dependabot also ignores two version ranges. `accesskit_consumer` 0.39 and newer
 need AccessKit 0.25, while GPUI and the vendored `accesskit_macos` use 0.24 and
 the accessibility tests feed GPUI's tree into the consumer; it moves with a
 GPUI upgrade. `skrifa` 0.45 and newer exceed swash's cap under GPUI's Linux
-text stack, so a bump would compile a second copy; move it when swash accepts
-the newer release.
+text stack, so a bump would stop sharing swash's copy and compile another;
+move it when swash accepts the newer release.
+Dependabot ignores the vendored `gpui-pre*`, `global-hotkey`, and
+`portable-pty` crates entirely: a version bump would leave the
+`[patch.crates-io]` override unused, which Cargo only warns about, and silently
+drop the patches.
 Dependabot opens one grouped pull request per ecosystem, so one bump that needs
 a regeneration commit or a code change holds back the rest of its group.
 A bump that changes lint behavior, such as `syn`, may also need code changes
