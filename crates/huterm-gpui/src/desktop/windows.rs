@@ -15940,7 +15940,9 @@ impl Render for WorkspaceView {
             );
         }
         root = root.children(marks);
-        if let Some((drag, dragged)) = self
+        // A tab drag sprang away from its workspace has no label in this
+        // bar; the drag overlay draws its chip and slot marker instead.
+        if let Some((drag, dragged, source)) = self
             .drag
             .as_ref()
             .filter(|drag| drag.dragging())
@@ -15948,14 +15950,14 @@ impl Render for WorkspaceView {
                 Payload::Tab { tab, .. } => Some((drag, tab)),
                 _ => None,
             })
+            .and_then(|(drag, tab)| {
+                let source =
+                    self.tabs.iter().position(|view| view.id == tab)?;
+                Some((drag, tab, source))
+            })
         {
             let nesting = drag.nesting();
             let marker = strip.marker(strip.slot(drag.pointer()));
-            let source = self
-                .tabs
-                .iter()
-                .position(|tab| tab.id == dragged)
-                .unwrap_or_default();
             // In pane mode the preview returns to the tab's slot, dimmed.
             let preview = if nesting || drag.outside {
                 strip.label(source)
@@ -15970,6 +15972,7 @@ impl Render for WorkspaceView {
                 .unwrap_or_default();
             root = root.child(
                 div()
+                    .debug_selector(|| "tab-drag-preview".to_owned())
                     .absolute()
                     .left(preview.origin.x)
                     .top(preview.origin.y)

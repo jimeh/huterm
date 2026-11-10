@@ -317,12 +317,14 @@ fn a_tab_springs_a_row_and_lands_in_that_workspaces_bar(
         target(cx, window) == Some(DropTarget::Slot(0))
     });
     f.h.cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window, &f.h.cx);
     assert!(
-        VisualTestContext::from_window(window, &f.h.cx)
-            .debug_bounds("drag-title-chip")
-            .is_some(),
+        visual.debug_bounds("drag-title-chip").is_some(),
         "the tab drag draws no chip away from its bar"
     );
+    // Its label is not in this bar, so the bar draws no preview of it over
+    // another workspace's tab.
+    assert!(visual.debug_bounds("tab-drag-preview").is_none());
     f.h.release_at(window, slot);
     f.h.wait_for("the tab to land first there, shown", |cx| {
         no_drag(cx, window)
@@ -848,6 +850,10 @@ fn a_workspace_released_outside_tears_off_into_a_window_of_its_own(
             .is_some(),
         "the leaving row draws no tear-off cue"
     );
+    // The bar's pill marks a tab's tear-off, not a workspace's.
+    assert!(h.update_view(source, |view, _, _| {
+        view.drawn_tear_off.borrow().is_none()
+    }));
     let before = h.cx.update(|cx| cx.windows());
     h.finish_workspace_drag(source);
     let torn = new_window(&mut h, &before);
