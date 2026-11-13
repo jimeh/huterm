@@ -465,11 +465,16 @@ fn contract_scrolling_agrees_in_process_and_over_ipc() {
 
 #[test]
 fn contract_focus_reports_agree_in_process_and_over_ipc() {
-    // Focus reporting on, and the reports echoed visibly.
+    // Focus reporting on, and the reports echoed visibly. The script turns
+    // reporting on only after input the viewer sent, so on both paths the
+    // focused subscription lands first and reports no focus-in of its own.
     contract(
-        "stty -echo; printf '\\033[?1004hfocus\\n'; exec od -c",
+        "stty -echo; printf 'ready\\n'; read _; \
+         printf '\\033[?1004hfocus\\n'; exec od -c",
         |path| {
-            let mut seen = vec![seen_until(path, shows("focus"))];
+            let mut seen = vec![seen_until(path, shows("ready"))];
+            path.type_text("\r");
+            seen.push(seen_until(path, shows("focus")));
             path.focus(false);
             path.focus(true);
             // `od` prints the two reports once a block fills; the text
@@ -483,7 +488,7 @@ fn contract_focus_reports_agree_in_process_and_over_ipc() {
                     .chars()
                     .filter(|c| !c.is_whitespace())
                     .collect();
-                text.contains("[O") && text.contains("Ix")
+                text.contains("033[O033[Ix")
             }));
             seen
         },
