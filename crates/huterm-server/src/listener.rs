@@ -39,6 +39,10 @@ use crate::server::Server;
 /// spinning on a socket that stays readable.
 const ACCEPT_BACKOFF_MILLIS: u16 = 100;
 
+/// The most `accept` calls between two checks of the wake socket, so a
+/// flood of connections never holds off a stop.
+const ACCEPT_BATCH: usize = 16;
+
 /// Counts one connection in a listener's count until dropped. A
 /// connection's driver thread holds it until the thread exits.
 #[derive(Debug)]
@@ -144,7 +148,8 @@ impl Listener {
         self.file.as_ref().map(SocketFile::path)
     }
 
-    /// The connections the listener serves now, counted until their
+    /// The connections the listener serves now. A connection counts until
+    /// its driver has run every job and its cleanup, just before its
     /// threads exit.
     #[must_use]
     pub fn connections(&self) -> usize {
@@ -241,7 +246,7 @@ fn accept_loop(
             Woke::Stop => break,
             Woke::Accept | Woke::Idle => {}
         }
-        loop {
+        for _ in 0..ACCEPT_BATCH {
             match listener.accept() {
                 Ok((stream, _)) => {
                     reap(&mut handles);

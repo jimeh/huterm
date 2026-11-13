@@ -24,7 +24,7 @@ use std::fs::{self, DirBuilder, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// The socket name a server and its clients use when none is given.
 pub const DEFAULT_SOCKET_NAME: &str = "default";
@@ -93,8 +93,8 @@ impl fmt::Display for DirectoryProblem {
 pub enum SocketError {
     /// The socket name does not match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
     InvalidName(String),
-    /// `HUTERM_SOCKET_DIR` or an explicit socket path is not absolute, or
-    /// an explicit path names no file.
+    /// `HUTERM_SOCKET_DIR` or an explicit socket path is not absolute or
+    /// holds a `..` component, or an explicit path names no file.
     InvalidPath(PathBuf),
     /// The socket path does not fit `sun_path`.
     PathTooLong {
@@ -141,7 +141,8 @@ impl fmt::Display for SocketError {
             ),
             Self::InvalidPath(path) => write!(
                 f,
-                "socket path {} must be absolute and name a file",
+                "socket path {} must be absolute, name a file, and hold no \
+                 '..' component",
                 path.display()
             ),
             Self::PathTooLong { path, limit } => write!(
@@ -228,17 +229,26 @@ impl SocketPath {
     /// Refuses a relative path, one that names no file, and one too long
     /// for a socket address.
     pub fn explicit(path: impl Into<PathBuf>) -> Result<Self, SocketError> {
-        let path = path.into();
-        let directory = match (path.parent(), path.file_name()) {
-            (Some(parent), Some(_)) if path.is_absolute() => {
-                parent.to_path_buf()
-            }
-            _ => return Err(SocketError::InvalidPath(path)),
-        };
-        Self::checked(directory, path)
+        Self::checked(path.into())
     }
 
-    fn checked(directory: PathBuf, path: PathBuf) -> Result<Self, SocketError> {
+    /// Normalizes `path` so its directory is a plain path to the directory
+    /// itself: with a trailing `/` or a `.` component, `lstat` would follow
+    /// a symbolic link to the directory instead of refusing it.
+    fn checked(path: PathBuf) -> Result<Self, SocketError> {
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|component| component == Component::ParentDir)
+        {
+            return Err(SocketError::InvalidPath(path));
+        }
+        // Components drop trailing separators and inner `.` components.
+        let path: PathBuf = path.components().collect();
+        let directory = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(_)) => parent.to_path_buf(),
+            _ => return Err(SocketError::InvalidPath(path)),
+        };
         if path.as_os_str().len() > MAX_SOCKET_PATH_BYTES {
             return Err(SocketError::PathTooLong {
                 path,
@@ -300,8 +310,7 @@ fn resolve_in(
     } else {
         PathBuf::from(format!("/tmp/huterm-{uid}"))
     };
-    let path = directory.join(name);
-    SocketPath::checked(directory, path)
+    SocketPath::checked(directory.join(name))
 }
 
 /// This process's effective user ID.
@@ -382,8 +391,26 @@ pub fn check_peer(
 #[derive(Debug)]
 pub struct SocketFile {
     path: PathBuf,
+    identity: FileIdentity,
+}
+
+/// What tells one file at a path from a later one: an inode number alone
+/// can come back for the next file created, as ext4 does.
+#[derive(Debug, Eq, PartialEq)]
+struct FileIdentity {
     device: u64,
     inode: u64,
+    changed: (i64, i64),
+}
+
+impl FileIdentity {
+    fn of(metadata: &fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
 }
 
 impl SocketFile {
@@ -394,18 +421,20 @@ impl SocketFile {
     }
 
     /// Removes the socket file if it is still the one this process bound,
-    /// so a socket another server bound at the same path since survives.
-    /// Returns whether it removed the file.
+    /// judged by its device, inode, and change time, so a socket another
+    /// server bound at the same path since survives. Returns whether it
+    /// removed the file.
+    ///
+    /// Checking and removing are two calls, so a server that replaces the
+    /// socket between them loses its path; the daemon's startup lock
+    /// (#45) closes that window.
     ///
     /// # Errors
     /// Returns the error of inspecting or removing the file, except that
     /// it is already gone.
     pub fn remove(self) -> io::Result<bool> {
         match fs::symlink_metadata(&self.path) {
-            Ok(metadata)
-                if metadata.dev() == self.device
-                    && metadata.ino() == self.inode =>
-            {
+            Ok(metadata) if FileIdentity::of(&metadata) == self.identity => {
                 fs::remove_file(&self.path)?;
                 Ok(true)
             }
@@ -461,8 +490,7 @@ pub fn bind(
             .map_err(io("inspect socket", &socket.path))?;
         Ok(SocketFile {
             path: socket.path.clone(),
-            device: metadata.dev(),
-            inode: metadata.ino(),
+            identity: FileIdentity::of(&metadata),
         })
     };
     match finish() {

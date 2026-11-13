@@ -1216,7 +1216,8 @@ or other permissions. `huterm_socket::bind` creates a missing directory with
 mode `0700`, refuses to listen in one that fails the check, as tmux does,
 binds, and then sets the socket file's mode to `0600`. Stale-socket
 detection and startup races belong to [#45][issue-45]; a stopping listener
-removes its socket file only while it is still the file it bound.
+removes its socket file only while its device, inode, and change time still
+match the file it bound.
 
 `huterm_server::Listener` accepts on one thread. After `accept`, it reads
 the peer's credentials, through `SO_PEERCRED` on Linux and `getpeereid` on
@@ -2755,14 +2756,29 @@ and authentication" now follows.
   `handshake_deadline` (default `HANDSHAKE_DEADLINE`) and `max_connections`
   (default `MAX_CONNECTIONS`), so a test reaches either limit over a real
   socket in milliseconds on the wall clock the native adapter runs on.
-- **Stopping removes only its own socket.** A stopping listener closes its
+- **Stopping removes its own socket.** A stopping listener closes its
   connections, joins their threads, and removes the socket file only when
-  its device and inode still match what it bound, so it never deletes a
-  successor's socket. `Listener::from_listener` serves a socket bound
-  elsewhere, checking peers but leaving the file alone.
-- **Accept failures back off.** When `accept` fails for a reason other than
-  an empty queue, such as running out of descriptors, the listener waits
-  100 ms rather than spinning on a socket that stays readable.
+  its device, inode, and change time still match what it bound; an inode
+  number alone comes back for the next file on ext4. Checking and removing
+  are two calls, so a successor that replaces the socket between them loses
+  its path until [#45][issue-45]'s startup lock serializes servers.
+  `Listener::from_listener` serves a socket bound elsewhere, checking peers
+  but leaving the file alone.
+- **Accepting stays responsive.** The listener checks its wake socket after
+  every 16 accepts, so a flood of connections never holds off a stop. When
+  `accept` fails for a reason other than an empty queue, such as running out
+  of descriptors, it waits 100 ms rather than spinning on a socket that
+  stays readable.
+- **Paths are normalized before the check.** A socket path is absolute and
+  holds no `..` component, and its directory is its normalized parent: with
+  a trailing `/` or a `.` component, `lstat` would follow a symbolic link to
+  the directory instead of refusing it.
+- **Only the last component is checked.** As with tmux, the check covers
+  the socket's directory and not its ancestors. The default directories sit
+  in `/tmp`, whose sticky bit stops another user from renaming them, and in
+  the user's own runtime directory; a `HUTERM_SOCKET_DIR` or explicit path
+  under a directory another user can write is the user's choice, and peer
+  credentials still guard both ends.
 
 Tests over the real socket:
 
@@ -2776,8 +2792,8 @@ Tests over the real socket:
   split at every byte, and waits until the server has read the first part
   before writing the rest; the native client does the same with the
   server's preamble and `Welcome`. A hierarchy snapshot larger than the
-  socket's buffers arrives whole through the server's partial writes,
-  read in 61-byte chunks.
+  socket's buffers arrives whole, read in 61-byte chunks only after the
+  server has written part of it, so the server's first writes were short.
 - The second-user test (`a_second_user_is_closed_before_the_preamble`) is
   ignored in the normal suite, because it needs root to start a peer as
   another user. It runs as root in the Linux Docker image, as the core

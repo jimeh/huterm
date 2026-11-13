@@ -260,3 +260,54 @@ fn bind_and_connect_refuse_a_directory_that_is_not_private() {
     connect(&socket).unwrap();
     file.remove().unwrap();
 }
+
+#[test]
+fn a_trailing_slash_or_dot_never_hides_a_symlinked_directory() {
+    let root = TestDirectory::new();
+    let private = root.path().join("private");
+    DirBuilder::new().mode(0o700).create(&private).unwrap();
+    let link = root.path().join("link");
+    symlink(&private, &link).unwrap();
+    let override_with_slash = format!("{}/", link.display());
+    let resolved = resolve(
+        "default",
+        &[(SOCKET_DIR_VARIABLE, &override_with_slash)],
+        None,
+        false,
+    )
+    .unwrap();
+    let dotted = SocketPath::explicit(link.join(".").join("default")).unwrap();
+    for socket in [resolved, dotted] {
+        assert_eq!(socket.directory(), link.as_path());
+        assert!(
+            matches!(
+                socket.check_directory(),
+                Err(SocketError::UnsafeDirectory {
+                    problem: DirectoryProblem::Symlink,
+                    ..
+                })
+            ),
+            "{socket:?}"
+        );
+    }
+    assert!(matches!(
+        SocketPath::explicit(private.join("..").join("private").join("s")),
+        Err(SocketError::InvalidPath(_))
+    ));
+}
+
+#[test]
+fn a_socket_binds_at_exactly_the_longest_path_a_socket_address_holds() {
+    let root = TestDirectory::new();
+    let directory_bytes = root.path().as_os_str().len();
+    let name = "s".repeat(MAX_SOCKET_PATH_BYTES - directory_bytes - 1);
+    let socket = root.socket(&name);
+    assert_eq!(socket.path().as_os_str().len(), MAX_SOCKET_PATH_BYTES);
+    let (_listener, file) = bind(&socket).unwrap();
+    connect(&socket).unwrap();
+    assert!(file.remove().unwrap());
+    assert!(matches!(
+        SocketPath::explicit(root.path().join(format!("{name}s"))),
+        Err(SocketError::PathTooLong { .. })
+    ));
+}

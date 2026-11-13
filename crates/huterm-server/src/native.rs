@@ -67,6 +67,7 @@ enum Event {
 #[derive(Debug, Default)]
 struct Stats {
     received: AtomicUsize,
+    written: AtomicUsize,
     retained: AtomicUsize,
     max_retained: AtomicUsize,
     bound: AtomicUsize,
@@ -93,6 +94,12 @@ impl ConnectionHandle {
     #[must_use]
     pub fn received(&self) -> usize {
         self.stats.received.load(Ordering::Acquire)
+    }
+
+    /// The bytes the socket has accepted from the connection.
+    #[must_use]
+    pub fn written(&self) -> usize {
+        self.stats.written.load(Ordering::Acquire)
     }
 
     /// The encoded bytes the connection retains now.
@@ -429,6 +436,7 @@ impl Driver {
                 }
                 Woke::Event(Event::Written(count)) => {
                     connection.transmitted(count, now());
+                    self.stats.written.fetch_add(count, Ordering::AcqRel);
                 }
                 Woke::Event(Event::WriterIdle) => writer_idle = true,
                 Woke::Event(Event::Completed(id, completion)) => {
@@ -491,6 +499,7 @@ impl Driver {
             };
             if written > 0 {
                 connection.transmitted(written, now);
+                self.stats.written.fetch_add(written, Ordering::AcqRel);
             }
             if written < transmit.len() {
                 *writer_idle = batches.try_send((transmit, written)).is_err();

@@ -72,9 +72,17 @@ fn read_to_end(stream: &mut UnixStream) -> Vec<u8> {
     bytes
 }
 
+/// Connects to `socket`, failing a read that waits past [`PROMPT`] rather
+/// than hanging the test.
+fn connected(socket: &SocketPath) -> UnixStream {
+    let stream = huterm_socket::connect(socket).unwrap();
+    stream.set_read_timeout(Some(PROMPT)).unwrap();
+    stream
+}
+
 /// Connects a raw peer to `socket` and completes its handshake.
 fn handshake(socket: &SocketPath, server: &Server) -> (UnixStream, TestPeer) {
-    let mut stream = huterm_socket::connect(socket).unwrap();
+    let mut stream = connected(socket);
     let mut peer = TestPeer::new(server.runtime());
     stream.write_all(&peer.opening()).unwrap();
     let message = read_until(&mut stream, &mut peer, |message| {
@@ -95,7 +103,7 @@ fn a_peer_running_as_another_user_is_closed_before_the_preamble() {
     let listener =
         Listener::start(server, bound, huterm_socket::effective_uid() + 1)
             .unwrap();
-    let mut stream = huterm_socket::connect(&socket).unwrap();
+    let mut stream = connected(&socket);
     let _ = stream.write_all(&preamble());
     assert_eq!(read_to_end(&mut stream), Vec::<u8>::new());
     assert_eq!(listener.refused_peers(), 1);
@@ -113,7 +121,7 @@ fn past_max_connections_a_hello_is_rejected_as_busy_until_one_ends() {
     let (first, _) = handshake(listening.socket(), &server);
     assert_eq!(listening.listener().connections(), 1);
 
-    let mut busy = huterm_socket::connect(listening.socket()).unwrap();
+    let mut busy = connected(listening.socket());
     let mut peer = TestPeer::new(server.runtime());
     busy.write_all(&peer.opening()).unwrap();
     let message = read_until(&mut busy, &mut peer, |_| true);
@@ -123,7 +131,7 @@ fn past_max_connections_a_hello_is_rejected_as_busy_until_one_ends() {
     );
     assert_eq!(read_to_end(&mut busy), Vec::<u8>::new());
 
-    // Once the first connection's threads exit, its slot frees.
+    // Once the first connection's driver finishes, its slot frees.
     drop(first);
     wait_until("the first connection ends", || {
         listening.listener().connections() == 0
@@ -136,6 +144,8 @@ fn past_max_connections_a_hello_is_rejected_as_busy_until_one_ends() {
 fn past_max_refusals_a_connection_is_closed_at_once() {
     let server = Arc::new(server(ServerConfig {
         max_connections: 0,
+        // Long enough that no refusal times out during the test.
+        handshake_deadline: Duration::from_secs(600),
         ..ServerConfig::default()
     }));
     let listening = SocketServer::start(Arc::clone(&server));
@@ -143,8 +153,7 @@ fn past_max_refusals_a_connection_is_closed_at_once() {
     // the listener admitted it before the next connects.
     let refusing: Vec<UnixStream> = (0..MAX_REFUSALS)
         .map(|_| {
-            let mut stream =
-                huterm_socket::connect(listening.socket()).unwrap();
+            let mut stream = connected(listening.socket());
             let mut opening = [0; PREAMBLE_LEN];
             stream.read_exact(&mut opening).unwrap();
             assert_eq!(opening, preamble());
@@ -153,7 +162,7 @@ fn past_max_refusals_a_connection_is_closed_at_once() {
         .collect();
     assert_eq!(listening.listener().refusals(), MAX_REFUSALS);
 
-    let mut closed = huterm_socket::connect(listening.socket()).unwrap();
+    let mut closed = connected(listening.socket());
     assert_eq!(read_to_end(&mut closed), Vec::<u8>::new());
 
     // A refusing connection still answers its Hello.
@@ -178,7 +187,7 @@ fn a_client_that_sends_no_hello_is_closed_at_the_handshake_deadline() {
     }));
     let listening = SocketServer::start(server);
     let started = Instant::now();
-    let mut silent = huterm_socket::connect(listening.socket()).unwrap();
+    let mut silent = connected(listening.socket());
     // The server sends its preamble, then closes once the deadline passes
     // on its own clock, the wall clock this adapter runs on.
     assert_eq!(read_to_end(&mut silent), preamble().to_vec());
@@ -214,7 +223,7 @@ fn frames_split_at_every_byte_decode_over_a_bound_socket() {
         .request(Request::SelectSession { session });
     bytes.extend(&request);
     for split in 1..bytes.len() {
-        let mut client = huterm_socket::connect(&socket).unwrap();
+        let mut client = connected(&socket);
         let (accepted, _) = listener.accept().unwrap();
         let handle = serve(Arc::clone(&server), accepted).unwrap();
         // The server reads the first part before the rest exists.
@@ -240,8 +249,6 @@ fn frames_split_at_every_byte_decode_over_a_bound_socket() {
 #[test]
 fn a_message_larger_than_the_socket_buffers_arrives_whole_through_partial_writes()
  {
-    use nix::sys::socket::{getsockopt, sockopt};
-
     const SESSIONS: usize = 2_500;
 
     let server = Arc::new(server(ServerConfig::default()));
@@ -254,10 +261,39 @@ fn a_message_larger_than_the_socket_buffers_arrives_whole_through_partial_writes
             mux.create_session(Some(&name)).unwrap();
         }
     }
-    let listening = SocketServer::start(Arc::clone(&server));
-    let (mut client, mut peer) = handshake(listening.socket(), &server);
+    let directory = TestDirectory::new();
+    let socket = directory.socket("test");
+    let (listener, _file) = huterm_socket::bind(&socket).unwrap();
+    let mut client = connected(&socket);
+    let (accepted, _) = listener.accept().unwrap();
+    let handle = serve(Arc::clone(&server), accepted).unwrap();
+    let mut peer = TestPeer::new(server.runtime());
+    client.write_all(&peer.opening()).unwrap();
+    let mut handshake_bytes = 0;
+    let mut byte = [0];
+    loop {
+        assert_eq!(client.read(&mut byte).unwrap(), 1, "the server closed");
+        handshake_bytes += 1;
+        if peer
+            .receive(&byte)
+            .iter()
+            .any(|message| matches!(message, Message::Welcome(_)))
+        {
+            break;
+        }
+    }
+    wait_until("the server counts its handshake bytes", || {
+        handle.written() == handshake_bytes
+    });
+
     let (_, subscribe) = peer.request(Request::SubscribeHierarchy);
     client.write_all(&subscribe).unwrap();
+    // The client reads nothing until the server has written some of its
+    // answer, so the socket took at most its buffers' worth.
+    wait_until("the server starts writing", || {
+        handle.written() > handshake_bytes
+    });
+    let first = handle.written() - handshake_bytes;
     // An odd chunk size splits frames at shifting offsets.
     let mut buffer = [0; 61];
     let mut read = 0;
@@ -275,15 +311,46 @@ fn a_message_larger_than_the_socket_buffers_arrives_whole_through_partial_writes
     };
     assert_eq!(snapshot.state.digest(), snapshot.digest);
     assert_eq!(snapshot.state.sessions().len(), SESSIONS);
-    // The connection's buffers hold less than the snapshot, so the
-    // server's writes were partial. Each end's buffers have the same
-    // defaults, and Linux counts only the sender's.
-    let buffered = getsockopt(&client, sockopt::SndBuf).unwrap()
-        + getsockopt(&client, sockopt::RcvBuf).unwrap();
-    assert!(read > buffered, "{read} <= {buffered}");
+    // The server wrote more once the client read: its first writes were
+    // short or met a full socket, and the rest arrived intact.
+    assert!(read > first, "{read} <= {first}");
     drop(client);
-    stopped(move || listening.shutdown());
+    stopped(move || handle.join());
     let _ = server.lock().shutdown();
+}
+
+#[test]
+fn shutting_down_completes_while_connections_keep_arriving() {
+    use std::sync::atomic::AtomicBool;
+
+    // Every connection past the refusals is closed at once, the cheapest
+    // path, so the accept queue stays busy.
+    let server = Arc::new(server(ServerConfig {
+        max_connections: 0,
+        ..ServerConfig::default()
+    }));
+    let listening = SocketServer::start(server);
+    let path = listening.socket().path().to_path_buf();
+    let flooding = Arc::new(AtomicBool::new(true));
+    let floods: Vec<_> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            let flooding = Arc::clone(&flooding);
+            thread::spawn(move || {
+                while flooding.load(Ordering::Acquire) {
+                    let _ = UnixStream::connect(&path);
+                }
+            })
+        })
+        .collect();
+    wait_until("the flood fills the refusals", || {
+        listening.listener().refusals() == MAX_REFUSALS
+    });
+    stopped(move || listening.shutdown());
+    flooding.store(false, Ordering::Release);
+    for flood in floods {
+        flood.join().unwrap();
+    }
 }
 
 /// Where the second-user test's child process connects.
@@ -339,6 +406,7 @@ fn a_second_user_is_closed_before_the_preamble() {
 
     // The listener's own user is served.
     let mut stream = UnixStream::connect(&path).unwrap();
+    stream.set_read_timeout(Some(PROMPT)).unwrap();
     let mut peer = TestPeer::new(server.runtime());
     stream.write_all(&peer.opening()).unwrap();
     read_until(&mut stream, &mut peer, |message| {
@@ -357,6 +425,7 @@ fn second_user_peer() {
         .expect("started by a_second_user_is_closed_before_the_preamble");
     assert_ne!(huterm_socket::effective_uid(), 0);
     let mut stream = UnixStream::connect(path).unwrap();
+    stream.set_read_timeout(Some(PROMPT)).unwrap();
     let _ = stream.write_all(&preamble());
     assert_eq!(read_to_end(&mut stream), Vec::<u8>::new());
 }
