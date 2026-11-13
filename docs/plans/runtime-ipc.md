@@ -2772,7 +2772,8 @@ and authentication" now follows.
 - **Paths are normalized before the check.** A socket path is absolute and
   holds no `..` component, and its directory is its normalized parent: with
   a trailing `/` or a `.` component, `lstat` would follow a symbolic link to
-  the directory instead of refusing it.
+  the directory instead of refusing it. An `XDG_RUNTIME_DIR` with a `..`
+  component falls back to `/tmp/huterm-<uid>` like any other unusable one.
 - **Only the last component is checked.** As with tmux, the check covers
   the socket's directory and not its ancestors. The default directories sit
   in `/tmp`, whose sticky bit stops another user from renaming them, and in
@@ -2793,7 +2794,8 @@ Tests over the real socket:
   before writing the rest; the native client does the same with the
   server's preamble and `Welcome`. A hierarchy snapshot larger than the
   socket's buffers arrives whole, read in 61-byte chunks only after the
-  server has written part of it, so the server's first writes were short.
+  socket took less than the server offered (`ConnectionHandle::short_writes`)
+  and the writer thread held the rest.
 - The second-user test (`a_second_user_is_closed_before_the_preamble`) is
   ignored in the normal suite, because it needs root to start a peer as
   another user. It runs as root in the Linux Docker image, as the core

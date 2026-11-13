@@ -269,38 +269,21 @@ fn a_message_larger_than_the_socket_buffers_arrives_whole_through_partial_writes
     let handle = serve(Arc::clone(&server), accepted).unwrap();
     let mut peer = TestPeer::new(server.runtime());
     client.write_all(&peer.opening()).unwrap();
-    let mut handshake_bytes = 0;
-    let mut byte = [0];
-    loop {
-        assert_eq!(client.read(&mut byte).unwrap(), 1, "the server closed");
-        handshake_bytes += 1;
-        if peer
-            .receive(&byte)
-            .iter()
-            .any(|message| matches!(message, Message::Welcome(_)))
-        {
-            break;
-        }
-    }
-    wait_until("the server counts its handshake bytes", || {
-        handle.written() == handshake_bytes
+    read_until(&mut client, &mut peer, |message| {
+        matches!(message, Message::Welcome(_))
     });
+    assert_eq!(handle.short_writes(), 0, "the handshake fits the socket");
 
     let (_, subscribe) = peer.request(Request::SubscribeHierarchy);
     client.write_all(&subscribe).unwrap();
-    // The client reads nothing until the server has written some of its
-    // answer, so the socket took at most its buffers' worth.
-    wait_until("the server starts writing", || {
-        handle.written() > handshake_bytes
-    });
-    let first = handle.written() - handshake_bytes;
+    // The client reads nothing until the socket has taken less than the
+    // server offered and the writer thread holds the rest.
+    wait_until("a short write", || handle.short_writes() > 0);
     // An odd chunk size splits frames at shifting offsets.
     let mut buffer = [0; 61];
-    let mut read = 0;
     let snapshot = loop {
         let count = client.read(&mut buffer).expect("the server's bytes");
         assert!(count > 0, "the server closed before answering");
-        read += count;
         if let Some(Message::HierarchySnapshot(snapshot)) = peer
             .receive(&buffer[..count])
             .into_iter()
@@ -311,9 +294,6 @@ fn a_message_larger_than_the_socket_buffers_arrives_whole_through_partial_writes
     };
     assert_eq!(snapshot.state.digest(), snapshot.digest);
     assert_eq!(snapshot.state.sessions().len(), SESSIONS);
-    // The server wrote more once the client read: its first writes were
-    // short or met a full socket, and the rest arrived intact.
-    assert!(read > first, "{read} <= {first}");
     drop(client);
     stopped(move || handle.join());
     let _ = server.lock().shutdown();

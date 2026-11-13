@@ -67,6 +67,15 @@ fn the_override_wins_then_an_owned_xdg_runtime_dir_on_linux_then_tmp() {
     assert_eq!(
         resolved(
             "default",
+            &[("XDG_RUNTIME_DIR", "/run/user/501/../501")],
+            Some(UID),
+            true
+        ),
+        tmp
+    );
+    assert_eq!(
+        resolved(
+            "default",
             &[(SOCKET_DIR_VARIABLE, ""), ("XDG_RUNTIME_DIR", "")],
             Some(UID),
             true

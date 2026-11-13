@@ -68,6 +68,7 @@ enum Event {
 struct Stats {
     received: AtomicUsize,
     written: AtomicUsize,
+    short_writes: AtomicUsize,
     retained: AtomicUsize,
     max_retained: AtomicUsize,
     bound: AtomicUsize,
@@ -100,6 +101,13 @@ impl ConnectionHandle {
     #[must_use]
     pub fn written(&self) -> usize {
         self.stats.written.load(Ordering::Acquire)
+    }
+
+    /// How many times the socket took less than the driver offered, so
+    /// the writer thread finished the batch once the socket had room.
+    #[must_use]
+    pub fn short_writes(&self) -> usize {
+        self.stats.short_writes.load(Ordering::Acquire)
     }
 
     /// The encoded bytes the connection retains now.
@@ -502,6 +510,7 @@ impl Driver {
                 self.stats.written.fetch_add(written, Ordering::AcqRel);
             }
             if written < transmit.len() {
+                self.stats.short_writes.fetch_add(1, Ordering::AcqRel);
                 *writer_idle = batches.try_send((transmit, written)).is_err();
             }
         }

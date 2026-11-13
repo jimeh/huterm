@@ -303,7 +303,12 @@ fn resolve_in(
         directory
     } else if let Some(runtime) =
         variable("XDG_RUNTIME_DIR").filter(|runtime| {
-            xdg_runtime && runtime.is_absolute() && owner(runtime) == Some(uid)
+            xdg_runtime
+                && runtime.is_absolute()
+                && !runtime
+                    .components()
+                    .any(|component| component == Component::ParentDir)
+                && owner(runtime) == Some(uid)
         })
     {
         runtime.join("huterm")
@@ -427,7 +432,9 @@ impl SocketFile {
     ///
     /// Checking and removing are two calls, so a server that replaces the
     /// socket between them loses its path; the daemon's startup lock
-    /// (#45) closes that window.
+    /// (#45) closes that window. Changing the live socket's metadata, as
+    /// `chmod` or `touch` does, changes its identity, so the file is left
+    /// for the daemon's stale-socket handling instead.
     ///
     /// # Errors
     /// Returns the error of inspecting or removing the file, except that
