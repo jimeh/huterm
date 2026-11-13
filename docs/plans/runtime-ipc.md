@@ -2244,9 +2244,12 @@ The wire inventory:
   slice 4, so a subscription that asks for them answers `Unsupported`.
 - **Input cost.** `viewer::input_cost` is what one input counts against
   the input window, on both sides: its text's bytes, a character chord's
-  text and layout text, or `INPUT_EVENT_COST` (32 bytes) for a key or
-  mouse report, about what one occupies, so a flood of keys cannot stage
-  far more memory than the window suggests.
+  text and layout text, and at least `INPUT_EVENT_COST` (32 bytes), what a
+  key or mouse report counts. The floor is about what a staged input
+  occupies, so a flood of tiny inputs cannot stage far more memory than
+  the window suggests. `viewer::check_input` refuses input past its
+  payload limits before the client numbers it, so an oversized paste
+  answers `LimitExceeded` locally instead of ending the connection.
 
 The streaming encoder:
 
@@ -2293,22 +2296,38 @@ The server:
   consecutive from 1, and staged input past the window is a protocol
   violation. The server acknowledges input once core admitted or refused
   it for good, so input refused for good still leaves the client's window.
+  Focus is state, so a focus report staged right behind another replaces
+  it: staged focus reports never outnumber the input and requests around
+  them, which the window and the in-flight limit bound.
 - **Stop and revocation.** Core cannot snapshot a runtime that stopped, so
   a stopped viewer's complete final update re-encodes the last snapshot the
-  server planned, then `ViewerStopped` follows. A connection remembers its
-  last `MAX_ENDED_VIEWERS` (256) ended viewers, so a request naming one
-  answers `Stopped` or `Revoked` rather than `StaleTarget`; the client
-  keeps the same record and answers such a request locally.
+  server planned, then `ViewerStopped` follows. An ended viewer's lane
+  takes nothing new but sends everything it already holds, the notice
+  after the rest; a viewer the client closed drops only views not yet
+  started. A viewer that ends while its subscription's result still waits
+  for room ends once that result is on its lane, so the notice never
+  overtakes it. A snapshot that fails leaves core's viewer notified, so the
+  pump keeps owing it rather than waiting for a wake core will not send. A
+  connection remembers its last `MAX_ENDED_VIEWERS` (256) ended viewers, so
+  a request naming one answers `Stopped` or `Revoked` rather than
+  `StaleTarget`; the client keeps the same record and answers such a request
+  locally.
 - **Disconnect.** The connection drops its viewers, then detaches its
   attachments once no viewer job still holds a viewer, so a job a fault
   harness holds cannot make the detach revoke a viewer it would otherwise
   find dropped. Staged input is discarded.
 - **Bounds.** `MAX_CONNECTION_VIEWERS` (256) counts subscriptions in
-  flight. The outbound queue's lanes are dynamic, one per viewer. A
-  streamed or late-encoded message counts its frames from their cut until
-  they are written, and produces frames only while retained bytes are
-  under the budget, so a connection's encoded output stays within
-  `OUTBOUND_BUDGET` plus one frame however many viewers it holds. The
+  flight. The outbound queue's lanes are dynamic, one per viewer. An
+  update or selection text counts its frames from their cut until they are
+  written; a status or acknowledgement counts whole from its start, when
+  it is encoded. Over the budget no such message starts, so a connection's
+  encoded output stays within `OUTBOUND_BUDGET` plus the messages already
+  started, however many viewers it has. One already started still
+  finishes, because it holds a stream that messages admitted earlier may
+  need; stopping it there could hold every stream while encoded messages
+  sat over the budget. A large result counts as in flight until its text
+  is written, not only until it is answered, so a connection holds one
+  selection's text at a time. The
   writer-stall deadline is armed while anything waits to be written,
   queued but not yet encoded included; it used to count only retained
   bytes, so a full socket with nothing but late-encoded items queued never
@@ -2329,8 +2348,11 @@ The client:
   interleaving client lanes is left to a remote transport that needs it.
 - **Viewers.** `ClientSession::subscribe_terminal` takes whether the viewer
   starts visible, so a background tab gets no credit from the start. A
-  visible viewer keeps the credit window full, returning a credit for each
-  credited update it disposes of; a hidden one returns none. Input past the
+  viewer ends on the client as its `CloseViewer` goes out, since nothing
+  after it reaches the server's viewer, and a cancel reaches a request that
+  waits in a viewer's queue. A visible viewer keeps the credit window
+  full, returning a credit for each credited update it disposes of; a
+  hidden one returns none. Input past the
   window waits locally, with focus reports and the requests that name the
   viewer behind it, in issue order. Scrolls are numbered by the session
   and typing carries the number. Per incarnation the session keeps each
@@ -2366,7 +2388,9 @@ Fault injection:
   replays from its seed.
 - Scenarios `clean`, `local-faults`, `remote`, `remote-healthy`,
   `stalled-readers`, `state-corruption`, and `swarm` take the simulation's
-  broker profiles. After the faults, every viewer turns visible, the
+  broker profiles. The faulty ones also revoke viewers in their terminals
+  and close them from their clients, and the clients subscribe again.
+  After the faults, every viewer turns visible, the
   terminals publish past the next update digest, and each run checks that
   every view shows its terminal's latest snapshot, that no client resyncs
   without damage or faults a viewer or the connection, that the server
@@ -2374,9 +2398,18 @@ Fault injection:
   order, that on a healthy link every input arrives, and that no connection
   retains more than its bound. The normal suite runs three seeds per
   scenario; `mise run faults:ipc -- 1000` ran 1,000 per scenario with about
-  32,000 cuts, 42,000 stalls, and 82,000 damaged deltas, all caught.
+  32,000 cuts, 42,000 stalls on faulty links and 135,000 from stalled
+  readers, 14,000 revocations, 14,000 closes, and 82,000 damaged deltas,
+  all caught.
 - The world's acceptance cases found one server bug: the stall deadline
   never armed while a full socket left only late-encoded items queued.
+  Review found more, each now covered by a test that failed before its
+  fix: an ended viewer's lane discarded its notice and queued results;
+  selection texts escaped the one-large-result limit; staged focus reports
+  had no bound; oversized input ended the connection; a closed viewer
+  stayed registered on the client; a cancel missed requests in a viewer's
+  queue; a failed snapshot froze its viewer; and streamed messages could
+  hold every stream while encoded ones sat over the budget.
   The long runs found only the harness's own bugs: unordered maps and a
   process-wide counter that kept seeds from replaying, model viewers whose
   identities collided across terminals, and a tamper that dropped a
