@@ -272,14 +272,14 @@ pub(crate) struct Checkpoints {
 
 impl Checkpoints {
     /// Keeps a checkpoint, dropping the oldest past the bound; returns
-    /// whether it dropped one.
-    pub(crate) fn insert(&mut self, seq: u64, digest: u64) -> bool {
+    /// the sequence of the one it dropped.
+    pub(crate) fn insert(&mut self, seq: u64, digest: u64) -> Option<u64> {
         self.pending.insert((seq, digest));
-        let over = self.pending.len() > MAX_PENDING_CHECKPOINTS;
-        if over {
-            self.pending.pop_first();
+        if self.pending.len() > MAX_PENDING_CHECKPOINTS {
+            self.pending.pop_first().map(|(dropped, _)| dropped)
+        } else {
+            None
         }
-        over
     }
 
     /// Takes the digests to check now that the projection applied

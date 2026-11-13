@@ -2,12 +2,18 @@ use std::future::Future;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use huterm_protocol::DigestProfile;
+use huterm_protocol::{DigestProfile, RuntimeId, SessionId};
 use huterm_server::native::{ConnectionHandle, serve};
 use huterm_server::test_support::server;
 use huterm_server::{Server, ServerConfig};
-use huterm_wire::handshake::ClientKind;
+use huterm_wire::caps::MessageCaps;
+use huterm_wire::codec::IdScope;
+use huterm_wire::frame::{DEFAULT_MAX_FRAME, Frame, FrameEnd, preamble};
+use huterm_wire::handshake::{ClientKind, Reject, RejectReason};
+use huterm_wire::message::{Message, encode_message};
 use huterm_wire::response::Response;
+
+use crate::session::HierarchyUpdate;
 
 use super::*;
 
@@ -139,14 +145,10 @@ fn reconnecting_over_a_live_connection_resolves_with_the_new_handshake() {
     let _ = server.lock().shutdown();
 }
 
-#[test]
-fn an_undrained_event_receiver_stays_at_capacity_and_then_reports_one_lag() {
-    let server = Arc::new(server(ServerConfig::default()));
-    let (stream, connection) = serve_pair(&server);
-    let client = Client::spawn(config(), stream).unwrap();
-    let handle = client.handle();
-    let events = block_on(handle.events()).unwrap();
-    block_on(handle.connected()).unwrap();
+/// Subscribes and commits more hierarchy events than the event channel
+/// holds, without draining it; returns the renamed session and the last
+/// sequence, which the projection has reached.
+fn overflow_events(handle: &ClientHandle) -> (SessionId, u64) {
     block_on(handle.request(Request::SubscribeHierarchy)).unwrap();
     let Response::Session(session) =
         block_on(handle.request(Request::CreateSession { name: None }))
@@ -155,17 +157,35 @@ fn an_undrained_event_receiver_stays_at_capacity_and_then_reports_one_lag() {
     else {
         panic!("a created session");
     };
-    // More hierarchy events than the channel holds, none drained.
     let mut last = 0;
     for index in 0..EVENT_CHANNEL_CAPACITY {
-        let renamed = block_on(handle.request(Request::RenameSession {
-            session,
-            name: Some(format!("name {index}")),
-        }))
-        .unwrap();
-        last = renamed.committed.unwrap().seq;
+        last = rename(handle, session, &format!("name {index}"));
     }
     assert_eq!(block_on(handle.wait_for(last)), Resolution::Ready);
+    (session, last)
+}
+
+/// Renames `session` and returns the rename's sequence.
+fn rename(handle: &ClientHandle, session: SessionId, name: &str) -> u64 {
+    block_on(handle.request(Request::RenameSession {
+        session,
+        name: Some(name.into()),
+    }))
+    .unwrap()
+    .committed
+    .unwrap()
+    .seq
+}
+
+#[test]
+fn an_undrained_event_receiver_stays_at_capacity_and_then_reports_one_lag() {
+    let server = Arc::new(server(ServerConfig::default()));
+    let (stream, connection) = serve_pair(&server);
+    let client = Client::spawn(config(), stream).unwrap();
+    let handle = client.handle();
+    let events = block_on(handle.events()).unwrap();
+    block_on(handle.connected()).unwrap();
+    let (session, last) = overflow_events(&handle);
     assert_eq!(events.len(), EVENT_CHANNEL_CAPACITY);
 
     let mut delivered = 0;
@@ -176,7 +196,65 @@ fn an_undrained_event_receiver_stays_at_capacity_and_then_reports_one_lag() {
     let snapshot = block_on(handle.hierarchy()).unwrap();
     assert_eq!(snapshot.state.seq(), last);
 
+    // Forwarding resumes after the marker, and without another overflow
+    // no second marker follows.
+    let renamed = rename(&handle, session, "after the lag");
+    assert_eq!(block_on(handle.wait_for(renamed)), Resolution::Ready);
+    assert!(matches!(
+        events.try_recv(),
+        Ok(ClientEvent::Hierarchy(HierarchyUpdate::Applied { seq, .. }))
+            if seq == renamed
+    ));
+    assert!(events.is_empty());
+
     client.shutdown().unwrap();
     joined(connection);
+    let _ = server.lock().shutdown();
+}
+
+#[test]
+fn connected_reports_why_the_last_connection_ended_after_its_close_was_dropped()
+{
+    let server = Arc::new(server(ServerConfig::default()));
+    let (stream, connection) = serve_pair(&server);
+    let client = Client::spawn(config(), stream).unwrap();
+    let handle = client.handle();
+    let events = block_on(handle.events()).unwrap();
+    block_on(handle.connected()).unwrap();
+    overflow_events(&handle);
+    assert_eq!(events.len(), EVENT_CHANNEL_CAPACITY);
+
+    // The next peer refuses the `Hello`; its bytes wait in the socket.
+    let (stream, mut peer) = UnixStream::pair().unwrap();
+    let reject = Reject {
+        reason: RejectReason::ServerBusy,
+        message: "busy".into(),
+    };
+    let payload = encode_message(
+        &Message::Reject(reject.clone()),
+        IdScope::new(RuntimeId::new(0)),
+        MessageCaps::for_minor(0),
+    )
+    .unwrap();
+    let frame = Frame {
+        stream: 0,
+        end: FrameEnd::Final,
+        payload,
+    }
+    .encode(DEFAULT_MAX_FRAME)
+    .unwrap();
+    peer.write_all(&[&preamble()[..], &frame].concat()).unwrap();
+    let rejected = Err(CloseReason::Rejected(reject));
+    assert_eq!(block_on(handle.reconnect(stream)), rejected);
+    joined(connection);
+    assert_eq!(
+        events.len(),
+        EVENT_CHANNEL_CAPACITY,
+        "the close was dropped"
+    );
+    assert_eq!(block_on(handle.connected()), rejected);
+
+    client.shutdown().unwrap();
+    drop(peer);
     let _ = server.lock().shutdown();
 }

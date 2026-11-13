@@ -1144,6 +1144,28 @@ fn only_a_subscribe_that_succeeded_makes_later_connections_subscribe() {
     let sent = pair.pump();
     assert_eq!(sent_requests(&sent, runtime), []);
 
+    // The server's answer is a failure, so its snapshot never arrives.
+    let subscribe = pair.session.request(Request::SubscribeHierarchy, pair.now);
+    pair.send();
+    pair.run();
+    let frames = split_frames(&pair.take());
+    let result = of_kind(&frames, MessageKind::Result);
+    pair.deliver_frame(&pair.rewrite(&result, |message| {
+        let Message::Result(result) = message else {
+            panic!("a result");
+        };
+        result.outcome =
+            Err(WireError::new(ErrorCode::Internal, "subscribe failed"));
+    }));
+    assert_eq!(
+        pair.outcome(subscribe)
+            .map(|outcome| outcome.unwrap_err().code),
+        Some(ErrorCode::Internal)
+    );
+    pair.reconnect_quietly(&server);
+    let sent = pair.pump();
+    assert_eq!(sent_requests(&sent, runtime), []);
+
     pair.call(Request::SubscribeHierarchy).unwrap();
     pair.reconnect_quietly(&server);
     let sent = pair.pump();
@@ -1152,16 +1174,25 @@ fn only_a_subscribe_that_succeeded_makes_later_connections_subscribe() {
 }
 
 #[test]
-fn past_the_checkpoint_bound_the_oldest_is_dropped_and_the_rest_still_check() {
+fn past_the_checkpoint_bound_the_oldest_is_dropped_and_a_resync_covers_it() {
     let server = fresh_server(ServerConfig::default());
     let (mut pair, session) = Pair::subscribed(&server);
-    // The server answers every rename while its events wait.
+    // The server answers every rename while its events wait. Only the
+    // first rename's digest is wrong, and its checkpoint is the one the
+    // bound drops.
     let renames = MAX_PENDING_CHECKPOINTS + 1;
     let mut events = Vec::with_capacity(renames);
+    let mut last = 0;
     for index in 0..renames {
         let frames = pair.rename_frames(session, &format!("name {index}"));
         let mut result = of_kind(&frames, MessageKind::Result);
-        if index == 0 || index == renames - 1 {
+        let (_, Message::Result(RequestResult { outcome, .. })) =
+            pair.decode(&result)
+        else {
+            panic!("a result");
+        };
+        last = outcome.unwrap().committed.unwrap().seq;
+        if index == 0 {
             result = pair.rewrite(&result, wrong_digest);
         }
         pair.deliver_frame(&result);
@@ -1169,14 +1200,93 @@ fn past_the_checkpoint_bound_the_oldest_is_dropped_and_the_rest_still_check() {
         events.push(of_kind(&frames, MessageKind::HierarchyEvent));
     }
     assert_eq!(pair.session.checkpoints.len(), MAX_PENDING_CHECKPOINTS);
-    assert_eq!(pair.session.stats().checkpoints_dropped, 1);
+    // The drop owes the check a snapshot that covers it.
+    assert_eq!(
+        pair.session.stats(),
+        SessionStats {
+            resync_requests: 1,
+            checkpoints_dropped: 1,
+            ..SessionStats::default()
+        }
+    );
 
+    let mark = pair.log.len();
+    pair.pump();
+    assert_eq!(
+        pair.updates(mark),
+        [&HierarchyUpdate::Installed { seq: last }]
+    );
+    assert_eq!(pair.session.checkpoints.len(), 0);
     for event in &events {
         pair.deliver_frame(event);
     }
-    // The first rename's wrong digest was dropped unchecked; the last
-    // one's is checked when its event applies.
-    assert_eq!(pair.session.stats().digest_mismatches, 1);
+    assert_eq!(
+        pair.session.hierarchy_digest(),
+        Some(server.lock().hierarchy_digest(DigestProfile::Base))
+    );
+    assert_eq!(
+        pair.session.stats(),
+        SessionStats {
+            resync_requests: 1,
+            checkpoints_dropped: 1,
+            ..SessionStats::default()
+        }
+    );
+    assert!(!pair.session.resyncing, "its result resolved");
+    shut_down(&server);
+}
+
+#[test]
+fn a_drop_past_an_outstanding_resync_sends_one_more_once_that_resync_resolves()
+{
+    let server = fresh_server(ServerConfig::default());
+    let (mut pair, session) = Pair::subscribed(&server);
+    let mut renamed = 0;
+    let mut rename = |pair: &mut Pair| {
+        renamed += 1;
+        let frames = pair.rename_frames(session, &format!("name {renamed}"));
+        pair.deliver_frame(&of_kind(&frames, MessageKind::Result));
+    };
+    // The first drop sends a resync, and the server answers it at once.
+    for _ in 0..=MAX_PENDING_CHECKPOINTS {
+        rename(&mut pair);
+    }
+    assert_eq!(pair.session.stats().resync_requests, 1);
+    pair.send();
+    pair.run();
+    let resync = split_frames(&pair.take());
+    let snapshot = of_kind(&resync, MessageKind::HierarchyResync);
+    let (_, Message::HierarchyResync(covering)) = pair.decode(&snapshot) else {
+        panic!("a resync snapshot");
+    };
+    // Before its answer arrives, the bound drops every checkpoint the
+    // snapshot covers and then one it does not, which asks for nothing
+    // while the resync is outstanding.
+    for _ in 0..=MAX_PENDING_CHECKPOINTS {
+        rename(&mut pair);
+    }
+    assert_eq!(pair.session.stats().resync_requests, 1);
+    assert!(pair.session.uncovered.unwrap() > covering.state.seq());
+
+    pair.deliver_frame(&snapshot);
+    assert_eq!(pair.session.stats().resync_requests, 1, "still outstanding");
+    pair.deliver_frame(&of_kind(&resync, MessageKind::Result));
+    assert_eq!(pair.session.stats().resync_requests, 2);
+    pair.pump();
+    assert_eq!(pair.session.uncovered, None);
     assert_eq!(pair.session.checkpoints.len(), 0);
+    assert_eq!(
+        pair.session.hierarchy_digest(),
+        Some(server.lock().hierarchy_digest(DigestProfile::Base))
+    );
+    assert_eq!(
+        pair.session.stats(),
+        SessionStats {
+            resync_requests: 2,
+            // One in the first batch, then one per result in the second.
+            checkpoints_dropped: MAX_PENDING_CHECKPOINTS as u64 + 2,
+            ..SessionStats::default()
+        }
+    );
     shut_down(&server);
 }

@@ -2014,8 +2014,14 @@ The client:
   `EVENT_CHANNEL_CAPACITY` (1,024) events, and the driver never waits for
   its consumer: while it is full, events are dropped, and once there is
   room the consumer gets one `ClientEvent::Lagged` and re-reads the
-  projection, as after core's subscription lag. Results, waiter
-  resolutions, and handshake outcomes travel on their own reply channels.
+  projection, as after core's subscription lag. That re-read is not atomic
+  with the channel, as core's resubscribe is: events queued behind the
+  marker may already be in the re-read projection, so the consumer skips an
+  `Applied` event at or below the re-read sequence. The driver keeps the
+  last connection's close reason, and `ClientHandle::connected` returns it
+  while no connection is open, so a dropped `Closed` loses no `Rejected`,
+  `ContractFault`, or timeout. Results, waiter resolutions, and handshake
+  outcomes travel on their own reply channels.
 - **Calls outlive connections.** A caller's request has a session-wide
   `CallId`, and each connection numbers what it sends from 1, as the
   server's request window requires, so a query resent on the next
@@ -2047,8 +2053,17 @@ The client:
   frees its request slot while its checkpoint waits, so in-flight requests
   do not bound checkpoints; `MAX_PENDING_CHECKPOINTS` (4,096, four times
   core's 1,024-event subscription queue, past which the server lags and
-  resyncs) does. Past it, the oldest checkpoint is dropped unchecked and
-  counted in `SessionStats::checkpoints_dropped`. A snapshot
+  resyncs) does. Past it, the oldest checkpoint is dropped and counted in
+  `SessionStats::checkpoints_dropped`, and the check moves to a snapshot:
+  the first drop since a snapshot last covered one sends a
+  `ResyncHierarchy` under the same at-most-one rule. That resync covers the
+  drop, because the server committed the dropped sequence before the client
+  read its result. Later drops only raise the sequence a snapshot must
+  reach, so a flood of results sends one resync, not one per result. A
+  drop while another resync is outstanding can outrun that resync's
+  snapshot; once the snapshot installs and its resync succeeds, the session
+  sends one more. A failed resync sends nothing more, and a drop before
+  the connection's first snapshot waits for it. A snapshot
   behind the projection is a violation only after a snapshot installed on
   the same connection, and a hierarchy event before its connection's first
   snapshot is a violation.

@@ -69,7 +69,10 @@ use crate::projection::{
 /// the server lags and resynchronizes, and the resync snapshot drops the
 /// checkpoints it covers; four times that leaves room for the events the
 /// server's lane and the socket hold. Past it, the oldest checkpoint is
-/// dropped unchecked and counted in [`SessionStats::checkpoints_dropped`].
+/// dropped and counted in [`SessionStats::checkpoints_dropped`], and the
+/// session sends one `ResyncHierarchy` of its own whose snapshot covers
+/// the dropped sequence, so the check still happens: the snapshot's digest
+/// is checked against its state.
 pub const MAX_PENDING_CHECKPOINTS: usize = 4 * 1024;
 
 /// A request's identity for the life of its session, across connections.
@@ -191,7 +194,11 @@ pub enum ClientEvent {
     /// The native client's event channel filled, so it dropped the events
     /// after the last one it delivered: re-read the projection, and the
     /// connection state if it matters, as after core's subscription lag.
-    /// The session itself never reports it.
+    /// Unlike core's resubscribe, the re-read is not atomic with the
+    /// channel: events queued behind the marker may already be in the
+    /// re-read projection, so skip an [`HierarchyUpdate::Applied`] whose
+    /// sequence is at most the re-read projection's. The session itself
+    /// never reports it.
     Lagged,
 }
 
@@ -199,12 +206,14 @@ pub enum ClientEvent {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SessionStats {
     /// `ResyncHierarchy` requests the session sent on its own, after a
-    /// digest mismatch, a gap, or an inconsistent event.
+    /// digest mismatch, a gap, an inconsistent event, or a checkpoint
+    /// dropped at [`MAX_PENDING_CHECKPOINTS`].
     pub resync_requests: u64,
     /// Digests that disagreed with the projection: on events and at
     /// structural checkpoints.
     pub digest_mismatches: u64,
-    /// Checkpoints dropped unchecked at [`MAX_PENDING_CHECKPOINTS`].
+    /// Checkpoints dropped at [`MAX_PENDING_CHECKPOINTS`], each left to a
+    /// snapshot that covers it.
     pub checkpoints_dropped: u64,
 }
 
@@ -286,6 +295,9 @@ pub struct ClientSession {
     subscribed: bool,
     /// A `ResyncHierarchy` of the session's own is outstanding.
     resyncing: bool,
+    /// The highest sequence whose checkpoint was dropped at the bound and
+    /// that no snapshot installed since has covered.
+    uncovered: Option<u64>,
     stats: SessionStats,
     last_call: u64,
     last_wait: u64,
@@ -326,6 +338,7 @@ impl ClientSession {
             held: Vec::new(),
             subscribed: false,
             resyncing: false,
+            uncovered: None,
             stats: SessionStats::default(),
             last_call: 0,
             last_wait: 0,
@@ -818,6 +831,7 @@ impl ClientSession {
         self.stream = Some(stream);
         self.projection = None;
         self.checkpoints.clear();
+        self.uncovered = None;
         let events = &mut self.events;
         self.waiters.cancel_all(|wait| {
             events.push_back(ClientEvent::Waiter {
@@ -885,10 +899,39 @@ impl ClientSession {
             }
             Some(projection) if projection.seq() > seq => {}
             _ => {
-                if self.checkpoints.insert(seq, digest) {
+                if let Some(dropped) = self.checkpoints.insert(seq, digest) {
                     self.stats.checkpoints_dropped += 1;
+                    self.dropped(dropped);
                 }
             }
+        }
+    }
+
+    /// Owes the checkpoint dropped at `seq` a snapshot that covers it. The
+    /// first drop since the last covering snapshot sends the resync; later
+    /// ones only raise the sequence it must reach, so a flood of results
+    /// sends one resync, not one per result.
+    fn dropped(&mut self, seq: u64) {
+        let first = self.uncovered.is_none();
+        self.uncovered = Some(self.uncovered.map_or(seq, |owed| owed.max(seq)));
+        if first {
+            self.resync_uncovered();
+        }
+    }
+
+    /// Sends a resync while a dropped checkpoint is uncovered, once a
+    /// snapshot installed on this connection. Before that, the pending
+    /// subscription's snapshot comes first. A resync sent after a drop
+    /// covers it, because the server committed the dropped sequence before
+    /// the client read its result; only a drop while a resync was already
+    /// outstanding can outrun that resync's snapshot.
+    fn resync_uncovered(&mut self) {
+        let installed = self
+            .connection
+            .as_ref()
+            .is_some_and(|connection| connection.installed);
+        if installed && self.uncovered.is_some() {
+            self.resync();
         }
     }
 
@@ -949,10 +992,14 @@ impl ClientSession {
         }
         self.projection = Some(projection);
         self.checkpoints.covered(seq);
+        if self.uncovered.is_some_and(|owed| owed <= seq) {
+            self.uncovered = None;
+        }
         self.events.push_back(ClientEvent::Hierarchy(
             HierarchyUpdate::Installed { seq },
         ));
         self.advanced(seq);
+        self.resync_uncovered();
     }
 
     fn event(&mut self, bytes: &[u8], context: DecodeContext) {
@@ -1030,6 +1077,12 @@ impl ClientSession {
         if entry.internal {
             if entry.kind == RequestKind::ResyncHierarchy {
                 self.resyncing = false;
+                // A snapshot that installed while this resync was still
+                // outstanding may have left a drop uncovered. A failed
+                // resync asks for nothing more, so it cannot loop.
+                if outcome.is_ok() {
+                    self.resync_uncovered();
+                }
             }
             return;
         }
@@ -1139,6 +1192,7 @@ impl ClientSession {
         self.connected = None;
         self.resyncing = false;
         self.checkpoints.clear();
+        self.uncovered = None;
         self.held.clear();
         self.queue.clear();
         let mut calls: Vec<CallId> = self.calls.keys().copied().collect();

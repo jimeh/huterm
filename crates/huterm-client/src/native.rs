@@ -150,6 +150,7 @@ impl Client {
                         handshakes: Vec::new(),
                         listener: None,
                         lagged: false,
+                        last_close: CloseReason::Disconnected,
                         start: Instant::now(),
                     };
                     futures_lite::future::block_on(driver.run());
@@ -251,6 +252,13 @@ impl ClientHandle {
     /// [`Self::hierarchy`], and the connection through [`Self::connected`]
     /// if it follows connection state. Results, waiter resolutions, and
     /// handshake outcomes reach their own callers and never wait on it.
+    ///
+    /// The re-read is not atomic with the channel, as core's resubscribe
+    /// is: events queued behind the marker may already be in the snapshot
+    /// the re-read returns. Skip a [`HierarchyUpdate::Applied`] whose
+    /// sequence is at most the snapshot's.
+    ///
+    /// [`HierarchyUpdate::Applied`]: crate::session::HierarchyUpdate::Applied
     pub async fn events(&self) -> Option<Receiver<ClientEvent>> {
         let (reply, events) = async_channel::bounded(1);
         self.command(Command::Events(reply));
@@ -261,7 +269,10 @@ impl ClientHandle {
     /// connection ends.
     ///
     /// # Errors
-    /// Returns why the connection ended before its handshake completed.
+    /// Returns why the connection ended before its handshake completed, or,
+    /// with no connection open, why the last one ended, even when the event
+    /// channel dropped its [`ClientEvent::Closed`]. Once the client has shut
+    /// down it returns [`CloseReason::Disconnected`].
     pub async fn connected(&self) -> Handshake {
         let (reply, handshake) = async_channel::bounded(1);
         self.command(Command::Connected(reply));
@@ -463,6 +474,9 @@ struct Driver {
     /// The listener's channel was full, so events were dropped and the
     /// listener owes a [`ClientEvent::Lagged`].
     lagged: bool,
+    /// Why the last connection ended, which [`ClientHandle::connected`]
+    /// reports while there is none, so a dropped `Closed` loses nothing.
+    last_close: CloseReason,
     start: Instant,
 }
 
@@ -586,7 +600,7 @@ impl Driver {
                     self.handshakes.push(reply);
                 }
                 None => {
-                    let _ = reply.try_send(Err(CloseReason::Disconnected));
+                    let _ = reply.try_send(Err(self.last_close.clone()));
                 }
             },
             Command::Reconnect(stream, reply) => {
@@ -646,6 +660,7 @@ impl Driver {
                     for reply in self.handshakes.drain(..) {
                         let _ = reply.try_send(Err(reason.clone()));
                     }
+                    self.last_close = reason.clone();
                 }
                 ClientEvent::Hierarchy(_) | ClientEvent::Lagged => {}
             }
