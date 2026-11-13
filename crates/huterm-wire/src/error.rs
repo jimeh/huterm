@@ -1,15 +1,16 @@
 //! The error half of a request's result.
 //!
 //! A [`WireError`] carries a stable numeric code, whether the same request
-//! may safely be sent again, the hierarchy sequence a structural request
-//! committed at before failing, and a diagnostic message clients never
-//! parse. Codes are stable numbers; a minor version may add codes, which a
+//! may safely be sent again, the hierarchy sequence (and digest) a
+//! structural request committed at before failing, and a diagnostic message
+//! clients never parse. Codes are stable numbers; a minor version may add codes, which a
 //! server withholds from older peers like any newer variant.
 
 use huterm_protocol::CommandError;
 
 use crate::codec::{DecodeError, EncodeError, Reader, Writer};
 use crate::handshake::truncated;
+use crate::response::{Committed, decode_committed, encode_committed};
 
 /// The longest diagnostic message a [`WireError`] carries; longer messages
 /// are cut at a character boundary.
@@ -58,11 +59,14 @@ pub enum ErrorCode {
     ClientRequired,
     /// The runtime failed while executing the request.
     Internal,
+    /// The client cancelled the request before it started; nothing was
+    /// committed.
+    Cancelled,
 }
 
 impl ErrorCode {
     /// Every code, in number order.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::StaleTarget,
         Self::ForeignScope,
         Self::NotPermitted,
@@ -82,6 +86,7 @@ impl ErrorCode {
         Self::Unavailable,
         Self::ClientRequired,
         Self::Internal,
+        Self::Cancelled,
     ];
 
     /// The code's stable number.
@@ -107,6 +112,7 @@ impl ErrorCode {
             Self::Unavailable => 17,
             Self::ClientRequired => 18,
             Self::Internal => 19,
+            Self::Cancelled => 20,
         }
     }
 
@@ -133,26 +139,26 @@ pub struct WireError {
     pub code: ErrorCode,
     /// Whether the request may be sent again.
     pub retry: Retry,
-    /// The hierarchy sequence a structural request committed at before it
-    /// failed.
-    pub committed_seq: Option<u64>,
+    /// Where a structural request committed before it failed, as a
+    /// failed close cleanup does.
+    pub committed: Option<Committed>,
     /// A diagnostic message, never parsed.
     pub message: String,
 }
 
 impl WireError {
-    /// An error that committed nothing; only [`ErrorCode::Busy`] is safe to
-    /// retry.
+    /// An error that committed nothing; only [`ErrorCode::Busy`] and
+    /// [`ErrorCode::Cancelled`] are safe to retry.
     #[must_use]
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
-            retry: if code == ErrorCode::Busy {
+            retry: if matches!(code, ErrorCode::Busy | ErrorCode::Cancelled) {
                 Retry::Safe
             } else {
                 Retry::Never
             },
-            committed_seq: None,
+            committed: None,
             message: message.into(),
         }
     }
@@ -189,7 +195,7 @@ pub fn encode_error(
     let WireError {
         code,
         retry,
-        committed_seq,
+        committed,
         message,
     } = error;
     w.record(|w| {
@@ -198,10 +204,7 @@ pub fn encode_error(
             Retry::Safe => 0,
             Retry::Never => 1,
         });
-        w.option(*committed_seq, |w, seq| {
-            w.u64(seq);
-            Ok(())
-        })?;
+        encode_committed(w, *committed)?;
         w.str(
             truncated(message, MAX_ERROR_MESSAGE_BYTES),
             MAX_ERROR_MESSAGE_BYTES,
@@ -235,7 +238,7 @@ pub fn decode_error(r: &mut Reader<'_>) -> Result<WireError, DecodeError> {
         Ok(WireError {
             code,
             retry,
-            committed_seq: r.option("committed sequence", Reader::u64)?,
+            committed: decode_committed(r)?,
             message: r.string(MAX_ERROR_MESSAGE_BYTES, "error message")?,
         })
     })

@@ -40,3 +40,22 @@ fn every_minor_0_kind_has_a_cap_covering_its_payload() {
         crate::stream::MAX_OPEN_STREAMS * caps.cap(MessageKind::Input).unwrap()
     );
 }
+
+#[test]
+fn requests_stay_below_the_largest_client_cap_and_results_fit_one_frame() {
+    let caps = MessageCaps::for_minor(0);
+    let cap = |kind| caps.cap(kind).unwrap();
+    // Requests may span frames, but none raises the reassembly budget.
+    assert!(cap(MessageKind::Request) < cap(MessageKind::Input));
+    assert!(cap(MessageKind::Cancel) < cap(MessageKind::Input));
+    assert!(
+        cap(MessageKind::Result)
+            <= crate::frame::Frame::capacity(
+                u32::try_from(crate::stream::MAX_OPEN_STREAMS).unwrap() - 1,
+                crate::frame::MIN_MAX_FRAME,
+            )
+    );
+    assert_eq!(MessageKind::Request.direction(), Direction::ClientToServer);
+    assert_eq!(MessageKind::Cancel.direction(), Direction::ClientToServer);
+    assert_eq!(MessageKind::Result.direction(), Direction::ServerToClient);
+}

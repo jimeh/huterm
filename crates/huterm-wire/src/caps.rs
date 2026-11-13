@@ -17,7 +17,22 @@ use huterm_protocol::{
 };
 
 use crate::codec::{MAX_VARINT_BYTES, varint_len};
+use crate::command::{
+    MAX_ARGUMENT_TEXT_BYTES, MAX_COMMAND_ARGUMENTS, MAX_COMMAND_NAME_BYTES,
+};
+use crate::error::MAX_ERROR_MESSAGE_BYTES;
 use crate::frame::HANDSHAKE_FRAME_LIMIT;
+use crate::launch::{
+    LAUNCH_PAYLOAD_LIMIT, MAX_LAUNCH_ARGUMENTS, MAX_LAUNCH_ENVIRONMENT,
+    MAX_LAUNCH_PATH_BYTES,
+};
+use crate::request::{
+    MAX_CLOSE_REQUEST_TABS, MAX_REQUEST_LAYOUT_ITEMS, MAX_REQUEST_NAME_BYTES,
+};
+use crate::response::{
+    MAX_CLOSE_SUMMARY_PROCESSES, MAX_CLOSE_SUMMARY_TERMINALS,
+    MAX_PROCESS_COMMAND_BYTES, MAX_PROCESS_COMMAND_LINE_BYTES,
+};
 
 /// The most unacknowledged input bytes one viewer may have outstanding.
 pub const VIEWER_INPUT_BUDGET: usize = 1 << 20;
@@ -98,11 +113,17 @@ pub enum MessageKind {
     /// A client's request for a complete snapshot after it discarded a
     /// delta.
     ResyncViewer,
+    /// A request, numbered by the client.
+    Request,
+    /// A request's result.
+    Result,
+    /// A client's request to abandon a request that has not started.
+    Cancel,
 }
 
 impl MessageKind {
     /// Every kind, in number order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 17] = [
         Self::Hello,
         Self::Welcome,
         Self::Reject,
@@ -117,6 +138,9 @@ impl MessageKind {
         Self::InputAck,
         Self::Credit,
         Self::ResyncViewer,
+        Self::Request,
+        Self::Result,
+        Self::Cancel,
     ];
 
     /// The kind's stable number.
@@ -137,6 +161,9 @@ impl MessageKind {
             Self::InputAck => 11,
             Self::Credit => 12,
             Self::ResyncViewer => 13,
+            Self::Request => 14,
+            Self::Result => 15,
+            Self::Cancel => 16,
         }
     }
 
@@ -154,7 +181,9 @@ impl MessageKind {
             | Self::Paste
             | Self::Input
             | Self::Credit
-            | Self::ResyncViewer => Direction::ClientToServer,
+            | Self::ResyncViewer
+            | Self::Request
+            | Self::Cancel => Direction::ClientToServer,
             Self::Welcome
             | Self::Reject
             | Self::HierarchySnapshot
@@ -163,7 +192,8 @@ impl MessageKind {
             | Self::HostEffect
             | Self::TerminalUpdate
             | Self::ViewerStatus
-            | Self::InputAck => Direction::ServerToClient,
+            | Self::InputAck
+            | Self::Result => Direction::ServerToClient,
         }
     }
 
@@ -222,9 +252,12 @@ impl MessageCaps {
             ),
             MessageKind::ViewerStatus => message_cap(kind, status_record_cap()),
             MessageKind::Input => message_cap(kind, input_record_cap()),
+            MessageKind::Request => message_cap(kind, request_record_cap()),
+            MessageKind::Result => message_cap(kind, result_record_cap()),
             MessageKind::InputAck
             | MessageKind::Credit
-            | MessageKind::ResyncViewer => SMALL_MESSAGE_CAP,
+            | MessageKind::ResyncViewer
+            | MessageKind::Cancel => SMALL_MESSAGE_CAP,
         })
     }
 
@@ -464,6 +497,145 @@ const fn input_record_cap() -> usize {
         + record_prefix(INPUT_TEXT_PAYLOAD_LIMIT + APPENDED_HEADROOM)
         + string(INPUT_TEXT_PAYLOAD_LIMIT)
         + APPENDED_HEADROOM
+}
+
+/// Bytes each request-sized item record, such as an environment pair or a
+/// listed process, reserves for fields later minor versions append.
+const REQUEST_ITEM_HEADROOM: usize = 4;
+
+/// The larger of two sizes.
+const fn max(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+
+/// A terminal launch record: two paths, every argument and environment
+/// string's length prefix, the shared payload, and the fixed fields.
+const fn launch_record_cap() -> usize {
+    let prefix = varint_len(LAUNCH_PAYLOAD_LIMIT as u64);
+    let strings = MAX_LAUNCH_ARGUMENTS + 2 * MAX_LAUNCH_ENVIRONMENT;
+    let pairs = MAX_LAUNCH_ENVIRONMENT
+        * (record_prefix(2 * LAUNCH_PAYLOAD_LIMIT) + REQUEST_ITEM_HEADROOM);
+    let shell = 1 + 1 + MAX_VARINT_BYTES + APPENDED_HEADROOM;
+    let sizes = 4 * varint_len(u16::MAX as u64);
+    // Three colors and the 256-colour palette, three bytes each.
+    let presentation = record_prefix(1 << 10) + 3 * 259 + APPENDED_HEADROOM;
+    let scrollback = 1 + 5 + 1 + MAX_VARINT_BYTES + APPENDED_HEADROOM;
+    record_prefix(1 << 20)
+        + APPENDED_HEADROOM
+        + 2 * string(MAX_LAUNCH_PATH_BYTES)
+        + 2 * MAX_VARINT_BYTES
+        + strings * prefix
+        + LAUNCH_PAYLOAD_LIMIT
+        + pairs
+        + shell
+        + sizes
+        + presentation
+        + scrollback
+        + 1
+}
+
+/// A catalog invocation record: its identifier and every argument with
+/// its name and a text value at the limit.
+const fn invocation_record_cap() -> usize {
+    let argument = record_prefix(1 << 13)
+        + string(MAX_COMMAND_NAME_BYTES)
+        + 1
+        + record_prefix(1 << 13)
+        + string(MAX_ARGUMENT_TEXT_BYTES)
+        + REQUEST_ITEM_HEADROOM;
+    record_prefix(1 << 20)
+        + APPENDED_HEADROOM
+        + string(MAX_COMMAND_NAME_BYTES)
+        + MAX_VARINT_BYTES
+        + MAX_COMMAND_ARGUMENTS * argument
+}
+
+/// An arrangement node: its tag and record, a pane's identity or a split's
+/// axis and child count, and its share of its parent's child record and
+/// weight.
+const fn arrangement_node_bytes() -> usize {
+    let child = record_prefix(1 << 20) + 5;
+    1 + record_prefix(1 << 20)
+        + MAX_VARINT_BYTES
+        + 1
+        + child
+        + REQUEST_ITEM_HEADROOM
+}
+
+/// A request record: its identity, tag, and fields record, at the largest
+/// of its kinds' worst cases: an arrangement with its expected layout, a
+/// launch with its targets and name, an invocation, and a close of many
+/// tabs. Every other kind is a few identities.
+const fn request_record_cap() -> usize {
+    let ids = 4 * MAX_VARINT_BYTES;
+    let arrange = 5
+        + ids
+        + MAX_REQUEST_LAYOUT_ITEMS * hierarchy_item_bytes()
+        + MAX_REQUEST_LAYOUT_ITEMS * arrangement_node_bytes();
+    let launch =
+        ids + 1 + optional_string(MAX_REQUEST_NAME_BYTES) + launch_record_cap();
+    let close = 1
+        + record_prefix(1 << 20)
+        + 2 * MAX_VARINT_BYTES
+        + MAX_CLOSE_REQUEST_TABS * MAX_VARINT_BYTES;
+    let fields = max(max(arrange, launch), max(invocation_record_cap(), close));
+    APPENDED_HEADROOM
+        + MAX_VARINT_BYTES
+        + MAX_VARINT_BYTES
+        + record_prefix(1 << 20)
+        + fields
+}
+
+/// A close assessment's fields: the ticket, the effect at its most tabs,
+/// the confirmation flag, every busy terminal, every listed process at its
+/// longest strings, and the omitted counts.
+const fn assessment_bytes() -> usize {
+    let effect = 1
+        + record_prefix(1 << 16)
+        + 2 * MAX_VARINT_BYTES
+        + MAX_CLOSE_REQUEST_TABS * MAX_VARINT_BYTES;
+    let terminal = record_prefix(1 << 16)
+        + MAX_VARINT_BYTES
+        + 1
+        + record_prefix(1 << 16)
+        + 1
+        + REQUEST_ITEM_HEADROOM;
+    let process = record_prefix(1 << 11)
+        + 5
+        + 1
+        + string(MAX_PROCESS_COMMAND_BYTES)
+        + optional_string(MAX_PROCESS_COMMAND_LINE_BYTES)
+        + REQUEST_ITEM_HEADROOM;
+    5 + effect
+        + 1
+        + 1
+        + MAX_CLOSE_SUMMARY_TERMINALS * terminal
+        + MAX_CLOSE_SUMMARY_PROCESSES * process
+        + 2 * 5
+}
+
+/// A committed sequence: its option tag and record, the sequence, and the
+/// optional digest.
+const COMMITTED_BYTES: usize =
+    1 + 1 + MAX_VARINT_BYTES + 1 + 8 + APPENDED_HEADROOM;
+
+/// A result record: the request identity and outcome tag, then a success
+/// at its largest response, a close assessment, or an error at its
+/// longest message.
+const fn result_record_cap() -> usize {
+    let success = record_prefix(1 << 16)
+        + 1
+        + record_prefix(1 << 16)
+        + assessment_bytes()
+        + APPENDED_HEADROOM
+        + COMMITTED_BYTES
+        + APPENDED_HEADROOM;
+    let error = record_prefix(1 << 11)
+        + 2
+        + COMMITTED_BYTES
+        + string(MAX_ERROR_MESSAGE_BYTES)
+        + APPENDED_HEADROOM;
+    APPENDED_HEADROOM + MAX_VARINT_BYTES + 1 + max(success, error)
 }
 
 /// The most bytes of unfinished client messages a server holds: every

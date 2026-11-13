@@ -34,6 +34,128 @@ fn every_message_vector_encodes_to_its_bytes_and_decodes_back() {
     assert_eq!(events.len(), 23);
 }
 
+fn distinct<T: Eq + std::hash::Hash>(values: Vec<T>) -> usize {
+    values.into_iter().collect::<HashSet<_>>().len()
+}
+
+#[test]
+fn request_vectors_cover_every_request_variant() {
+    use crate::request::{Request, RequestKind};
+    let vectors = minor_0_messages();
+    let requests: Vec<&Request> = vectors
+        .iter()
+        .filter_map(|vector| match &vector.message {
+            Message::Request(message) => Some(&message.request),
+            _ => None,
+        })
+        .collect();
+    let kinds: HashSet<_> =
+        requests.iter().map(|request| request.kind()).collect();
+    let minor_0 = RequestKind::ALL.iter().filter(|kind| kind.since() == 0);
+    assert_eq!(kinds.len(), minor_0.count());
+    assert_eq!(
+        distinct(
+            requests
+                .iter()
+                .filter_map(|request| match request {
+                    Request::PrepareClose { request } =>
+                        Some(discriminant(request)),
+                    _ => None,
+                })
+                .collect()
+        ),
+        8
+    );
+    assert_eq!(
+        distinct(
+            requests
+                .iter()
+                .filter_map(|request| match request {
+                    Request::MovePane { to, .. } => Some(discriminant(to)),
+                    _ => None,
+                })
+                .collect()
+        ),
+        2
+    );
+    assert_eq!(
+        distinct(
+            requests
+                .iter()
+                .filter_map(|request| match request {
+                    Request::ExecuteCommand { invocation } => {
+                        Some(discriminant(invocation))
+                    }
+                    _ => None,
+                })
+                .collect()
+        ),
+        2
+    );
+}
+
+#[test]
+fn result_vectors_cover_every_response_variant() {
+    use crate::response::{Response, TerminalJobs};
+    let vectors = minor_0_messages();
+    let responses: Vec<&Response> = vectors
+        .iter()
+        .filter_map(|vector| match &vector.message {
+            Message::Result(result) => result.outcome.as_ref().ok(),
+            _ => None,
+        })
+        .map(|success| &success.response)
+        .collect();
+    assert_eq!(
+        distinct(
+            responses
+                .iter()
+                .map(|response| discriminant(*response))
+                .collect()
+        ),
+        12
+    );
+    let assessments: Vec<_> = responses
+        .iter()
+        .filter_map(|response| match response {
+            Response::CloseAssessment(assessment) => Some(assessment),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        distinct(
+            assessments
+                .iter()
+                .map(|a| discriminant(&a.effect))
+                .collect()
+        ),
+        8
+    );
+    assert_eq!(
+        distinct(
+            assessments
+                .iter()
+                .flat_map(|a| &a.busy)
+                .map(|busy| discriminant(&busy.jobs))
+                .collect()
+        ),
+        2
+    );
+    assert!(
+        assessments
+            .iter()
+            .flat_map(|a| &a.busy)
+            .any(|busy| matches!(
+                &busy.jobs,
+                TerminalJobs::Running(processes) if processes.len() > 1
+            ))
+    );
+    assert!(vectors.iter().any(|vector| matches!(
+        &vector.message,
+        Message::Result(result) if result.outcome.is_err()
+    )));
+}
+
 #[test]
 fn every_record_vector_encodes_to_its_bytes_and_decodes_back() {
     for vector in minor_0_records() {

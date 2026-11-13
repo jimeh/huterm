@@ -16,6 +16,10 @@ use huterm_protocol::{
 
 use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
 
+/// Every hierarchy event whose sequence is a multiple of this carries a
+/// digest; core computes them at emission.
+pub use huterm_protocol::HIERARCHY_DIGEST_INTERVAL;
+
 /// A hierarchy stream as one connection sees it: the stream its client
 /// rebuilt from the connection's runtime scope and server incarnation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,7 +48,7 @@ pub struct HierarchySnapshot {
 }
 
 /// One sequenced hierarchy event, with the digest that every
-/// `HIERARCHY_DIGEST_INTERVAL`th event carries.
+/// [`HIERARCHY_DIGEST_INTERVAL`]th event carries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SequencedEvent {
     /// The event's sequence.
@@ -57,15 +61,34 @@ pub struct SequencedEvent {
 }
 
 /// Counts hierarchy items while decoding, so a message can never describe
-/// more state than core can hold.
-#[derive(Debug, Default)]
-pub(crate) struct Items(usize);
+/// more state than core can hold, or a request more than its limit.
+#[derive(Debug)]
+pub(crate) struct Items {
+    count: usize,
+    limit: usize,
+    field: &'static str,
+}
+
+impl Default for Items {
+    fn default() -> Self {
+        Self::limited(MAX_HIERARCHY_ITEMS, "hierarchy item count")
+    }
+}
 
 impl Items {
+    /// A counter that refuses more than `limit` items as `field`.
+    pub(crate) const fn limited(limit: usize, field: &'static str) -> Self {
+        Self {
+            count: 0,
+            limit,
+            field,
+        }
+    }
+
     pub(crate) fn add(&mut self, count: usize) -> Result<(), DecodeError> {
-        self.0 += count;
-        if self.0 > MAX_HIERARCHY_ITEMS {
-            return Err(DecodeError::Invalid("hierarchy item count"));
+        self.count += count;
+        if self.count > self.limit {
+            return Err(DecodeError::Invalid(self.field));
         }
         Ok(())
     }

@@ -22,6 +22,12 @@ pub const MAX_NAME_BYTES: usize = 256;
 /// anything, so every hierarchy snapshot stays bounded.
 pub const MAX_HIERARCHY_ITEMS: usize = 16_384;
 
+/// Every hierarchy event whose sequence is a multiple of this carries the
+/// digest of the state after it, so a remote projection that drifted is
+/// noticed within this many events. Core computes those digests at
+/// emission.
+pub const HIERARCHY_DIGEST_INTERVAL: u64 = 256;
+
 /// Identifies one ordered hierarchy stream.
 ///
 /// An embedded stream is one runtime incarnation within this process. A
@@ -898,49 +904,43 @@ impl HierarchyState {
     }
 
     /// Returns the digest of the fields `profile` covers; the base profile
-    /// is [`Self::digest`]'s encoding.
+    /// is [`Self::digest`]'s encoding, which [`HierarchyDigester`] computes.
     #[must_use]
     pub fn digest_for(&self, profile: DigestProfile) -> u64 {
-        let DigestProfile::Base = profile;
-        let mut hash = Fnv1a(FNV_OFFSET);
+        let mut digest = HierarchyDigester::new(profile);
         for session_id in &self.session_order {
             let session = &self.sessions[session_id];
-            hash.byte(b'S');
-            hash.number(session.info.id.get());
-            hash.optional(session.info.custom_name.as_deref());
-            hash.text(&session.info.automatic_name);
-            hash.count(session.workspaces.len());
+            digest.session(
+                session.info.id,
+                session.info.custom_name.as_deref(),
+                &session.info.automatic_name,
+                session.workspaces.len(),
+            );
             for workspace_id in &session.workspaces {
                 let workspace = &self.workspaces[workspace_id];
-                hash.byte(b'W');
-                hash.number(workspace.info.id.get());
-                hash.optional(workspace.info.custom_name.as_deref());
-                hash.text(&workspace.info.automatic_name);
-                hash.byte(u8::from(workspace.info.pinned));
-                hash.count(workspace.tabs.len());
+                digest.workspace(
+                    workspace.info.id,
+                    workspace.info.custom_name.as_deref(),
+                    &workspace.info.automatic_name,
+                    workspace.info.pinned,
+                    workspace.tabs.len(),
+                );
                 for tab_id in &workspace.tabs {
                     let tab = &self.tabs[tab_id].info;
-                    hash.byte(b'T');
-                    hash.number(tab.id.get());
-                    hash.optional(tab.custom_name.as_deref());
-                    match tab.zoomed {
-                        None => hash.byte(0),
-                        Some(pane) => {
-                            hash.byte(1);
-                            hash.number(pane.get());
-                        }
-                    }
-                    hash.byte(u8::from(tab.input_sync));
-                    hash.node(tab.layout.root());
+                    digest.tab(
+                        tab.id,
+                        tab.custom_name.as_deref(),
+                        tab.zoomed,
+                        tab.input_sync,
+                        &tab.layout,
+                    );
                 }
             }
         }
         for (attachment, session) in &self.attachments {
-            hash.byte(b'A');
-            hash.number(attachment.get());
-            hash.number(session.get());
+            digest.attachment(*attachment, *session);
         }
-        hash.0
+        digest.finish()
     }
 
     /// Validates and applies one event, or returns `None` without changes.
@@ -1633,6 +1633,104 @@ fn position(index: u32) -> Option<usize> {
     usize::try_from(index).ok()
 }
 
+/// Computes a hierarchy digest from a walk of any hierarchy, so a holder of
+/// the structure, such as core's Mux, digests it without building a
+/// [`HierarchyState`] or copying a name.
+///
+/// The caller visits records in [`HierarchyState::digest`]'s canonical
+/// order: each session in order, each followed by its workspaces in order,
+/// each followed by its tabs in order; then every attachment in ascending
+/// identity order. The counts it passes must be the numbers of records it
+/// visits next. A walk in another order gives another digest.
+#[derive(Clone, Debug)]
+pub struct HierarchyDigester {
+    hash: Fnv1a,
+}
+
+impl HierarchyDigester {
+    /// Starts a digest of the fields `profile` covers.
+    #[must_use]
+    pub fn new(profile: DigestProfile) -> Self {
+        let DigestProfile::Base = profile;
+        Self {
+            hash: Fnv1a(FNV_OFFSET),
+        }
+    }
+
+    /// Adds a session that holds `workspaces` workspaces.
+    pub fn session(
+        &mut self,
+        id: SessionId,
+        custom_name: Option<&str>,
+        automatic_name: &str,
+        workspaces: usize,
+    ) {
+        let hash = &mut self.hash;
+        hash.byte(b'S');
+        hash.number(id.get());
+        hash.optional(custom_name);
+        hash.text(automatic_name);
+        hash.count(workspaces);
+    }
+
+    /// Adds a workspace of the last session that holds `tabs` tabs.
+    pub fn workspace(
+        &mut self,
+        id: WorkspaceId,
+        custom_name: Option<&str>,
+        automatic_name: &str,
+        pinned: bool,
+        tabs: usize,
+    ) {
+        let hash = &mut self.hash;
+        hash.byte(b'W');
+        hash.number(id.get());
+        hash.optional(custom_name);
+        hash.text(automatic_name);
+        hash.byte(u8::from(pinned));
+        hash.count(tabs);
+    }
+
+    /// Adds a tab of the last workspace, with its whole layout.
+    pub fn tab(
+        &mut self,
+        id: TabId,
+        custom_name: Option<&str>,
+        zoomed: Option<PaneId>,
+        input_sync: bool,
+        layout: &PaneLayout,
+    ) {
+        let hash = &mut self.hash;
+        hash.byte(b'T');
+        hash.number(id.get());
+        hash.optional(custom_name);
+        match zoomed {
+            None => hash.byte(0),
+            Some(pane) => {
+                hash.byte(1);
+                hash.number(pane.get());
+            }
+        }
+        hash.byte(u8::from(input_sync));
+        hash.node(layout.root());
+    }
+
+    /// Adds an attachment and the session it views.
+    pub fn attachment(&mut self, attachment: AttachmentId, session: SessionId) {
+        let hash = &mut self.hash;
+        hash.byte(b'A');
+        hash.number(attachment.get());
+        hash.number(session.get());
+    }
+
+    /// The digest of everything added.
+    #[must_use]
+    pub fn finish(self) -> u64 {
+        self.hash.0
+    }
+}
+
+#[derive(Clone, Debug)]
 struct Fnv1a(u64);
 
 impl Fnv1a {
