@@ -706,7 +706,7 @@ impl ClientSession {
     /// Keeps every live viewer's status baseline for a reconnect to the
     /// same incarnation, as the connection ends.
     pub(super) fn carry_viewers(&mut self) {
-        for (_, entry) in self.viewers.drain() {
+        for (_, entry) in std::mem::take(&mut self.viewers) {
             self.carried
                 .baselines
                 .insert(entry.terminal, entry.baseline);

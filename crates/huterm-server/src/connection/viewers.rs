@@ -822,7 +822,7 @@ impl Connection {
     /// Drops every viewer as a connection ends: admitted input still runs,
     /// and staged input is discarded.
     pub(super) fn drop_viewers(&mut self) {
-        for (id, _) in self.viewers.drain() {
+        for (id, _) in std::mem::take(&mut self.viewers) {
             self.unwatches.push_back(id);
         }
         self.watches.clear();

@@ -314,7 +314,7 @@ pub struct ClientSession {
     connection: Option<Connection>,
     connected: Option<Connected>,
     events: VecDeque<ClientEvent>,
-    viewers: HashMap<ViewerId, ClientViewer>,
+    viewers: BTreeMap<ViewerId, ClientViewer>,
     subscribing: HashMap<CallId, Subscribing>,
     /// Status baselines and final views kept for the current incarnation.
     carried: Carried,
@@ -359,7 +359,7 @@ impl ClientSession {
             connection: None,
             connected: None,
             events: VecDeque::new(),
-            viewers: HashMap::new(),
+            viewers: BTreeMap::new(),
             subscribing: HashMap::new(),
             carried: Carried::default(),
         }

@@ -155,7 +155,7 @@ fn staged_input_is_discarded_at_a_disconnect_and_admitted_input_still_runs() {
     world.want(peer, 0, true);
     world.settle(SETTLE);
     for index in 0..5 {
-        world.type_text(peer, 0, &format!("key{index}"));
+        world.type_text(peer, 0, &format!("key{index}")).unwrap();
     }
     world.settle(SETTLE);
     // The model's queue holds two; the server stages the other three.
@@ -235,7 +235,7 @@ fn deltas_discarded_as_stale_still_return_credit_and_the_resync_snapshot_arrives
     world.terminals[0].set_row(1, "damaged on the way");
     world.settle(SETTLE);
     assert_eq!(world.peers[peer].tamper.as_ref().unwrap().damaged, 1);
-    world.peers[peer].tamper = None;
+    world.peers[peer].tamper.as_mut().unwrap().per_mille = 0;
     // Cursor moves keep the damaged row and reach the next digest, which
     // finds the damage; deltas after the resync request are discarded
     // as stale while the complete snapshot is on its way.
@@ -416,7 +416,7 @@ fn a_refused_scroll_leaves_the_clients_numbers_in_core_unchanged() {
         now,
     );
     world.settle(SETTLE);
-    world.type_text(peer, 0, "typed after the scroll");
+    world.type_text(peer, 0, "typed after the scroll").unwrap();
     world.settle(SETTLE);
     world.terminals[0].drain(usize::MAX);
     let outcome = |call| {

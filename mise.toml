@@ -243,6 +243,11 @@ run = "bash scripts/fuzz-wire.sh"
 description = "Run the runtime IPC design simulation over many seeds per scenario"
 run = "cargo run --quiet --locked --release -p huterm-ipc-sim --"
 
+[tasks."faults:ipc"]
+depends = ["ghostty:prepare"]
+description = "Run seeded fault injection over the real IPC server and client (optional SEEDS, or SCENARIO SEED to replay)"
+run = "bash scripts/faults-ipc.sh"
+
 [tasks.check]
 description = "Run fast deterministic local checks"
 depends = ["format:check", "lint", "lint:test-order", "lint:docs", "lint:agents", "flakes:check", "architecture", "check:wasm", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]

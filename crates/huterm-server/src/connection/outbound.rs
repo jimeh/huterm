@@ -20,7 +20,7 @@
 //! of a streamed or late-encoded message from when it is cut until it is
 //! written.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::io::IoSlice;
 use std::sync::Arc;
 
@@ -338,7 +338,7 @@ pub(crate) struct Outbound {
     control: LaneQueue,
     large: LaneQueue,
     hierarchy: LaneQueue,
-    viewers: HashMap<ViewerId, LaneQueue>,
+    viewers: BTreeMap<ViewerId, LaneQueue>,
     /// Lanes that may have work, in turn order.
     ring: VecDeque<Lane>,
     streams: OutboundStreams,
@@ -366,7 +366,7 @@ impl Outbound {
             control: LaneQueue::default(),
             large: LaneQueue::default(),
             hierarchy: LaneQueue::default(),
-            viewers: HashMap::new(),
+            viewers: BTreeMap::new(),
             ring: VecDeque::new(),
             // The client holds whatever its caps allow on each stream; the
             // host effect stream stays reserved for slice 4.

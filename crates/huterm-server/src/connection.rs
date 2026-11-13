@@ -32,7 +32,7 @@ mod outbound;
 mod tickets;
 mod viewers;
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,7 +207,7 @@ pub struct Connection {
     over_since: Option<Duration>,
     /// The latest time any call passed in.
     clock: Duration,
-    viewers: HashMap<ViewerId, Viewer>,
+    viewers: BTreeMap<ViewerId, Viewer>,
     /// Recently ended viewers and why, oldest first.
     ended: VecDeque<(ViewerId, Ended)>,
     /// Subscriptions in flight, which count toward the viewer limit.
@@ -284,7 +284,7 @@ impl Connection {
             stalled_since: None,
             over_since: None,
             clock: now,
-            viewers: HashMap::new(),
+            viewers: BTreeMap::new(),
             ended: VecDeque::new(),
             subscribing: 0,
             viewer_works: 0,

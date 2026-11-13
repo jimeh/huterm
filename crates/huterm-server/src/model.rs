@@ -29,11 +29,6 @@ use crate::viewer::{
     Ordered, Reply, SnapshotOutcome, ViewerPort, Wake, WakeSource,
 };
 
-/// Numbers viewers across every model terminal, as core numbers them across
-/// every terminal in the process.
-static NEXT_VIEWER: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
-
 /// Viewers one model terminal admits, as core does.
 const VIEWER_LIMIT: usize = 32;
 
@@ -110,6 +105,10 @@ struct State {
     cursor_column: u16,
     status: Arc<TerminalStatus>,
     slots: Vec<Slot>,
+    /// Numbers viewers across every terminal that shares it, as core
+    /// numbers them across every terminal in its process. Each world has
+    /// its own, so a run replays exactly.
+    next_viewer: Arc<std::sync::atomic::AtomicU64>,
     queue: VecDeque<(ViewerId, Ordered, usize)>,
     pty: Vec<Written>,
     focus: Vec<(ViewerId, bool)>,
@@ -161,12 +160,15 @@ pub fn text_row(text: &str, columns: usize) -> Arc<TerminalRow> {
 }
 
 impl ModelTerminal {
-    /// A terminal `terminal` of `size`, its rows blank.
+    /// A terminal `terminal` of `size`, its rows blank, numbering its
+    /// viewers from `next_viewer`, which every terminal of one world
+    /// shares.
     #[must_use]
     pub fn new(
         terminal: TerminalId,
         size: GridSize,
         limits: ModelLimits,
+        next_viewer: Arc<std::sync::atomic::AtomicU64>,
     ) -> Self {
         let rows = (0..size.rows)
             .map(|_| text_row("", usize::from(size.columns)))
@@ -186,6 +188,7 @@ impl ModelTerminal {
                 cursor_column: 0,
                 status: Arc::new(TerminalStatus::default()),
                 slots: Vec::new(),
+                next_viewer,
                 queue: VecDeque::new(),
                 pty: Vec::new(),
                 focus: Vec::new(),
@@ -221,7 +224,9 @@ impl ModelTerminal {
         }
         let id = ViewerId::in_runtime(
             state.runtime,
-            NEXT_VIEWER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            state
+                .next_viewer
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         let (wake, receiver) = async_channel::bounded(1);
         let seen = state.status.revision;

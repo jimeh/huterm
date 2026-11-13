@@ -29,6 +29,26 @@ use crate::model::{ModelLimits, ModelTerminal, ModelTerminals};
 use crate::test_support::offer;
 use crate::{Connection, Server, ServerConfig, Work};
 
+/// A snapshot's rows as text, for failure messages.
+pub(crate) fn rows_text(snapshot: &TerminalSnapshot) -> Vec<String> {
+    snapshot
+        .rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| {
+                    if cell.text.is_empty() {
+                        " "
+                    } else {
+                        &cell.text
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect()
+}
+
 /// `SplitMix64`, so every run replays from its seed.
 #[derive(Clone, Debug)]
 pub(crate) struct Rng(u64);
@@ -149,9 +169,13 @@ impl Pipe {
 }
 
 /// Decodable damage injected into deltas on their way to a client: a
-/// complete update's first full row gets another first character, and the
-/// message is framed again on its stream. Transport integrity is assumed,
-/// so the damage still decodes; digests must catch it.
+/// delta's first full row gets another first character, and the message is
+/// framed again on its stream. Transport integrity is assumed, so the
+/// damage still decodes; digests must catch it.
+///
+/// It holds each message's frames until the message completes, so damage
+/// is turned off by setting `per_mille` to zero, never by removing it
+/// mid-connection, which would drop the frames it holds.
 #[derive(Debug)]
 pub(crate) struct Tamper {
     /// Chance per thousand that a delta with a full row is damaged.
@@ -218,6 +242,7 @@ impl Tamper {
                 .iter()
                 .flat_map(|frame| frame.payload.iter().copied())
                 .collect();
+
             if let Some(damaged) = self.damage(&message, rng) {
                 out.extend(
                     Frame {
@@ -369,12 +394,14 @@ impl World {
             (mux.create_session(None).unwrap().get(), mux.runtime_id())
         };
         let models = ModelTerminals::default();
+        let next_viewer = Arc::new(std::sync::atomic::AtomicU64::new(1));
         let terminals: Vec<ModelTerminal> = (0..terminals)
             .map(|index| {
                 let terminal = ModelTerminal::new(
                     TerminalId::in_runtime(runtime, 10_000 + index as u64),
                     size,
                     limits,
+                    Arc::clone(&next_viewer),
                 );
                 models.insert(terminal.clone());
                 terminal
@@ -454,6 +481,19 @@ impl World {
 
     /// Breaks `peer`'s link: both ends see the connection end.
     pub(crate) fn cut(&mut self, peer: usize) {
+        self.hang_up(peer);
+        let now = self.time();
+        let peer = &mut self.peers[peer];
+        peer.session.disconnected(now);
+        // Viewers end with their connection.
+        for wanted in &mut peer.wanted {
+            wanted.viewer = None;
+            wanted.subscribing = None;
+        }
+    }
+
+    /// Ends the server's side of `peer`'s connection and runs its cleanup.
+    fn hang_up(&mut self, peer: usize) {
         let now = self.time();
         let index = peer;
         let peer = &mut self.peers[index];
@@ -470,7 +510,6 @@ impl World {
                 connection.complete(work.id, completion, now);
             }
         }
-        peer.session.disconnected(now);
     }
 
     /// Wants a viewer of terminal `terminal` on `peer`.
@@ -708,7 +747,10 @@ impl World {
             {
                 connection.tick(now);
             }
-            if peer.session.next_deadline().is_some_and(|at| at <= now) {
+            // A stalled reader is a frozen client: its clock stops too.
+            if peer.stalled_until <= ms
+                && peer.session.next_deadline().is_some_and(|at| at <= now)
+            {
                 peer.session.tick(now);
             }
         }
@@ -720,6 +762,13 @@ impl World {
         if let Some(reason) = ended {
             self.peers[index].closes.push(reason);
             self.cut(index);
+        }
+        // A connection the client ended, at a deadline or a violation: the
+        // server sees the transport close.
+        if self.peers[index].connection.is_some()
+            && !self.peers[index].session.is_connected()
+        {
+            self.hang_up(index);
         }
         self.drive_client(index);
     }
@@ -860,12 +909,14 @@ impl World {
         };
         // A new incarnation's terminals are new.
         self.models = ModelTerminals::default();
+        let next_viewer = Arc::new(std::sync::atomic::AtomicU64::new(1));
         self.terminals = (0..self.terminals.len())
             .map(|index| {
                 let terminal = ModelTerminal::new(
                     TerminalId::in_runtime(runtime, 10_000 + index as u64),
                     self.size,
                     self.limits,
+                    Arc::clone(&next_viewer),
                 );
                 self.models.insert(terminal.clone());
                 terminal
@@ -875,14 +926,15 @@ impl World {
         self.session = session;
     }
 
-    /// Types `text` into `peer`'s viewer of terminal `index`.
+    /// Types `text` into `peer`'s viewer of terminal `index`, returning
+    /// its input sequence, or `None` without a live viewer.
     pub(crate) fn type_text(
         &mut self,
         peer: usize,
         index: usize,
         text: &str,
-    ) -> u64 {
-        let viewer = self.viewer(peer, index).expect("a live viewer");
+    ) -> Option<u64> {
+        let viewer = self.viewer(peer, index)?;
         self.peers[peer]
             .session
             .send_input(
@@ -890,7 +942,7 @@ impl World {
                 huterm_protocol::TerminalInput::Text(text.into()),
                 None,
             )
-            .expect("a live viewer takes input")
+            .ok()
     }
 
     /// The view `peer`'s viewer of terminal `index` shows, if it has one.
