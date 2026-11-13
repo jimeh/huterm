@@ -1,7 +1,7 @@
 # Local runtime IPC
 
-Status: in progress for [issue #44][issue-44]. Slices 1, 2, and 3a are
-implemented, with the revisions recorded under each; slices 3b to 5 remain.
+Status: in progress for [issue #44][issue-44]. Slices 1, 2, 3a, and 3b are
+implemented, with the revisions recorded under each; slices 4 and 5 remain.
 
 Named server mode moves the runtime out of the desktop process. This plan
 defines the contract that carries runtime requests, results, the hierarchy
@@ -2144,6 +2144,13 @@ runs.
   in core, and the disconnect order with its core change.
 - Contract scenarios for snapshots, scrolling, input, focus, geometry
   control, and revocation.
+- Seeded fault injection over the real `huterm-server` and `huterm-client`:
+  an in-memory transport with seeded latency, jitter, fragmentation,
+  bounded buffers, stalled and trickling readers, connection cuts, and
+  decodable damage to deltas, so each run replays from its seed. It takes
+  `huterm-ipc-sim`'s broker fault profiles as its specification without
+  depending on the crate, which `mise run architecture` forbids. The normal
+  suite runs bounded seeds; `mise run faults:ipc` runs many more.
 
 Acceptance:
 
@@ -2178,6 +2185,226 @@ Acceptance:
   user made after it.
 - A scroll during a multi-frame update arrives after that update, and the
   client applies both.
+- Under seeded fault injection, after each run reaches quiescence, every
+  client converges on its terminals' latest snapshots, resyncs recover from
+  damage that digests caught, no connection breaks a lane's order or the
+  credit rules, and no input reaches a terminal twice or out of order.
+
+#### Revisions during slice 3b
+
+None of these changes a settled decision. Each is an implementation choice
+within the contract or a narrow correction to its text, except the window
+close, which this slice leaves as it was (see "What an embedded window
+close keeps").
+
+The wire inventory:
+
+- **Viewer requests.** Request kinds 46 to 52 are `SubscribeTerminal`,
+  `CloseViewer`, `Snapshot`, `Selection`, `SelectUnits`,
+  `UpdatePresentation`, and `SetScrollbackCompression`; the test-only
+  `PinTab` keeps 45. `SetScrollbackCompression` is a shared setter, so a
+  `Mutation`; the others are `Viewer` requests, with `ReportGeometry`.
+  `RequestKind::names_viewer` says which requests name a viewer: they
+  travel on the viewer's lane in both directions, so they stay in order
+  with its input, and the server handles each as it arrives rather than
+  in its request queue. `SubscribeTerminal` names an attachment and
+  travels on the control lane. `Snapshot` carries an optional scroll with
+  the client's number for it and an optional cell for a link lookup; its
+  update arrives before its result. Clients number scrolls from 1, because
+  core treats a scroll numbered 0 as already superseded; the server answers
+  0 with `InvalidArgument`. `CloseViewer` drops the server's viewer, as
+  dropping an in-process one does.
+- **Viewer messages.** Message kinds 17 to 20 are `Focus` (client to
+  server, on the viewer's lane), `ViewerStopped`, `ViewerRevoked`, and
+  `LargeResult`, a result whose response may pass the `Result` cap.
+  Selection text is the only one, so `RequestKind::large_result` is set
+  for `Selection` alone. `Welcome`'s minor-0 vector changed, because it
+  lists the caps of the client's kinds and `Focus` is one.
+- **Subscription results.** A subscription's success is
+  `Response::Viewer { viewer, status }`. A terminal whose runtime stopped
+  on its own answers a success too, `Response::Stopped { status }`, rather
+  than the `Stopped` error the text above describes, because a `WireError`
+  carries no payload and the final status must travel with the answer.
+  Core's `Mux::terminal_status` reads it under the same attachment and
+  session check as a subscription. A runtime that panicked publishes no
+  final status, so its answer carries the last status it published.
+- **The `Result` cap grew.** A viewer's status, about 1.1 MiB at every
+  limit, and a link lookup must fit a `Result`, so its cap is about 1.2 MiB
+  and a result may span frames; slice 3a's rule that every result fits one
+  frame at the smallest `max_frame` no longer holds, though a close
+  assessment still does. The retained bound is unchanged, because the
+  hierarchy cap is larger still. A link's destination is at most
+  `MAX_LINK_DESTINATION_BYTES` (32 KiB), its cells at most `MAX_LINK_CELLS`
+  (16,384), and their texts together at most `MAX_LINK_TEXT_BYTES` (32 KiB),
+  core's scan limits; a link past them travels as `LinkLookup::ScanLimit`.
+- **Responses** 12 to 16 are `Viewer`, `Stopped`, `Snapshot { link }`,
+  `Text { text }`, and `Range { range }`.
+- **Subscription options** carry the capabilities, initial focus,
+  geometry, presentation, and the spawned flag. Host effects arrive with
+  slice 4, so a subscription that asks for them answers `Unsupported`.
+- **Input cost.** `viewer::input_cost` is what one input counts against
+  the input window, on both sides: its text's bytes, a character chord's
+  text and layout text, or `INPUT_EVENT_COST` (32 bytes) for a key or
+  mouse report, about what one occupies, so a flood of keys cannot stage
+  far more memory than the window suggests.
+
+The streaming encoder:
+
+- **Frame at a time from the snapshot.** `UpdateEncoder::plan` numbers the
+  next update and fixes its baseline, holding only the two `Arc` snapshots
+  core already shares. `PlannedUpdate::frames`, called when the message
+  starts, builds the style table and each full row's runs without copying a
+  cell's text, sizes every row exactly, and encodes the header and style
+  table. `UpdateFrames::fill` then encodes one row operation at a time
+  straight from the snapshot's rows, so no `TerminalUpdate` value and no
+  whole-message buffer exist, and between frames it holds at most the rest
+  of one row. A row that encodes to another length than its sizing pass
+  computed is an encode error, which ends the connection rather than
+  corrupting it. A property test checks that the streamed bytes equal
+  `encode_message`'s at any frame size, and a perturbed sizing pass fails
+  it.
+- **Late encoding.** A status and an input acknowledgement encode when
+  their message starts, and a selection result streams its text from its
+  own buffer between a head and a tail that `text_result_parts` encodes.
+
+The server:
+
+- **Viewer ports.** The connection holds each viewer as an
+  `Arc<dyn ViewerPort>`. It calls the port's non-blocking methods itself,
+  polling what changed and admitting ordered messages, so a keystroke
+  reaches core without a worker hop. Snapshots, selection text, and
+  selection units are `Job::Viewer`s whose replies the native driver
+  awaits on its executor; only a subscription, which takes the `Mux` lock,
+  runs on a worker. Core's `TerminalViewer` is the production port; the
+  test-only `ModelTerminal` is a deterministic one.
+- **The viewer's lane opens with its subscription's result**, its first
+  message, rather than gating the lane on a result queued on the control
+  lane: the order is the same with nothing to gate.
+- **Pumps.** A viewer has at most one snapshot in flight. A client's
+  snapshot requests go first, then an update owed without credit (the
+  first, or a resync's complete snapshot), then a credited update when the
+  terminal published something the viewer has not built. A status replaces
+  the viewer's unsent status in place, or goes in ahead of the first
+  update not yet started; an input acknowledgement does the same.
+- **Ordered staging.** Input, focus, and the viewer requests core orders
+  with them (geometry, presentation, history edits) share one staging
+  queue per viewer, admitted in arrival order, retried every
+  `STAGING_RETRY` (16 ms) while anything is staged. Input sequences must be
+  consecutive from 1, and staged input past the window is a protocol
+  violation. The server acknowledges input once core admitted or refused
+  it for good, so input refused for good still leaves the client's window.
+- **Stop and revocation.** Core cannot snapshot a runtime that stopped, so
+  a stopped viewer's complete final update re-encodes the last snapshot the
+  server planned, then `ViewerStopped` follows. A connection remembers its
+  last `MAX_ENDED_VIEWERS` (256) ended viewers, so a request naming one
+  answers `Stopped` or `Revoked` rather than `StaleTarget`; the client
+  keeps the same record and answers such a request locally.
+- **Disconnect.** The connection drops its viewers, then detaches its
+  attachments once no viewer job still holds a viewer, so a job a fault
+  harness holds cannot make the detach revoke a viewer it would otherwise
+  find dropped. Staged input is discarded.
+- **Bounds.** `MAX_CONNECTION_VIEWERS` (256) counts subscriptions in
+  flight. The outbound queue's lanes are dynamic, one per viewer. A
+  streamed or late-encoded message counts its frames from their cut until
+  they are written, and produces frames only while retained bytes are
+  under the budget, so a connection's encoded output stays within
+  `OUTBOUND_BUDGET` plus one frame however many viewers it holds. The
+  writer-stall deadline is armed while anything waits to be written,
+  queued but not yet encoded included; it used to count only retained
+  bytes, so a full socket with nothing but late-encoded items queued never
+  armed it.
+- **Native I/O.** The socket is non-blocking. While the writer is idle, the
+  driver writes a batch itself and hands the writer only what the socket
+  did not take; the reader and writer wait with `poll` where a blocking
+  socket would block. `MSG_DONTWAIT` on a blocking socket was tried first,
+  and macOS blocked on it. One task per viewer forwards its wakes, with at
+  most one queued at a time.
+
+The client:
+
+- **One stream.** The client keeps sending every message on stream 0,
+  whole, in order, as slice 3a did, so each lane's order holds trivially.
+  A large paste therefore delays the same connection's other viewers'
+  keystrokes by its write time, about a millisecond per MiB locally;
+  interleaving client lanes is left to a remote transport that needs it.
+- **Viewers.** `ClientSession::subscribe_terminal` takes whether the viewer
+  starts visible, so a background tab gets no credit from the start. A
+  visible viewer keeps the credit window full, returning a credit for each
+  credited update it disposes of; a hidden one returns none. Input past the
+  window waits locally, with focus reports and the requests that name the
+  viewer behind it, in issue order. Scrolls are numbered by the session
+  and typing carries the number. Per incarnation the session keeps each
+  terminal's status baseline and each stopped terminal's final view, and
+  `ViewerEvent` reports updates, status with what changed, input
+  acknowledgements, stops, revocations, and contract faults.
+
+What an embedded window close keeps:
+
+- Core's detach, retarget, and session close now skip viewers that are
+  already dropped, so their admitted input runs before they finalize, and
+  an explicit detach of a live viewer still revokes it and discards its
+  queued input; cross-session moves still revoke every viewer of the moved
+  terminal. A disconnect drops its viewers before it detaches, so a
+  remote client's admitted input reaches the PTY.
+- The desktop's window close commits first and drops its views after, so
+  at the detach its viewer is still live, and input queued at that instant
+  is discarded as before. Keeping it needs the desktop to drop the
+  window's views before it commits, and to resubscribe them if the commit
+  fails; that change touches the close path other open work is editing and
+  belongs with [#45][issue-45], which moves the desktop behind the runtime
+  interface. Core's test covers the drop-then-close order the change will
+  rely on, and the viewers and close smokes stay green.
+
+Fault injection:
+
+- `huterm-server`'s test-only `World` joins real `Connection`s and
+  `ClientSession`s through in-memory links on a virtual clock, behind model
+  terminals, and runs handed-out work at once or, when it holds work, after
+  random delays in a random order. `Tamper` damages deltas in flight so
+  they still decode. Every choice draws from one seed, and the viewer
+  tables are ordered maps and each world numbers its own viewers, so a run
+  replays from its seed.
+- Scenarios `clean`, `local-faults`, `remote`, `remote-healthy`,
+  `stalled-readers`, `state-corruption`, and `swarm` take the simulation's
+  broker profiles. After the faults, every viewer turns visible, the
+  terminals publish past the next update digest, and each run checks that
+  every view shows its terminal's latest snapshot, that no client resyncs
+  without damage or faults a viewer or the connection, that the server
+  ends connections only as stalled, that no input arrives twice or out of
+  order, that on a healthy link every input arrives, and that no connection
+  retains more than its bound. The normal suite runs three seeds per
+  scenario; `mise run faults:ipc -- 1000` ran 1,000 per scenario with about
+  32,000 cuts, 42,000 stalls, and 82,000 damaged deltas, all caught.
+- The harness found three bugs before review: a stall deadline that never
+  armed, viewers whose identities collided across model terminals, and its
+  own tamper dropping a message's first frames when removed mid-stream.
+
+Measurements, release medians on an Apple M3 Max (`mise run bench:ipc`),
+each cell the range over two to four runs. "Base" is slice 3a's commit on
+the same machine. "Writer threads" is this slice with the drivers handing
+every write to their writer thread, as slice 3a did; "direct writes" is
+this slice as it ships.
+
+| Measurement | Base | Writer threads | Direct writes |
+| --- | --- | --- | --- |
+| `RenameTab` round trip | 55.2 us | not measured | 38.1 to 39.0 us |
+| Commit to the client's projection | 19.8 us | not measured | 14.8 to 16.6 us |
+| Keystroke echo through a PTY over IPC | none | 81 to 107 us | 70 to 73 us |
+| The same keystroke echo in process | none | 36 us | 36 us |
+| Echo output, in-process viewer to remote client | none | 24 us | 19 to 21 us |
+| 100,000-line flood until a viewer shows it, over IPC | none | 147 to 151 ms | 154 to 158 ms |
+| The same flood in process | none | 146 to 151 ms | 148 to 150 ms |
+
+A keystroke's echo over IPC still crosses the client's driver, the server's
+reader and driver, and the client's reader and driver, besides core's own
+hops; replacing the reader threads with an event loop, as "Risks"
+anticipates, is the next step if it matters. Direct writes trade about 4
+percent of flood throughput for that latency: with writer threads the
+flood over IPC took about as long as in process. Writing only small
+batches directly did not recover it, which points at the smaller, more
+frequent writes rather than inline writing of large batches.
+`ci:benchmarks` gates none of these, because no CI runner has measured
+them.
 
 ### Slice 4: host effects over IPC
 
@@ -2271,6 +2498,7 @@ closed at the deadline.
 | Architecture boundaries | New `mise run architecture` rules, each shown to fail once against a deliberate violation |
 | Peer authentication and socket permissions | Slice 5 tests, including a second-user test in Docker |
 | The design's invariants hold under faults, version skew, and remote-like links | `huterm-ipc-sim`: every scenario over 12 seeds in the normal suite, the design-switch tests, and `mise run sim:ipc -- 2000` before changing the design |
+| The real server and client hold those invariants under faults | Slice 3b fault injection: every scenario over 3 seeds in the normal suite, and `mise run faults:ipc` over many |
 
 Property tests use `proptest` as a dev-dependency, synchronize on observable
 progress, and bound their case counts so the normal suite stays fast. The

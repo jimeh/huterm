@@ -596,15 +596,35 @@ Nothing in the desktop calls either until #45.
   contract tests map in-process errors through it too.
 - A connection retains at most `OUTBOUND_BUDGET` plus one hierarchy message
   plus one result or hierarchy message of encoded bytes
-  (`ServerConfig::retained_bound`). A producer admits a message only while
-  retained bytes are under the budget, and encodes it once into the buffer
-  the writer shares; at the budget the connection stops reading. Never
-  re-encode a message per frame or copy a frame's payload.
+  (`ServerConfig::retained_bound`). A producer admits a result or
+  hierarchy message only while retained bytes are under the budget, and
+  encodes it once into the buffer the writer shares; at the budget the
+  connection stops reading. Updates, statuses, input acknowledgements, and
+  selection text encode only when their message starts, and an update and
+  selection text one frame at a time from the snapshot or the text
+  (`UpdateEncoder::plan`, `PlannedUpdate::frames`, `text_result_parts`);
+  they cut frames only under the budget. Never re-encode a message per
+  frame, copy an encoded message's payload, or build a whole update.
+- A viewer's pump has one snapshot in flight and is the only producer of
+  its updates; its first update and a resync's are complete and spend no
+  credit, and a status or acknowledgement replaces its unsent one ahead of
+  the first update not yet started. Requests that name a viewer
+  (`RequestKind::names_viewer`) bypass the request queue and stay in order
+  with its input in one staging queue, retried every `STAGING_RETRY` while
+  anything is staged. A disconnect drops viewers before it detaches.
+- The connection calls a `ViewerPort`'s non-blocking methods itself, so
+  input reaches core without a worker hop; snapshots and selection run as
+  `Job::Viewer`s the native driver awaits, and only a subscription takes a
+  worker. The native sockets are non-blocking: the drivers write what the
+  socket takes at once, and the reader and writer threads wait with `poll`.
+  Do not use `MSG_DONTWAIT` on a blocking socket instead; macOS blocks on
+  it.
 - To add a request kind, give `Request` and `RequestKind` a variant, the
   next tag in `RequestKind::number`, an entry in `RequestKind::ALL`, a
   `retry_class` (the default arm is `Mutation`, which a client never
-  resends), a `since` minor version, and `large_result` if its result can
-  exceed a frame. Add `encode_fields` and `decode_fields` arms, fit its worst
+  resends), a `since` minor version, `large_result` if its result can pass
+  the `Result` cap, and `names_viewer` and `Request::viewer` if it names a
+  viewer. Add `encode_fields` and `decode_fields` arms, fit its worst
   case under the `Request` cap with a boundary test, and add a golden
   vector, which the vector test counts. The server needs an arm in
   `Connection::start` and in `runtime::execute` (usually `plain`); without
@@ -618,8 +638,19 @@ Nothing in the desktop calls either until #45.
   none, so embedded mode pays nothing. A digest costs time in proportion to
   the hierarchy, under the lock: about 1 us for a small hierarchy and 7 ms
   at `MAX_HIERARCHY_ITEMS` with every name at its limit.
-- `mise run bench:ipc` measures a request's round trip and a hierarchy
-  event's latency over a socket pair. It gates nothing yet.
+- `mise run bench:ipc` measures a request's round trip, a hierarchy event's
+  latency, a keystroke's echo through a PTY, the output a remote viewer
+  waits for, and a 100,000-line flood, over a socket pair and in process.
+  It gates nothing yet. Time snapshots in a benchmark by awaiting
+  `SnapshotRequest::recv`; `read_snapshot` parks a millisecond at a time.
+- Viewer tests run on a deterministic world (`world.rs`): real connections
+  and client sessions over in-memory links on a virtual clock, behind
+  `ModelTerminal`s. `faults.rs` runs it under seeded faults and checks the
+  simulation's invariants; `mise run faults:ipc [SEEDS]` runs many seeds,
+  and `mise run faults:ipc SCENARIO SEED` replays one. Keep everything a
+  run touches seeded and ordered: an unordered map or a process-wide
+  counter makes a seed stop replaying. Turn the world's `Tamper` off by
+  zeroing its rate, never by removing it, which drops the frames it holds.
 
 ## Attachments, close consent, and exit
 
