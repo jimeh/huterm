@@ -29,6 +29,10 @@ blocking.workspace = true
 futures-lite.workspace = true
 
 [dev-dependencies]
+# The contract tests and the IPC benchmark drive the server through the
+# real client. The client's tests depend on this crate the same way; Cargo
+# allows the cycle because both edges are dev edges.
+huterm-client.workspace = true
 # The test feed's tests deliver test-minor events, so the wire crate's
 # test-only minor version is on whenever this crate's tests build.
 huterm-wire = { workspace = true, features = ["test-minor"] }

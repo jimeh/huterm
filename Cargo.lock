@@ -2745,6 +2745,7 @@ dependencies = [
  "async-io",
  "blocking",
  "futures-lite",
+ "huterm-client",
  "huterm-core",
  "huterm-protocol",
  "huterm-wire",

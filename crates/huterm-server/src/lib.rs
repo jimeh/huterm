@@ -12,8 +12,12 @@
 
 #![deny(missing_docs)]
 
+#[cfg(all(test, unix))]
+mod benchmark;
 pub mod config;
 pub mod connection;
+#[cfg(all(test, unix))]
+mod contract_tests;
 mod convert;
 pub mod feed;
 #[cfg(unix)]

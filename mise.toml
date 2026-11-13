@@ -676,6 +676,24 @@ case "$output" in
 esac
 '''
 
+[tasks."bench:ipc"]
+depends = ["ghostty:prepare"]
+description = "Measure runtime IPC request round trips and hierarchy event latency over a Unix socket pair"
+run = '''
+set -eu
+output=$(bash scripts/build-exec.sh cargo test --release --locked -p huterm-server --lib benchmark::ipc_benchmark \
+  -- --ignored --nocapture --exact 2>&1) || {
+  printf '%s\n' "$output"
+  exit 1
+}
+printf '%s\n' "$output"
+# A renamed or moved benchmark would otherwise run no test and pass.
+case "$output" in
+  *"test result: ok. 1 passed"*) ;;
+  *) echo "bench:ipc: ipc_benchmark ran no test" >&2; exit 1 ;;
+esac
+'''
+
 [tasks."ghostty:prepare"]
 description = "Verify pinned source and Zig for the Ghostty engine"
 run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"

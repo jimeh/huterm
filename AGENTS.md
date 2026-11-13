@@ -28,7 +28,7 @@ its guide; most of its rules record a failure that already happened once.
 
 | Change area | Guide |
 | --- | --- |
-| PTY I/O, process info, runtime workers, shutdown, Mux, IDs, session capture and restore, terminal lifecycle, the IPC wire contract and fuzzing, or a new binary that hosts terminals | [Core runtime](docs/agents/core-runtime.md) |
+| PTY I/O, process info, runtime workers, shutdown, Mux, IDs, session capture and restore, terminal lifecycle, the IPC wire contract and fuzzing, the IPC server and client, or a new binary that hosts terminals | [Core runtime](docs/agents/core-runtime.md) |
 | GPUI threading, the window model, frame scheduling, close and Quit, rendering, keymap and menus, overlays, configuration, schemas | [Desktop client](docs/agents/desktop-client.md) |
 | Keyboard and text input, mouse reporting, scrolling, selection, tab dragging, pane focus and divider drags, links, file drops | [Desktop input](docs/agents/desktop-input.md) |
 | Fullscreen, Quake windows, the title row, window decorations, native window handles | [Window presentation](docs/agents/window-presentation.md) |
