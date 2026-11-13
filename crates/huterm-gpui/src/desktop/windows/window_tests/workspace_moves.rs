@@ -433,6 +433,20 @@ fn the_session_list_keys_reorder_sessions(cx: &mut TestAppContext) {
     h.wait_for("the session to move down", |cx| {
         sessions(cx) == [other.session, own]
     });
+    // The row menu's items move it too, and do nothing at the end.
+    h.update_view(window, |view, window, cx| {
+        let raw = own.get();
+        view.run_session_pick(&format!("session-down:{raw}"), window, cx);
+    });
+    h.cx.run_until_parked();
+    assert_eq!(h.cx.update(sessions), [other.session, own]);
+    h.update_view(window, |view, window, cx| {
+        let raw = own.get();
+        view.run_session_pick(&format!("session-up:{raw}"), window, cx);
+    });
+    h.wait_for("the row menu's pick to move it back up", |cx| {
+        sessions(cx) == [own, other.session]
+    });
 }
 
 #[gpui::test]

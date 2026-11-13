@@ -37,7 +37,8 @@ pub struct ListOption {
     pub id: ItemId,
     /// The visible text, which is also the option's accessible name.
     pub label: SharedString,
-    /// Secondary text under the label.
+    /// Secondary text under the label, which is also the option's
+    /// accessible description.
     pub description: Option<SharedString>,
 }
 
@@ -555,6 +556,11 @@ fn option_row<V: Owner>(
         .id((ElementId::from("option"), option.id.clone()))
         .role(gpui::Role::ListBoxOption)
         .aria_label(option.label.clone())
+        // The second line tells apart options with one label, such as
+        // workspaces of two sessions.
+        .when_some(option.description.clone(), |row, description| {
+            row.aria_description(description)
+        })
         .aria_position_in_set(row)
         .aria_selected(highlighted)
         .when(

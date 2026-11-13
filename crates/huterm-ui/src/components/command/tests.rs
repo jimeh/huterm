@@ -42,6 +42,8 @@ struct Setup {
     height: Option<f32>,
     pointer_highlights: bool,
     fallback: HighlightFallback,
+    /// Each option carries its font's foundry as a second line.
+    described: bool,
 }
 
 impl Default for Setup {
@@ -52,6 +54,7 @@ impl Default for Setup {
             height: None,
             pointer_highlights: true,
             fallback: HighlightFallback::First,
+            described: false,
         }
     }
 }
@@ -96,7 +99,15 @@ impl Owner {
             fonts
                 .iter()
                 .filter(|font| font.to_lowercase().contains(&query))
-                .map(|font| ListOption::new(font.to_lowercase(), font.clone()))
+                .map(|font| {
+                    let option =
+                        ListOption::new(font.to_lowercase(), font.clone());
+                    if setup.described {
+                        option.description(format!("{font} foundry"))
+                    } else {
+                        option
+                    }
+                })
                 .collect()
         };
         let log = Rc::new(RefCell::new(Vec::new()));
@@ -568,6 +579,24 @@ fn the_search_and_list_report_their_roles_and_states(cx: &mut TestAppContext) {
             })
             .collect();
         assert_eq!(selected, [("Monaco".into(), 1.into())]);
+    });
+}
+
+#[gpui::test]
+fn an_options_second_line_is_its_accessible_description(
+    cx: &mut TestAppContext,
+) {
+    let (_, cx) = setup(
+        cx,
+        Setup {
+            described: true,
+            ..Setup::default()
+        },
+    );
+    cx.update(|window, _| {
+        let option = &a11y_labelled(window, "Monaco")["aria"];
+        assert_eq!(option["role"], "ListBoxOption");
+        assert_eq!(option["description"], "Monaco foundry");
     });
 }
 

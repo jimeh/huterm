@@ -607,10 +607,9 @@ impl WorkspaceView {
         session: SessionId,
         cx: &App,
     ) -> Option<MenuSpec> {
-        self.session_rows(cx)
-            .iter()
-            .find(|row| row.session == session)
-            .map(row_menu)
+        let rows = self.session_rows(cx);
+        let index = rows.iter().position(|row| row.session == session)?;
+        Some(row_menu(&rows[index], index, rows.len()))
     }
 
     /// Whether a dismissed row menu of `kind` returns focus to its row: a
@@ -677,6 +676,8 @@ impl WorkspaceView {
             SessionPick::Rename(raw)
             | SessionPick::ClearName(raw)
             | SessionPick::OpenInNewWindow(raw)
+            | SessionPick::MoveUp(raw)
+            | SessionPick::MoveDown(raw)
             | SessionPick::Close(raw) => raw,
         };
         let Some(session) =
@@ -693,6 +694,19 @@ impl WorkspaceView {
             SessionPick::Rename(_) => RowAction::Rename,
             SessionPick::ClearName(_) => RowAction::ClearName,
             SessionPick::Close(_) => RowAction::Close,
+            SessionPick::MoveUp(_) | SessionPick::MoveDown(_) => {
+                let up = matches!(pick, SessionPick::MoveUp(_));
+                if let Err(error) =
+                    self.move_session_step(session, up, window, cx)
+                {
+                    self.report_failure(
+                        "Command failed",
+                        error.to_string(),
+                        cx,
+                    );
+                }
+                return;
+            }
             SessionPick::OpenInNewWindow(_) => {
                 self.close_session_list(window, cx);
                 self.run_recorded(

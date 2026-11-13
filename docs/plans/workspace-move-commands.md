@@ -75,6 +75,10 @@ Each new item goes where its siblings already live, with no new pattern:
   icon) while another session exists, then, while the session has another
   workspace, **Move Workspace Up** and **Move Workspace Down** (arrow icons,
   disabled at the ends) before Move Workspace to New Window.
+- Session row menu: **Move Session Up** and **Move Session Down** (arrow
+  icons, disabled at the ends) after Open in New Window, while there is
+  another session, so the session list's keyboard reorder has a visible
+  equivalent.
 - Palette: the four operation commands by catalog title. The two
   `sidebar_*` commands stay contextual, as their siblings are.
 - Settings keybindings: each joins its siblings' group.
@@ -107,7 +111,11 @@ Each new item goes where its siblings already live, with no new pattern:
   the shown workspace, and puts it in the new tab's view, built when the
   window has none (`put_pane_view`). It skips a busy window and views the
   projection has not caught up with, as tab adoption does.
-  `adopt_pane_view` is now these two halves.
+  `adopt_pane_view` is now these two halves. The kept view keeps its
+  viewer, scroll position, and terminal state; a selection still clears
+  when the pane's new size reflows its terminal, as any resize or output
+  clears one (the engine bumps its generation), so a pane moved into a new
+  tab of another size loses it, as it would within one workspace.
 - **Incoming edge scroll.** `Incoming` gains the `ListScroll` a local
   gesture has. While the pointer is over the destination's drawn workspace
   list, frames scroll it at the edges and retarget the incoming preview.
@@ -157,6 +165,27 @@ finding was checked against the code.
   through real key presses and the menus through their picks; the existing
   overlays smoke walks the tab menu past the new item, which keyboard
   navigation skips while disabled.
+
+## UX review
+
+A Codex computer-use review of a scratch bundle found the moves, reorders,
+and their propagation to a second window working, and four issues:
+
+- Moving a split pane to a new tab of another workspace cleared its
+  selection. The view is kept (the window tests compare entities); the
+  pane's new size reflows the terminal, which clears any selection, as a
+  window resize does. Recorded as a limitation, not changed here.
+- Picker rows exposed only their label, so two "Workspace 1" destinations in
+  different sessions read the same. Fixed: an option's second line is now
+  its accessible description, for every picker.
+- Session reordering had no visible equivalent of its keys. Fixed with the
+  session row menu items above.
+- A disabled menu item's reason does not reach native menus, which also
+  drop item icons. This predates the change and affects every item; follow
+  up.
+
+Showing the `Sidebar` keys beside the row menus' items is a follow-up too:
+no row menu shows its local keys today, F2 for Rename included.
 
 ## Non-goals
 

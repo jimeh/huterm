@@ -30,18 +30,21 @@ fn drawn(spec: &MenuSpec) -> Vec<String> {
 #[test]
 fn a_row_menu_acts_on_its_own_session() {
     assert_eq!(
-        drawn(&row_menu(&row(2, "infra", false))),
+        drawn(&row_menu(&row(2, "infra", false), 1, 3)),
         [
             "session-rename:2 Rename Session…",
             "session-clear:2 Clear Name",
             "session-window:2 Open in New Window",
+            "session-up:2 Move Session Up",
+            "session-down:2 Move Session Down",
             "-",
             "session-close:2 Close Session…",
         ]
     );
-    // An automatic name has nothing to clear.
+    // An automatic name has nothing to clear, and a lone session nowhere
+    // to move.
     assert_eq!(
-        drawn(&row_menu(&row(1, "Session 1", true))),
+        drawn(&row_menu(&row(1, "Session 1", true), 0, 1)),
         [
             "session-rename:1 Rename Session…",
             "session-window:1 Open in New Window",
@@ -52,11 +55,41 @@ fn a_row_menu_acts_on_its_own_session() {
 }
 
 #[test]
+fn session_moves_are_disabled_at_their_ends() {
+    let enabled = |index: usize| -> Vec<(String, bool)> {
+        row_menu(&row(4, "infra", false), index, 2)
+            .to_listbox(Platform::MacOs)
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                ListRow::Item(item)
+                    if item.id.starts_with("session-up")
+                        || item.id.starts_with("session-down") =>
+                {
+                    Some((item.id.to_string(), item.enabled))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let rows = |up: bool, down: bool| {
+        vec![
+            ("session-up:4".to_owned(), up),
+            ("session-down:4".to_owned(), down),
+        ]
+    };
+    assert_eq!(enabled(0), rows(false, true));
+    assert_eq!(enabled(1), rows(true, false));
+}
+
+#[test]
 fn picks_round_trip_through_their_ids() {
     for (id, pick) in [
         ("session-rename:7", SessionPick::Rename(7)),
         ("session-clear:7", SessionPick::ClearName(7)),
         ("session-window:7", SessionPick::OpenInNewWindow(7)),
+        ("session-up:7", SessionPick::MoveUp(7)),
+        ("session-down:7", SessionPick::MoveDown(7)),
         ("session-close:7", SessionPick::Close(7)),
     ] {
         assert_eq!(parse_pick(id), Some(pick), "{id}");

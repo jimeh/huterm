@@ -255,7 +255,7 @@ switcher_style = "full"             # full (icon and name) or icon
   the row's menu: Rename, Clear Name, and Close, and for a workspace, Pin
   Workspace or Unpin Workspace, Move Workspace to Session…, Move Workspace
   Up and Down, and Move Workspace to New Window, and for a session, Open in
-  New Window.
+  New Window and Move Session Up and Down.
   In the popovers each row also has a "⋯" button that opens the
   same menu. Drag a row up or down to reorder the session's workspaces or
   the sessions, holding it at the list's edge to scroll; Escape cancels the
