@@ -697,6 +697,7 @@ fn a_revoked_viewers_waiting_result_follows_its_update_and_precedes_the_notice()
     // The server reads the scroll under the budget; its snapshot completes
     // only once the other viewer's update holds the writer.
     world.freeze_work = true;
+    let since = world.peers[peer].log.len();
     let now = world.time();
     let scroll = world.peers[peer].session.scroll(
         viewer,
@@ -722,9 +723,10 @@ fn a_revoked_viewers_waiting_result_follows_its_update_and_precedes_the_notice()
     world.step();
     world.peers[peer].stalled_until = 0;
     world.settle(SETTLE);
-    let log = &world.peers[peer].log;
+    // Everything the client logged since the scroll went out.
+    let log = &world.peers[peer].log[since..];
     let position = |wanted: &dyn Fn(&huterm_client::ClientEvent) -> bool| {
-        log.iter().rposition(wanted)
+        log.iter().position(wanted)
     };
     let updated = position(&|event| {
         matches!(
@@ -751,7 +753,9 @@ fn a_revoked_viewers_waiting_result_follows_its_update_and_precedes_the_notice()
             }) if *revoked == viewer
         )
     });
-    assert!(answered.is_some(), "the scroll succeeded");
+    let updated = updated.expect("the scroll's update arrived");
+    let answered = answered.expect("the scroll succeeded");
+    let revoked = revoked.expect("the revocation arrived");
     assert!(updated < answered, "its update came first");
     assert!(answered < revoked, "the revocation came last");
 }
