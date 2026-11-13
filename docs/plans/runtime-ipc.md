@@ -2375,9 +2375,12 @@ Fault injection:
   retains more than its bound. The normal suite runs three seeds per
   scenario; `mise run faults:ipc -- 1000` ran 1,000 per scenario with about
   32,000 cuts, 42,000 stalls, and 82,000 damaged deltas, all caught.
-- The harness found three bugs before review: a stall deadline that never
-  armed, viewers whose identities collided across model terminals, and its
-  own tamper dropping a message's first frames when removed mid-stream.
+- The world's acceptance cases found one server bug: the stall deadline
+  never armed while a full socket left only late-encoded items queued.
+  The long runs found only the harness's own bugs: unordered maps and a
+  process-wide counter that kept seeds from replaying, model viewers whose
+  identities collided across terminals, and a tamper that dropped a
+  message's first frames when removed mid-stream.
 
 Measurements, release medians on an Apple M3 Max (`mise run bench:ipc`),
 each cell the range over two to four runs. "Base" is slice 3a's commit on
