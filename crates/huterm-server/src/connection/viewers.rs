@@ -26,7 +26,7 @@ use std::time::Duration;
 use huterm_core::RuntimeError;
 use huterm_protocol::{
     InputStamp, MousePosition, ScrollCommand, TerminalInput, TerminalSnapshot,
-    ViewerId,
+    TerminalStatus, ViewerId,
 };
 use huterm_wire::caps::VIEWER_INPUT_BUDGET;
 use huterm_wire::error::{ErrorCode, WireError};
@@ -101,6 +101,9 @@ pub(super) struct Viewer {
     woken: bool,
     /// How the viewer ended before its lane opened; it ends once open.
     ending: Option<Ended>,
+    /// The status the viewer's last poll read before its lane opened,
+    /// which goes out ahead of its end.
+    ending_status: Option<Arc<TerminalStatus>>,
     credit: u32,
     /// The terminal published something the viewer has not built.
     notified: bool,
@@ -129,6 +132,7 @@ impl Viewer {
             opened: false,
             woken: false,
             ending: None,
+            ending_status: None,
             credit: 0,
             notified: false,
             owed: true,
@@ -196,8 +200,17 @@ impl Connection {
     pub fn viewer_ended(&mut self, viewer: ViewerId, now: Duration) {
         self.clock = now;
         self.poll_viewer(viewer);
-        if let Some(live) = self.viewers.get(&viewer) {
+        if let Some(live) = self.viewers.get_mut(&viewer) {
             let update = live.port.poll();
+            // The poll consumed the final status; a viewer whose lane is
+            // not open yet sends it once the lane opens.
+            if let Some(status) = update.status {
+                if live.opened {
+                    self.outbound.set_status(viewer, status);
+                } else {
+                    live.ending_status = Some(status);
+                }
+            }
             let ended = if update.revoked {
                 Ended::Revoked
             } else {
@@ -295,6 +308,9 @@ impl Connection {
         // poll after that reads its status baseline as unchanged.
         viewer.woken = false;
         if let Some(ended) = viewer.ending {
+            if let Some(status) = viewer.ending_status.take() {
+                self.outbound.set_status(id, status);
+            }
             self.end_viewer(id, ended);
             return;
         }

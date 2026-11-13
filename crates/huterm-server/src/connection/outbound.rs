@@ -182,10 +182,11 @@ impl LaneQueue {
     /// starts only under the budget; and a frame other than a batch's
     /// `first` waits for the next batch unless it fits `space` whole.
     fn waits(&self, first: bool, space: usize, limit: u32, over: bool) -> bool {
-        // Over the budget, no message encoded as it goes starts; one already
-        // started holds a stream, so it finishes, which frees the stream
-        // for messages admitted earlier. The writer takes one batch at a
-        // time, so what it produces meanwhile stays within a batch.
+        // Over the budget while bytes drain, no message encoded as it goes
+        // starts; one already started holds a stream, so it finishes, which
+        // frees the stream for messages admitted earlier. The writer takes
+        // one batch at a time, so what it produces meanwhile stays within a
+        // batch.
         if over
             && self.current.is_none()
             && !matches!(self.queue.front(), Some(Item::Encoded(..)))
@@ -718,12 +719,26 @@ impl Outbound {
         Ok(Ok(current))
     }
 
+    /// Whether retained bytes will drain without another message starting:
+    /// frames are with the writer, or a started message still has frames
+    /// to cut. When neither holds, everything retained waits behind
+    /// messages encoded as they go, so one of those must start even over
+    /// the budget.
+    fn draining(&self) -> bool {
+        !self.handed.is_empty()
+            || [&self.control, &self.large, &self.hierarchy]
+                .into_iter()
+                .chain(self.viewers.values())
+                .any(|queue| queue.current.is_some())
+    }
+
     /// Cuts `lane`'s next frame within `space`, or, unless it is the
     /// `first` frame of its transmit, nothing when the whole frame does
     /// not fit.
     fn cut(&mut self, lane: Lane, space: usize, first: bool) -> Turn {
         let limit = self.limit;
         let encoding = self.encoding;
+        let over = self.retained >= self.budget && self.draining();
         let Self {
             control,
             large,
@@ -744,7 +759,7 @@ impl Outbound {
         if !queue.has_work() {
             return Turn::Empty;
         }
-        if queue.waits(first, space, limit, self.retained >= self.budget) {
+        if queue.waits(first, space, limit, over) {
             return Turn::Wait;
         }
         if queue.current.is_none() {
@@ -954,6 +969,38 @@ mod tests {
             assert!(turns < 10_000, "the queue stopped moving");
         }
         assert_eq!(delivered, 3 * 1000 + 2 * budget);
+        assert_eq!(outbound.retained(), 0);
+    }
+
+    #[test]
+    fn encoded_messages_over_the_budget_behind_a_streamed_one_still_go_out() {
+        let budget = 100;
+        // The preamble goes out first, while the rest waits over the budget.
+        let mut outbound = Outbound::new(b"hi".to_vec(), 1 << 16, budget);
+        let runtime = RuntimeId::new(1);
+        outbound.set_encoding(IdScope::new(runtime), MessageCaps::for_minor(0));
+        let viewer = ViewerId::in_runtime(runtime, 1);
+        outbound.open_viewer(viewer);
+        // Every retained byte waits behind a message encoded as it goes.
+        outbound.push(
+            Lane::Viewer(viewer),
+            Item::Text {
+                head: Vec::new(),
+                text: "t".repeat(10),
+                tail: Vec::new(),
+            },
+        );
+        outbound.push_encoded(Lane::Viewer(viewer), vec![7; 2 * budget], None);
+        let mut delivered = 0;
+        let mut turns = 0;
+        while let Some(batch) = outbound.take(64) {
+            delivered +=
+                payloads(&batch).iter().map(|p| p.len()).sum::<usize>();
+            outbound.written(batch.len());
+            turns += 1;
+            assert!(turns < 10_000, "the queue stopped moving");
+        }
+        assert_eq!(delivered, 2 + 10 + 2 * budget);
         assert_eq!(outbound.retained(), 0);
     }
 }

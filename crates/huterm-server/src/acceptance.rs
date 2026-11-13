@@ -595,6 +595,78 @@ fn a_live_viewer_hears_its_terminal_stop_after_everything_queued_before_it() {
 }
 
 #[test]
+fn a_viewer_that_stops_before_its_subscription_is_answered_reports_the_exit() {
+    // With a budget of one byte, a writer batch the stalled client does
+    // not read keeps the second subscription's result waiting for room.
+    let mut world = World::new(
+        1,
+        ServerConfig {
+            outbound_budget: 1,
+            ..ServerConfig::default()
+        },
+        2,
+        grid(80, 24),
+        ModelLimits::default(),
+    );
+    let peer = world.add_peer(LinkProfile {
+        latency: 0,
+        jitter: 0,
+        chunk: usize::MAX,
+        buffer: 64,
+    });
+    world.peers[peer].batch = Some(256);
+    world.settle(SETTLE);
+    world.want(peer, 0, true);
+    world.settle(SETTLE);
+    // The server reads the subscription while under the budget; its work
+    // completes only once the writer is stuck.
+    world.hold_work = true;
+    world.want(peer, 1, true);
+    for _ in 0..10 {
+        if !world.peers[peer].works.is_empty() {
+            break;
+        }
+        world.step();
+    }
+    let held = std::mem::take(&mut world.peers[peer].works);
+    world.hold_work = false;
+    assert_eq!(held.len(), 1, "the subscription's work is held");
+    world.peers[peer].stalled_until = u64::MAX;
+    for row in 0..24 {
+        world.terminals[0].set_row(row, &format!("{row:0>80}"));
+    }
+    for _ in 0..5 {
+        world.step();
+    }
+    world.peers[peer].works = held;
+    world.step();
+    assert_eq!(world.peers[peer].connection.as_ref().unwrap().viewers(), 2);
+    world.terminals[1].exit(3);
+    world.terminals[1].stop();
+    world.step();
+    world.peers[peer].stalled_until = 0;
+    world.settle(SETTLE);
+    let events = world.viewer_events(peer, 0);
+    let exited = events.iter().position(|event| {
+        matches!(
+            event,
+            ViewerEvent::Status { status, .. } if matches!(
+                status.lifecycle,
+                huterm_protocol::TerminalLifecycle::Exited(_)
+            )
+        )
+    });
+    let stopped = events
+        .iter()
+        .position(|event| matches!(event, ViewerEvent::Stopped { .. }));
+    assert!(stopped.is_some(), "the client heard the stop");
+    assert!(
+        exited.is_some_and(|exited| Some(exited) < stopped),
+        "the exit arrived before the stop"
+    );
+}
+
+#[test]
 fn a_live_viewer_hears_its_revocation_and_a_new_one_takes_over() {
     let mut world = world(1);
     let peer = world.add_peer(LinkProfile::INSTANT);
