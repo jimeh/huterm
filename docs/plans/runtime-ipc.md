@@ -1,7 +1,7 @@
 # Local runtime IPC
 
-Status: in progress for [issue #44][issue-44]. Slices 1 and 2 are
-implemented, with the revisions recorded under each; slices 3a to 5 remain.
+Status: in progress for [issue #44][issue-44]. Slices 1, 2, and 3a are
+implemented, with the revisions recorded under each; slices 3b to 5 remain.
 
 Named server mode moves the runtime out of the desktop process. This plan
 defines the contract that carries runtime requests, results, the hierarchy
@@ -190,7 +190,8 @@ Architecture gates added to `mise run architecture`:
 - `huterm-wire`'s normal and build dependencies are exactly
   `huterm-protocol`.
 - `huterm-client` depends on no `huterm-core`, `huterm-ghostty`,
-  `portable-pty`, or `gpui-pre`, on any target.
+  `portable-pty`, or `gpui-pre`, on any target, through normal or build
+  edges, so its tests may still run against the real server.
 - `huterm-server` depends on no `gpui-pre`.
 - `huterm-protocol`, `huterm-wire` with its golden vectors, and
   `huterm-client` without its native transport build for
@@ -612,8 +613,9 @@ A result is a success value or a `WireError`:
   `Busy`, `Unsupported`, `InvalidArgument`, `LimitExceeded`, `StaleClose`.
 - `retry`: `Safe` when nothing was committed and the same request may be
   sent again, such as `Busy`; `Never` otherwise.
-- `committed_seq`: the hierarchy sequence for a structural request that
-  committed before failing, as a failed close cleanup does today.
+- `committed`: the hierarchy sequence, and its digest while the connection
+  is subscribed, for a structural request that committed before failing, as
+  a failed close cleanup does today.
 - `message`: a diagnostic string, never parsed by clients.
 
 Every structural result carries the hierarchy sequence it committed at, so
@@ -738,14 +740,14 @@ looping.
   knowing about wire versions; `huterm-wire` maps each negotiated minor
   version onto a profile.
 - **Where it is computed.** Core computes the digest at emission, under the
-  Mux lock, from a state it builds from Mux's own structure, for each
-  profile its subscribers registered. A connection's forwarder does not run
-  a reducer of its own, so a reducer bug cannot produce matching digests on
-  both ends. Building that state costs time proportional to the hierarchy,
-  under the Mux lock, for each registered profile, on every structural
-  result, every subscription snapshot, and every 256th event. Hierarchies
-  hold tens to hundreds of items, so this stays small, and slice 3a measures
-  it on a large fixture.
+  Mux lock, by walking Mux's own structure, for each profile its
+  subscribers registered. A connection's forwarder does not run a reducer of
+  its own, so a reducer bug cannot produce matching digests on both ends.
+  The walk costs time proportional to the hierarchy, under the Mux lock, for
+  each registered profile, on every structural result, every subscription
+  snapshot, and every 256th event. Hierarchies hold tens to hundreds of
+  items, so this stays small; slice 3a measured it on a large fixture (see
+  its revisions).
 
 A hung server keeps its socket open, so the client arms a one-shot deadline
 only while a request or sequence waiter is outstanding, as the hierarchy
@@ -1218,8 +1220,9 @@ planted.
 The server serves each connection with a reader thread, a writer thread,
 and one executor thread for its pumps and request handling. Mux-locking and
 blocking work (spawn, close, assessment) runs on worker threads, never on a
-connection's I/O or pump threads. Slice 3a picks the executor from crates
-already in `Cargo.lock` and runs the license and release-age checks.
+connection's I/O or pump threads. Slice 3a picked `async-executor` with
+`futures-lite`, `async-io`, and `blocking`, all already in `Cargo.lock` (see
+its revisions).
 
 ### Remote clients later
 
@@ -1813,6 +1816,325 @@ Acceptance:
   not a growing queue; a client that reads a byte at a time while over
   `OUTBOUND_BUDGET`, and one that stops reading while under it, are both
   disconnected at `WRITER_STALL_DEADLINE` on the injected clock.
+
+#### Revisions during slice 3a
+
+None of these changes a settled decision; each is an implementation choice
+within the contract, or a narrow correction to its text.
+
+The wire inventory:
+
+- **Request kinds.** Slice 3a adds the message kinds `Request` 14, `Result`
+  15, and `Cancel` 16. A `RequestId` is a per-connection `u64` that starts
+  at 1, is never reused, and is never 0, which decoders reject. Each
+  `RequestKind` has a stable tag, a static `RetryClass` (`Query`, `Viewer`,
+  or `Mutation`), the minor version that introduced it, and a
+  `large_result` flag that no slice 3a kind sets. The queries are
+  `SubscribeHierarchy`, `ResyncHierarchy`, the four selections, and
+  `PrepareClose`; `ReportGeometry` is the only `Viewer` request, and every
+  other request is a `Mutation`. `ToggleInputSync` and
+  `CloseEmptiedWorkspace` mirror the desktop's composite calls.
+  `ExecuteCommand` carries a `DecodedInvocation`, so an identifier the
+  server's catalog does not know answers `UnknownCommand` with its text.
+  `Request` and `RequestKind` are `non_exhaustive`, because the test-only
+  `PinTab` request exists whenever any crate in a build enables
+  `test-minor`; a server answers a variant it cannot serve with
+  `Unsupported`, and a minor-0 encoder refuses `PinTab` the same way.
+- **Viewer requests wait for slice 3b.** Slice 3a defines only
+  `SetScrollback`, `ClearHistory`, and `Reset` (class `Mutation`) and
+  `ReportGeometry` (class `Viewer`), so the retry classes and their tests
+  are real; its server holds no viewers and answers them `StaleTarget`, and
+  drops the ordered viewer messages (`Input`, `Paste`, `Credit`, and
+  `ResyncViewer`). Slice 3b settles the semantics of the remaining
+  `TerminalViewer` operations and adds them: `subscribe_terminal`,
+  `request_snapshot`, `request_scrolled_snapshot`,
+  `request_snapshot_with_link`, `request_selection`,
+  `request_select_units`, `update_presentation`,
+  `set_scrollback_compression`, `set_focus`, and input.
+- **Where a result committed.** `WireError.committed_seq` became
+  `committed: Option<Committed>`, where `Committed { seq, digest }` travels
+  as a record and carries the digest while the connection is subscribed.
+  Every structural success carries the same field, so the client checks a
+  digest at every structural result. The committed-error vector changed
+  with it. A new code, `Cancelled` (20), answers
+  a request cancelled before it started; it is safe to retry, because
+  nothing committed, and `WireError::new` marks only `Busy` and `Cancelled`
+  safe.
+- **Caps.** The `Request` cap is 628,872 bytes: an `ArrangePanes` whose
+  expected layout and arrangement each hold `MAX_REQUEST_LAYOUT_ITEMS`
+  (1,024) items with every name at its limit. A launch is bounded by
+  `MAX_LAUNCH_PATH_BYTES` (4,096), `MAX_LAUNCH_ARGUMENTS` and
+  `MAX_LAUNCH_ENVIRONMENT` (1,024 each), and a 256 KiB
+  `LAUNCH_PAYLOAD_LIMIT` that arguments and environment share, and a close
+  names at most `MAX_CLOSE_REQUEST_TABS` (1,024) tabs. `Input` stays the
+  largest client message, so `SERVER_REASSEMBLY_BUDGET` is unchanged. The
+  `Result` cap is 52,788 bytes and fits one frame at the 64 KiB minimum
+  `max_frame`, including a close assessment of at most 32 busy terminals
+  and 32 processes, with commands cut to 256 bytes and command lines to
+  1,024, plus counts of what it left out. Request names may be up to
+  `MAX_REQUEST_NAME_BYTES` (1,024), so core, not the codec, answers
+  `InvalidName` for a name over 256 bytes, as in process. `Welcome` lists
+  the two new client kinds' caps, which changed its minor-0 vector.
+- **Wire forms.** Paths travel as `OsStr` bytes on Unix and as UTF-8
+  elsewhere. Shell features travel as a bit set, and a feature without a
+  bit encodes as `Unsupported`. A presentation travels as raw RGB bytes,
+  all 256 palette entries included. Arrangements check their depth before
+  recursing, at most `MAX_SPLIT_CHILDREN` children per split, and their
+  node count.
+
+Digests at emission:
+
+- **One canonical encoding.** It moved into `huterm_protocol::HierarchyDigester`,
+  which `HierarchyState::digest_for` uses, so `SAMPLE_HIERARCHY_DIGEST` is
+  unchanged. `HIERARCHY_DIGEST_INTERVAL` (256) moved to `huterm-protocol`
+  with it. `Mux::hierarchy_digest(profile)` walks Mux's own structure under
+  the caller's lock, building no `HierarchyState` and copying no name.
+  `Mux::subscribe_hierarchy_with_digests(profile)` returns the snapshot,
+  its digest, and a subscription whose events carry digests, computed once
+  per distinct registered profile at each interval multiple, after the
+  change applies. `subscribe_hierarchy` computes none, so embedded mode
+  pays nothing.
+
+Release medians on an Apple M3 Max
+(`cargo test --release -p huterm-core hierarchy_digest_cost -- --ignored`):
+
+| Fixture | Items | `Mux::hierarchy_digest` | Build a state, then digest | Digest a built state |
+| --- | --- | --- | --- | --- |
+| Small, 8-byte names | 21 | 1.0 us | 3.3 us | 1.0 us |
+| Small, 256-byte names | 21 | 8.8 us | 11.3 us | 8.9 us |
+| Large, 8-byte names | 15,552 | 0.79 ms | 2.94 ms | 0.79 ms |
+| Large, 256-byte names | 15,552 | 7.27 ms | 9.81 ms | 7.34 ms |
+
+The server:
+
+- **A sans-IO connection.** `huterm-server`'s `Connection` is the whole
+  per-connection protocol as a deterministic state machine. It takes bytes
+  in, hands out frames, and runs on an injected clock. It hands out `Work`
+  and takes back each `Completion`, and never touches the `Mux`;
+  `runtime::execute` runs a job against the shared `Mux` on a worker. Work
+  and completions are plain values that carry what they hold, such as a
+  ticket's consent or a history record, so a test, or slice 3b's seeded
+  fault-injection harness, can hold, reorder, or fail them and drive the
+  connection with any transport and clock. Closing returns the disconnect
+  cleanup, and a completion that arrives after a close releases what its
+  job created through cleanup work.
+- **The executor.** Each connection runs a reader, a writer, and a driver
+  thread. The driver runs the connection on an `async-executor`
+  `LocalExecutor` under `futures_lite::future::block_on`, waiting on one
+  event channel, which the reader, the writer, worker completions, and a
+  forwarding task for the hierarchy feed feed, or on an `async_io::Timer`
+  for the next deadline. Jobs run through `blocking::unblock`, so slice 3b
+  adds one forwarding task per viewer wake. The reader reads only after the
+  driver grants a permit while `wants_input()` holds, so at most one read
+  buffer is in flight. The writer writes one batch at a time with vectored
+  writes straight from the shared message buffers. Only a batch's first
+  frame is cut short to fit the batch; a later frame that does not fit
+  whole waits for the next batch, so a message that fits one frame is
+  never split across two. The event channel is
+  unbounded, but each source is bounded: one read, one batch, the in-flight
+  jobs, and one coalesced wake per feed. At the end, the driver shuts the
+  socket down so blocked threads return and waits for every outstanding job
+  and its cleanup.
+- **The retained-bytes bound.** Each message is encoded once, when it is
+  admitted, into a buffer the queue and the writer share; frames are cut
+  from it in place. Producers admit messages only while retained bytes are
+  under `OUTBOUND_BUDGET`, and at the budget the connection also stops
+  reading and arms the over-budget stall deadline. A replacement snapshot
+  is issued only under the budget and admitted when it completes. A
+  connection therefore retains at most `OUTBOUND_BUDGET` plus one hierarchy
+  message plus one result or hierarchy message
+  (`ServerConfig::retained_bound`). Every hierarchy kind shares one computed
+  cap of 9,617,517 bytes, so the default bound is 27,623,642 bytes. The
+  largest snapshot measured is 8,725,140 bytes, for tabs of full splits, so
+  with real event sizes a connection retains about 17 MiB at worst.
+  Without a hierarchy subscription only results flow, so a connection
+  retains at most `OUTBOUND_BUDGET` plus one result at its cap, which the
+  native flood test asserts.
+- **One replacement in flight.** A subscribe, a client resync, and a lag
+  resync each replace the hierarchy feed, and at most one replacement runs
+  per connection, so two replacement jobs never coexist. The contract's
+  check that two replacements completing in reverse order never roll the
+  client back becomes: a late completion for a superseded replacement is
+  dropped and never rolls the client back.
+- **Close tickets and attachments.** An unknown, consumed, or released
+  ticket answers `StaleTarget`; `StaleClose` stays core's revision check.
+  Releasing a ticket that a job holds answers `Unit` and drops the record
+  when the job completes; until then, a commit or another release of it
+  answers `StaleTarget`, as for any released ticket. `AttachSession` makes
+  the attachment the connection's. `DetachSession`, `RetargetAttachment`,
+  and a `PrepareClose` naming `Window` or `EmptiedWindow` accept only the
+  connection's own attachments and otherwise answer `NotPermitted`.
+  `AttachSession`, `CommitClose`, and `CloseSession` carry the connection's
+  attachments and report which of them no longer exist, read under the
+  lock, and the connection drops those. Another caller can end the
+  connection's attachments at any time, even between an attach job and its
+  completion, so the connection's set holds at most its live attachments
+  plus those ended since the last such job, and repeated attach and
+  external close cycles never grow it. A disconnect detaches the rest on a
+  worker, and an attachment a late job creates is detached by cleanup
+  work.
+- **History slots.** A rearrangement touches its slot when its job starts,
+  which creates it or evicts the least recently used slot and records the
+  slot's generation. On completion, the change is filed as the undo entry
+  and redo is cleared, unless the slot's generation changed, the change is
+  empty, or it committed before the slot's newest sequence. A token names
+  one entry in one direction. A restore takes its entry out; on success it
+  files the same change the other way with a new token, and on failure it
+  drops the entry. Records count while they live in the table or in a job.
+- **Request IDs.** The server records used IDs as a floor plus the IDs
+  seen above it. An ID at or below the floor, one seen before, or one more
+  than `REQUEST_ID_WINDOW` (1,024) above the floor is a protocol violation,
+  which keeps the record bounded and lets slice 3b's viewer lanes deliver
+  requests out of number order.
+- **Errors.** `runtime::error_code` is the one mapping from core's errors:
+  `ForeignRuntime` maps to `StaleTarget`, as a client refuses a foreign
+  identity locally, and `LayoutChanged` and `InvalidRestore` map to
+  `StaleUndo`. `Welcome` advertises `ServerConfig::max_in_flight_requests`,
+  the value the server enforces.
+- **The hierarchy feed seam.** A `HierarchySource` captures a snapshot and
+  a new feed under one lock; the snapshot encodes later, off the lock, and
+  the feed hands out each event already encoded for its connection.
+  Production uses `CoreSource`. The test-only `TestSource` applies
+  `TestEvent`s and delivers each at the peer's minor version, so a test
+  that uses it drives the hierarchy only through it.
+
+The client:
+
+- **A sans-IO session.** `huterm-client`'s `ClientSession` is the whole
+  client protocol as a deterministic state machine that lives across
+  connections, and it builds for `wasm32-unknown-unknown`. On Unix,
+  `native::Client` runs it with a reader and a writer thread per connection
+  and one driver thread, which waits on one event channel or an
+  `async_io::Timer` under `futures_lite::future::block_on`, so the client
+  needs no executor. When a connection ends, the driver shuts the socket
+  down and joins both I/O threads before it reports the end. The transport
+  never reconnects on its own: `ClientHandle::reconnect` takes a new
+  stream, reports the old connection's end, and resolves with the new
+  handshake; slice 5 adds `connect`. `ClientHandle::events` holds at most
+  `EVENT_CHANNEL_CAPACITY` (1,024) events, and the driver never waits for
+  its consumer: while it is full, events are dropped, and once there is
+  room the consumer gets one `ClientEvent::Lagged` and re-reads the
+  projection, as after core's subscription lag. That re-read is not atomic
+  with the channel, as core's resubscribe is: events queued behind the
+  marker may already be in the re-read projection, so the consumer skips an
+  `Applied` event at or below the re-read sequence. The driver keeps the
+  last connection's close reason, and `ClientHandle::connected` returns it
+  while no connection is open, so a dropped `Closed` loses no `Rejected`,
+  `ContractFault`, or timeout. Results, waiter resolutions, and handshake
+  outcomes travel on their own reply channels.
+- **Calls outlive connections.** A caller's request has a session-wide
+  `CallId`, and each connection numbers what it sends from 1, as the
+  server's request window requires, so a query resent on the next
+  connection keeps its call and gets a new request number.
+- **Unsent requests at a disconnect.** A mutation sent on the broken
+  connection resolves `OutcomeUnknown`. A mutation never sent resolves
+  `Disconnected`, because it did not run: one queued during a handshake,
+  one held past the in-flight limit, or one issued with no connection.
+  Viewer requests resolve `Disconnected`. A sent query the caller
+  cancelled resolves `Cancelled`. Other queries wait for the next
+  connection and go out in issue order. `abandon`, and shutting the native
+  client down, fail the waiting queries with `Disconnected` and cancel
+  every sequence waiter.
+- **The client subscribes because the caller did.** The session subscribes
+  only after a `SubscribeHierarchy` of the caller's succeeds, and from then
+  on every connection subscribes again by itself; a cancelled or failed
+  subscribe changes nothing, and a caller's subscribe that waits for the
+  next connection goes out there instead of a second one. A
+  `SubscribeHierarchy` or `ResyncHierarchy` result is held until the
+  projection reaches its sequence.
+- **Digest checks.** A snapshot whose digest disagrees with its state
+  closes the connection as a contract fault. A mismatch on a digested event
+  or at a structural checkpoint, a reducer gap, or an inconsistent event
+  sends one `ResyncHierarchy`; at most one is outstanding. A result's
+  committed digest is checked at once when the projection holds that
+  sequence, kept and checked right after that event applies when the
+  projection is behind, and dropped when the projection has passed it. An
+  installed snapshot drops the checkpoints it covers, unchecked. A result
+  frees its request slot while its checkpoint waits, so in-flight requests
+  do not bound checkpoints; `MAX_PENDING_CHECKPOINTS` (4,096, four times
+  core's 1,024-event subscription queue, past which the server lags and
+  resyncs) does. Past it, the oldest checkpoint is dropped and counted in
+  `SessionStats::checkpoints_dropped`, and the check moves to a snapshot:
+  the first drop since a snapshot last covered one sends a
+  `ResyncHierarchy` under the same at-most-one rule. That resync covers the
+  drop, because the server committed the dropped sequence before the client
+  read its result. Later drops only raise the sequence a snapshot must
+  reach, so a flood of results sends one resync, not one per result. A
+  drop while another resync is outstanding can outrun that resync's
+  snapshot; once the snapshot installs and its resync succeeds, the session
+  sends one more. A failed resync sends nothing more, and a drop before
+  the connection's first snapshot waits for it. A snapshot
+  behind the projection is a violation only after a snapshot installed on
+  the same connection, and a hierarchy event before its connection's first
+  snapshot is a violation.
+- **The transport profile and the client's deadlines.** The client takes
+  `max_in_flight_requests` from `Welcome` and holds requests back past it;
+  its request and cancel caps are the smallest of its own cap, the
+  advertised cap, and the advertised reassembly budget. It refuses, as a
+  protocol violation, a profile it cannot honour: a nonzero suspend grace,
+  no requests in flight, or no cap for requests or cancels. The handshake
+  and progress deadlines bound how long the client waits on the server, so
+  they live in `ClientConfig` as `CLIENT_HANDSHAKE_DEADLINE` (5 s) and
+  `CLIENT_PROGRESS_DEADLINE` (30 s), not in `Welcome`. The progress
+  deadline is armed while a sent request is unanswered, a sequence waiter
+  exists, or a subscription result waits for the projection; every inbound
+  frame restarts it.
+- **Waiters.** `wait_for` resolves `Ready` at once when the projection
+  already holds the sequence, and `Cancelled` at once before any connection
+  has named a stream. A new incarnation cancels every waiter, and the same
+  incarnation keeps them across connections.
+- **The outbound path.** Every client message travels on the control lane
+  and stream 0, and its frames are written in full before the next
+  message's. A message is encoded once, and the native writer writes
+  batches of up to about 256 KiB with vectored writes, so no payload is
+  copied before the socket. Per request, the client allocates the encoded
+  message, its call-table entry, and, natively, its reply channel.
+- **The test-minor projection.** Under `cfg(any(test, feature =
+  "test-minor"))`, `ClientSession::with_test_projection` sends `Hello.minor`
+  as `TEST_MINOR` and holds a `TestHierarchy` projection that computes
+  digests at the negotiated minor version. Production code holds only the
+  minor-0 projection.
+- **Gates.** `mise run architecture` checks `huterm-client`'s normal and
+  build edges with all features on every target, so its tests may
+  dev-depend on `huterm-server` and `huterm-core` and run against the real
+  server. `mise run check:wasm` checks `huterm-client`.
+
+Contract tests and measurements:
+
+- **The contract harness** lives in `huterm-server`'s unit tests
+  (`contract_tests.rs`), which reach the server's test support through
+  `cfg(test)`; an integration target of the same crate would need a
+  dev-dependency on itself to enable it. Its in-process path calls `Mux`
+  directly, maps errors through `runtime::error_code`, and keeps close
+  tickets and layout history with the server's semantics over core's own
+  values, using its own conversions so a slip in the server's shows up as a
+  difference. Its IPC path runs the native adapters over a `UnixStream`
+  pair. Every step compares results, with identities by number and tokens
+  and tickets by first appearance, error codes and retry, committed
+  positions, and then the hierarchy's sequence and digest, from
+  `Mux::hierarchy_digest` in process and from the client's projection over
+  IPC.
+- **IPC latency.** `mise run bench:ipc` reports a `RenameTab` round trip
+  over the native adapters, the latency from a rename committed on the
+  server's `Mux` to the client's projection applying its event, and the
+  same rename in process. It gates nothing, because no CI runner has
+  measured it yet. A round trip takes ten thread wakeups: the client's
+  driver and writer; the server's reader, driver, worker, driver again, and
+  writer; and the client's reader, driver, and caller. They take most of
+  its time, since the rename itself takes 0.04 us and the digest about
+  1 us. Reusing the server reader's buffer instead of copying each read
+  moved the round trip's median by less than its run-to-run spread, so the
+  reader keeps its copy.
+
+Five runs of 5,000 samples after 5,000 warm-up samples, in release on an
+Apple M3 Max, with a one-tab hierarchy; each cell gives the range across
+runs.
+
+| Measurement | Median | 99th percentile |
+| --- | --- | --- |
+| `RenameTab` round trip over IPC | 55.0 to 55.4 us | 65 to 87 us |
+| Commit to the client's projection | 19.0 to 19.8 us | 25 to 37 us |
+| The same rename in process | 0.04 us | 0.08 to 0.12 us |
 
 ### Slice 3b: viewers, updates, and input over IPC
 

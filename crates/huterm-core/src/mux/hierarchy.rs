@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use huterm_protocol::{
+    DigestProfile, HIERARCHY_DIGEST_INTERVAL, HierarchyDigester,
     HierarchyEnvelope, HierarchyEvent, HierarchyState, SessionInfo, StreamId,
     TabInfo, WorkspaceInfo,
 };
@@ -17,7 +18,7 @@ pub(crate) const HIERARCHY_QUEUE_CAPACITY: usize = 1024;
 
 #[derive(Debug, Default)]
 struct Queue {
-    events: VecDeque<HierarchyEnvelope>,
+    events: VecDeque<DigestedEnvelope>,
     lagged: bool,
 }
 
@@ -25,6 +26,21 @@ struct Queue {
 struct Subscriber {
     queue: Weak<Mutex<Queue>>,
     wake: async_channel::Sender<()>,
+    /// The profile a digesting subscription's digests cover; `None` for a
+    /// subscription that takes none.
+    profile: Option<DigestProfile>,
+}
+
+/// One hierarchy event, with the digest of the state after it when a
+/// digesting subscription receives an event whose sequence is a multiple of
+/// [`HIERARCHY_DIGEST_INTERVAL`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DigestedEnvelope {
+    /// The event.
+    pub envelope: HierarchyEnvelope,
+    /// The digest, under the subscription's profile, of the state the event
+    /// leaves.
+    pub digest: Option<u64>,
 }
 
 /// The Mux-owned hierarchy sequence and its subscribers.
@@ -35,6 +51,9 @@ pub(super) struct HierarchyPublisher {
     /// Events built for delivery, observed by tests.
     #[cfg(test)]
     built: usize,
+    /// Digests computed at emission, observed by tests.
+    #[cfg(test)]
+    digested: usize,
 }
 
 impl HierarchyPublisher {
@@ -51,7 +70,24 @@ impl HierarchyPublisher {
             .retain(|subscriber| subscriber.queue.strong_count() > 0);
     }
 
-    fn publish(&self, envelope: &HierarchyEnvelope) {
+    /// The distinct profiles live digesting subscriptions registered.
+    fn profiles(&self) -> Vec<DigestProfile> {
+        let mut profiles = Vec::new();
+        for profile in self.subscribers.iter().filter_map(|s| s.profile) {
+            if !profiles.contains(&profile) {
+                profiles.push(profile);
+            }
+        }
+        profiles
+    }
+
+    /// Queues `envelope` for every subscriber, with the digest of its
+    /// profile from `digests` for a digesting one.
+    fn publish(
+        &self,
+        envelope: &HierarchyEnvelope,
+        digests: &[(DigestProfile, u64)],
+    ) {
         for subscriber in &self.subscribers {
             let Some(queue) = subscriber.queue.upgrade() else {
                 continue;
@@ -65,7 +101,16 @@ impl HierarchyPublisher {
                 queue.events = VecDeque::new();
                 queue.lagged = true;
             } else {
-                queue.events.push_back(envelope.clone());
+                let digest = subscriber.profile.and_then(|profile| {
+                    digests
+                        .iter()
+                        .find(|(digested, _)| *digested == profile)
+                        .map(|(_, digest)| *digest)
+                });
+                queue.events.push_back(DigestedEnvelope {
+                    envelope: envelope.clone(),
+                    digest,
+                });
             }
             drop(queue);
             let _ = subscriber.wake.try_send(());
@@ -73,25 +118,15 @@ impl HierarchyPublisher {
     }
 }
 
-/// A bounded, ordered feed of the hierarchy events that follow one snapshot.
-///
-/// Dropping the subscription unregisters it. The publisher never waits for a
-/// subscriber to drain: queue access is a short constant-time critical
-/// section, and when the queue would overflow, it discards the queue and the
-/// subscription reports [`HierarchyRecvError::Lagged`] until it is replaced.
+/// The queue and wake signal behind both subscription kinds.
 #[derive(Debug)]
-pub struct HierarchySubscription {
+struct Feed {
     queue: Arc<Mutex<Queue>>,
     wake: async_channel::Receiver<()>,
 }
 
-impl HierarchySubscription {
-    /// Takes the next queued event.
-    ///
-    /// # Errors
-    /// Returns `Empty` when no event is queued, `Lagged` after the queue
-    /// overflowed, and `Closed` once the Mux is gone and nothing remains.
-    pub fn try_recv(&self) -> Result<HierarchyEnvelope, HierarchyRecvError> {
+impl Feed {
+    fn try_recv(&self) -> Result<DigestedEnvelope, HierarchyRecvError> {
         let mut queue =
             self.queue.lock().unwrap_or_else(PoisonError::into_inner);
         if queue.lagged {
@@ -112,6 +147,35 @@ impl HierarchySubscription {
         })
     }
 
+    async fn wait_for_activity(&self) -> Result<(), HierarchyRecvError> {
+        self.wake
+            .recv()
+            .await
+            .map_err(|_| HierarchyRecvError::Closed)
+    }
+}
+
+/// A bounded, ordered feed of the hierarchy events that follow one snapshot.
+///
+/// Dropping the subscription unregisters it. The publisher never waits for a
+/// subscriber to drain: queue access is a short constant-time critical
+/// section, and when the queue would overflow, it discards the queue and the
+/// subscription reports [`HierarchyRecvError::Lagged`] until it is replaced.
+#[derive(Debug)]
+pub struct HierarchySubscription {
+    feed: Feed,
+}
+
+impl HierarchySubscription {
+    /// Takes the next queued event.
+    ///
+    /// # Errors
+    /// Returns `Empty` when no event is queued, `Lagged` after the queue
+    /// overflowed, and `Closed` once the Mux is gone and nothing remains.
+    pub fn try_recv(&self) -> Result<HierarchyEnvelope, HierarchyRecvError> {
+        self.feed.try_recv().map(|queued| queued.envelope)
+    }
+
     /// Completes once events, or a lag, arrived since the last call.
     ///
     /// The signal carries no data and coalesces: drain with
@@ -120,16 +184,41 @@ impl HierarchySubscription {
     /// # Errors
     /// Returns `Closed` once the Mux has been dropped.
     pub async fn wait_for_activity(&self) -> Result<(), HierarchyRecvError> {
-        self.wake
-            .recv()
-            .await
-            .map_err(|_| HierarchyRecvError::Closed)
+        self.feed.wait_for_activity().await
     }
 
     /// Consumes a pending wake signal without waiting.
     #[cfg(test)]
     pub(crate) fn take_wake(&self) -> bool {
-        self.wake.try_recv().is_ok()
+        self.feed.wake.try_recv().is_ok()
+    }
+}
+
+/// A [`HierarchySubscription`] whose events carry the digest of the state
+/// they leave at every multiple of [`HIERARCHY_DIGEST_INTERVAL`], under the
+/// profile it registered; see [`Mux::subscribe_hierarchy_with_digests`].
+#[derive(Debug)]
+pub struct DigestedHierarchySubscription {
+    feed: Feed,
+}
+
+impl DigestedHierarchySubscription {
+    /// Takes the next queued event and its digest.
+    ///
+    /// # Errors
+    /// Returns `Empty` when no event is queued, `Lagged` after the queue
+    /// overflowed, and `Closed` once the Mux is gone and nothing remains.
+    pub fn try_recv(&self) -> Result<DigestedEnvelope, HierarchyRecvError> {
+        self.feed.try_recv()
+    }
+
+    /// Completes once events, or a lag, arrived since the last call; see
+    /// [`HierarchySubscription::wait_for_activity`].
+    ///
+    /// # Errors
+    /// Returns `Closed` once the Mux has been dropped.
+    pub async fn wait_for_activity(&self) -> Result<(), HierarchyRecvError> {
+        self.feed.wait_for_activity().await
     }
 }
 
@@ -169,7 +258,73 @@ impl Mux {
     pub fn subscribe_hierarchy(
         &mut self,
     ) -> (HierarchyState, HierarchySubscription) {
-        let state = HierarchyState::from_sessions(
+        let state = self.hierarchy_state();
+        let feed = self.register(None);
+        (state, HierarchySubscription { feed })
+    }
+
+    /// Like [`Self::subscribe_hierarchy`], and also returns the snapshot's
+    /// digest under `profile` and a subscription whose events carry that
+    /// profile's digest at every multiple of [`HIERARCHY_DIGEST_INTERVAL`].
+    /// Emission computes each registered profile's digest once, however
+    /// many subscriptions share it.
+    ///
+    /// # Panics
+    /// Panics if canonical structure repeats an identity, which would be a
+    /// Mux invariant violation.
+    pub fn subscribe_hierarchy_with_digests(
+        &mut self,
+        profile: DigestProfile,
+    ) -> (HierarchyState, u64, DigestedHierarchySubscription) {
+        let state = self.hierarchy_state();
+        let digest = self.hierarchy_digest(profile);
+        let feed = self.register(Some(profile));
+        (state, digest, DigestedHierarchySubscription { feed })
+    }
+
+    /// The digest under `profile` of the hierarchy as it stands, equal to
+    /// [`HierarchyState::digest_for`] of a snapshot taken now. It walks the
+    /// Mux's own structure, building no state and copying no name, so a
+    /// caller can read it under the same lock as a structural change.
+    #[must_use]
+    pub fn hierarchy_digest(&self, profile: DigestProfile) -> u64 {
+        let mut digest = HierarchyDigester::new(profile);
+        for session in &self.sessions {
+            digest.session(
+                session.id,
+                session.custom_name.as_deref(),
+                &session.automatic_name,
+                session.workspaces.len(),
+            );
+            for id in &session.workspaces {
+                let workspace = &self.workspaces[id];
+                digest.workspace(
+                    workspace.id,
+                    workspace.custom_name.as_deref(),
+                    &workspace.automatic_name,
+                    workspace.pinned,
+                    workspace.tabs.len(),
+                );
+                for tab in &workspace.tabs {
+                    digest.tab(
+                        tab.id,
+                        tab.custom_name.as_deref(),
+                        tab.zoomed,
+                        tab.input_sync,
+                        &tab.layout,
+                    );
+                }
+            }
+        }
+        for (attachment, session) in &self.attachments {
+            digest.attachment(*attachment, *session);
+        }
+        digest.finish()
+    }
+
+    /// The hierarchy as it stands, current through [`Self::hierarchy_seq`].
+    fn hierarchy_state(&self) -> HierarchyState {
+        HierarchyState::from_sessions(
             StreamId::new(self.runtime_id),
             self.hierarchy.seq,
             self.sessions.iter().map(|session| {
@@ -185,7 +340,11 @@ impl Mux {
                 .iter()
                 .map(|(attachment, session)| (*attachment, *session)),
         )
-        .expect("canonical hierarchy has unique, scoped identities");
+        .expect("canonical hierarchy has unique, scoped identities")
+    }
+
+    /// Registers a subscriber that takes `profile`'s digests, if any.
+    fn register(&mut self, profile: Option<DigestProfile>) -> Feed {
         let queue = Arc::new(Mutex::new(Queue::default()));
         let (wake, signal) = async_channel::bounded(1);
         // Repeated resubscription while idle must not accumulate dropped
@@ -194,14 +353,12 @@ impl Mux {
         self.hierarchy.subscribers.push(Subscriber {
             queue: Arc::downgrade(&queue),
             wake,
+            profile,
         });
-        (
-            state,
-            HierarchySubscription {
-                queue,
-                wake: signal,
-            },
-        )
+        Feed {
+            queue,
+            wake: signal,
+        }
     }
 
     /// Advances the hierarchy sequence for a committed change and delivers
@@ -227,7 +384,23 @@ impl Mux {
         {
             self.hierarchy.built += 1;
         }
-        self.hierarchy.publish(&envelope);
+        // The change is already applied, so each digest covers the state
+        // this event leaves.
+        let digests: Vec<(DigestProfile, u64)> =
+            if self.hierarchy.seq.is_multiple_of(HIERARCHY_DIGEST_INTERVAL) {
+                self.hierarchy
+                    .profiles()
+                    .into_iter()
+                    .map(|profile| (profile, self.hierarchy_digest(profile)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        #[cfg(test)]
+        {
+            self.hierarchy.digested += digests.len();
+        }
+        self.hierarchy.publish(&envelope, &digests);
     }
 }
 
@@ -263,6 +436,9 @@ impl Tab {
         }
     }
 }
+
+#[cfg(test)]
+mod digest_tests;
 
 #[cfg(test)]
 mod tests {

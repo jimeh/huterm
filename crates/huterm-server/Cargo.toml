@@ -1,0 +1,41 @@
+[package]
+name = "huterm-server"
+description = "Runtime IPC server for Huterm: the per-connection protocol over a Mux"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "0.34.0"
+
+[features]
+default = []
+# The test-only hierarchy feed that delivers test-minor events. Never enabled
+# by a shipping server.
+test-minor = ["huterm-wire/test-minor"]
+# Raw wire helpers that tests use as a client: building Hello and request
+# frames and decoding what the server sends.
+test-support = []
+
+[dependencies]
+async-channel.workspace = true
+huterm-core.workspace = true
+huterm-protocol.workspace = true
+huterm-wire.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+async-executor.workspace = true
+async-io.workspace = true
+blocking.workspace = true
+futures-lite.workspace = true
+
+[dev-dependencies]
+# The contract tests and the IPC benchmark drive the server through the
+# real client. The client's tests depend on this crate the same way; Cargo
+# allows the cycle because both edges are dev edges.
+huterm-client.workspace = true
+# The test feed's tests deliver test-minor events, so the wire crate's
+# test-only minor version is on whenever this crate's tests build.
+huterm-wire = { workspace = true, features = ["test-minor"] }
+
+[lints]
+workspace = true

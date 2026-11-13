@@ -556,6 +556,58 @@ dependency rule.
   [the dependencies guide](dependencies.md#fuzzing-toolchain)). Turn a crash
   into a regression test in the normal suite.
 
+## The IPC server and client
+
+`huterm-server` serves a `Mux` over the wire contract and `huterm-client`
+follows it (see
+[the plan's slice 3a revisions](../plans/runtime-ipc.md#revisions-during-slice-3a)).
+Nothing in the desktop calls either until #45.
+
+- Each crate splits a deterministic sans-IO state machine from its native
+  adapter. `huterm_server::Connection` is one connection's whole protocol
+  over bytes, values, and an injected clock; it hands out `Work`, takes back
+  each `Completion`, and never touches the `Mux`.
+  `huterm_client::ClientSession` lives across connections and builds for
+  `wasm32-unknown-unknown`. The `native` modules run them over a
+  `UnixStream` with reader, writer, and driver threads. Put protocol
+  behavior in the state machines, where tests drive it on the injected
+  clock, and keep the adapters to I/O and wakeups.
+- `runtime::execute` runs each job on a `blocking` worker. Never run `Mux`
+  work, a spawn, or a process scan on a connection's reader, writer, or
+  driver thread, and never hold the `Mux` lock while waiting on a socket. A
+  structural job reads the hierarchy sequence, and the digest for a
+  subscribed connection, under the same lock as its change, so its
+  `Committed` is exact.
+- `runtime::error_code` is the one mapping from `MuxError` and
+  `RuntimeError` onto wire codes. A new core error needs an arm there; the
+  contract tests map in-process errors through it too.
+- A connection retains at most `OUTBOUND_BUDGET` plus one hierarchy message
+  plus one result or hierarchy message of encoded bytes
+  (`ServerConfig::retained_bound`). A producer admits a message only while
+  retained bytes are under the budget, and encodes it once into the buffer
+  the writer shares; at the budget the connection stops reading. Never
+  re-encode a message per frame or copy a frame's payload.
+- To add a request kind, give `Request` and `RequestKind` a variant, the
+  next tag in `RequestKind::number`, an entry in `RequestKind::ALL`, a
+  `retry_class` (the default arm is `Mutation`, which a client never
+  resends), a `since` minor version, and `large_result` if its result can
+  exceed a frame. Add `encode_fields` and `decode_fields` arms, fit its worst
+  case under the `Request` cap with a boundary test, and add a golden
+  vector, which the vector test counts. The server needs an arm in
+  `Connection::start` and in `runtime::execute` (usually `plain`); without
+  one it answers `Unsupported`. Add the operation to the contract tests in
+  `crates/huterm-server/src/contract_tests.rs`.
+- `Mux::hierarchy_digest(profile)` walks the `Mux`'s own structure under the
+  caller's lock without building a `HierarchyState`.
+  `subscribe_hierarchy_with_digests` returns a subscription whose events
+  carry a digest at every multiple of `HIERARCHY_DIGEST_INTERVAL`, computed
+  once per registered profile at emission; `subscribe_hierarchy` computes
+  none, so embedded mode pays nothing. A digest costs time in proportion to
+  the hierarchy, under the lock: about 1 us for a small hierarchy and 7 ms
+  at `MAX_HIERARCHY_ITEMS` with every name at its limit.
+- `mise run bench:ipc` measures a request's round trip and a hierarchy
+  event's latency over a socket pair. It gates nothing yet.
+
 ## Attachments, close consent, and exit
 
 Session AttachmentId is distinct from a terminal viewer (`ViewerId`); one

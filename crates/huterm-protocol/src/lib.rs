@@ -24,10 +24,11 @@ pub use command::{
     Requirement, SIDES, catalog, ids, lookup, validate, validate_supplied,
 };
 pub use hierarchy::{
-    ApplyOutcome, DigestProfile, HierarchyEnvelope, HierarchyEvent,
-    HierarchyState, LayoutChange, MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES,
-    ResyncReason, SessionInfo, StreamId, TabChange, TabInfo, TabRecord,
-    TabSnapshot, Touched, WorkspaceInfo, resolve_tab_name,
+    ApplyOutcome, DigestProfile, HIERARCHY_DIGEST_INTERVAL, HierarchyDigester,
+    HierarchyEnvelope, HierarchyEvent, HierarchyState, LayoutChange,
+    MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, ResyncReason, SessionInfo, StreamId,
+    TabChange, TabInfo, TabRecord, TabSnapshot, Touched, WorkspaceInfo,
+    resolve_tab_name,
 };
 pub use layout_template::{
     BUILT_IN_LAYOUTS, LayoutTemplate, MAX_LAYOUT_NAME_LEN, MAX_TEMPLATE_DEPTH,
@@ -787,6 +788,11 @@ impl ShellFeatures {
     #[must_use]
     pub fn contains(&self, feature: ShellFeature) -> bool {
         self.0.contains(&feature)
+    }
+
+    /// The enabled features, in order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = ShellFeature> + '_ {
+        self.0.iter().copied()
     }
 }
 

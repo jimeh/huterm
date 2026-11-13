@@ -31,8 +31,16 @@ fn codes_keep_distinct_stable_numbers_and_unknown_codes_fail() {
 }
 
 #[test]
-fn only_busy_is_safe_to_retry_and_long_messages_are_cut() {
+fn only_busy_and_cancelled_are_safe_to_retry_and_long_messages_are_cut() {
     assert_eq!(WireError::from(&CommandError::Busy).retry, Retry::Safe);
+    for code in ErrorCode::ALL {
+        let safe = matches!(code, ErrorCode::Busy | ErrorCode::Cancelled);
+        assert_eq!(
+            WireError::new(code, "").retry == Retry::Safe,
+            safe,
+            "{code:?}"
+        );
+    }
     for (error, code) in [
         (
             CommandError::UnknownCommand(ids::QUIT),

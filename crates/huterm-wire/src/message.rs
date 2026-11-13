@@ -22,6 +22,11 @@ use crate::hierarchy::{
     HierarchyContext, HierarchySnapshot, SequencedEvent, decode_sequenced,
     decode_snapshot, encode_sequenced, encode_snapshot,
 };
+use crate::request::{
+    Cancel, RequestMessage, decode_cancel, decode_request, encode_cancel,
+    encode_request,
+};
+use crate::response::{RequestResult, decode_result, encode_result};
 use crate::update::{
     TerminalUpdate, decode_update, encode_update, read_grid, style_flags,
 };
@@ -118,6 +123,12 @@ pub enum Message {
     Credit(Credit),
     /// A request for a complete snapshot.
     ResyncViewer(ResyncViewer),
+    /// A request.
+    Request(RequestMessage),
+    /// A request's result.
+    Result(RequestResult),
+    /// A request to abandon a request that has not started.
+    Cancel(Cancel),
 }
 
 impl Message {
@@ -139,6 +150,9 @@ impl Message {
             Self::InputAck(_) => MessageKind::InputAck,
             Self::Credit(_) => MessageKind::Credit,
             Self::ResyncViewer(_) => MessageKind::ResyncViewer,
+            Self::Request(_) => MessageKind::Request,
+            Self::Result(_) => MessageKind::Result,
+            Self::Cancel(_) => MessageKind::Cancel,
         }
     }
 }
@@ -312,6 +326,11 @@ pub fn encode_message(
         Message::ResyncViewer(resync) => {
             encode_resync(&mut w, scope, *resync)?;
         }
+        Message::Request(request) => {
+            encode_request(&mut w, scope, request, caps.minor())?;
+        }
+        Message::Result(result) => encode_result(&mut w, scope, result)?,
+        Message::Cancel(cancel) => encode_cancel(&mut w, *cancel)?,
     }
     // An update's cap follows its grid, which the encoder already checked.
     let cap = match message {
@@ -386,6 +405,13 @@ pub fn decode_message(
         MessageKind::ResyncViewer => {
             Message::ResyncViewer(decode_resync(&mut r, scope)?)
         }
+        MessageKind::Request => Message::Request(decode_request(
+            &mut r,
+            scope,
+            context.caps.minor(),
+        )?),
+        MessageKind::Result => Message::Result(decode_result(&mut r, scope)?),
+        MessageKind::Cancel => Message::Cancel(decode_cancel(&mut r)?),
     };
     r.finish()?;
     Ok(message)

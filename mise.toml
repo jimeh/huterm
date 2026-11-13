@@ -149,7 +149,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, and IPC simulation boundaries"
+description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, client, server, and IPC simulation boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -201,6 +201,20 @@ if echo "$wire_dependencies" | rg -v '^huterm-protocol '; then
   echo "huterm-wire may depend only on huterm-protocol" >&2
   exit 1
 fi
+# huterm-client builds for browsers and never links a runtime or the
+# desktop. Its tests run against the real server, so only normal and build
+# edges count.
+client_dependencies="$(cargo tree --locked -p huterm-client --target all --all-features --prefix none --edges normal,build | tail -n +2)"
+if echo "$client_dependencies" | rg '^(huterm-core|huterm-ghostty|portable-pty|gpui-pre)( |-)'; then
+  echo "huterm-client must not depend on huterm-core, huterm-ghostty, portable-pty, or gpui-pre" >&2
+  exit 1
+fi
+# huterm-server serves a runtime to clients and never links the desktop.
+server_dependencies="$(cargo tree --locked -p huterm-server --target all --all-features --prefix none --edges normal,build | tail -n +2)"
+if echo "$server_dependencies" | rg '^gpui-pre( |-)'; then
+  echo "huterm-server must not depend on gpui-pre" >&2
+  exit 1
+fi
 # huterm-ipc-sim is a standalone design simulation, not product code.
 sim_dependencies="$(cargo tree --locked -p huterm-ipc-sim --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$sim_dependencies" ]; then
@@ -217,8 +231,8 @@ fi
 '''
 
 [tasks."check:wasm"]
-description = "Check that huterm-protocol and huterm-wire with its golden vectors build for wasm32-unknown-unknown"
-run = "cargo check --locked --target wasm32-unknown-unknown -p huterm-protocol -p huterm-wire --features huterm-wire/vectors"
+description = "Check that huterm-protocol, huterm-wire with its golden vectors, and the sans-IO huterm-client build for wasm32-unknown-unknown"
+run = "cargo check --locked --target wasm32-unknown-unknown -p huterm-protocol -p huterm-wire -p huterm-client --features huterm-wire/vectors"
 
 [tasks."fuzz:wire"]
 description = "Fuzz the wire decoders and the IPC simulation's schedule on the pinned nightly (optional target and libFuzzer flags)"
@@ -659,6 +673,24 @@ printf '%s\n' "$output"
 case "$output" in
   *"test result: ok. 1 passed"*) ;;
   *) echo "bench:wire: wire_benchmark ran no test" >&2; exit 1 ;;
+esac
+'''
+
+[tasks."bench:ipc"]
+depends = ["ghostty:prepare"]
+description = "Measure runtime IPC request round trips and hierarchy event latency over a Unix socket pair"
+run = '''
+set -eu
+output=$(bash scripts/build-exec.sh cargo test --release --locked -p huterm-server --lib benchmark::ipc_benchmark \
+  -- --ignored --nocapture --exact 2>&1) || {
+  printf '%s\n' "$output"
+  exit 1
+}
+printf '%s\n' "$output"
+# A renamed or moved benchmark would otherwise run no test and pass.
+case "$output" in
+  *"test result: ok. 1 passed"*) ;;
+  *) echo "bench:ipc: ipc_benchmark ran no test" >&2; exit 1 ;;
 esac
 '''
 

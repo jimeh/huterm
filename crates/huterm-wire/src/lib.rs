@@ -1,7 +1,8 @@
 //! Huterm's runtime IPC wire contract: the preamble, frames and their
 //! streams, message caps, the codec, version and feature negotiation, wire
 //! errors, and the encodings of hierarchy state and events, pane layouts,
-//! catalog invocations, terminal updates and status, and viewer input.
+//! catalog invocations, terminal updates and status, viewer input, and
+//! requests and their results.
 //!
 //! Everything here is sans-IO: pure functions and state machines over bytes
 //! and values, so a native socket adapter and a browser's WebSocket callbacks
@@ -21,7 +22,10 @@ pub mod error;
 pub mod frame;
 pub mod handshake;
 pub mod hierarchy;
+pub mod launch;
 pub mod message;
+pub mod request;
+pub mod response;
 pub mod status;
 pub mod stream;
 #[cfg(any(test, feature = "test-minor"))]

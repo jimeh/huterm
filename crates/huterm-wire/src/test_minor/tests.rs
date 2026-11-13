@@ -658,3 +658,46 @@ mod updates {
         }
     }
 }
+
+#[test]
+fn the_test_minor_request_exists_only_at_its_version() {
+    use crate::request::{
+        Request, RequestId, RequestKind, RequestMessage, RetryClass,
+    };
+    let message = Message::Request(RequestMessage {
+        id: RequestId::FIRST,
+        request: Request::PinTab {
+            tab: tab_id(4),
+            pinned: true,
+        },
+    });
+    assert_eq!(RequestKind::PinTab.since(), TEST_MINOR);
+    assert_eq!(RequestKind::PinTab.retry_class(), RetryClass::Mutation);
+    assert_eq!(
+        encode_message(&message, vectors::scope(), MessageCaps::for_minor(0)),
+        Err(EncodeError::Unsupported)
+    );
+    let bytes = encode_message(
+        &message,
+        vectors::scope(),
+        MessageCaps::for_minor(TEST_MINOR),
+    )
+    .unwrap();
+    // Kind, record length, identity, tag 45, then the tab and the flag.
+    assert_eq!(bytes, [0x0e, 0x05, 0x01, 0x2d, 0x02, 0x04, 0x01]);
+    assert_eq!(
+        decode_message(
+            &bytes,
+            Direction::ClientToServer,
+            vectors::context(TEST_MINOR)
+        ),
+        Ok(message)
+    );
+    assert_eq!(
+        decode_message(&bytes, Direction::ClientToServer, vectors::context(0)),
+        Err(DecodeError::UnknownTag {
+            field: "request",
+            tag: 45
+        })
+    );
+}

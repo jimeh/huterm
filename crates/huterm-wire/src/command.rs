@@ -115,8 +115,37 @@ pub fn encode_invocation(
     invocation: &CommandInvocation,
 ) -> Result<(), EncodeError> {
     let CommandInvocation { id, args } = invocation;
+    encode_parts(w, scope, id.as_str(), args)
+}
+
+/// Encodes an invocation as a server decoded it, so an unknown identifier
+/// travels as its text.
+///
+/// # Errors
+/// Refuses what [`encode_invocation`] refuses.
+pub fn encode_decoded_invocation(
+    w: &mut Writer,
+    scope: IdScope,
+    invocation: &DecodedInvocation,
+) -> Result<(), EncodeError> {
+    match invocation {
+        DecodedInvocation::Known(invocation) => {
+            encode_invocation(w, scope, invocation)
+        }
+        DecodedInvocation::Unknown { id, args } => {
+            encode_parts(w, scope, id, args)
+        }
+    }
+}
+
+fn encode_parts(
+    w: &mut Writer,
+    scope: IdScope,
+    id: &str,
+    args: &[CommandArgument],
+) -> Result<(), EncodeError> {
     w.record(|w| {
-        w.str(id.as_str(), MAX_COMMAND_NAME_BYTES, "command ID")?;
+        w.str(id, MAX_COMMAND_NAME_BYTES, "command ID")?;
         w.seq(
             args.iter(),
             MAX_COMMAND_ARGUMENTS,

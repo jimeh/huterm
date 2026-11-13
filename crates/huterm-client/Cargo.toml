@@ -1,0 +1,36 @@
+[package]
+name = "huterm-client"
+description = "Runtime IPC client for Huterm: the sans-IO session and its native Unix transport"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "0.34.0"
+
+[features]
+default = []
+# The test-only projection that follows a server at the test-only minor
+# version. Never enabled by a shipping client.
+test-minor = ["huterm-wire/test-minor"]
+
+[dependencies]
+huterm-protocol.workspace = true
+huterm-wire.workspace = true
+
+# The native transport; the sans-IO session builds for wasm32 without it.
+[target.'cfg(unix)'.dependencies]
+async-channel.workspace = true
+async-io.workspace = true
+futures-lite.workspace = true
+
+[dev-dependencies]
+# Client tests run against the real server. Dev edges only: the
+# architecture rule checks the client's normal and build edges.
+huterm-core.workspace = true
+huterm-server = { workspace = true, features = ["test-minor", "test-support"] }
+# The test projection's tests follow a test-minor server, so the wire
+# crate's test-only minor version is on whenever this crate's tests build.
+huterm-wire = { workspace = true, features = ["test-minor"] }
+
+[lints]
+workspace = true

@@ -8,7 +8,10 @@ mod lifecycle;
 mod moves;
 mod restore;
 pub use capture::{FailedPane, RestoreReport, SpawnFailure, SpawnedTerminals};
-pub use hierarchy::{HierarchyRecvError, HierarchySubscription};
+pub use hierarchy::{
+    DigestedEnvelope, DigestedHierarchySubscription, HierarchyRecvError,
+    HierarchySubscription,
+};
 pub use lifecycle::{CloseAssessment, CloseEffect, CloseRequest, CloseTicket};
 pub use moves::{Beside, MoveDestination, PaneRef};
 pub use restore::RestoreDirection;

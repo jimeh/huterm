@@ -34,7 +34,8 @@ mod wake;
 
 pub use mux::{
     AutomaticNumbering, Beside, CloseAssessment, CloseEffect, CloseRequest,
-    CloseTicket, DEFAULT_SOCKET_NAME, FailedPane, HierarchyRecvError,
+    CloseTicket, DEFAULT_SOCKET_NAME, DigestedEnvelope,
+    DigestedHierarchySubscription, FailedPane, HierarchyRecvError,
     HierarchySubscription, MoveDestination, Mux, MuxError, OpenedPane,
     OpenedTab, PaneRef, RestoreDirection, RestoreReport, SelectionTarget,
     Session, SpawnFailure, SpawnedTerminals, Tab, Workspace,
