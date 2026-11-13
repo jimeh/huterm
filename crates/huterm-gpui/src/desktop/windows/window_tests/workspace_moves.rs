@@ -642,3 +642,33 @@ fn the_row_menus_session_move_asks_for_the_session_in_the_palette(
     let session = h.session;
     assert_eq!(h.cx.update(|cx| order(cx, session)), [h.workspace, second]);
 }
+
+#[gpui::test]
+fn a_busy_window_takes_no_workspace_row_drop(cx: &mut TestAppContext) {
+    let mut h = sidebar_harness(cx);
+    let tab = h.open_tab(ECHO);
+    let (second, _) = h.add_workspace(1);
+    let window = h.attach_showing(&[tab]);
+    h.wait_chrome(window, "the sidebar", WorkspaceChrome::docked);
+    let (session, first) = (h.session, h.workspace);
+    let from = h.row_bounds(window, first);
+    let below = h.row_bounds(window, second);
+    let after = gpui::point(below.center().x, below.bottom() - px(2.0));
+    h.drag_row(window, from.center(), after);
+    // Another operation starts while the row drags, as a session switch
+    // or a close commit does.
+    h.update_view(window, |view, _, _| view.busy = true);
+    h.release(window, after);
+    h.cx.run_until_parked();
+    assert_eq!(h.cx.update(|cx| order(cx, session)), [first, second]);
+    h.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        assert_eq!(desktop.pending_spawns, 0, "the drop took a hold");
+        assert!(desktop.cross.reserved.is_empty());
+    });
+    assert!(
+        h.update_view(window, |view, _, _| view.busy),
+        "the drop ended the other operation's busy"
+    );
+    h.update_view(window, |view, _, _| view.busy = false);
+}

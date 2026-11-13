@@ -610,12 +610,15 @@ completions: Move Tab to Workspace through `commit_tab_move` with
 `Operation::MoveTab`, and Move Workspace to Session and Move Workspace Up or
 Down through `move_workspace`. Both hold the window busy, and every workspace
 move and every tab move between workspaces also holds Quit and checkpoints
-until it settles (`hold_move`). A window's `busy` alone stops only its own
-commands: Quit honors it only in its host window, and checkpoints never read
-it. Neither command follows its item: the window keeps its workspace unless
-the move emptied it, and then follows or closes through its emptied close as
-after a drop. A command cancels a row or pane drag first; a tab drag refuses
-it (`check_runtime_available`). The `sidebar_move_*` keys act on the focused
+until its completion reconciles (`hold_move`). A window's `busy` alone stops
+only its own commands: Quit honors it only in its host window, and
+checkpoints never read it. A busy window takes no workspace row drop, since
+the move would end the other operation's `busy` and share its hold slot.
+Pane moves between workspaces still hold only `busy`. Neither command
+follows its item: the window keeps its workspace unless the move emptied it,
+and then follows or closes through its emptied close as after a drop. A
+command cancels a row or pane drag first; a tab drag refuses it
+(`check_runtime_available`). The `sidebar_move_*` keys act on the focused
 row, a workspace or a session list row, keep its focus, and do nothing at the
 list's end. Unlike a cross-window drop, a command reserves no destination
 window, which reconciles and installs the moved views as for any other

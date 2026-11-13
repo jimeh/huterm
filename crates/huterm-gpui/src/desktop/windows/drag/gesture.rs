@@ -860,6 +860,12 @@ impl WorkspaceView {
         {
             return;
         }
+        // A workspace row drop commits as Move Workspace Up or Down does,
+        // which a busy window refuses: its move would end the other
+        // operation's `busy` and share its Quit and checkpoint holds.
+        if matches!(payload, Payload::Workspace { .. }) && self.busy {
+            return;
+        }
         let change = drag.target().and_then(|target| {
             self.drop_operation(payload, target, Side::Source, cx)
         });

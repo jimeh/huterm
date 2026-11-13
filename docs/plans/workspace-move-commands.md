@@ -200,6 +200,24 @@ pending reveal to the drawn list and added a test for the row menu's
 session prompt. A reorder briefly blocks the window's input while it
 commits, as a tab move already does; that stays.
 
+The follow-up round found that a workspace row drop could still commit
+while the window was busy with another operation, ending that operation's
+`busy` and sharing its hold slot; a busy window now takes no workspace row
+drop. Two findings stay as accepted residual risk:
+
+- The holds end when the move's completion reconciles. When the move took
+  the window's shown workspace, the window then follows through its emptied
+  close, whose commit takes the close pipeline's own hold; a checkpoint in
+  the gap before that commit saves the window still naming the departed
+  workspace. Restore falls back to the session's first workspace, and the
+  next checkpoint, which the follow-up triggers, corrects it. A drop on
+  another window and any other client's move leave the same gap. Holding
+  until the follow-up would tie the move's hold to a close pipeline that
+  can end without committing, which risks a Quit that never resumes.
+- Pane moves between workspaces (`commit_pane_move`, which #458's row drops
+  and Move Pane to New Tab share) still hold only `busy`, as before this
+  change. A follow-up can give them `hold_move`.
+
 ## Non-goals
 
 - Workspace drops on session rows (decided), session rows across windows.
