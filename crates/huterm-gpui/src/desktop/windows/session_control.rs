@@ -496,6 +496,13 @@ impl WorkspaceView {
             ids::SIDEBAR_RENAME => {
                 self.run_session_row(focused, RowAction::Rename, window, cx);
             }
+            ids::SIDEBAR_MOVE_UP | ids::SIDEBAR_MOVE_DOWN => {
+                let up = command == ids::SIDEBAR_MOVE_UP;
+                return Some(
+                    self.move_session_step(focused, up, window, cx)
+                        .or(Ok(CommandOutcome::Completed)),
+                );
+            }
             ids::SIDEBAR_MENU => {
                 let anchor = self
                     .session_row_bounds
@@ -538,7 +545,11 @@ impl WorkspaceView {
             RowAction::ClearName => ids::CLEAR_SESSION_NAME,
             RowAction::Close => ids::CLOSE_SESSION,
             // Sessions have no pin; their menu never offers one.
-            RowAction::TogglePin | RowAction::NewWindow => return,
+            RowAction::TogglePin
+            | RowAction::NewWindow
+            | RowAction::MoveUp
+            | RowAction::MoveDown
+            | RowAction::ToSession => return,
         };
         self.run_recorded(
             &CommandInvocation::new(
@@ -717,14 +728,24 @@ impl WorkspaceView {
             let Committed { result, seq } = task.await;
             projected(&app, seq).await;
             let _ = view.update(cx, |view, cx| {
-                if let Err(error) = result
-                    && !terminating(cx)
-                {
-                    view.report_failure(
+                match result {
+                    Err(error) if !terminating(cx) => view.report_failure(
                         "Reorder sessions",
                         format!("Cannot reorder sessions: {error}"),
                         cx,
-                    );
+                    ),
+                    // The moved row stays in view, as one moved by key.
+                    Ok(()) => {
+                        if let Some(index) = view
+                            .session_rows(cx)
+                            .iter()
+                            .position(|row| row.session == session)
+                        {
+                            view.session_list_scroll.scroll_to_item(index);
+                            cx.notify();
+                        }
+                    }
+                    Err(_) => {}
                 }
             });
         })

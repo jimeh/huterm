@@ -568,12 +568,14 @@ tests.
   its own workspace through `all_tab_views` and the projection, not the
   shown one. A failed drop springs back only once the window is no longer
   busy, since a spring-back to another workspace is a switch.
-- A pane moved into another workspace of the same window gets a fresh view:
-  reconcile adopts pane views only within one workspace, and whole tabs
-  between held workspaces (`adopt_moved_tabs`). The move focuses the pane
-  once its view installs (`restore_focus`) and records an undo entry, as
-  Move Pane to New Tab into another workspace does. A committed move that
-  empties a hidden origin closes it unless pinned (`close_emptied_hidden`).
+- A pane moved into another workspace of the same window keeps its view, as
+  a whole tab does: `adopt_moved_panes` moves the `PaneView` between held
+  workspaces before the per-workspace passes (see the desktop client
+  guide). A pane that lands in another session's workspace gets a fresh
+  view there and focuses once it installs (`restore_focus`). Either way the
+  move records an undo entry, as Move Pane to New Tab into another
+  workspace does. A committed move that empties a hidden origin closes it
+  unless pinned (`close_emptied_hidden`).
 - A workspace row routes through the cross-window sampler. Over another
   window it slots into that window's list, or takes its content
   (`Window`), and commits `MoveWorkspace` into that session through
@@ -585,7 +587,10 @@ tests.
   source refuses the release and shows no tear-off cue, since a transfer
   would end its own operation's `busy`. A window on the workspace's own
   session takes it only in its list. A row outside the window never
-  edge-scrolls its list.
+  edge-scrolls its own list. In the destination, an incoming tab, pane, or
+  workspace over the drawn workspace list scrolls it at its edges, as a
+  local one does (`Incoming::advance_list`), and retargets the preview as
+  the rows move.
 - Workspace tear-off (`tear_off_workspace`) moves first, with
   `Mux::move_workspace_to_new_session` and an attach under one lock, then
   opens the window, which adopts the attachment and installs. The source
@@ -596,6 +601,24 @@ tests.
   stops. A session's only
   workspace never tears off. Dropping a row drag (`drop_row_drag`) also
   ends its cross-window record.
+
+### Workspace move commands
+
+See [the plan](../plans/workspace-move-commands.md). The keyboard and palette
+equivalents of the drags commit the operation a drop would, through the same
+completions: Move Tab to Workspace through `commit_tab_move` with
+`Operation::MoveTab`, and Move Workspace to Session and Move Workspace Up or
+Down through `move_workspace`, which holds the window busy, so Quit and other
+structural commands wait for it. Neither follows its item: the window keeps
+its workspace unless the move emptied it, and then follows or closes through
+its emptied close as after a drop. A command cancels a row or pane drag
+first; a tab drag refuses it (`check_runtime_available`). The `sidebar_move_*`
+keys act on the focused row, a workspace or a session list row, keep its
+focus, and do nothing at the list's end. Unlike a cross-window drop, a
+command reserves no destination window, which reconciles and installs the
+moved views as for any other client's change; a pane close queued in the
+source during a move to another session ends quietly, as R1 settled for
+hidden workspaces.
 
 ## Modifier pane drags
 

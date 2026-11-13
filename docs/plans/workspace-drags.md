@@ -147,7 +147,10 @@ Tests are in `window_tests/workspace_drags.rs` unless noted.
   session rows across windows.
 - A progress cue for spring-loading; tabs have none either.
 - Adopting a pane's view across workspaces of one window; a moved pane
-  reinstalls there, as across windows.
+  reinstalls there, as across windows. [Workspace move
+  commands](workspace-move-commands.md) later added that adoption, edge
+  scrolling under an incoming drag, and the keyboard and palette
+  equivalents.
 
 [issue-27]: https://github.com/jimeh/huterm/issues/27
 [mockup]: https://plans.jimeh.dev/axkjsbrns72kivld37iujyoezq/huterm-workspace-drag-mockup.html

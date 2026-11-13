@@ -2,8 +2,8 @@
 //! Preview updates are deferred and tagged; release resolves again and reserves
 //! both windows synchronously before any runtime worker can start.
 use super::drag::{
-    Destination, DropTarget, Gesture, Hover, Operation, Payload as Dragged,
-    Side, SpringBack, operation,
+    Destination, DropTarget, Gesture, Hover, ListScroll, Operation,
+    Payload as Dragged, Side, SpringBack, operation,
 };
 use super::pane_moves::PaneMove;
 use super::window_locator::{Located, NativeLocator, WindowLocator};
@@ -85,10 +85,31 @@ pub(super) struct Incoming {
     sample: u64,
     pub(super) payload: Payload,
     pub(super) hover: Hover,
+    /// The edge autoscroll of the workspace list under the pointer, as a
+    /// local gesture's.
+    list: ListScroll,
 }
 impl Incoming {
     pub(super) fn scrolls(&self, scroll: Pixels) -> bool {
         self.hover.scrolls(scroll)
+    }
+    /// Whether the pointer rests over the list `scroll` at its edge.
+    fn list_scrolls(&self, scroll: &gpui::ScrollHandle) -> bool {
+        scroll.bounds().contains(&self.hover.pointer)
+            && ListScroll::direction(self.hover.pointer, scroll).is_some()
+    }
+    /// Scrolls the list `scroll` under a pointer resting at its edge.
+    /// Returns whether it scrolled.
+    fn advance_list(
+        &mut self,
+        now: Instant,
+        scroll: &gpui::ScrollHandle,
+    ) -> bool {
+        if !scroll.bounds().contains(&self.hover.pointer) {
+            self.list = ListScroll::new(now);
+            return false;
+        }
+        self.list.advance(now, self.hover.pointer, scroll)
     }
     pub(super) fn autoscroll(
         &mut self,
@@ -449,6 +470,7 @@ impl WorkspaceView {
                     self.tab_scroll,
                     self.tab_strip(window),
                 ),
+                list: ListScroll::new(Instant::now()),
             });
             self.last_scroll = Instant::now();
         }
@@ -534,6 +556,46 @@ impl WorkspaceView {
                 (incoming.generation, incoming.sample, label),
             );
         }
+    }
+
+    /// The workspace list an incoming drag scrolls, while one draws.
+    fn incoming_list_scroll(&self) -> Option<gpui::ScrollHandle> {
+        self.incoming.as_ref()?;
+        let chrome = self.workspace_chrome_now.get();
+        (chrome.docked() || self.switcher_mode.is_some())
+            .then(|| self.workspace_drag_scroll())
+    }
+
+    /// Whether an incoming drag rests at the workspace list's edge, so
+    /// frames keep scrolling it.
+    pub(super) fn incoming_list_scrolls(&self) -> bool {
+        self.incoming_list_scroll().is_some_and(|scroll| {
+            self.incoming
+                .as_ref()
+                .is_some_and(|incoming| incoming.list_scrolls(&scroll))
+        })
+    }
+
+    /// Scrolls the workspace list under an incoming drag resting at its
+    /// edge, as a local drag does, and moves the drop target with the
+    /// rows. Returns whether it scrolled.
+    pub(super) fn advance_incoming_list(
+        &mut self,
+        now: Instant,
+        window: &Window,
+        cx: &mut App,
+    ) -> bool {
+        let Some(scroll) = self.incoming_list_scroll() else {
+            return false;
+        };
+        let scrolled = self
+            .incoming
+            .as_mut()
+            .is_some_and(|incoming| incoming.advance_list(now, &scroll));
+        if scrolled {
+            self.retarget_incoming(now, false, window, cx);
+        }
+        scrolled
     }
 
     pub(super) fn advance_incoming_spring(

@@ -922,7 +922,11 @@ impl WorkspaceView {
                 workspace,
                 before,
                 ..
-            } => Self::move_workspace(session, workspace, before, cx),
+            } => {
+                self.move_workspace(
+                    session, workspace, session, before, window, cx,
+                );
+            }
             Operation::MoveSession { session, before } => {
                 Self::move_session(session, before, cx);
             }
@@ -931,7 +935,7 @@ impl WorkspaceView {
 
     /// Commits a tab reorder or move on a worker; a refused move that
     /// spring-loaded switches `back`.
-    fn commit_tab_move(
+    pub(in super::super) fn commit_tab_move(
         &mut self,
         change: Operation,
         back: Option<SpringBack>,
@@ -940,9 +944,16 @@ impl WorkspaceView {
     ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         self.busy = true;
-        let task = cx
-            .background_executor()
-            .spawn(async move { runtime.commit_drop(change) });
+        let task = cx.background_executor().spawn(async move {
+            #[cfg(all(test, feature = "test-support"))]
+            if runtime.worker_hooks.enter(worker_hooks::Stage::Move).await {
+                return Committed {
+                    result: Err(RuntimeError::Stopped.into()),
+                    seq: runtime.lock().hierarchy_seq(),
+                };
+            }
+            runtime.commit_drop(change)
+        });
         let app = cx.to_async();
         let (title, verb) = match change {
             Operation::MoveTab { .. } => ("Move tab", "move"),

@@ -197,6 +197,7 @@ fn switch_workspace_lists_only_the_windows_sessions_workspaces_by_name() {
         window_only: true,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: true,
+        exclusion: Exclusion::default(),
     };
     assert_eq!(
         switch.values(ArgumentKind::Workspace),
@@ -220,9 +221,72 @@ fn switch_workspace_lists_only_the_windows_sessions_workspaces_by_name() {
     // name another session's.
     let any = DomainView {
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
         ..switch
     };
     assert_eq!(any.values(ArgumentKind::Workspace).len(), 3);
+    mux.close_session(session).unwrap();
+    mux.close_session(elsewhere).unwrap();
+}
+
+#[test]
+fn move_pickers_leave_out_where_the_item_already_is() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let mine = mux.create_workspace(session, None).unwrap();
+    let sibling = mux.create_workspace(session, None).unwrap();
+    let elsewhere = mux.create_session(None).unwrap();
+    let foreign = mux.create_workspace(elsewhere, None).unwrap();
+    let tab = mux.open_tab(mine, &terminal_command()).unwrap().tab;
+    let theirs = mux.open_tab(sibling, &terminal_command()).unwrap().tab;
+    let hierarchy = hierarchy(&mut mux, &[]);
+    let target = PaletteTarget {
+        session: Some(session),
+        workspace: Some(mine),
+        tab: Some(tab.id),
+        ..target()
+    };
+    let domain = |command, tab, workspace| DomainView {
+        hierarchy: &hierarchy,
+        profiles: &[],
+        layouts: &[],
+        target: &target,
+        window_only: true,
+        pane_exclusion: PaneExclusion::OwnPane,
+        own_session_workspaces: false,
+        exclusion: exclusion(command, &hierarchy, &target, tab, workspace),
+    };
+    // A tab move offers every workspace but the tab's own, in any session.
+    assert_eq!(
+        domain(ids::MOVE_TAB_TO_WORKSPACE, None, None)
+            .values(ArgumentKind::Workspace),
+        [sibling, foreign].map(CommandValue::Workspace)
+    );
+    assert_eq!(
+        domain(ids::MOVE_TAB_TO_WORKSPACE, Some(theirs.id), None)
+            .values(ArgumentKind::Workspace),
+        [mine, foreign].map(CommandValue::Workspace),
+        "a named tab leaves out its own workspace"
+    );
+    // A workspace move offers every session but the workspace's own.
+    assert_eq!(
+        domain(ids::MOVE_WORKSPACE_TO_SESSION, None, None)
+            .values(ArgumentKind::Session),
+        [CommandValue::Session(elsewhere)]
+    );
+    assert_eq!(
+        domain(ids::MOVE_WORKSPACE_TO_SESSION, None, Some(foreign))
+            .values(ArgumentKind::Session),
+        [CommandValue::Session(session)],
+        "a named workspace leaves out its own session"
+    );
+    // Other commands leave nothing out.
+    assert_eq!(
+        domain(ids::MOVE_PANE_TO_NEW_TAB, None, None)
+            .values(ArgumentKind::Workspace)
+            .len(),
+        3
+    );
     mux.close_session(session).unwrap();
     mux.close_session(elsewhere).unwrap();
 }
@@ -250,6 +314,7 @@ fn window_scoped_commands_list_only_this_windows_tabs() {
         window_only: true,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     assert_eq!(
         window_only.values(ArgumentKind::Tab),
@@ -305,6 +370,7 @@ fn identity_replacement_and_duplicate_labels_keep_scoped_ids() {
         window_only: false,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     let mut editor = SlotEditor::new(rename, &[], &domain, false).unwrap();
     editor.set_text("chosen");
@@ -343,6 +409,7 @@ fn rename_targets_prefill_from_the_projected_session_and_workspace() {
         window_only: false,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     for (command, kind, name) in [
         (ids::RENAME_SESSION, ArgumentKind::Session, "named session"),
@@ -393,6 +460,7 @@ fn palette_invocation_renames_exact_tab_and_stale_target_changes_nothing() {
         window_only: false,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     let mut editor = SlotEditor::new(rename, &[], &domain, false).unwrap();
     editor.set_text("chosen");
@@ -437,6 +505,7 @@ fn quake_profiles_form_a_strict_domain_with_a_default() {
         window_only: false,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     let toggle = huterm_protocol::lookup(ids::TOGGLE_QUAKE.as_str()).unwrap();
     assert!(slots::runs_without_prompt(toggle, &domain));
@@ -684,6 +753,7 @@ fn a_rebuild_moves_window_scoped_pickers_and_defaults_to_the_current_scope() {
         window_only: true,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     assert_eq!(
         domain.values(ArgumentKind::Tab),
@@ -770,6 +840,7 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
         window_only: true,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     // The pane being moved is never offered; another pane is labelled by
     // its published title, else its program name.
@@ -786,6 +857,7 @@ fn pane_and_side_pickers_build_the_explicit_move_invocation() {
     let moving = |tab: TabId| DomainView {
         pane_exclusion: PaneExclusion::OwnTab(tab),
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
         ..domain
     };
     assert_eq!(
@@ -877,6 +949,7 @@ fn rename_pane_defaults_to_the_focused_pane_and_prefills_its_custom_name() {
         window_only: false,
         pane_exclusion: PaneExclusion::Nothing,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     assert_eq!(
         domain.values(ArgumentKind::Pane),
@@ -901,6 +974,7 @@ fn rename_pane_defaults_to_the_focused_pane_and_prefills_its_custom_name() {
     let moving = DomainView {
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
         ..domain
     };
     assert_eq!(
@@ -934,6 +1008,7 @@ fn the_layout_picker_lists_built_ins_by_title_then_user_layouts_by_name() {
         window_only: true,
         pane_exclusion: PaneExclusion::OwnPane,
         own_session_workspaces: false,
+        exclusion: Exclusion::default(),
     };
     let rows: Vec<(&str, &str)> = domain
         .rows(ArgumentKind::Layout)

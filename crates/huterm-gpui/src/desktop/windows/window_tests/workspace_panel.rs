@@ -541,6 +541,8 @@ fn rows_show_rename_and_open_a_menu_for_their_own_workspace(
             [
                 format!("workspace-rename:{raw}"),
                 format!("workspace-pin:{raw}"),
+                format!("workspace-up:{raw}"),
+                format!("workspace-down:{raw}"),
                 format!("workspace-window:{raw}"),
                 format!("workspace-close:{raw}"),
             ]
@@ -1105,6 +1107,50 @@ fn every_side_draws_with_every_tab_position(cx: &mut TestAppContext) {
             }
         }
     }
+}
+
+#[gpui::test]
+fn a_sheet_opened_the_first_time_shows_the_shown_row(cx: &mut TestAppContext) {
+    // A visible sidebar in a window too narrow to dock it, as a narrow
+    // window restores.
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.sidebar.visible = true;
+        config.tabs.always_show = true;
+    });
+    let (window, _) = harness.workspace_window();
+    let mut last = None;
+    for _ in 0..40 {
+        last = Some(harness.add_workspace(1));
+    }
+    let (last, tabs) = last.unwrap();
+    harness.wait_projection();
+    harness
+        .invoke_with(
+            window,
+            &super::workspaces::workspace_pick(ids::SELECT_WORKSPACE, last),
+        )
+        .unwrap();
+    harness.wait_workspace(window, last, &tabs);
+    let height = harness
+        .update_view(window, |_, window, _| window.viewport_size().height);
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(gpui::size(px(500.0), height));
+    harness.wait_chrome(window, "narrow", WorkspaceChrome::narrow);
+    // The sheet's list has never drawn; its first frame shows the shown
+    // workspace's row, last in a list taller than the window.
+    harness.invoke(window, ids::TOGGLE_SIDEBAR).unwrap();
+    harness.row_bounds(window, last);
+    harness.cx.run_until_parked();
+    let (shown, sheet) = harness.update_view(window, |view, _, _| {
+        (
+            view.workspace_row_bounds.borrow()[&last],
+            view.switcher_scroll.bounds(),
+        )
+    });
+    assert!(
+        sheet.top() <= shown.top() && shown.bottom() <= sheet.bottom(),
+        "the shown row {shown:?} is outside the sheet's list {sheet:?}"
+    );
 }
 
 #[gpui::test]

@@ -1347,6 +1347,51 @@ fn a_tab_held_at_the_workspace_lists_edge_scrolls_it(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_tab_from_another_window_held_at_the_lists_edge_scrolls_it(
+    cx: &mut TestAppContext,
+) {
+    let mut h = sidebar_harness(cx);
+    let tab = h.open_tab(ECHO);
+    let moving = h.open_tab(ECHO);
+    let source = h.attach_showing(&[tab, moving]);
+    let (destination, shown, _) = h.private_window();
+    let target_session = workspace_session(&mut h, shown);
+    {
+        let mut mux = h.runtime.lock();
+        for _ in 0..40 {
+            let workspace = mux.create_workspace(target_session, None).unwrap();
+            mux.open_tab(workspace, &fixture(ECHO)).unwrap();
+        }
+    }
+    h.wait_projection();
+    h.wait_chrome(destination, "its sidebar", WorkspaceChrome::docked);
+    let list =
+        h.update_view(destination, |view, _, _| view.workspace_scroll.bounds());
+    let edge = gpui::point(list.center().x, list.bottom() - px(4.0));
+    let locator = h.cross_locator();
+    locator
+        .0
+        .set(Located::Window(destination.window_id(), edge));
+    h.update_view(source, |view, window, cx| {
+        let at = view.tab_strip(window).label(1).center();
+        view.begin_reorder(moving, at, window, cx);
+        view.update_drag(at + gpui::point(px(8.0), px(8.0)), window, cx);
+    });
+    h.wait_for("the destination's list to keep scrolling", |cx| {
+        destination
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>().is_ok_and(|view| {
+                    view.read(cx).workspace_scroll.offset().y < px(-60.0)
+                })
+            })
+            .unwrap_or(false)
+    });
+    h.update_view(source, |view, window, cx| {
+        view.cancel_drag(window, cx);
+    });
+}
+
+#[gpui::test]
 fn a_pane_close_queued_during_a_workspace_transfer_follows_it(
     cx: &mut TestAppContext,
 ) {

@@ -294,18 +294,19 @@ fn undo_focuses_a_pane_whose_view_has_to_install_again(
     let tab = harness.open_tab(ECHO);
     let kept = harness.first_pane(tab);
     let moving = harness.split(tab, kept, SplitDirection::Right, ECHO);
-    let elsewhere = harness
-        .runtime
-        .lock()
-        .create_workspace(harness.session, None)
-        .unwrap();
+    // Another session's workspace, whose views this window does not keep.
+    let elsewhere = {
+        let mut mux = harness.runtime.lock();
+        let session = mux.create_session(None).unwrap();
+        mux.create_workspace(session, None).unwrap()
+    };
     let window = harness.attach_window();
     harness.activate(window, tab);
     harness.wait_for("both panes to show", |cx| {
         panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 2)
     });
     harness.focus(window, tab, moving);
-    // The pane leaves for a workspace this window does not show, so the
+    // The pane leaves for a workspace this window does not hold, so the
     // window drops its view.
     harness
         .invoke_with(
@@ -338,6 +339,70 @@ fn undo_focuses_a_pane_whose_view_has_to_install_again(
         pane_screen(cx, window, tab, moving)
             .is_some_and(|text| text.contains("got:back"))
     });
+}
+
+#[gpui::test]
+fn undo_returns_a_pane_kept_in_a_hidden_workspace_with_its_view(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let kept = harness.first_pane(tab);
+    let moving = harness.split(tab, kept, SplitDirection::Right, ECHO);
+    let hidden = harness
+        .runtime
+        .lock()
+        .create_workspace(harness.session, None)
+        .unwrap();
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_for("both panes to show", |cx| {
+        panes_shown(cx, window, tab).is_some_and(|(panes, _)| panes.len() == 2)
+    });
+    let view = |harness: &mut DesktopHarness| {
+        harness.update_view(window, |view, _, _| {
+            view.all_tab_views()
+                .find_map(|tab| tab.pane(moving))
+                .map(|pane| pane.view.entity_id())
+        })
+    };
+    let before = view(&mut harness);
+    harness.focus(window, tab, moving);
+    // The pane leaves for a workspace this window holds hidden, which
+    // keeps its view.
+    harness
+        .invoke_with(
+            window,
+            &CommandInvocation::new(
+                ids::MOVE_PANE_TO_NEW_TAB,
+                vec![CommandArgument::new(
+                    "workspace",
+                    CommandValue::Workspace(hidden),
+                )],
+            ),
+        )
+        .unwrap();
+    harness.wait_for("the pane to leave and the move to record", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![kept], kept))
+            && next_label(cx, window, RestoreDirection::Undo)
+                .as_deref()
+                .is_some()
+    });
+    assert_eq!(view(&mut harness), before, "the hidden view was rebuilt");
+    // Undo brings the same view back, with keyboard focus.
+    harness.invoke(window, ids::UNDO).unwrap();
+    harness.wait_for("the returned pane to take keyboard focus", |cx| {
+        panes_shown(cx, window, tab)
+            .is_some_and(|(panes, _)| panes == [kept, moving])
+            && pane_focused(cx, window, tab, moving)
+    });
+    assert_eq!(view(&mut harness), before, "the returned view was rebuilt");
+    // Redo moves it away again, still on the same view.
+    harness.invoke(window, ids::REDO).unwrap();
+    harness.wait_for("the pane to leave again", |cx| {
+        panes_shown(cx, window, tab) == Some((vec![kept], kept))
+    });
+    assert_eq!(view(&mut harness), before);
 }
 
 #[gpui::test]

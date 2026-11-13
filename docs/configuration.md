@@ -253,18 +253,21 @@ switcher_style = "full"             # full (icon and name) or icon
   while other windows show it, and an "exited" tag once all its shells
   exited. A click shows the workspace or session, and a right-click opens
   the row's menu: Rename, Clear Name, and Close, and for a workspace, Pin
-  Workspace or Unpin Workspace and Move Workspace to New Window, and for a
-  session, Open in New Window.
+  Workspace or Unpin Workspace, Move Workspace to Session…, Move Workspace
+  Up and Down, and Move Workspace to New Window, and for a session, Open in
+  New Window.
   In the popovers each row also has a "⋯" button that opens the
   same menu. Drag a row up or down to reorder the session's workspaces or
   the sessions, holding it at the list's edge to scroll; Escape cancels the
-  drag. A dragged row shows its name under the pointer. A workspace row
+  drag. Option-Up and Option-Down (Alt on Linux) move the focused row
+  instead. A dragged row shows its name under the pointer. A workspace row
   dragged out of the window opens the workspace in a new window and
   session, as Move Workspace to New Window in its menu does, and one
   dropped on another window moves into that window's session, which then
-  shows it; a session's only workspace does neither but can still move to
-  another window. A tab or pane dropped on another workspace's row moves
-  into it, last, and the window keeps showing its workspace; resting on a
+  shows it; a session's only workspace does not tear off but can still
+  move to another window, or to another session through its menu. A tab
+  or pane dropped on another workspace's row moves into it, last, and the
+  window keeps showing its workspace; resting on a
   row for half a second shows that workspace, so the drag can go on into
   its tab bar or panes, and a drag that then ends without a drop goes back.
   A double-click renames a workspace row in the sidebar; in the

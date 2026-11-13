@@ -33,6 +33,9 @@ pub(super) struct TabMenuInput {
     pub(super) panes: usize,
     /// The tab syncs input, so its sync row shows, worded to stop.
     pub(super) input_sync: bool,
+    /// A workspace other than the tab's exists, in any session, so Move
+    /// Tab to Workspace… has somewhere to go.
+    pub(super) other_workspace: bool,
 }
 
 /// The rows for `input`, with the active tab's shortcuts from `keymap` as
@@ -107,6 +110,20 @@ pub(super) fn tab_menu(
             _ => move_tab,
         };
     rows.push(MenuRow::Item(move_tab));
+    let to_workspace = MenuItem::new(
+        ids::MOVE_TAB_TO_WORKSPACE.as_str(),
+        "Move Tab to Workspace…",
+    );
+    rows.push(MenuRow::Item(
+        match super::workspace_moves::tab_to_workspace_availability(
+            input.other_workspace,
+        ) {
+            Err(huterm_protocol::CommandError::Unavailable(reason)) => {
+                to_workspace.disabled(Some(reason))
+            }
+            _ => to_workspace,
+        },
+    ));
     rows.push(MenuRow::Item(MenuItem::new(
         ids::MOVE_TAB_TO_PANE.as_str(),
         "Move Tab into Pane…",
@@ -157,6 +174,7 @@ mod tests {
             directory_known: true,
             panes: 1,
             input_sync: false,
+            other_workspace: true,
         }
     }
 
@@ -191,6 +209,7 @@ mod tests {
                 ("close_other_tabs", "Close Other Tabs", true),
                 ("close_tabs_after", "Close Tabs to the Right", true),
                 ("move_tab_to_new_window", "Move Tab to New Window", true),
+                ("move_tab_to_workspace", "Move Tab to Workspace…", true),
                 ("move_tab_to_pane", "Move Tab into Pane…", true),
             ]
         );
@@ -202,7 +221,7 @@ mod tests {
             matches!(model.rows[6], MenuRow::Separator),
             "one separator before the move"
         );
-        assert_eq!(model.rows.len(), 9);
+        assert_eq!(model.rows.len(), 10);
     }
 
     #[test]
@@ -215,22 +234,22 @@ mod tests {
         };
         assert_eq!(
             enabled(&input(0, 3)),
-            [true, true, true, true, true, true, true]
+            [true, true, true, true, true, true, true, true]
         );
         assert_eq!(
             enabled(&input(1, 3)),
-            [true, true, true, true, true, true, true]
+            [true, true, true, true, true, true, true, true]
         );
         assert_eq!(
             enabled(&input(2, 3)),
-            [true, true, true, true, false, true, true],
+            [true, true, true, true, false, true, true, true],
             "the last tab has nothing to its right"
         );
         assert_eq!(
             enabled(&input(0, 1)),
-            [true, true, true, false, false, false, true],
+            [true, true, true, false, false, false, true, true],
             "a single tab has no others and nothing after it, and can still \
-             move into a pane of another workspace"
+             move to another workspace or into a pane of one"
         );
         let single = model(&input(0, 1));
         let closers = items(&single);
@@ -252,6 +271,24 @@ mod tests {
         assert_eq!(
             items(&model(&input(0, 2)))[4].label,
             "Close Tabs to the Right"
+        );
+    }
+
+    #[test]
+    fn a_lone_workspace_disables_move_to_workspace_with_a_hint() {
+        let alone = TabMenuInput {
+            other_workspace: false,
+            ..input(0, 2)
+        };
+        let alone = model(&alone);
+        let row = items(&alone)
+            .into_iter()
+            .find(|item| item.id.as_ref() == "move_tab_to_workspace")
+            .unwrap();
+        assert!(!row.enabled);
+        assert_eq!(
+            row.disabled_hint.as_deref(),
+            Some("There is no other workspace.")
         );
     }
 
@@ -307,6 +344,7 @@ mod tests {
             [
                 "toggle_pane_input_sync",
                 "move_tab_to_new_window",
+                "move_tab_to_workspace",
                 "move_tab_to_pane"
             ]
         );
