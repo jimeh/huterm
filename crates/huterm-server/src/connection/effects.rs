@@ -14,7 +14,9 @@
 //! written within the delivery deadline, and its last within that plus one
 //! second per [`HOST_EFFECT_MIN_THROUGHPUT`] bytes. One that misses either
 //! is dropped at once with its reservations, and its message is aborted
-//! after the frame already with the writer.
+//! after the frame already with the writer. An effect reaches the head as
+//! soon as no other is being sent, even while an earlier one's last frame
+//! or abort still waits at the writer.
 
 use std::time::Duration;
 
@@ -32,6 +34,16 @@ use huterm_wire::handshake::{
 
 use super::outbound::EffectProgress;
 use super::{CloseReason, Connection};
+use crate::viewer::PendingEffect;
+
+/// The effect at the head of the lane, waiting for the slot, and when it
+/// got there.
+#[derive(Debug)]
+pub(super) struct Waiting {
+    viewer: ViewerId,
+    effect: Box<dyn PendingEffect>,
+    reached: Duration,
+}
 
 /// The effect being sent and its deadlines.
 #[derive(Clone, Copy, Debug)]
@@ -47,7 +59,8 @@ pub(super) struct Sending {
 pub struct EffectStats {
     /// Effects whose message started.
     pub sent: u64,
-    /// Effects dropped at a deadline.
+    /// Effects dropped at a deadline: waiting at the head of the lane, or
+    /// aborted while being sent.
     pub expired: u64,
 }
 
@@ -116,20 +129,48 @@ impl Connection {
         }
     }
 
-    /// Starts the next current effect while the slot is idle.
+    /// Moves the next current effect to the head of the lane and starts it
+    /// once the slot is idle. While the slot still drains an earlier
+    /// effect's last frame or abort, the next effect waits at the head with
+    /// its delivery deadline running, so a client that reads slowly cannot
+    /// hold queued effects, and their reservations, without a bound.
     pub(super) fn offer_effects(&mut self) {
-        if self.closed.is_some()
-            || self.outbound.effect_progress() != EffectProgress::Idle
+        if self.closed.is_some() {
+            return;
+        }
+        let progress = self.outbound.effect_progress();
+        if matches!(progress, EffectProgress::Sending { .. }) {
+            return;
+        }
+        if self
+            .waiting
+            .as_ref()
+            .is_some_and(|waiting| !waiting.effect.is_current())
         {
+            self.waiting = None;
+        }
+        if self.waiting.is_none() {
+            self.waiting = self.next_ready();
+        }
+        if progress != EffectProgress::Idle {
             return;
         }
         self.sending = None;
+        while let Some(waiting) = self.waiting.take() {
+            if self.start_effect(waiting) {
+                return;
+            }
+            self.waiting = self.next_ready();
+        }
+    }
+
+    /// The next current effect from the ready viewers in turn, at the head
+    /// of the lane from now.
+    fn next_ready(&mut self) -> Option<Waiting> {
         let mut turns = self.effect_queue.len();
         while turns > 0 {
             turns -= 1;
-            let Some(id) = self.effect_queue.pop_front() else {
-                return;
-            };
+            let id = self.effect_queue.pop_front()?;
             let Some(live) = self.viewers.get(&id) else {
                 self.effect_ready.remove(&id);
                 continue;
@@ -145,38 +186,58 @@ impl Connection {
             };
             // The viewer may hold more; it stays in turn.
             self.effect_queue.push_back(id);
-            let Some(payload) = effect.payload() else {
-                continue;
-            };
-            if !effect.is_current() {
-                continue;
-            }
-            self.last_effect += 1;
-            // A payload past the wire's limits, which core's bounds rule
-            // out, is dropped rather than sent.
-            let Ok(head) = host_effect_head(
-                self.scope,
-                self.last_effect,
-                id,
-                effect.generation(),
-                effect.terminal(),
-                payload,
-            ) else {
-                continue;
-            };
-            let len = head.len() + payload.streamed().len();
-            self.outbound.start_effect(head, effect);
-            self.effect_stats.sent += 1;
-            self.sending = Some(Sending {
-                first: self.clock + HOST_EFFECT_DELIVERY_DEADLINE,
-                complete: self.clock + completion(len),
+            return Some(Waiting {
+                viewer: id,
+                effect,
+                reached: self.clock,
             });
-            return;
         }
+        None
     }
 
-    /// The effect lane's next deadline, if an effect is under way.
+    /// Starts `waiting`'s message, or drops it when it is no longer current
+    /// or has no wire form. Returns whether it started.
+    fn start_effect(&mut self, waiting: Waiting) -> bool {
+        let Waiting {
+            viewer,
+            effect,
+            reached,
+        } = waiting;
+        let Some(payload) = effect.payload() else {
+            return false;
+        };
+        if !effect.is_current() {
+            return false;
+        }
+        self.last_effect += 1;
+        // A payload past the wire's limits, which core's bounds rule out,
+        // is dropped rather than sent.
+        let Ok(head) = host_effect_head(
+            self.scope,
+            self.last_effect,
+            viewer,
+            effect.generation(),
+            effect.terminal(),
+            payload,
+        ) else {
+            return false;
+        };
+        let len = head.len() + payload.streamed().len();
+        self.outbound.start_effect(head, effect);
+        self.effect_stats.sent += 1;
+        self.sending = Some(Sending {
+            first: reached + HOST_EFFECT_DELIVERY_DEADLINE,
+            complete: reached + completion(len),
+        });
+        true
+    }
+
+    /// The effect lane's next deadline: the waiting effect's delivery
+    /// deadline, or the sending effect's first-frame or completion one.
     pub(super) fn effect_deadline(&self) -> Option<Duration> {
+        if let Some(waiting) = &self.waiting {
+            return Some(waiting.reached + HOST_EFFECT_DELIVERY_DEADLINE);
+        }
         let sending = self.sending?;
         match self.outbound.effect_progress() {
             EffectProgress::Sending {
@@ -189,11 +250,19 @@ impl Connection {
         }
     }
 
-    /// Drops an effect that missed its deadline at `now`.
+    /// Drops an effect that missed its deadline at `now`: the waiting one,
+    /// or the one being sent, whose message is aborted unless its last
+    /// frame is already cut, in which case it still arrives.
     pub(super) fn check_effect_deadline(&mut self, now: Duration) {
-        if self.effect_deadline().is_some_and(|at| now >= at) {
-            self.sending = None;
-            self.outbound.abort_effect();
+        if self.effect_deadline().is_none_or(|at| now < at) {
+            return;
+        }
+        if self.waiting.take().is_some() {
+            self.effect_stats.expired += 1;
+            return;
+        }
+        self.sending = None;
+        if self.outbound.abort_effect() {
             self.effect_stats.expired += 1;
         }
     }
@@ -243,6 +312,7 @@ impl Connection {
         }
         self.effect_queue.clear();
         self.effect_ready.clear();
+        self.waiting = None;
         self.sending = None;
     }
 }

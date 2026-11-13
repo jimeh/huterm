@@ -457,9 +457,10 @@ pub(crate) enum HostEffectAdmission {
 /// waits instead of dropping the effect: a lost write is visible to the
 /// user, and every holder keeps these locks briefly. Admission releases
 /// the sink state before it takes the terminal budget, then the process
-/// budget, then the client's share, then the queue. Other threads may take the queue or a budget
-/// while holding the sink state, but never take another of these locks
-/// while holding the queue or a budget, so the waits cannot form a cycle.
+/// budget, then the client's share, then the queue. Other threads may take
+/// the queue or a budget while holding the sink state, but never take
+/// another of these locks while holding the queue or a budget, so the waits
+/// cannot form a cycle.
 /// That is why reservations are freed after the queue is released.
 #[derive(Clone, Debug)]
 pub(crate) struct HostEffectSink {
@@ -1467,5 +1468,77 @@ mod tests {
         // Granting again cannot bring a revoked recipient back.
         assert!(recipient.set_permission(HostEffectKind::Clipboard, true, 9));
         assert_eq!(sink.admit_borrowed("later"), HostEffectAdmission::Denied);
+    }
+
+    #[test]
+    fn a_client_at_its_share_never_denies_another_whatever_its_viewers() {
+        let sink = HostEffectSink::new(TerminalId::new(23));
+        let full = DesktopHostEffectClient::new();
+        let other = DesktopHostEffectClient::new();
+        let link = |ordinal: &Arc<AtomicU64>| RecipientLink {
+            activity: None,
+            ordinal: Arc::clone(ordinal),
+        };
+        let options = HostEffectRecipientOptions::local_desktop(
+            HostEffectPermissions::ALL,
+        );
+        // The full client has three viewers on the terminal, and turns
+        // between them as it fills its share.
+        let ordinals: Vec<Arc<AtomicU64>> =
+            (0..4).map(|n| Arc::new(AtomicU64::new(n))).collect();
+        let held: Vec<HostEffectRecipient> = (0..3)
+            .map(|n| {
+                sink.register(
+                    Some(AttachmentId::new(n + 1)),
+                    &full,
+                    options,
+                    link(&ordinals[usize::try_from(n).unwrap()]),
+                )
+                .unwrap()
+            })
+            .collect();
+        let second = sink
+            .register(
+                Some(AttachmentId::new(9)),
+                &other,
+                options,
+                link(&ordinals[3]),
+            )
+            .unwrap();
+        let half = TERMINAL_EFFECT_LIMIT / 2;
+        let mut next = 10;
+        let mut activate = |ordinal: &Arc<AtomicU64>| {
+            next += 1;
+            ordinal.store(next, Ordering::Release);
+        };
+        for n in 0..half {
+            activate(&ordinals[n % 3]);
+            assert_eq!(
+                sink.admit_borrowed("full"),
+                HostEffectAdmission::Accepted
+            );
+        }
+        activate(&ordinals[0]);
+        assert_eq!(sink.admit_borrowed("over"), HostEffectAdmission::Full);
+        // Its effects stay queued while the other client takes its own half.
+        activate(&ordinals[3]);
+        for _ in 0..half {
+            assert_eq!(
+                sink.admit_borrowed("other"),
+                HostEffectAdmission::Accepted
+            );
+        }
+        let mut delivered = 0;
+        while second.try_next().is_some() {
+            delivered += 1;
+        }
+        assert_eq!(delivered, half);
+        let queued: usize = held
+            .iter()
+            .map(|recipient| {
+                std::iter::from_fn(|| recipient.try_next()).count()
+            })
+            .sum();
+        assert_eq!(queued, half);
     }
 }

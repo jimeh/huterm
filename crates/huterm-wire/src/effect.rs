@@ -44,10 +44,12 @@ const fn kind_tag(kind: HostEffectKind) -> u64 {
     }
 }
 
-fn kind_from_tag(tag: u64) -> Result<HostEffectKind, DecodeError> {
+fn kind_from_tag(tag: u64, minor: u16) -> Result<HostEffectKind, DecodeError> {
     HostEffectKind::ALL
         .into_iter()
-        .find(|kind| kind_tag(*kind) == tag)
+        .find(|kind| {
+            kind_tag(*kind) == tag && effect_kind_since(*kind) <= minor
+        })
         .ok_or(DecodeError::UnknownTag {
             field: "host effect kind",
             tag,
@@ -99,12 +101,14 @@ pub(crate) fn write_kinds(w: &mut Writer, kinds: EffectKinds) {
     w.u64(kinds.0);
 }
 
-/// Reads a set of effect kinds, refusing a bit no kind has.
+/// Reads a set of effect kinds, refusing a bit no kind known at `minor`
+/// has.
 pub(crate) fn read_kinds(
     r: &mut Reader<'_>,
+    minor: u16,
 ) -> Result<EffectKinds, DecodeError> {
     let bits = r.u64()?;
-    if bits & !EffectKinds::ALL.0 != 0 {
+    if bits & !EffectKinds::known_at(minor).0 != 0 {
         return Err(DecodeError::Invalid("host effect kinds"));
     }
     Ok(EffectKinds(bits))
@@ -412,10 +416,15 @@ pub fn host_effect_head(
     }
 }
 
+/// Encodes a permission change at negotiated minor version `minor`.
+///
+/// # Errors
+/// Refuses a kind `minor` does not know with [`EncodeError::Unsupported`].
 pub(crate) fn encode_set_permission(
     w: &mut Writer,
     scope: IdScope,
     change: SetHostEffectPermission,
+    minor: u16,
 ) -> Result<(), EncodeError> {
     let SetHostEffectPermission {
         viewer,
@@ -423,6 +432,9 @@ pub(crate) fn encode_set_permission(
         generation,
         allowed,
     } = change;
+    if effect_kind_since(kind) > minor {
+        return Err(EncodeError::Unsupported);
+    }
     w.record(|w| {
         w.id(scope, viewer)?;
         w.tag(kind_tag(kind));
@@ -435,11 +447,12 @@ pub(crate) fn encode_set_permission(
 pub(crate) fn decode_set_permission(
     r: &mut Reader<'_>,
     scope: IdScope,
+    minor: u16,
 ) -> Result<SetHostEffectPermission, DecodeError> {
     r.record(|r| {
         Ok(SetHostEffectPermission {
             viewer: r.id(scope)?,
-            kind: kind_from_tag(r.tag()?)?,
+            kind: kind_from_tag(r.tag()?, minor)?,
             generation: r.u64()?,
             allowed: r.bool()?,
         })

@@ -68,7 +68,7 @@ use huterm_wire::response::{Committed, RequestResult, Response, Success};
 use huterm_wire::stream::Reassembler;
 
 pub use self::effects::EffectStats;
-use self::effects::Sending;
+use self::effects::{Sending, Waiting};
 use self::hierarchy::HierarchyLane;
 use self::history::{History, SlotRef};
 pub use self::outbound::Transmit;
@@ -248,6 +248,8 @@ pub struct Connection {
     effect_ready: BTreeSet<ViewerId>,
     /// The last effect identity this connection assigned.
     last_effect: u64,
+    /// The effect at the head of the lane, waiting for the slot.
+    waiting: Option<Waiting>,
     /// The effect being sent and its deadlines.
     sending: Option<Sending>,
     effect_stats: EffectStats,
@@ -325,6 +327,7 @@ impl Connection {
             effect_queue: VecDeque::new(),
             effect_ready: BTreeSet::new(),
             last_effect: 0,
+            waiting: None,
             sending: None,
             effect_stats: EffectStats::default(),
         }

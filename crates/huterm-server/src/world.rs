@@ -584,6 +584,32 @@ impl World {
         });
     }
 
+    /// Sends `message` on `peer`'s link in one frame, as its client would,
+    /// bypassing the session, so a test can send what a conforming client
+    /// never does.
+    pub(crate) fn inject(
+        &mut self,
+        peer: usize,
+        message: &huterm_wire::message::Message,
+    ) {
+        let peer = &mut self.peers[peer];
+        let runtime = peer.session.connected().expect("connected").runtime;
+        let bytes = huterm_wire::message::encode_message(
+            message,
+            huterm_wire::codec::IdScope::new(runtime),
+            huterm_wire::caps::MessageCaps::for_minor(0),
+        )
+        .expect("the message encodes");
+        let frame = huterm_wire::frame::Frame {
+            stream: 0,
+            end: huterm_wire::frame::FrameEnd::Final,
+            payload: bytes,
+        }
+        .encode(huterm_wire::frame::DEFAULT_MAX_FRAME)
+        .expect("the frame encodes");
+        peer.client_out.extend(frame);
+    }
+
     /// The host effects `peer` received, in order.
     pub(crate) fn effects(
         &self,

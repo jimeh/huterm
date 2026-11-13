@@ -22,16 +22,18 @@
 //!
 //! Host effects travel apart from the lanes, on the stream the server keeps
 //! for them, one effect at a time, with at most one of its frames with the
-//! writer at once: a slot of its own, outside the budget. An effect's
-//! first frame goes ahead of every lane's, so a busy connection delays it
-//! by at most the frame already in the writer; its later frames lead every
-//! other batch while lanes have work, and every batch otherwise. The text streams from the effect itself, which the queue
-//! drops, releasing its reservations, once its last frame is cut or the
-//! effect is aborted. Between effects, the slot yields: the next effect
-//! starts only once every lane that had something to send when the last
-//! one ended has cut a frame, so effects back to back never starve updates
-//! or leave an ordinary stream idle; one effect holds the link at most
-//! until its completion deadline.
+//! writer at once: a slot of its own, outside the budget. An effect's first
+//! frame goes ahead of every lane's, so a busy connection delays it by at
+//! most what the writer already holds: one batch, which the native adapter
+//! keeps to 256 KiB, a few milliseconds at the transport profile's minimum
+//! throughput. Its later frames lead every other batch while lanes have
+//! work, and every batch otherwise. The text streams from the effect
+//! itself, which the queue drops, releasing its reservations, once its last
+//! frame is cut or the effect is aborted. Between effects, the slot yields:
+//! the next effect starts only once every lane that had something to send
+//! when the last one ended has cut a frame, so effects back to back never
+//! starve updates or leave an ordinary stream idle; one effect holds the
+//! link at most until its completion deadline.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::IoSlice;

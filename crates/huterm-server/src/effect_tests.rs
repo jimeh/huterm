@@ -3,7 +3,6 @@
 
 use std::time::{Duration, Instant};
 
-use huterm_client::{ClientEvent, ViewerEvent};
 use huterm_core::{
     DesktopHostEffectClient, HostEffectPermissions, HostEffectRecipientOptions,
     HostEffectViewerOptions, TerminalViewer, ViewerOptions,
@@ -55,15 +54,14 @@ fn embedded_write(viewer: &TerminalViewer) -> String {
 
 /// Waits for `remote`'s next clipboard write.
 fn remote_write(remote: &Remote) -> String {
-    remote.event(|event| match event {
-        ViewerEvent::HostEffect(delivery) => match &delivery.payload {
-            EffectPayload::ClipboardWrite { text, .. } => Some(text.clone()),
-            payload @ EffectPayload::Notification { .. } => {
-                panic!("a clipboard write, not {payload:?}")
-            }
-        },
-        _ => None,
-    })
+    let delivery =
+        block_on(remote.handle.next_effect()).expect("the client is running");
+    match delivery.payload {
+        EffectPayload::ClipboardWrite { text, .. } => text,
+        payload @ EffectPayload::Notification { .. } => {
+            panic!("a clipboard write, not {payload:?}")
+        }
+    }
 }
 
 #[test]
@@ -131,12 +129,11 @@ fn an_osc_52_write_reaches_exactly_one_eligible_desktop_across_embedded_and_remo
     desktop.type_text(desktop_viewer, &osc52("ZGVza3RvcA=="));
     assert_eq!(embedded_write(&embedded), "desktop");
 
-    while let Ok(event) = text.events.try_recv() {
-        assert!(
-            !matches!(event, ClientEvent::Viewer(ViewerEvent::HostEffect(_))),
-            "the text client received {event:?}"
-        );
-    }
+    let none = futures_lite::future::block_on(futures_lite::future::poll_once(
+        text.handle.next_effect(),
+    ));
+    assert!(none.is_none(), "the text client received {none:?}");
+    assert_eq!(text.handle.effects_dropped(), 0);
     drop(embedded);
     desktop.shutdown();
     text.shutdown();

@@ -424,13 +424,15 @@ pub(crate) fn read_capabilities(
     })
 }
 
-/// Encodes subscription options' record.
+/// Encodes subscription options' record at negotiated minor version
+/// `minor`, projecting the permitted effect kinds onto those it knows.
 ///
 /// # Errors
 /// Never fails today; the signature matches the other field encoders.
 pub(crate) fn encode_subscribe_options(
     w: &mut Writer,
     options: &SubscribeOptions,
+    minor: u16,
 ) -> Result<(), EncodeError> {
     let SubscribeOptions {
         capabilities,
@@ -450,17 +452,20 @@ pub(crate) fn encode_subscribe_options(
         })?;
         w.option(presentation.as_deref(), crate::launch::encode_presentation)?;
         w.bool(*spawned);
-        write_kinds(w, *allowed_effects);
+        write_kinds(w, allowed_effects.intersect(EffectKinds::known_at(minor)));
         Ok(())
     })
 }
 
-/// Decodes subscription options' record.
+/// Decodes subscription options' record at negotiated minor version
+/// `minor`.
 ///
 /// # Errors
-/// Returns the first decode failure.
+/// Returns the first decode failure, and refuses an effect kind `minor`
+/// does not know.
 pub(crate) fn decode_subscribe_options(
     r: &mut Reader<'_>,
+    minor: u16,
 ) -> Result<SubscribeOptions, DecodeError> {
     r.record(|r| {
         Ok(SubscribeOptions {
@@ -476,7 +481,7 @@ pub(crate) fn decode_subscribe_options(
                 crate::launch::decode_presentation(r).map(Box::new)
             })?,
             spawned: r.bool()?,
-            allowed_effects: read_kinds(r)?,
+            allowed_effects: read_kinds(r, minor)?,
         })
     })
 }

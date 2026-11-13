@@ -2537,9 +2537,12 @@ Policy and core:
   identity.
 - **Eligibility by negotiated kind.** `effect_kind_since` names each kind's
   minor version, all 0 today. The server grants a recipient only the kinds
-  its connection's minor version knows (`EffectKinds::known_at`), and a
-  client cannot name a newer kind's tag, so a newer kind never selects an
-  older client.
+  its connection's minor version knows (`EffectKinds::known_at`). The
+  subscription encoder projects the permitted kinds onto the negotiated
+  minor version, decoders refuse a newer kind, and the client answers a
+  permission change for one `Unsupported` locally, so a newer kind never
+  selects an older client and a newer client never sends an older server
+  what it cannot read.
 - **Client-numbered generations in core.**
   `HostEffectRecipient::set_permission(kind, allowed, generation)` stores the
   caller's number, stamps every later admission with it, and on a revoke
@@ -2561,7 +2564,13 @@ Policy and core:
 - **No admission time.** Deadlines run from the head of the lane on the
   connection's injected clock, so core records no admission time; an
   `Instant` from core could not be driven by the tests' clock. The
-  completion deadline counts the whole message, header included.
+  completion deadline counts the whole message, header included. An
+  effect reaches the head as soon as no other is being sent, even while an
+  earlier effect's last frame or abort still waits at the writer: review
+  found that otherwise a client reading a few bytes at a time held the next
+  effect in core's queue with no deadline, and with it the terminal's
+  budget. `EffectStats::expired` counts only effects dropped, not one whose
+  last frame was already cut when its deadline passed.
 - **Revocation at once.** A disconnect revokes every recipient
   (`HostEffectRecipient::revoke`) before it drops the viewers, and a
   viewer's end revokes its recipient, because a viewer job may still hold
@@ -2593,6 +2602,18 @@ The effect lane:
   client's updates on a healthy link.
 - **Bounds.** The effect slot holds one frame outside `OUTBOUND_BUDGET`, so
   `retained_bound` gains one frame and its length prefix.
+- **What "the frame already in the writer" means.** The native adapter
+  hands its writer a batch of up to 256 KiB, which it writes whole, so an
+  effect's first frame waits for at most that batch, a few milliseconds at
+  the profile's minimum throughput. That stays within the plan's bound,
+  which already allowed a 1 MiB frame ahead of the effect.
+- **The native client queues effects apart from its events.** Its event
+  channel drops events while full and asks the caller to re-read state,
+  which cannot recover an effect. `ClientHandle::next_effect` takes effects
+  from a queue of their own, bounded at 32 effects and 128 MiB as one
+  desktop's budget is; a caller that falls further behind loses the oldest
+  effects, so its clipboard still ends with the last write, and
+  `effects_dropped` counts them.
 
 Coverage:
 
@@ -2605,13 +2626,18 @@ Coverage:
   framing valid afterwards; a stalled recipient that does not hold up
   another; a burst of five writes in one step; a revoke and re-grant while
   an effect is in flight; an effect pending at a disconnect; a text client
-  never selected; an effect admitted before its viewer is announced; and
-  the two starvation rules. Each of the ordering, announcement, yield, and
-  alternation tests failed with its rule switched off.
+  never selected; an effect admitted before its viewer is announced; an
+  effect queued behind a trickled effect frame, which expires on its own
+  deadline; a stale permission generation and a change for a viewer without
+  host effects, which end the connection, and a change for an ended
+  viewer, which is dropped; and the two starvation rules. Each of the
+  ordering, announcement, yield, and alternation tests failed with its rule
+  switched off, as did the queued-effect deadline test without its fix.
 - A real-PTY test (`effect_tests.rs`) sends OSC 52 through `cat` from an
   embedded viewer, a desktop client, and a text client on one terminal and
   checks that exactly one eligible desktop receives each write. Core's
-  tests cover shares between two clients and the share floor.
+  tests cover shares between two clients, including a client at its share
+  with several viewers that never denies another, and the share floor.
 - Every fault scenario now subscribes with host effects. Terminals write
   tokened clipboard text, large writes on faulty links, and faulty clients
   toggle the clipboard permission. Each run checks that an effect reaches
@@ -2619,10 +2645,11 @@ Coverage:
   per viewer; that on a healthy link every effect arrives; and that no
   terminal holds a reservation at the end.
   `mise run faults:ipc -- 300` ran 300 seeds per scenario and the swarm:
-  of about 92,900 writes admitted, 39,800 arrived, every one of the 26,600
-  on healthy links among them; 5,500 missed their deadlines, 4,600 were
-  discarded by clients that had changed the permission meanwhile, and the
-  rest went with viewers and connections the faults ended. Its first run
+  of about 96,100 writes admitted, 39,800 arrived, every one of the 26,600
+  on healthy links among them; 9,000 were dropped at their deadlines,
+  4,400 were discarded by clients that had changed the permission
+  meanwhile, and the rest went with viewers and connections the faults
+  ended. Its first run
   found both starvation rules above.
 
 Measurements, release medians on an Apple M3 Max (`mise run bench:ipc`),

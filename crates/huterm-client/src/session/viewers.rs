@@ -41,7 +41,7 @@ use huterm_protocol::{
 };
 use huterm_wire::effect::{
     EffectKinds, EffectPayload, HostEffect, INITIAL_EFFECT_GENERATION,
-    SetHostEffectPermission,
+    SetHostEffectPermission, effect_kind_since,
 };
 use huterm_wire::error::{ErrorCode, WireError};
 use huterm_wire::message::{Message, Paste, encode_message};
@@ -334,14 +334,21 @@ impl ClientSession {
     ///
     /// # Errors
     /// Returns `NotPermitted` for a viewer subscribed without host effects,
-    /// and `StaleTarget`, `Stopped`, or `Revoked` for one this session does
-    /// not hold.
+    /// `Unsupported` for a kind the negotiated version does not know, and
+    /// `StaleTarget`, `Stopped`, or `Revoked` for a viewer this session
+    /// does not hold.
     pub fn set_host_effect_permission(
         &mut self,
         viewer: ViewerId,
         kind: HostEffectKind,
         allowed: bool,
     ) -> Result<u64, WireError> {
+        if effect_kind_since(kind) > self.minor {
+            return Err(WireError::new(
+                ErrorCode::Unsupported,
+                "the server's version does not know this effect kind",
+            ));
+        }
         let Some(entry) = self.viewers.get_mut(&viewer) else {
             return Err(self.unknown_viewer(viewer));
         };

@@ -1631,6 +1631,7 @@ fn encode_fields(
     w: &mut Writer,
     scope: IdScope,
     request: &Request,
+    minor: u16,
 ) -> Result<(), EncodeError> {
     match request {
         Request::SubscribeHierarchy | Request::ResyncHierarchy => Ok(()),
@@ -1875,7 +1876,7 @@ fn encode_fields(
         } => {
             w.id(scope, *attachment)?;
             w.id(scope, *terminal)?;
-            encode_subscribe_options(w, options)
+            encode_subscribe_options(w, options, minor)
         }
         Request::CloseViewer { viewer } => w.id(scope, *viewer),
         Request::Snapshot {
@@ -1944,6 +1945,7 @@ fn decode_fields(
     r: &mut Reader<'_>,
     scope: IdScope,
     kind: RequestKind,
+    minor: u16,
 ) -> Result<Request, DecodeError> {
     Ok(match kind {
         RequestKind::SubscribeHierarchy => Request::SubscribeHierarchy,
@@ -2144,7 +2146,7 @@ fn decode_fields(
         RequestKind::SubscribeTerminal => Request::SubscribeTerminal {
             attachment: r.id(scope)?,
             terminal: r.id(scope)?,
-            options: decode_subscribe_options(r)?,
+            options: decode_subscribe_options(r, minor)?,
         },
         RequestKind::CloseViewer => Request::CloseViewer {
             viewer: r.id(scope)?,
@@ -2204,7 +2206,7 @@ pub fn encode_request(
     w.record(|w| {
         write_request_id(w, *id);
         w.tag(kind.number());
-        w.record(|w| encode_fields(w, scope, request))
+        w.record(|w| encode_fields(w, scope, request, minor))
     })
 }
 
@@ -2228,7 +2230,7 @@ pub fn decode_request(
                 field: "request",
                 tag,
             })?;
-        let request = r.record(|r| decode_fields(r, scope, kind))?;
+        let request = r.record(|r| decode_fields(r, scope, kind, minor))?;
         Ok(RequestMessage { id, request })
     })
 }

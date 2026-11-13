@@ -634,7 +634,12 @@ Nothing in the desktop calls either until #45.
   later frames lead only every other batch; and between effects every lane
   with work cuts a frame. Without the last two, effect frames hold back a
   started message until the client's stream idle deadline closes the
-  connection. The client numbers permission changes,
+  connection. The next effect leaves core's queue for the head of the lane,
+  with its deadline running, while an earlier effect's last frame still
+  drains; otherwise a trickling client holds it, and the terminal's budget,
+  with no bound. The native client hands effects out through
+  `ClientHandle::next_effect`, never its lossy event channel. The client
+  numbers permission changes,
   and core stamps admitted effects with that number
   (`HostEffectRecipient::set_permission`), so a revoke and re-grant never
   revive an effect already sent.

@@ -233,7 +233,7 @@ pub fn encode_message(
             encode_viewer_only(&mut w, scope, *viewer)?;
         }
         Message::SetHostEffectPermission(change) => {
-            encode_set_permission(&mut w, scope, *change)?;
+            encode_set_permission(&mut w, scope, *change, caps.minor())?;
         }
     }
     // An update's cap follows its grid, which the encoder already checked.
@@ -328,7 +328,9 @@ pub fn decode_message(
         }
         MessageKind::SetHostEffectPermission => {
             Message::SetHostEffectPermission(decode_set_permission(
-                &mut r, scope,
+                &mut r,
+                scope,
+                context.caps.minor(),
             )?)
         }
     };

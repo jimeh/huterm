@@ -131,9 +131,8 @@ pub(crate) fn opposite(
 
 /// Core viewer options for a remote viewer: what the client asked for, with
 /// the viewer's own input budget so one connection's paste cannot refuse
-/// another's keystrokes. Host effects arrive with slice 4.
-/// Core's options for a remote viewer: its own input budget, and the
-/// host-effect recipient the connection chose, if the client asked for one.
+/// another's keystrokes, and the host-effect recipient the connection
+/// chose, if the client asked for one.
 pub(crate) fn viewer_options(
     options: huterm_wire::viewer::SubscribeOptions,
     host_effects: Option<huterm_core::HostEffectViewerOptions>,

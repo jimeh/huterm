@@ -42,11 +42,15 @@ use huterm_wire::request::Request;
 use huterm_wire::response::Success;
 use huterm_wire::viewer::SubscribeOptions;
 
+mod effects;
+
+use self::effects::Effects;
+pub use self::effects::{EFFECT_BACKLOG_BYTES, EFFECT_BACKLOG_LIMIT};
 use crate::config::ClientConfig;
 use crate::outbound::{FRAME_HEADER_LEN, Transmit};
 use crate::session::{
-    CallId, ClientEvent, ClientSession, CloseReason, Connected, Resolution,
-    WaitId,
+    CallId, ClientEvent, ClientSession, CloseReason, Connected, EffectDelivery,
+    Resolution, ViewerEvent, WaitId,
 };
 
 /// The most bytes one read takes.
@@ -148,6 +152,7 @@ pub struct Client {
 #[derive(Clone, Debug)]
 pub struct ClientHandle {
     inbox: Sender<Event>,
+    effects: Arc<Effects>,
 }
 
 impl Client {
@@ -158,12 +163,14 @@ impl Client {
     pub fn spawn(config: ClientConfig, stream: UnixStream) -> io::Result<Self> {
         let (inbox_sender, inbox) = async_channel::unbounded();
         let stats = Arc::new(Stats::default());
+        let effects = Effects::new();
         let io = Io::spawn(stream, 1, &inbox_sender, &stats)?;
         let driver = thread::Builder::new()
             .name("huterm-client-driver".into())
             .spawn({
                 let events = inbox_sender.clone();
                 let stats = Arc::clone(&stats);
+                let effects = Arc::clone(&effects);
                 move || {
                     let driver = Driver {
                         session: ClientSession::new(config),
@@ -177,6 +184,7 @@ impl Client {
                         handshakes: Vec::new(),
                         listener: None,
                         lagged: false,
+                        effects,
                         last_close: CloseReason::Disconnected,
                         start: Instant::now(),
                     };
@@ -186,6 +194,7 @@ impl Client {
         Ok(Self {
             handle: ClientHandle {
                 inbox: inbox_sender,
+                effects,
             },
             driver: Some(driver),
             stats,
@@ -218,10 +227,12 @@ impl Client {
             .handle
             .inbox
             .try_send(Event::Command(Command::Shutdown));
-        match self.driver.take() {
+        let joined = match self.driver.take() {
             Some(driver) => driver.join(),
             None => Ok(()),
-        }
+        };
+        self.handle.effects.close();
+        joined
     }
 }
 
@@ -340,6 +351,22 @@ impl ClientHandle {
         current.recv().await.unwrap_or(false)
     }
 
+    /// The next host effect to execute, waiting for one; `None` once the
+    /// client shut down and every effect was taken. Recheck
+    /// [`Self::host_effect_current`] right before acting. Effects wait in a
+    /// queue of their own, bounded at [`EFFECT_BACKLOG_LIMIT`] effects and
+    /// [`EFFECT_BACKLOG_BYTES`]; past either, the oldest is dropped and
+    /// counted in [`Self::effects_dropped`].
+    pub async fn next_effect(&self) -> Option<EffectDelivery> {
+        self.effects.next().await
+    }
+
+    /// Host effects dropped because the caller fell behind.
+    #[must_use]
+    pub fn effects_dropped(&self) -> u64 {
+        self.effects.dropped()
+    }
+
     /// Shows or hides `viewer`; a hidden viewer receives status but no
     /// rows.
     pub fn set_visible(&self, viewer: ViewerId, visible: bool) {
@@ -410,9 +437,10 @@ impl ClientHandle {
         snapshot.recv().await.ok().flatten()
     }
 
-    /// A receiver of everything the session reports besides results and
-    /// waiter resolutions: hierarchy changes and connection state, from
-    /// now on. Drain it, as core's subscription; dropping it stops the
+    /// A receiver of everything the session reports besides results,
+    /// waiter resolutions, and host effects: hierarchy changes, viewer
+    /// events, and connection state, from now on. Host effects come from
+    /// [`Self::next_effect`]. Drain it, as core's subscription; dropping it stops the
     /// forwarding, and a later call replaces it.
     ///
     /// It holds at most [`EVENT_CHANNEL_CAPACITY`] events. The client never
@@ -713,6 +741,9 @@ struct Driver {
     /// The listener's channel was full, so events were dropped and the
     /// listener owes a [`ClientEvent::Lagged`].
     lagged: bool,
+    /// Host effects for the caller, which never travel on the listener's
+    /// channel.
+    effects: Arc<Effects>,
     /// Why the last connection ended, which [`ClientHandle::connected`]
     /// reports while there is none, so a dropped `Closed` loses nothing.
     last_close: CloseReason,
@@ -919,11 +950,15 @@ impl Driver {
     }
 
     /// Routes what the session reports: results and waiter resolutions to
-    /// their callers, handshake outcomes to whoever awaits them, and the
-    /// rest to the event listener.
+    /// their callers, handshake outcomes to whoever awaits them, host
+    /// effects to their queue, and the rest to the event listener.
     fn route(&mut self) {
         while let Some(event) = self.session.poll_event() {
             match event {
+                ClientEvent::Viewer(ViewerEvent::HostEffect(delivery)) => {
+                    self.effects.push(delivery);
+                    continue;
+                }
                 ClientEvent::Result { call, outcome } => {
                     if let Some(reply) = self.replies.remove(&call) {
                         let _ = reply.try_send(outcome);

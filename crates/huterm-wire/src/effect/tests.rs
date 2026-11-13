@@ -160,7 +160,7 @@ fn every_kind_is_known_at_minor_zero_and_a_kind_set_refuses_unknown_bits() {
     let mut w = Writer::new();
     w.u64(0b100);
     assert_eq!(
-        read_kinds(&mut Reader::new(&w.into_bytes())),
+        read_kinds(&mut Reader::new(&w.into_bytes()), 0),
         Err(DecodeError::Invalid("host effect kinds"))
     );
 }

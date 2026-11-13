@@ -5,7 +5,7 @@
 use huterm_client::EffectDelivery;
 use huterm_protocol::{GridSize, HostEffectKind, ViewerId};
 use huterm_wire::caps::CLIPBOARD_PAYLOAD_LIMIT;
-use huterm_wire::effect::EffectPayload;
+use huterm_wire::effect::{EffectPayload, INITIAL_EFFECT_GENERATION};
 use huterm_wire::handshake::{
     HOST_EFFECT_DELIVERY_DEADLINE, HOST_EFFECT_MIN_THROUGHPUT,
 };
@@ -582,4 +582,97 @@ fn a_streaming_effect_lets_a_started_update_finish() {
     until_effects(&mut world, peer, 1, 5_000);
     world.settle(SETTLE);
     assert!(world.shows_current(peer, 0));
+}
+
+#[test]
+fn an_effect_queued_behind_a_trickled_frame_expires_on_its_own_deadline() {
+    let mut world = world(1, small());
+    let other = world.add_peer(LinkProfile::INSTANT);
+    let stuck = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want_effects(other, 0, true);
+    world.want_effects(stuck, 0, true);
+    world.settle(SETTLE);
+    let terminal = world.terminals[0].clone();
+    terminal.activate(model_viewer(&world, stuck, 0));
+    // A byte a millisecond, so the first write's frame stays in the
+    // writer long after its deadline, and its abort waits behind it.
+    world.peers[stuck].batch = Some(64 << 10);
+    world.peers[stuck].write_rate = 1;
+    assert!(terminal.clipboard(&"a".repeat(1 << 20)));
+    assert!(terminal.clipboard(&"b".repeat(40 << 20)));
+    let start = world.now;
+    // The first expires at its deadline; the second reaches the head of
+    // the lane then, while the first's frame still drains, and expires at
+    // its own.
+    let deadline = millis(HOST_EFFECT_DELIVERY_DEADLINE);
+    while world.now < start + 2 * deadline + 10 {
+        world.step();
+    }
+    let stats = world.peers[stuck]
+        .connection
+        .as_ref()
+        .unwrap()
+        .effect_stats();
+    assert_eq!((stats.sent, stats.expired), (1, 2));
+    assert_eq!(terminal.effects_held(), (0, 0));
+    terminal.activate(model_viewer(&world, other, 0));
+    assert!(terminal.clipboard(&"c".repeat(30 << 20)));
+    until_effects(&mut world, other, 1, 10_000);
+    assert_eq!(world.effects(stuck).len(), 0);
+}
+
+#[test]
+fn a_bad_permission_change_ends_the_connection_and_one_for_an_ended_viewer_is_dropped()
+ {
+    use huterm_wire::effect::SetHostEffectPermission;
+    use huterm_wire::message::Message;
+
+    let change = |viewer, generation| {
+        Message::SetHostEffectPermission(SetHostEffectPermission {
+            viewer,
+            kind: HostEffectKind::Clipboard,
+            generation,
+            allowed: false,
+        })
+    };
+    let violation = |world: &World, peer: usize| {
+        world.peers[peer]
+            .closes
+            .iter()
+            .any(|reason| matches!(reason, crate::CloseReason::Violation(_)))
+    };
+    let mut world = world(2, small());
+    let stale = world.add_peer(LinkProfile::INSTANT);
+    let plain = world.add_peer(LinkProfile::INSTANT);
+    let ended = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want_effects(stale, 0, true);
+    world.want(plain, 0, true);
+    world.want_effects(ended, 0, true);
+    world.want_effects(ended, 1, true);
+    world.settle(SETTLE);
+
+    // A generation not above the current one.
+    let viewer = world.viewer(stale, 0).unwrap();
+    world.inject(stale, &change(viewer, INITIAL_EFFECT_GENERATION));
+    world.settle(SETTLE);
+    assert!(violation(&world, stale), "{:?}", world.peers[stale].closes);
+
+    // A change for a viewer subscribed without host effects.
+    let viewer = world.viewer(plain, 0).unwrap();
+    world.inject(plain, &change(viewer, INITIAL_EFFECT_GENERATION + 1));
+    world.settle(SETTLE);
+    assert!(violation(&world, plain), "{:?}", world.peers[plain].closes);
+
+    // A change for a viewer that ended is dropped, as its input is.
+    let gone = world.viewer(ended, 1).unwrap();
+    assert!(world.close_viewer(ended, 1));
+    world.settle(SETTLE);
+    world.inject(ended, &change(gone, INITIAL_EFFECT_GENERATION + 1));
+    world.settle(SETTLE);
+    assert_eq!(world.peers[ended].closes.len(), 0);
+    assert!(world.terminals[0].clipboard("still"));
+    world.settle(SETTLE);
+    assert_eq!(texts(&world, ended), ["still"]);
 }
