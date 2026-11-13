@@ -148,10 +148,105 @@ fn iterations(cells: usize) -> usize {
     (2_000_000 / cells).clamp(50, 1000)
 }
 
-/// One measured operation's report and the budget it must stay within.
+/// One measured operation's report and the budgets it exceeded.
 struct Measured {
     line: String,
     failures: Vec<String>,
+}
+
+/// The most one operation may take at the largest grid: the server's
+/// build and encode, and the client's decode and apply, each as a median,
+/// and the update's bytes.
+struct Budget {
+    fixture: &'static str,
+    op: &'static str,
+    server_us: u128,
+    client_us: u128,
+    bytes: usize,
+}
+
+/// The largest grid, where budgets apply.
+const GATED_GRID: (u16, u16) = (400, 120);
+
+// PROVISIONAL: Apple silicon measurements times about three, until CI
+// measurements replace them.
+const BUDGETS: &[Budget] = &[
+    Budget {
+        fixture: "plain",
+        op: "complete",
+        server_us: 2_000,
+        client_us: 1_300,
+        bytes: 49_242,
+    },
+    Budget {
+        fixture: "styled",
+        op: "complete",
+        server_us: 2_600,
+        client_us: 1_800,
+        bytes: 60_958,
+    },
+    Budget {
+        fixture: "sparse",
+        op: "complete",
+        server_us: 2_100,
+        client_us: 1_300,
+        bytes: 49_242,
+    },
+    Budget {
+        fixture: "plain",
+        op: "delta-row",
+        server_us: 30,
+        client_us: 15,
+        bytes: 682,
+    },
+    Budget {
+        fixture: "styled",
+        op: "delta-row",
+        server_us: 40,
+        client_us: 20,
+        bytes: 855,
+    },
+    Budget {
+        fixture: "sparse",
+        op: "delta-row",
+        server_us: 30,
+        client_us: 15,
+        bytes: 682,
+    },
+];
+
+/// The budgets an operation's medians and bytes exceed, if it has any.
+fn over_budget(
+    content: Content,
+    size: GridSize,
+    op: &str,
+    (server_ns, client_ns, bytes): (u128, u128, usize),
+) -> Vec<String> {
+    let gated = (size.columns, size.rows) == GATED_GRID;
+    let Some(budget) = BUDGETS.iter().find(|budget| {
+        gated && budget.fixture == content.name() && budget.op == op
+    }) else {
+        return Vec::new();
+    };
+    let name =
+        format!("{} {op} at {}x{}", budget.fixture, size.columns, size.rows);
+    let mut failures = Vec::new();
+    if server_ns > budget.server_us * 1000 {
+        failures.push(format!(
+            "{name}: server median {server_ns} ns over {} us",
+            budget.server_us
+        ));
+    }
+    if client_ns > budget.client_us * 1000 {
+        failures.push(format!(
+            "{name}: client median {client_ns} ns over {} us",
+            budget.client_us
+        ));
+    }
+    if bytes > budget.bytes {
+        failures.push(format!("{name}: {bytes} bytes over {}", budget.bytes));
+    }
+    failures
 }
 
 fn complete(content: Content, size: GridSize) -> Measured {
@@ -213,7 +308,12 @@ fn complete(content: Content, size: GridSize) -> Measured {
             build.p95() + encoding.p95(),
             decoding.p95() + apply.p95(),
         ),
-        failures: Vec::new(),
+        failures: over_budget(
+            content,
+            size,
+            "complete",
+            (server, client, bytes),
+        ),
     }
 }
 
@@ -286,6 +386,7 @@ fn delta(content: Content, size: GridSize, change: Change) -> Measured {
     let last = &snapshots[(iterations(size.cells()) - 1) % 2];
     assert_eq!(shown.rows, last.rows, "the client shows the last snapshot");
     bytes.sort_unstable();
+    let bytes = bytes[bytes.len() / 2];
     let (server, client) = (sorted(server), sorted(client));
     Measured {
         line: format!(
@@ -295,13 +396,18 @@ fn delta(content: Content, size: GridSize, change: Change) -> Measured {
             size.columns,
             size.rows,
             change.name(),
-            bytes[bytes.len() / 2],
+            bytes,
             server.p50(),
             client.p50(),
             server.p95(),
             client.p95(),
         ),
-        failures: Vec::new(),
+        failures: over_budget(
+            content,
+            size,
+            change.name(),
+            (server.p50(), client.p50(), bytes),
+        ),
     }
 }
 

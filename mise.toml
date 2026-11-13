@@ -1315,7 +1315,7 @@ esac
 '''
 
 [tasks."ci:benchmarks"]
-description = "Run CI scroll, output latency, keystroke snapshot, link lookup, history reflow, and scrollback compression budgets for Ghostty"
+description = "Run CI scroll, output latency, keystroke snapshot, link lookup, history reflow, scrollback compression, and wire codec budgets"
 depends = ["verify:toolchain"]
 run = [
   "mise run bench:scroll",
@@ -1324,6 +1324,7 @@ run = [
   "mise run bench:links",
   "mise run bench:engine",
   "mise run bench:compression",
+  "mise run bench:wire",
 ]
 
 [tasks."smoke:renderer"]

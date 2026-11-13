@@ -628,7 +628,7 @@ jobs:
       - name: Check platform prerequisites
         run: mise run doctor
 
-      - name: Verify Ghostty benchmark budgets
+      - name: Verify benchmark budgets
         run: mise run ci:benchmarks
 
       - name: Save prebuilt Ghostty
