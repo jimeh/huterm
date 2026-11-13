@@ -645,6 +645,23 @@ for name in compression_benchmark_steps compression_benchmark_resize; do
 done
 '''
 
+[tasks."bench:wire"]
+description = "Measure terminal update and status encoding, decoding, and apply against their budgets"
+run = '''
+set -eu
+output=$(cargo test --release --locked -p huterm-wire --lib benchmark::wire_benchmark \
+  -- --ignored --nocapture --exact 2>&1) || {
+  printf '%s\n' "$output"
+  exit 1
+}
+printf '%s\n' "$output"
+# A renamed or moved benchmark would otherwise run no test and pass.
+case "$output" in
+  *"test result: ok. 1 passed"*) ;;
+  *) echo "bench:wire: wire_benchmark ran no test" >&2; exit 1 ;;
+esac
+'''
+
 [tasks."ghostty:prepare"]
 description = "Verify pinned source and Zig for the Ghostty engine"
 run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"

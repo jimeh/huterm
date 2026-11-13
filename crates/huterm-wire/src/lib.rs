@@ -50,3 +50,6 @@ pub const fn digest_profile(minor: u16) -> DigestProfile {
     let _ = minor;
     DigestProfile::Base
 }
+
+#[cfg(test)]
+mod benchmark;
