@@ -9,7 +9,24 @@ use super::drag::Operation;
 use super::{
     App, CommandError, CommandInvocation, CommandOutcome, Context, Desktop,
     HierarchyState, SessionId, TabId, Window, WorkspaceId, WorkspaceView,
+    checkpoints, session_switch,
 };
+
+/// Holds Quit and checkpoints for `window`'s tab or workspace move until
+/// `release_move`: a pending spawn, which Quit hosted by any window waits
+/// for, and a transfer reservation, which a checkpoint waits for and which
+/// makes one already capturing take its capture again. A window that closes
+/// meanwhile releases both.
+pub(super) fn hold_move(cx: &mut App, window: gpui::WindowId) {
+    checkpoints::set_transfer_reserved(cx, window, true);
+    session_switch::hold_switch_spawn(cx, window);
+}
+
+/// Releases `hold_move`'s holds once the move settled in `window`.
+pub(super) fn release_move(cx: &mut App, window: gpui::WindowId) {
+    checkpoints::set_transfer_reserved(cx, window, false);
+    session_switch::release_switch_spawn(cx, window);
+}
 
 /// Where a one-place move puts an item in its list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

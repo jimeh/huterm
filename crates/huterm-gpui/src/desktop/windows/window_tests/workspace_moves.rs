@@ -3,6 +3,7 @@
 //! Up and Down with their sidebar keys, and the pane views a move between
 //! workspaces of one window keeps.
 
+use super::super::checkpoints;
 use super::super::worker_hooks::Stage;
 use super::pane_drags::active;
 use super::workspaces::{shown_workspace, workspace_pick};
@@ -531,6 +532,12 @@ fn a_destination_that_goes_while_a_tab_move_waits_refuses_it(
     h.wait_for("the move's worker to start", |_| {
         runtime.worker_hooks.held(Stage::Move) == 1
     });
+    // The move holds Quit and checkpoints until it settles.
+    h.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        assert!(desktop.pending_spawns > 0);
+        assert!(desktop.cross.reserved.contains(&window.window_id()));
+    });
     // The window is busy, so a second move waits its turn.
     unavailable(&h.invoke_with(window, &tab_to(tab, second)));
     runtime.lock().close_workspace(second).unwrap();
@@ -541,6 +548,11 @@ fn a_destination_that_goes_while_a_tab_move_waits_refuses_it(
             && notices(cx, window)
                 .iter()
                 .any(|notice| notice.contains("Cannot move tab"))
+    });
+    h.cx.update(|cx| {
+        let desktop = cx.global::<Desktop>();
+        assert_eq!(desktop.pending_spawns, 0, "the move's hold leaked");
+        assert!(desktop.cross.reserved.is_empty());
     });
     h.cx.update(|cx| {
         assert_eq!(tabs_in(cx, own), [tab, other]);
@@ -565,9 +577,19 @@ fn quit_waits_for_a_workspace_move_and_saves_the_workspace_once(
     h.wait_for("the move's worker to start", |_| {
         runtime.worker_hooks.held(Stage::Move) == 1
     });
+    // A checkpoint waits for the move, whichever window takes it.
+    h.cx.update(|cx| {
+        checkpoints::take_checkpoint(cx);
+        assert!(cx.global::<Desktop>().checkpoints.waiting_transfer);
+    });
     h.resume_quits();
     h.cx.update(request_quit);
     h.cx.run_until_parked();
+    // Quit waits for the move globally, not only in a host that is busy.
+    assert!(
+        h.cx.update(|cx| cx.global::<Desktop>().quit_pending),
+        "the Quit did not wait for the move"
+    );
     assert!(
         h.recorder.saved().is_empty(),
         "the Quit captured before the move settled"
@@ -591,4 +613,32 @@ fn quit_waits_for_a_workspace_move_and_saves_the_workspace_once(
         other.session.get(),
         "saved outside the session it moved to"
     );
+}
+
+#[gpui::test]
+fn the_row_menus_session_move_asks_for_the_session_in_the_palette(
+    cx: &mut TestAppContext,
+) {
+    let mut h = sidebar_harness(cx);
+    let tab = h.open_tab(ECHO);
+    let (second, _) = h.add_workspace(1);
+    let window = h.attach_showing(&[tab]);
+    h.other_session("other", 1);
+    h.wait_projection();
+    h.update_view(window, |view, window, cx| {
+        let raw = second.get();
+        view.run_workspace_pick(
+            &format!("workspace-session:{raw}"),
+            window,
+            cx,
+        );
+    });
+    h.cx.run_until_parked();
+    assert!(
+        h.update_view(window, |view, _, _| view.palette.is_some()),
+        "the pick did not open the palette's prompt"
+    );
+    // Nothing moves until a session is picked.
+    let session = h.session;
+    assert_eq!(h.cx.update(|cx| order(cx, session)), [h.workspace, second]);
 }

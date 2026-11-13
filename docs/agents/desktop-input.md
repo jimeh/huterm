@@ -608,17 +608,19 @@ See [the plan](../plans/workspace-move-commands.md). The keyboard and palette
 equivalents of the drags commit the operation a drop would, through the same
 completions: Move Tab to Workspace through `commit_tab_move` with
 `Operation::MoveTab`, and Move Workspace to Session and Move Workspace Up or
-Down through `move_workspace`, which holds the window busy, so Quit and other
-structural commands wait for it. Neither follows its item: the window keeps
-its workspace unless the move emptied it, and then follows or closes through
-its emptied close as after a drop. A command cancels a row or pane drag
-first; a tab drag refuses it (`check_runtime_available`). The `sidebar_move_*`
-keys act on the focused row, a workspace or a session list row, keep its
-focus, and do nothing at the list's end. Unlike a cross-window drop, a
-command reserves no destination window, which reconciles and installs the
-moved views as for any other client's change; a pane close queued in the
-source during a move to another session ends quietly, as R1 settled for
-hidden workspaces.
+Down through `move_workspace`. Both hold the window busy, and every workspace
+move and every tab move between workspaces also holds Quit and checkpoints
+until it settles (`hold_move`). A window's `busy` alone stops only its own
+commands: Quit honors it only in its host window, and checkpoints never read
+it. Neither command follows its item: the window keeps its workspace unless
+the move emptied it, and then follows or closes through its emptied close as
+after a drop. A command cancels a row or pane drag first; a tab drag refuses
+it (`check_runtime_available`). The `sidebar_move_*` keys act on the focused
+row, a workspace or a session list row, keep its focus, and do nothing at the
+list's end. Unlike a cross-window drop, a command reserves no destination
+window, which reconciles and installs the moved views as for any other
+client's change; a pane close queued in the source during a move to another
+session ends quietly, as R1 settled for hidden workspaces.
 
 ## Modifier pane drags
 

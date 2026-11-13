@@ -944,6 +944,12 @@ impl WorkspaceView {
     ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         self.busy = true;
+        // A move between workspaces holds Quit and checkpoints until it
+        // settles; a reorder within one changes no membership.
+        let holds = matches!(change, Operation::MoveTab { .. });
+        if holds {
+            super::super::workspace_moves::hold_move(cx, self.window);
+        }
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
             if runtime.worker_hooks.enter(worker_hooks::Stage::Move).await {
@@ -981,6 +987,12 @@ impl WorkspaceView {
                     view.settle_moved(change, window, cx);
                 } else if let Some(back) = back {
                     view.switch_back(back, window, cx);
+                }
+                if holds {
+                    super::super::workspace_moves::release_move(
+                        cx,
+                        view.window,
+                    );
                 }
                 view.restore_tab_focus(window, cx);
                 view.resume_close(window, cx);

@@ -92,9 +92,13 @@ Each new item goes where its siblings already live, with no new pattern:
   - `commit_tab_move` with `Operation::MoveTab { before: None }`: its busy
     flag, failure notice, `reconcile_own`, `settle_moved`, and focus
     restore;
-  - `WorkspaceView::move_workspace`, now a method that holds the window busy
-    (so Quit and checkpoints wait), resumes a queued close, reports failure,
-    and reveals a reordered row. Row drops use it too.
+  - `WorkspaceView::move_workspace`, now a method that holds the window busy,
+    resumes a queued close, reports failure, and reveals a reordered row.
+    Row drops use it too.
+  - Both hold Quit and checkpoints until the move settles (`hold_move`): a
+    pending spawn, which Quit hosted by any window waits for, and a transfer
+    reservation, which checkpoints wait for and which makes a capture already
+    under way start again. A tab reorder within its workspace takes neither.
 - A test-only `Stage::Move` hook on both workers.
 - `workspace_menu.rs`, `tab_menu.rs`, `workspace_panel.rs`,
   `session_control.rs`: rows, picks, and the sidebar keys.
@@ -133,7 +137,7 @@ Each new item goes where its siblings already live, with no new pattern:
 | Destination workspace or session gone before the command | `StaleTarget` | `tab_moves_refuse_their_own_workspace_a_gone_one_and_a_busy_window`, `workspace_moves_to_sessions_refuse_their_own_session_and_a_gone_one` |
 | Destination gone while the worker waits | Mux refuses; notice; nothing moves; busy clears | `a_destination_that_goes_while_a_tab_move_waits_refuses_it` |
 | Busy window | Unavailable | both refusal tests |
-| Quit while a workspace move's worker waits | Quit waits on busy; the capture holds the workspace once, in its new session | `quit_waits_for_a_workspace_move_and_saves_the_workspace_once` |
+| Quit or a checkpoint while a move's worker waits | Both wait for the move's hold, whichever window hosts Quit; the capture holds the workspace once, in its new session | `quit_waits_for_a_workspace_move_and_saves_the_workspace_once`, `a_destination_that_goes_while_a_tab_move_waits_refuses_it` |
 | A tab move empties the shown workspace | Follows a sibling; a pinned one stays empty | `a_tab_move_that_empties_the_shown_workspace_follows_unless_pinned` |
 | A workspace move takes the shown workspace | Every window showing it follows; destination windows hold it hidden | `a_workspace_moved_to_another_session_leaves_every_window_showing_it` |
 | A session's only workspace moves | Its emptied window closes, as by drag | `a_sessions_only_workspace_moves_and_its_emptied_window_closes` |
@@ -186,6 +190,15 @@ and their propagation to a second window working, and four issues:
 
 Showing the `Sidebar` keys beside the row menus' items is a follow-up too:
 no row menu shows its local keys today, F2 for Rename included.
+
+## Code review
+
+The PR's dual review (Codex and Claude) found that a move held only its own
+window's `busy` flag, which Quit honors only in its host window and
+checkpoints never read; `hold_move` now covers both. It also tightened the
+pending reveal to the drawn list and added a test for the row menu's
+session prompt. A reorder briefly blocks the window's input while it
+commits, as a tab move already does; that stays.
 
 ## Non-goals
 

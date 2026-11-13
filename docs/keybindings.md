@@ -627,8 +627,8 @@ or clicking elsewhere closes the menu and returns focus to the terminal.
 The session list is no menu: its rows take the [Sidebar](#sidebar) keys, so
 the arrows, Home, and End walk them, Enter switches the window to the focused
 session, F2 renames it, Option-Up and Option-Down (Alt on Linux) reorder it,
-the menu key or Shift-F10 opens its menu, with Open in New Window, and Escape
-closes the list.
+the menu key or Shift-F10 opens its menu, with Open in New Window and Move
+Session Up and Down, and Escape closes the list.
 
 | Command | macOS | Linux |
 | --- | --- | --- |

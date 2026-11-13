@@ -589,10 +589,8 @@ impl WorkspaceView {
         {
             self.workspace_scroll.scroll_to_item(index);
             self.switcher_scroll.scroll_to_item(index);
-            // A list that has not laid out yet drops the request.
-            if self.workspace_scroll.bounds().size.height <= px(0.0)
-                || self.switcher_scroll.bounds().size.height <= px(0.0)
-            {
+            // A drawn list that has not laid out yet drops the request.
+            if self.workspace_drag_scroll().bounds().size.height <= px(0.0) {
                 self.reveal_pending = Some((workspace, false));
             }
         }
@@ -1085,7 +1083,8 @@ impl WorkspaceView {
 
     /// Moves `workspace` of `session` into session `to`, its own for a
     /// reorder, before `before` or to the end, on a worker, with the window
-    /// busy until it settles. The projection applies the committed order,
+    /// busy and Quit and checkpoints held (`hold_move`) until it settles.
+    /// The projection applies the committed order,
     /// and a window that showed a workspace that left its session follows
     /// through its emptied close; this reports failure and scrolls a
     /// reordered row into view.
@@ -1100,6 +1099,7 @@ impl WorkspaceView {
     ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         self.busy = true;
+        super::workspace_moves::hold_move(cx, self.window);
         let task = cx.background_executor().spawn(async move {
             #[cfg(all(test, feature = "test-support"))]
             if runtime.worker_hooks.enter(worker_hooks::Stage::Move).await {
@@ -1133,6 +1133,7 @@ impl WorkspaceView {
                     _ => {}
                 }
                 view.reconcile_own(window, cx);
+                super::workspace_moves::release_move(cx, view.window);
                 view.resume_close(window, cx);
                 cx.notify();
             });
