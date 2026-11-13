@@ -155,7 +155,13 @@ pub struct StyleEntry {
 pub struct Run {
     /// The style-table entry.
     pub style: u32,
-    /// Each cell's text, at most [`MAX_CELL_TEXT_BYTES`] bytes.
+    /// Whether the cells are wide characters in `style`, each followed by
+    /// its spacer: a cell with no text, `style`'s colors, and the spacer
+    /// flag in place of the wide flag. `style` holds the wide flag, and each
+    /// character is no text or one scalar other than U+0000.
+    pub wide: bool,
+    /// Each cell's text, at most [`MAX_CELL_TEXT_BYTES`] bytes; a wide run's
+    /// spacers included.
     pub texts: Vec<CellText>,
 }
 
@@ -335,11 +341,17 @@ pub fn build_row(row: &FullRow, styles: &[StyleEntry]) -> TerminalRow {
         let Some(style) = styles.get(run.style as usize) else {
             continue;
         };
-        cells.extend(run.texts.iter().map(|text| Cell {
+        let flags = style_of(style.flags);
+        let spacer = style_of(spacer_flags(style.flags));
+        cells.extend(run.texts.iter().enumerate().map(|(index, text)| Cell {
             text: text.clone(),
             foreground: style.foreground,
             background: style.background,
-            style: style_of(style.flags),
+            style: if run.wide && index % 2 == 1 {
+                spacer
+            } else {
+                flags
+            },
         }));
     }
     TerminalRow {
@@ -569,10 +581,106 @@ fn packs(text: &CellText) -> bool {
     text.is_empty() || text.as_char().is_some_and(|scalar| scalar != '\0')
 }
 
-fn run(style: u32, cells: &[Cell]) -> Run {
+/// Minor version 0's wide-character flag.
+const WIDE_FLAG: u64 = 1 << 6;
+
+/// Minor version 0's wide-character spacer flag.
+const SPACER_FLAG: u64 = 1 << 7;
+
+/// The flags of the spacer that follows a wide character with `flags`.
+const fn spacer_flags(flags: u64) -> u64 {
+    flags & !WIDE_FLAG | SPACER_FLAG
+}
+
+/// Whether a style can head a wide run: it has the wide flag and not the
+/// spacer flag.
+const fn heads_wide(flags: u64) -> bool {
+    flags & WIDE_FLAG != 0 && flags & SPACER_FLAG == 0
+}
+
+/// Whether a wide run's texts alternate a character that packs and a spacer
+/// with no text.
+fn wide_texts(texts: &[CellText]) -> bool {
+    texts.len().is_multiple_of(2)
+        && texts
+            .chunks(2)
+            .all(|pair| packs(&pair[0]) && pair[1].is_empty())
+}
+
+/// The fewest identical cells that travel as a fill run. A fill costs about
+/// four bytes, a packed cell one or more, and splitting a run costs a run
+/// header, so shorter repeats stay in their run.
+const FILL_CELLS: usize = 8;
+
+// `push_runs` finds repeats by comparing cells 4 apart.
+const _: () = assert!(FILL_CELLS >= 8);
+
+/// How a run's cells travel, the low bits of its header.
+const FORM_TEXTS: u64 = 0;
+const FORM_PACKED: u64 = 1;
+const FORM_FILL: u64 = 2;
+const FORM_WIDE: u64 = 3;
+
+/// What the row builder groups cells into runs by.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Kind {
+    /// A cell whose text does not pack.
+    Texts,
+    /// A cell whose text packs.
+    Packed,
+    /// A wide character and its spacer.
+    Wide,
+}
+
+fn run(style: u32, wide: bool, cells: &[Cell]) -> Run {
     Run {
         style,
+        wide,
         texts: cells.iter().map(|cell| cell.text.clone()).collect(),
+    }
+}
+
+/// Pushes the runs of `cells`, which share a style and kind. Repeats of at
+/// least [`FILL_CELLS`] packed cells become runs of their own, which travel
+/// as fills.
+fn push_runs(runs: &mut Vec<Run>, style: u32, kind: Kind, cells: &[Cell]) {
+    if kind != Kind::Packed {
+        runs.push(run(style, kind == Kind::Wide, cells));
+        return;
+    }
+    // Any 8 consecutive cells hold a multiple of 4 and the cell 4 after it,
+    // so comparing those pairs finds every repeat long enough to fill while
+    // reading a quarter of the cells of text that never repeats.
+    let mut pending = 0;
+    let mut probe = 0;
+    while probe + 4 < cells.len() {
+        let text = &cells[probe].text;
+        if cells[probe + 4].text != *text {
+            probe += 4;
+            continue;
+        }
+        let start = probe
+            - cells[pending..probe]
+                .iter()
+                .rev()
+                .take_while(|cell| cell.text == *text)
+                .count();
+        let end = probe
+            + cells[probe..]
+                .iter()
+                .take_while(|cell| cell.text == *text)
+                .count();
+        if end - start >= FILL_CELLS {
+            if pending < start {
+                runs.push(run(style, false, &cells[pending..start]));
+            }
+            runs.push(run(style, false, &cells[start..end]));
+            pending = end;
+        }
+        probe = end.next_multiple_of(4).max(probe + 4);
+    }
+    if pending < cells.len() {
+        runs.push(run(style, false, &cells[pending..]));
     }
 }
 
@@ -656,30 +764,45 @@ impl RowBuilder {
         if cells.len() != self.columns {
             return Err(EncodeError::Invalid("row width"));
         }
-        // A run ends where the style changes or where its cells stop or
-        // start packing, so each run's texts are copied once, at their
-        // exact size, and a packed run never holds a cell that cannot pack.
+        // A run ends where the style or the kind of its cells changes, so
+        // each run's texts are copied once, at their exact size, and a run's
+        // form never meets a cell it cannot hold.
         let mut runs: Vec<Run> = Vec::new();
-        let mut open: Option<(usize, u32, bool)> = None;
-        for (column, cell) in cells.iter().enumerate() {
+        let mut open: Option<(usize, u32, Kind)> = None;
+        let mut column = 0;
+        while let Some(cell) = cells.get(column) {
             if cell.text.len() > MAX_CELL_TEXT_BYTES {
                 return Err(EncodeError::LimitExceeded { field: "cell text" });
             }
-            let style = self.style(cell, row.flags(column, self.minor));
+            let flags = row.flags(column, self.minor);
+            let style = self.style(cell, flags);
             let packs = packs(&cell.text);
-            match open {
-                Some((_, open_style, open_packs))
-                    if open_style == style && open_packs == packs => {}
-                _ => {
-                    if let Some((start, style, _)) = open {
-                        runs.push(run(style, &cells[start..column]));
-                    }
-                    open = Some((column, style, packs));
+            let wide = packs
+                && heads_wide(flags)
+                && cells.get(column + 1).is_some_and(|spacer| {
+                    spacer.text.is_empty()
+                        && spacer.foreground == cell.foreground
+                        && spacer.background == cell.background
+                        && row.flags(column + 1, self.minor)
+                            == spacer_flags(flags)
+                });
+            let kind = match (wide, packs) {
+                (true, _) => Kind::Wide,
+                (false, true) => Kind::Packed,
+                (false, false) => Kind::Texts,
+            };
+            if open.is_none_or(|(_, open_style, open_kind)| {
+                open_style != style || open_kind != kind
+            }) {
+                if let Some((start, style, kind)) = open {
+                    push_runs(&mut runs, style, kind, &cells[start..column]);
                 }
+                open = Some((column, style, kind));
             }
+            column += if wide { 2 } else { 1 };
         }
-        if let Some((start, style, _)) = open {
-            runs.push(run(style, &cells[start..]));
+        if let Some((start, style, kind)) = open {
+            push_runs(&mut runs, style, kind, &cells[start..]);
         }
         Ok(FullRow {
             wrapped: *wrapped,
@@ -1144,7 +1267,12 @@ pub fn encode_update(
             }
             RowOp::Full(row)
                 if row.runs.iter().any(|run| {
-                    run.texts.is_empty() || run.style as usize >= styles.len()
+                    run.texts.is_empty()
+                        || styles.get(run.style as usize).is_none_or(|style| {
+                            run.wide
+                                && !(heads_wide(style.flags)
+                                    && wide_texts(&run.texts))
+                        })
                 }) =>
             {
                 return Err(EncodeError::Invalid("run"));
@@ -1221,7 +1349,8 @@ fn write_update(
             Ok(())
         })?;
         w.seq(styles.iter(), size.cells(), "style table", write_style)?;
-        w.seq(rows.iter(), usize::from(size.rows), "rows", |w, op| {
+        let ops = wire_ops(rows);
+        w.seq(ops.iter(), usize::from(size.rows), "rows", |w, op| {
             write_op(w, op, usize::from(size.columns))
         })
     })
@@ -1241,18 +1370,47 @@ fn write_style(w: &mut Writer, style: &StyleEntry) -> Result<(), EncodeError> {
     })
 }
 
+/// A row operation as it travels: consecutive kept rows become one range.
+enum WireOp<'a> {
+    /// `count` baseline rows from `start`, in order.
+    Keep { start: u16, count: u16 },
+    /// A row in full.
+    Full(&'a FullRow),
+}
+
+fn wire_ops(rows: &[RowOp]) -> Vec<WireOp<'_>> {
+    let mut ops: Vec<WireOp<'_>> = Vec::new();
+    for op in rows {
+        match (op, ops.last_mut()) {
+            (RowOp::Keep(index), Some(WireOp::Keep { start, count }))
+                if u32::from(*start) + u32::from(*count)
+                    == u32::from(*index) =>
+            {
+                *count += 1;
+            }
+            (RowOp::Keep(index), _) => ops.push(WireOp::Keep {
+                start: *index,
+                count: 1,
+            }),
+            (RowOp::Full(row), _) => ops.push(WireOp::Full(row)),
+        }
+    }
+    ops
+}
+
 fn write_op(
     w: &mut Writer,
-    op: &RowOp,
+    op: &WireOp<'_>,
     columns: usize,
 ) -> Result<(), EncodeError> {
     match op {
-        RowOp::Keep(index) => {
+        WireOp::Keep { start, count } => {
             w.tag(0);
-            w.u16(*index);
+            w.u16(*start);
+            w.u16(*count);
             Ok(())
         }
-        RowOp::Full(row) => {
+        WireOp::Full(row) => {
             w.tag(1);
             encode_row(w, row, columns)
         }
@@ -1278,29 +1436,65 @@ fn encode_row(
         w.bool(*wrap_continuation);
         w.tag(u64::from(prompt_tag(*prompt)));
         w.seq(runs.iter(), columns, "runs", |w, run| {
-            let start = w.len();
-            if write_packed(w, run)? {
-                return Ok(());
-            }
-            w.truncate(start);
-            w.u64(u64::from(run.style) << 1);
-            w.seq(run.texts.iter(), columns, "run", |w, text| {
-                w.str(text, MAX_CELL_TEXT_BYTES, "cell text")
-            })
+            write_run(w, run, columns)
         })
     })
 }
 
-/// Writes a run in packed form: its texts as one UTF-8 string, one scalar
-/// per cell and U+0000 for no text. Returns `false`, with the bytes written
-/// so far left for the caller to discard, at a cell that does not pack.
-fn write_packed(w: &mut Writer, run: &Run) -> Result<bool, EncodeError> {
-    w.u64(u64::from(run.style) << 1 | 1);
+/// Writes a run behind a header of its style index and form: a wide run
+/// as its characters, packed; at least [`FILL_CELLS`] identical cells that
+/// pack as a count and one packed cell; other cells that all pack as one
+/// packed string; and any other run as one length-prefixed text per cell.
+fn write_run(
+    w: &mut Writer,
+    run: &Run,
+    columns: usize,
+) -> Result<(), EncodeError> {
+    let header = u64::from(run.style) << 2;
+    if run.wide {
+        w.u64(header | FORM_WIDE);
+        let characters = run.texts.iter().step_by(2);
+        return if write_packed(w, characters.len(), characters)? {
+            Ok(())
+        } else {
+            Err(EncodeError::Invalid("run"))
+        };
+    }
+    if let [first, rest @ ..] = run.texts.as_slice()
+        && run.texts.len() >= FILL_CELLS
+        && packs(first)
+        && rest.iter().all(|text| text == first)
+    {
+        w.u64(header | FORM_FILL);
+        w.usize(run.texts.len());
+        write_packed(w, 1, [first])?;
+        return Ok(());
+    }
+    let start = w.len();
+    w.u64(header | FORM_PACKED);
+    if write_packed(w, run.texts.len(), &run.texts)? {
+        return Ok(());
+    }
+    w.truncate(start);
+    w.u64(header | FORM_TEXTS);
+    w.seq(run.texts.iter(), columns, "run", |w, text| {
+        w.str(text, MAX_CELL_TEXT_BYTES, "cell text")
+    })
+}
+
+/// Writes `count` texts as one length-prefixed UTF-8 string, one scalar per
+/// cell and U+0000 for no text. Returns `false`, with the bytes written so
+/// far left for the caller to discard, at a text that does not pack.
+fn write_packed<'a>(
+    w: &mut Writer,
+    count: usize,
+    texts: impl IntoIterator<Item = &'a CellText>,
+) -> Result<bool, EncodeError> {
     let mut packed = true;
-    // A run takes at least a byte per cell, so the length rarely needs more
-    // room than its cell count does.
-    w.length_prefixed(varint_len(run.texts.len() as u64), |w| {
-        for text in &run.texts {
+    // A cell takes at least a byte, so the length rarely needs more room
+    // than the cell count does.
+    w.length_prefixed(varint_len(count as u64), |w| {
+        for text in texts {
             match text.as_bytes() {
                 [] => w.fixed(&[0]),
                 ascii @ [1..=0x7f] => w.fixed(ascii),
@@ -1314,6 +1508,27 @@ fn write_packed(w: &mut Writer, run: &Run) -> Result<bool, EncodeError> {
         Ok(())
     })?;
     Ok(packed)
+}
+
+/// Reads a packed string of at most `cells` scalars, passing each cell's
+/// text to `push`.
+fn read_packed(
+    r: &mut Reader<'_>,
+    cells: usize,
+    mut push: impl FnMut(CellText),
+) -> Result<(), DecodeError> {
+    let packed = r.str(cells * 4, "run")?;
+    for (index, scalar) in packed.chars().enumerate() {
+        if index == cells {
+            return Err(DecodeError::TooLong { field: "run" });
+        }
+        push(if scalar == '\0' {
+            CellText::EMPTY
+        } else {
+            CellText::from(scalar)
+        });
+    }
+    Ok(())
 }
 
 /// Reads an update record's grid without consuming the rest, so a receiver
@@ -1392,21 +1607,7 @@ pub fn decode_update(
             })
         })?;
         let columns = usize::from(size.columns);
-        let rows =
-            r.seq(usize::from(size.rows), "rows", |r| match r.tag()? {
-                0 => {
-                    let index = r.u16()?;
-                    if baseline.is_none() || index >= size.rows {
-                        return Err(DecodeError::Invalid("keep index"));
-                    }
-                    Ok(RowOp::Keep(index))
-                }
-                1 => decode_row(r, columns, styles.len()).map(RowOp::Full),
-                tag => Err(DecodeError::UnknownTag {
-                    field: "row op",
-                    tag,
-                }),
-            })?;
+        let rows = decode_ops(r, size, baseline.is_some(), columns, &styles)?;
         if rows.len() != usize::from(size.rows) {
             return Err(DecodeError::Invalid("row count"));
         }
@@ -1434,10 +1635,56 @@ pub fn decode_update(
     })
 }
 
+/// Reads an update's row operations, expanding each range of kept rows,
+/// which a complete snapshot never holds.
+fn decode_ops(
+    r: &mut Reader<'_>,
+    size: GridSize,
+    delta: bool,
+    columns: usize,
+    styles: &[StyleEntry],
+) -> Result<Vec<RowOp>, DecodeError> {
+    let total = usize::from(size.rows);
+    let count = r.usize()?;
+    if count > total {
+        return Err(DecodeError::TooLong { field: "rows" });
+    }
+    let mut rows = Vec::with_capacity(total.min(r.remaining()));
+    for _ in 0..count {
+        match r.tag()? {
+            0 => {
+                let start = r.u16()?;
+                let kept = r.u16()?;
+                let end = usize::from(start) + usize::from(kept);
+                if !delta || kept == 0 || end > total {
+                    return Err(DecodeError::Invalid("keep index"));
+                }
+                // Checked per operation, so repeated ranges never build
+                // more rows than the grid holds.
+                if rows.len() + usize::from(kept) > total {
+                    return Err(DecodeError::TooLong { field: "rows" });
+                }
+                rows.extend((start..).take(usize::from(kept)).map(RowOp::Keep));
+            }
+            1 if rows.len() == total => {
+                return Err(DecodeError::TooLong { field: "rows" });
+            }
+            1 => rows.push(RowOp::Full(decode_row(r, columns, styles)?)),
+            tag => {
+                return Err(DecodeError::UnknownTag {
+                    field: "row op",
+                    tag,
+                });
+            }
+        }
+    }
+    Ok(rows)
+}
+
 fn decode_row(
     r: &mut Reader<'_>,
     columns: usize,
-    styles: usize,
+    styles: &[StyleEntry],
 ) -> Result<FullRow, DecodeError> {
     r.record(|r| {
         let wrapped = r.bool()?;
@@ -1446,35 +1693,51 @@ fn decode_row(
         let mut cells = 0_usize;
         let runs = r.seq(columns, "runs", |r| {
             let header = r.u64()?;
-            let style = u32::try_from(header >> 1)
+            let style = u32::try_from(header >> 2)
                 .ok()
-                .filter(|style| (*style as usize) < styles)
+                .filter(|style| (*style as usize) < styles.len())
                 .ok_or(DecodeError::Invalid("style index"))?;
             let remaining = columns - cells;
-            let texts = if header & 1 == 0 {
-                r.seq(remaining, "run", |r| {
-                    Ok(CellText::new(r.str(MAX_CELL_TEXT_BYTES, "cell text")?))
-                })?
-            } else {
-                let packed = r.str(remaining * 4, "run")?;
-                let mut texts = Vec::with_capacity(packed.len().min(remaining));
-                for scalar in packed.chars() {
-                    if texts.len() == remaining {
+            let mut texts = Vec::new();
+            let wide = header & 3 == FORM_WIDE;
+            match header & 3 {
+                FORM_TEXTS => {
+                    texts = r.seq(remaining, "run", |r| {
+                        Ok(CellText::new(
+                            r.str(MAX_CELL_TEXT_BYTES, "cell text")?,
+                        ))
+                    })?;
+                }
+                FORM_PACKED => {
+                    texts.reserve(r.peek().len().min(remaining));
+                    read_packed(r, remaining, |text| texts.push(text))?;
+                }
+                FORM_FILL => {
+                    let count = r.usize()?;
+                    if count > remaining {
                         return Err(DecodeError::TooLong { field: "run" });
                     }
-                    texts.push(if scalar == '\0' {
-                        CellText::EMPTY
-                    } else {
-                        CellText::from(scalar)
-                    });
+                    let mut fill = None;
+                    read_packed(r, 1, |text| fill = Some(text))?;
+                    let fill = fill.ok_or(DecodeError::Invalid("fill text"))?;
+                    texts = vec![fill; count];
                 }
-                texts
-            };
+                _ => {
+                    if !heads_wide(styles[style as usize].flags) {
+                        return Err(DecodeError::Invalid("wide run style"));
+                    }
+                    texts.reserve(r.peek().len().min(remaining));
+                    read_packed(r, remaining / 2, |text| {
+                        texts.push(text);
+                        texts.push(CellText::EMPTY);
+                    })?;
+                }
+            }
             if texts.is_empty() {
                 return Err(DecodeError::Invalid("empty run"));
             }
             cells += texts.len();
-            Ok(Run { style, texts })
+            Ok(Run { style, wide, texts })
         })?;
         if cells != columns {
             return Err(DecodeError::Invalid("row width"));

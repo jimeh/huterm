@@ -32,16 +32,20 @@ enum Content {
     Styled,
     /// Shell-like rows: a short line of text, then cells with no text.
     Sparse,
+    /// Full rows of CJK text: each wide character and its spacer.
+    Wide,
 }
 
 impl Content {
-    const ALL: [Self; 3] = [Self::Plain, Self::Styled, Self::Sparse];
+    const ALL: [Self; 4] =
+        [Self::Plain, Self::Styled, Self::Sparse, Self::Wide];
 
     const fn name(self) -> &'static str {
         match self {
             Self::Plain => "plain",
             Self::Styled => "styled",
             Self::Sparse => "sparse",
+            Self::Wide => "wide",
         }
     }
 
@@ -49,18 +53,25 @@ impl Content {
     fn row(self, columns: u16, index: usize, salt: usize) -> Arc<TerminalRow> {
         let columns = usize::from(columns);
         let text_columns = match self {
-            Self::Plain | Self::Styled => columns,
+            Self::Plain | Self::Styled | Self::Wide => columns,
             Self::Sparse => (index * 7 + salt) % (columns / 2) + 1,
         };
         let cells = (0..columns)
             .map(|column| {
-                let text = if column < text_columns {
-                    let byte = b'!'
-                        + u8::try_from((index * 31 + column + salt) % 94)
-                            .unwrap();
-                    CellText::from(char::from(byte))
-                } else {
-                    CellText::EMPTY
+                let varied = index * 31 + column + salt;
+                let text = match self {
+                    // A spacer holds no text.
+                    Self::Wide if column % 2 == 1 => CellText::EMPTY,
+                    Self::Wide => CellText::from(
+                        char::from_u32(
+                            0x4e00 + u32::try_from(varied % 2000).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                    _ if column < text_columns => CellText::from(char::from(
+                        b'!' + u8::try_from(varied % 94).unwrap(),
+                    )),
+                    _ => CellText::EMPTY,
                 };
                 let group = column / 8;
                 let (foreground, style) = match self {
@@ -68,6 +79,14 @@ impl Content {
                         CellColor::Indexed(u8::try_from(group % 16).unwrap()),
                         CellStyle {
                             bold: group % 2 == 1,
+                            ..CellStyle::default()
+                        },
+                    ),
+                    Self::Wide => (
+                        CellColor::DefaultForeground,
+                        CellStyle {
+                            wide: column % 2 == 0,
+                            wide_spacer: column % 2 == 1,
                             ..CellStyle::default()
                         },
                     ),
@@ -190,28 +209,42 @@ const BUDGETS: &[Budget] = &[
         op: "complete",
         server_us: 2_100,
         client_us: 1_300,
-        bytes: 49_242,
+        bytes: 13_391,
+    },
+    Budget {
+        fixture: "wide",
+        op: "complete",
+        server_us: 2_500,
+        client_us: 1_600,
+        bytes: 73_242,
     },
     Budget {
         fixture: "plain",
         op: "delta-row",
         server_us: 30,
         client_us: 15,
-        bytes: 682,
+        bytes: 450,
     },
     Budget {
         fixture: "styled",
         op: "delta-row",
         server_us: 40,
         client_us: 20,
-        bytes: 855,
+        bytes: 623,
     },
     Budget {
         fixture: "sparse",
         op: "delta-row",
         server_us: 30,
         client_us: 15,
-        bytes: 682,
+        bytes: 74,
+    },
+    Budget {
+        fixture: "wide",
+        op: "delta-row",
+        server_us: 30,
+        client_us: 15,
+        bytes: 650,
     },
 ];
 

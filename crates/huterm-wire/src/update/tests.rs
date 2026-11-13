@@ -471,6 +471,7 @@ fn malformed_rows_and_references_are_rejected() {
         0,
         Run {
             style: 0,
+            wide: false,
             texts: Vec::new(),
         },
     );
@@ -747,10 +748,10 @@ fn worst_case_length(size: GridSize) -> usize {
     encode_update(&mut w, vectors::scope(), &kept, STYLE_FLAGS).unwrap();
     let encoded = w.into_bytes();
     let mut record = Reader::new(&encoded).usize().unwrap();
-    // Swap the kept rows for full ones and the empty table for a full one.
-    record -= (0..size.rows)
-        .map(|index| 1 + varint_len(index.into()))
-        .sum::<usize>();
+    // Swap the kept rows, which travel as one range, for full ones, and the
+    // empty table for a full one.
+    record -= varint_len(1) + 1 + varint_len(0) + varint_len(rows as u64);
+    record += varint_len(rows as u64);
     record -= varint_len(0);
     record += varint_len(size.cells() as u64);
     let text = "x".repeat(MAX_CELL_TEXT_BYTES);
@@ -769,18 +770,19 @@ fn worst_case_length(size: GridSize) -> usize {
             )
             .unwrap();
         }
-        let full = RowOp::Full(FullRow {
+        let full = FullRow {
             wrapped: true,
             wrap_continuation: true,
             prompt: huterm_protocol::RowPrompt::Continuation,
             runs: (0..columns)
                 .map(|column| Run {
                     style: u32::try_from(row * columns + column).unwrap(),
+                    wide: false,
                     texts: vec![CellText::from(text.as_str())],
                 })
                 .collect(),
-        });
-        write_op(&mut w, &full, columns).unwrap();
+        };
+        write_op(&mut w, &WireOp::Full(&full), columns).unwrap();
         record += w.len();
     }
     1 + varint_len(record as u64) + record
@@ -1044,5 +1046,268 @@ fn every_single_field_of_damage_changes_the_view_digest() {
         let value = digest(damaged);
         assert!(!seen.contains(&value), "damage {index} went unnoticed");
         seen.push(value);
+    }
+}
+
+fn cell_with(text: &str, foreground: CellColor, style: CellStyle) -> Cell {
+    Cell {
+        text: CellText::from(text),
+        foreground,
+        background: CellColor::DefaultBackground,
+        style,
+    }
+}
+
+const WIDE: CellStyle = CellStyle {
+    bold: false,
+    dim: false,
+    italic: false,
+    underline: false,
+    strikeout: false,
+    hidden: false,
+    wide: true,
+    wide_spacer: false,
+};
+
+const SPACER: CellStyle = CellStyle {
+    wide: false,
+    wide_spacer: true,
+    ..WIDE
+};
+
+/// A one-row snapshot of `cells`, its first update's runs as each run's
+/// form and texts, and the update.
+fn runs_of(cells: Vec<Cell>) -> (Arc<TerminalSnapshot>, TerminalUpdate) {
+    let mut snapshot = (*screen(&[""], cells.len())).clone();
+    snapshot.rows[0] = Arc::new(TerminalRow {
+        cells,
+        ..TerminalRow::default()
+    });
+    let snapshot = Arc::new(snapshot);
+    let update = encoder().next(&snapshot, false).unwrap();
+    (snapshot, update)
+}
+
+fn shape(update: &TerminalUpdate) -> Vec<(bool, Vec<String>)> {
+    let RowOp::Full(row) = &update.rows[0] else {
+        unreachable!("a complete snapshot's rows are full")
+    };
+    row.runs
+        .iter()
+        .map(|run| {
+            (
+                run.wide,
+                run.texts.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn wide_characters_and_their_spacers_travel_as_one_wide_run() {
+    let plain = CellColor::DefaultForeground;
+    let red = CellColor::Indexed(1);
+    let (snapshot, update) = runs_of(vec![
+        cell_with("界", plain, WIDE),
+        cell_with("", plain, SPACER),
+        cell_with("🙂", plain, WIDE),
+        cell_with("", plain, SPACER),
+        // A spacer in other colors than its character is not derived from
+        // it, so the pair travels as two ordinary cells.
+        cell_with("帝", plain, WIDE),
+        cell_with("", red, SPACER),
+        cell_with("a", plain, CellStyle::default()),
+    ]);
+    assert_eq!(
+        shape(&update),
+        [
+            (
+                true,
+                vec!["界".into(), String::new(), "🙂".into(), String::new()]
+            ),
+            (false, vec!["帝".into()]),
+            (false, vec![String::new()]),
+            (false, vec!["a".into()]),
+        ]
+    );
+    // The wide style, the red spacer, and the plain cell: a derived spacer
+    // takes no entry.
+    assert_eq!(update.styles.len(), 3);
+    let bytes = update_bytes(&update);
+    let wide = [0x03, 0x07, 0xe7, 0x95, 0x8c, 0xf0, 0x9f, 0x99, 0x82];
+    assert!(bytes.windows(wide.len()).any(|window| window == wide));
+    let mut client: ViewerView = ViewerView::new(0);
+    applied(&mut client, &update);
+    assert!(shows(&client, &snapshot));
+}
+
+#[test]
+fn malformed_wide_runs_are_rejected() {
+    let plain = CellColor::DefaultForeground;
+    let (_, update) = runs_of(vec![
+        cell_with("界", plain, WIDE),
+        cell_with("", plain, SPACER),
+    ]);
+    // A wide run whose style lacks the wide flag.
+    let mut unflagged = update.clone();
+    unflagged.styles[0].flags = 0;
+    assert_eq!(
+        decode(&update_bytes(&unflagged)),
+        Err(DecodeError::Invalid("wide run style"))
+    );
+    assert_eq!(
+        encode_update(
+            &mut Writer::new(),
+            vectors::scope(),
+            &unflagged,
+            STYLE_FLAGS
+        ),
+        Err(EncodeError::Invalid("run"))
+    );
+    // A spacer that holds text cannot be derived.
+    let mut spacer_text = update;
+    first_row(&mut spacer_text).runs[0].texts[1] = CellText::from("x");
+    assert_eq!(
+        encode_update(
+            &mut Writer::new(),
+            vectors::scope(),
+            &spacer_text,
+            STYLE_FLAGS
+        ),
+        Err(EncodeError::Invalid("run"))
+    );
+}
+
+#[test]
+fn repeats_of_eight_cells_travel_as_fills_and_shorter_ones_stay_packed() {
+    let plain = |text: &str| styled_cell(text);
+    let mut cells = vec![plain("$"), plain(" ")];
+    cells.extend((0..7).map(|_| plain("-")));
+    cells.push(plain("x"));
+    cells.extend((0..8).map(|_| plain("")));
+    let (snapshot, update) = runs_of(cells);
+    let texts = |shape: &[(bool, Vec<String>)]| -> Vec<usize> {
+        shape.iter().map(|(_, texts)| texts.len()).collect()
+    };
+    assert_eq!(texts(&shape(&update)), [10, 8], "seven repeats stay packed");
+    assert!(update_bytes(&update).ends_with(&[0x02, 0x08, 0x01, 0x00]));
+    let mut client: ViewerView = ViewerView::new(0);
+    applied(&mut client, &update);
+    assert!(shows(&client, &snapshot));
+}
+
+#[test]
+fn malformed_fills_and_keep_ranges_are_rejected() {
+    // Eight cells with no text: the run's header, its count, and its one
+    // packed cell end the message.
+    let fill = update_bytes(&uniform_update(8, ""));
+    assert!(fill.ends_with(&[0x02, 0x08, 0x01, 0x00]));
+    let length = fill.len();
+    // More cells than the row holds.
+    let mut long = fill.clone();
+    long[length - 3] = 9;
+    assert_eq!(decode(&long), Err(DecodeError::TooLong { field: "run" }));
+    // No cells at all.
+    let mut empty = fill.clone();
+    empty[length - 3] = 0;
+    assert_eq!(decode(&empty), Err(DecodeError::Invalid("empty run")));
+    // A fill text of no scalars; the byte after it is never read.
+    let mut textless = fill.clone();
+    textless[length - 2] = 0;
+    assert_eq!(decode(&textless), Err(DecodeError::Invalid("fill text")));
+    // A fill text of three scalars in the room of one 3-byte scalar.
+    let mut three = update_bytes(&uniform_update(8, "界"));
+    assert!(three.ends_with(&[0x02, 0x08, 0x03, 0xe7, 0x95, 0x8c]));
+    let length = three.len();
+    three[length - 3..].copy_from_slice(b"abc");
+    assert_eq!(decode(&three), Err(DecodeError::TooLong { field: "run" }));
+
+    // A delta of three rows: two kept from the first, then one in full.
+    let snapshot = screen(&["a", "b", "c"], 2);
+    let mut server = encoder();
+    server.next(&snapshot, false).unwrap();
+    let scrolled = publish(&snapshot, |next| {
+        next.rows.remove(0);
+        next.rows.push(text_row("d", 2));
+    });
+    let delta = server.next(&scrolled, true).unwrap();
+    let bytes = update_bytes(&delta);
+    let range = [0x02, 0x00, 0x01, 0x02, 0x01];
+    let at = bytes
+        .windows(range.len())
+        .position(|window| window == range)
+        .expect("one range of two kept rows");
+    let edited = |edits: &[(usize, u8)]| {
+        let mut bytes = bytes.clone();
+        for (offset, value) in edits {
+            bytes[at + offset] = *value;
+        }
+        decode(&bytes)
+    };
+    // The range's start and count follow its tag.
+    assert!(edited(&[]).is_ok());
+    // No kept rows, rows past the baseline, and more rows than the grid.
+    assert_eq!(edited(&[(3, 0)]), Err(DecodeError::Invalid("keep index")));
+    assert_eq!(edited(&[(2, 2)]), Err(DecodeError::Invalid("keep index")));
+    assert_eq!(
+        edited(&[(2, 0), (3, 3)]),
+        Err(DecodeError::TooLong { field: "rows" })
+    );
+    // Two ranges of the whole grid.
+    let mut twice = delta.clone();
+    twice.rows = [0, 1, 2, 0, 1, 2].map(RowOp::Keep).to_vec();
+    assert_eq!(
+        decode(&update_bytes(&twice)),
+        Err(DecodeError::TooLong { field: "rows" })
+    );
+}
+
+/// The runs a packed stretch splits into, found by comparing every cell:
+/// each maximal repeat of at least [`FILL_CELLS`] cells is a run of its
+/// own, and the cells between repeats share one.
+fn reference_runs(texts: &[&str]) -> Vec<Vec<String>> {
+    let mut runs: Vec<Vec<String>> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    let mut start = 0;
+    while start < texts.len() {
+        let end = start
+            + texts[start..]
+                .iter()
+                .take_while(|text| **text == texts[start])
+                .count();
+        let repeat: Vec<String> =
+            texts[start..end].iter().map(ToString::to_string).collect();
+        if repeat.len() >= FILL_CELLS {
+            if !pending.is_empty() {
+                runs.push(std::mem::take(&mut pending));
+            }
+            runs.push(repeat);
+        } else {
+            pending.extend(repeat);
+        }
+        start = end;
+    }
+    if !pending.is_empty() {
+        runs.push(pending);
+    }
+    runs
+}
+
+proptest! {
+    #[test]
+    fn packed_cells_split_into_fills_exactly_where_repeats_reach_eight(
+        texts in proptest::collection::vec(
+            prop_oneof![3 => Just("a"), 1 => Just("b"), 2 => Just("")],
+            0..64,
+        ),
+    ) {
+        let cells: Vec<Cell> = texts.iter().map(|text| styled_cell(text)).collect();
+        let mut runs = Vec::new();
+        push_runs(&mut runs, 0, Kind::Packed, &cells);
+        let runs: Vec<Vec<String>> = runs
+            .iter()
+            .map(|run| run.texts.iter().map(ToString::to_string).collect())
+            .collect();
+        prop_assert_eq!(runs, reference_runs(&texts));
     }
 }
