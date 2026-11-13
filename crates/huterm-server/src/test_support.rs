@@ -37,6 +37,59 @@ use crate::connection::Connection;
 use crate::runtime::execute;
 use crate::server::Server;
 
+/// A listener for a server on a socket in its own private temporary
+/// directory, so parallel tests never share a socket.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct SocketServer {
+    // Dropped first: the listener stops and removes its socket before the
+    // directory goes.
+    listener: crate::listener::Listener,
+    socket: huterm_socket::SocketPath,
+    _directory: huterm_socket::testing::TestDirectory,
+}
+
+#[cfg(unix)]
+impl SocketServer {
+    /// Listens for `server`'s clients on a fresh socket.
+    ///
+    /// # Panics
+    /// Panics when the socket cannot be bound.
+    #[must_use]
+    pub fn start(server: Arc<Server>) -> Self {
+        let directory = huterm_socket::testing::TestDirectory::new();
+        let socket = directory.socket("test");
+        let listener = crate::listener::Listener::bind(server, &socket)
+            .expect("the test socket binds");
+        Self {
+            listener,
+            socket,
+            _directory: directory,
+        }
+    }
+
+    /// The socket clients connect to.
+    #[must_use]
+    pub fn socket(&self) -> &huterm_socket::SocketPath {
+        &self.socket
+    }
+
+    /// The listener.
+    #[must_use]
+    pub fn listener(&self) -> &crate::listener::Listener {
+        &self.listener
+    }
+
+    /// Stops the listener, closing every connection and waiting for their
+    /// threads.
+    ///
+    /// # Errors
+    /// Returns the payload of a thread that panicked.
+    pub fn shutdown(self) -> std::thread::Result<()> {
+        self.listener.shutdown()
+    }
+}
+
 /// What a fixed test server offers at `minor`.
 #[must_use]
 pub fn offer(minor: u16) -> ServerOffer {

@@ -5,8 +5,10 @@
 //! vocabulary both paths share. [`Direct`] calls `Mux` itself, as embedded
 //! mode does, maps core errors through [`wire_error`], the documented
 //! mapping, and keeps close tickets and layout history with the server's
-//! semantics over core's own values. [`Ipc`] runs the native server adapter
-//! and the native client over a `UnixStream` pair. Every step records its
+//! semantics over core's own values. [`Ipc`] runs the native client against
+//! a [`crate::Listener`] on a socket in a private temporary directory, so
+//! every scenario crosses the real socket transport, peer check included.
+//! Every step records its
 //! result and then the hierarchy's sequence and digest: from
 //! `Mux::hierarchy_digest` in process and from the client's projection over
 //! IPC. Results compare identities by number, opaque tokens and tickets by
@@ -21,7 +23,6 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -44,9 +45,8 @@ use huterm_wire::response::{
     ProcessSummary, Response, Selection, Success, TerminalJobs,
 };
 
-use crate::native::{ConnectionHandle, serve};
 use crate::runtime::wire_error;
-use crate::test_support::{quiet_command, server};
+use crate::test_support::{SocketServer, quiet_command, server};
 use crate::{Server, ServerConfig};
 
 /// How long the IPC path waits for something that should happen promptly.
@@ -816,11 +816,11 @@ fn wire_effect(effect: &core::CloseEffect) -> CloseEffect {
     }
 }
 
-/// The IPC path: the native server adapter and the native client over a
-/// `UnixStream` pair, against a fresh `Mux`.
+/// The IPC path: the native client connected to a listener on a bound
+/// socket, against a fresh `Mux`.
 struct Ipc {
     server: Arc<Server>,
-    connection: ConnectionHandle,
+    listening: SocketServer,
     client: Client,
     handle: ClientHandle,
 }
@@ -828,11 +828,10 @@ struct Ipc {
 impl Ipc {
     fn new() -> Self {
         let server = Arc::new(server(ServerConfig::default()));
-        let (stream, accepted) = UnixStream::pair().unwrap();
-        let connection = serve(Arc::clone(&server), accepted).unwrap();
-        let client = Client::spawn(
+        let listening = SocketServer::start(Arc::clone(&server));
+        let client = Client::connect(
             ClientConfig::local(ClientKind::Desktop, "contract", "test"),
-            stream,
+            listening.socket(),
         )
         .unwrap();
         let handle = client.handle();
@@ -841,7 +840,7 @@ impl Ipc {
             .expect("the client subscribes");
         Self {
             server,
-            connection,
+            listening,
             client,
             handle,
         }
@@ -886,17 +885,16 @@ impl Path for Ipc {
     fn shutdown(self: Box<Self>) {
         let Self {
             server,
-            connection,
+            listening,
             client,
             handle: _,
         } = *self;
         client
             .shutdown()
             .expect("the client's threads exit cleanly");
-        connection.close();
         let (done, exited) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = done.send(connection.join().is_ok());
+            let _ = done.send(listening.shutdown().is_ok());
         });
         assert!(
             exited

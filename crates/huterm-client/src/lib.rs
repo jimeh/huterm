@@ -7,10 +7,10 @@
 //! digests it checks, parks sequence waiters on it, and applies the retry
 //! rules when a connection breaks. It builds for `wasm32-unknown-unknown`.
 //! On Unix, [`native`] runs a session over a `UnixStream` with reader,
-//! writer, and driver threads behind async handles.
+//! writer, and driver threads behind async handles, and connects to a
+//! socket path that `huterm-socket` resolves and checks.
 //!
-//! See `docs/plans/runtime-ipc.md`. Slice 5 adds `connect`, which resolves
-//! socket paths.
+//! See `docs/plans/runtime-ipc.md`.
 
 #![deny(missing_docs)]
 

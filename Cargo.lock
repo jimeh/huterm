@@ -2636,6 +2636,7 @@ dependencies = [
  "huterm-core",
  "huterm-protocol",
  "huterm-server",
+ "huterm-socket",
  "huterm-wire",
  "nix 0.29.0",
 ]
@@ -2749,7 +2750,15 @@ dependencies = [
  "huterm-client",
  "huterm-core",
  "huterm-protocol",
+ "huterm-socket",
  "huterm-wire",
+ "nix 0.29.0",
+]
+
+[[package]]
+name = "huterm-socket"
+version = "0.34.0"
+dependencies = [
  "nix 0.29.0",
 ]
 
@@ -3582,6 +3591,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases 0.2.2",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

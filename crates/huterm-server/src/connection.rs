@@ -54,8 +54,7 @@ use huterm_wire::frame::{
     FrameDecoder, HANDSHAKE_FRAME_LIMIT, PREAMBLE_LEN, check_preamble, preamble,
 };
 use huterm_wire::handshake::{
-    ClientKind, HANDSHAKE_DEADLINE, ServerOffer, WRITER_STALL_DEADLINE,
-    negotiate_hello,
+    ClientKind, Reject, ServerOffer, WRITER_STALL_DEADLINE, negotiate_hello,
 };
 use huterm_wire::hierarchy::HierarchyContext;
 use huterm_wire::message::{
@@ -194,6 +193,9 @@ pub struct Connection {
     decoder: FrameDecoder,
     reassembler: Reassembler,
     negotiated: Option<Negotiation>,
+    /// The answer to `Hello` in place of negotiating, such as a busy
+    /// listener's.
+    refusal: Option<Reject>,
     rejecting: bool,
     closed: Option<CloseReason>,
     outbound: Outbound,
@@ -290,6 +292,7 @@ impl Connection {
                 HANDSHAKE_FRAME_LIMIT as usize,
             ),
             negotiated: None,
+            refusal: None,
             rejecting: false,
             closed: None,
             outbound: Outbound::new(
@@ -331,6 +334,12 @@ impl Connection {
             sending: None,
             effect_stats: EffectStats::default(),
         }
+    }
+
+    /// Answers the client's `Hello` with `reject` instead of negotiating,
+    /// then closes, as a listener at its connection limit does.
+    pub(crate) fn refuse(&mut self, reject: Reject) {
+        self.refusal = Some(reject);
     }
 
     /// Takes bytes read from the transport at `now`.
@@ -462,7 +471,7 @@ impl Connection {
         let handshake = self
             .negotiated
             .is_none()
-            .then_some(self.opened_at + HANDSHAKE_DEADLINE);
+            .then_some(self.opened_at + self.config.handshake_deadline);
         [
             handshake,
             self.reassembler.idle_deadline(),
@@ -488,7 +497,7 @@ impl Connection {
             self.retry_staged();
         }
         if self.negotiated.is_none()
-            && now >= self.opened_at + HANDSHAKE_DEADLINE
+            && now >= self.opened_at + self.config.handshake_deadline
         {
             self.shut(CloseReason::HandshakeTimeout);
             return;
@@ -706,7 +715,11 @@ impl Connection {
             self.shut(CloseReason::Violation("a message before Hello".into()));
             return;
         }
-        match negotiate_hello(bytes, &self.offer) {
+        let answer = match self.refusal.take() {
+            Some(reject) => Err(reject),
+            None => negotiate_hello(bytes, &self.offer),
+        };
+        match answer {
             Ok((mut welcome, hello)) => {
                 welcome.profile.max_in_flight_requests =
                     self.config.max_in_flight_requests;

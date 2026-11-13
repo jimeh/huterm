@@ -585,6 +585,29 @@ Nothing in the desktop calls either until #45.
   `UnixStream` with reader, writer, and driver threads. Put protocol
   behavior in the state machines, where tests drive it on the injected
   clock, and keep the adapters to I/O and wakeups.
+- Sockets go through `huterm-socket` on both ends (see
+  [slice 5's revisions](../plans/runtime-ipc.md#revisions-during-slice-5)):
+  `SocketPath::resolve` or `SocketPath::explicit`, then `bind` for a
+  server, which `huterm_server::Listener::bind` calls, and `connect` for a
+  client, which `huterm_client::native::Client::connect` calls. Never bind
+  or connect a runtime socket with `std` directly: those calls check that
+  the directory is private and that the peer runs as the same user. The
+  listener closes a foreign peer before the preamble, serves
+  `ServerConfig::max_connections`, refuses `MAX_REFUSALS` more with
+  `ServerBusy`, and closes the rest at once. Tests get a private socket
+  directory each from `huterm_socket::testing::TestDirectory` or
+  `huterm_server::test_support::SocketServer`, so parallel runs never
+  share a socket.
+- The second-user peer test is ignored in the normal suite because it needs
+  root. Run it in the Linux image after `mise run linux:exec -- cargo test
+  --locked -p huterm-server --lib --no-run`, as root with this worktree's
+  workspace volume (`scripts/linux.ts` names the image and the volume):
+  `docker run --rm --user root --entrypoint /bin/bash --mount
+  type=volume,source=<workspace volume>,target=/workspace <image> -c 'cd
+  /workspace && "$(ls -t target/debug/deps/huterm_server-* | grep -v
+  "\.d$" | head -1)" --ignored --exact
+  listener::tests::a_second_user_is_closed_before_the_preamble'`. Remove
+  the volumes and image afterwards as the development guide says.
 - `runtime::execute` runs each job on a `blocking` worker. Never run `Mux`
   work, a spawn, or a process scan on a connection's reader, writer, or
   driver thread, and never hold the `Mux` lock while waiting on a socket. A
@@ -662,7 +685,7 @@ Nothing in the desktop calls either until #45.
   at `MAX_HIERARCHY_ITEMS` with every name at its limit.
 - `mise run bench:ipc` measures a request's round trip, a hierarchy event's
   latency, a keystroke's echo through a PTY, the output a remote viewer
-  waits for, and a 100,000-line flood, over a socket pair and in process.
+  waits for, and a 100,000-line flood, over a bound socket and in process.
   It gates nothing yet. Time snapshots in a benchmark by awaiting
   `SnapshotRequest::recv`; `read_snapshot` parks a millisecond at a time.
 - Viewer tests run on a deterministic world (`world.rs`): real connections

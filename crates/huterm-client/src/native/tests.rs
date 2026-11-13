@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use huterm_protocol::{DigestProfile, RuntimeId, SessionId};
 use huterm_server::native::{ConnectionHandle, serve};
-use huterm_server::test_support::server;
+use huterm_server::test_support::{SocketServer, server};
 use huterm_server::{Server, ServerConfig};
+use huterm_socket::testing::TestDirectory;
 use huterm_wire::caps::MessageCaps;
 use huterm_wire::codec::IdScope;
 use huterm_wire::frame::{DEFAULT_MAX_FRAME, Frame, FrameEnd, preamble};
@@ -257,4 +258,80 @@ fn connected_reports_why_the_last_connection_ended_after_its_close_was_dropped()
     client.shutdown().unwrap();
     drop(peer);
     let _ = server.lock().shutdown();
+}
+
+#[test]
+fn a_client_connects_by_socket_path_and_reconnects_through_it() {
+    let server = Arc::new(server(ServerConfig::default()));
+    let listening = SocketServer::start(Arc::clone(&server));
+    let client = Client::connect(config(), listening.socket()).unwrap();
+    let handle = client.handle();
+    assert!(block_on(handle.connected()).unwrap().new_incarnation);
+    block_on(handle.request(Request::CreateSession { name: None })).unwrap();
+
+    let stream = connect(listening.socket()).unwrap();
+    let reconnected = block_on(handle.reconnect(stream)).unwrap();
+    assert!(!reconnected.new_incarnation);
+    block_on(handle.request(Request::CreateSession { name: None })).unwrap();
+
+    client.shutdown().unwrap();
+    listening.shutdown().unwrap();
+    let _ = server.lock().shutdown();
+}
+
+#[test]
+fn connecting_where_no_server_listens_fails_with_the_socket_path() {
+    let directory = TestDirectory::new();
+    let socket = directory.socket("absent");
+    let error = Client::connect(config(), &socket).unwrap_err();
+    assert!(
+        matches!(&error, SocketError::Io { path, .. } if path == socket.path()),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn a_welcome_split_at_every_byte_completes_the_handshake_over_a_bound_socket() {
+    let server = server(ServerConfig::default());
+    let directory = TestDirectory::new();
+    let socket = directory.socket("test");
+    let (listener, _file) = huterm_socket::bind(&socket).unwrap();
+    for split in 1.. {
+        let client = Client::connect(config(), &socket).unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        // A sans-IO connection plays the server: its preamble, then its
+        // Welcome to the client's Hello.
+        let mut connection = server.connection(Duration::ZERO);
+        let mut answer = Vec::new();
+        let mut buffer = vec![0; 64 << 10];
+        while answer.len() <= huterm_wire::frame::PREAMBLE_LEN {
+            let read = accepted.read(&mut buffer).unwrap();
+            assert!(read > 0, "the client closed before its Hello");
+            connection.receive(&buffer[..read], Duration::ZERO);
+            while let Some(transmit) = connection.poll_transmit(usize::MAX) {
+                connection.transmitted(transmit.len(), Duration::ZERO);
+                answer.extend(transmit.to_bytes());
+            }
+        }
+        if split == answer.len() {
+            client.shutdown().unwrap();
+            break;
+        }
+        // The client reads the first part before the rest exists.
+        accepted.write_all(&answer[..split]).unwrap();
+        let deadline = std::time::Instant::now() + PROMPT;
+        while client.received() < split {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the client read {} of {split} bytes",
+                client.received()
+            );
+            thread::sleep(Duration::from_micros(200));
+        }
+        assert_eq!(client.received(), split);
+        accepted.write_all(&answer[split..]).unwrap();
+        let connected = block_on(client.handle().connected()).unwrap();
+        assert_eq!(connected.incarnation, server.offer().incarnation);
+        client.shutdown().unwrap();
+    }
 }
