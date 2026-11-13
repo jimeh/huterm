@@ -5,6 +5,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use huterm_protocol::SessionId;
+use huterm_wire::caps::{MessageCaps, MessageKind};
 use huterm_wire::message::Message;
 use huterm_wire::request::Request;
 
@@ -95,10 +96,16 @@ fn every_thread_exits_after_the_server_ends_the_connection() {
 
 #[test]
 fn a_flooding_client_meets_backpressure_and_retained_bytes_stay_bounded() {
-    let server = Arc::new(server(ServerConfig {
+    let config = ServerConfig {
         outbound_budget: 64 << 10,
         ..ServerConfig::default()
-    }));
+    };
+    // Only results flow without a hierarchy subscription, and a result is
+    // admitted only while retained bytes are under the budget.
+    let result_cap =
+        MessageCaps::for_minor(0).cap(MessageKind::Result).unwrap();
+    let bound = config.outbound_budget + result_cap;
+    let server = Arc::new(server(config));
     let (mut client, mut peer, handle) = connect(&server);
     let session = SessionId::in_runtime(server.runtime(), 999_999);
     // The server answers before the flood starts.
@@ -134,10 +141,9 @@ fn a_flooding_client_meets_backpressure_and_retained_bytes_stay_bounded() {
     }
     assert!(handle.retained() >= 64 << 10, "paused at its budget");
     assert!(
-        handle.max_retained() <= handle.retained_bound(),
-        "{} > {}",
-        handle.max_retained(),
-        handle.retained_bound()
+        handle.max_retained() <= bound,
+        "{} > {bound}",
+        handle.max_retained()
     );
     drop(client);
     joined(handle);

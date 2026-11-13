@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
-use async_channel::{Receiver, Sender};
+use async_channel::{Receiver, Sender, TrySendError};
 use huterm_protocol::HierarchyState;
 use huterm_wire::error::{ErrorCode, WireError};
 use huterm_wire::hierarchy::HierarchySnapshot;
@@ -47,6 +47,10 @@ const READ_BUFFER_BYTES: usize = 64 << 10;
 
 /// About how many bytes the driver hands the writer at once.
 const WRITE_BATCH_BYTES: usize = 256 << 10;
+
+/// The most events [`ClientHandle::events`] holds for its consumer, as many
+/// as core's hierarchy subscription queues.
+pub const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// What a handshake ended in.
 pub type Handshake = Result<Connected, CloseReason>;
@@ -145,6 +149,7 @@ impl Client {
                         waits: HashMap::new(),
                         handshakes: Vec::new(),
                         listener: None,
+                        lagged: false,
                         start: Instant::now(),
                     };
                     futures_lite::future::block_on(driver.run());
@@ -237,7 +242,15 @@ impl ClientHandle {
     /// A receiver of everything the session reports besides results and
     /// waiter resolutions: hierarchy changes and connection state, from
     /// now on. Drain it, as core's subscription; dropping it stops the
-    /// forwarding.
+    /// forwarding, and a later call replaces it.
+    ///
+    /// It holds at most [`EVENT_CHANNEL_CAPACITY`] events. The client never
+    /// waits for the consumer: while the channel is full it drops events,
+    /// and once there is room it sends one [`ClientEvent::Lagged`], after
+    /// which the consumer re-reads the projection through
+    /// [`Self::hierarchy`], and the connection through [`Self::connected`]
+    /// if it follows connection state. Results, waiter resolutions, and
+    /// handshake outcomes reach their own callers and never wait on it.
     pub async fn events(&self) -> Option<Receiver<ClientEvent>> {
         let (reply, events) = async_channel::bounded(1);
         self.command(Command::Events(reply));
@@ -447,12 +460,17 @@ struct Driver {
     waits: HashMap<WaitId, Reply<Resolution>>,
     handshakes: Vec<Reply<Handshake>>,
     listener: Option<Sender<ClientEvent>>,
+    /// The listener's channel was full, so events were dropped and the
+    /// listener owes a [`ClientEvent::Lagged`].
+    lagged: bool,
     start: Instant,
 }
 
 enum Woke {
     Event(Event),
     Deadline,
+    /// The lag marker went out, or the listener was dropped.
+    Lag(bool),
 }
 
 impl Driver {
@@ -486,6 +504,12 @@ impl Driver {
                 Woke::Deadline => {
                     let now = self.now();
                     self.session.tick(now);
+                }
+                Woke::Lag(delivered) => {
+                    self.lagged = false;
+                    if !delivered {
+                        self.listener = None;
+                    }
                 }
                 Woke::Event(Event::Command(Command::Shutdown)) => {
                     self.shutdown();
@@ -548,8 +572,10 @@ impl Driver {
                 }));
             }
             Command::Events(reply) => {
-                let (sender, receiver) = async_channel::unbounded();
+                let (sender, receiver) =
+                    async_channel::bounded(EVENT_CHANNEL_CAPACITY);
                 self.listener = Some(sender);
+                self.lagged = false;
                 let _ = reply.try_send(receiver);
             }
             Command::Connected(reply) => match self.session.connected() {
@@ -568,6 +594,9 @@ impl Driver {
                 if let Some(io) = self.io.take() {
                     io.close();
                 }
+                // Report the old connection's end before the new one opens,
+                // so its `Closed` never reaches the new handshake's waiter.
+                self.route();
                 self.generation += 1;
                 match Io::spawn(
                     stream,
@@ -618,13 +647,34 @@ impl Driver {
                         let _ = reply.try_send(Err(reason.clone()));
                     }
                 }
-                ClientEvent::Hierarchy(_) => {}
+                ClientEvent::Hierarchy(_) | ClientEvent::Lagged => {}
             }
-            if let Some(listener) = &self.listener
-                && listener.try_send(event).is_err()
-            {
-                self.listener = None;
+            self.forward(event);
+        }
+    }
+
+    /// Hands `event` to the listener without waiting: while its channel is
+    /// full the event is dropped, and the lag marker goes out ahead of the
+    /// first event there is room for.
+    fn forward(&mut self, event: ClientEvent) {
+        let Some(listener) = &self.listener else {
+            return;
+        };
+        if self.lagged {
+            match listener.try_send(ClientEvent::Lagged) {
+                Ok(()) => self.lagged = false,
+                Err(TrySendError::Full(_)) => return,
+                Err(TrySendError::Closed(_)) => {
+                    self.listener = None;
+                    self.lagged = false;
+                    return;
+                }
             }
+        }
+        match listener.try_send(event) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => self.lagged = true,
+            Err(TrySendError::Closed(_)) => self.listener = None,
         }
     }
 
@@ -650,13 +700,24 @@ impl Driver {
     }
 
     async fn wait(&self, deadline: Option<Instant>) -> Woke {
-        let event = async {
+        let inbox = async {
             match self.inbox.recv().await {
                 Ok(event) => Woke::Event(event),
                 // The driver holds a sender, so the inbox never closes.
                 Err(_) => Woke::Event(Event::Command(Command::Shutdown)),
             }
         };
+        // A lagged listener gets its marker as soon as the consumer makes
+        // room, even when no further event arrives.
+        let lag = async {
+            match &self.listener {
+                Some(listener) if self.lagged => {
+                    Woke::Lag(listener.send(ClientEvent::Lagged).await.is_ok())
+                }
+                _ => futures_lite::future::pending().await,
+            }
+        };
+        let event = futures_lite::future::or(inbox, lag);
         match deadline {
             None => event.await,
             Some(at) => {

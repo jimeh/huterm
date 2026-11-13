@@ -84,12 +84,7 @@ impl Tickets {
 
     /// Takes a ticket's assessment for a commit job.
     pub(super) fn take(&mut self, ticket: u32) -> Result<Consent, WireError> {
-        let entry = self.entries.get_mut(&ticket).ok_or_else(|| {
-            WireError::new(
-                ErrorCode::StaleTarget,
-                format!("no close ticket {ticket}"),
-            )
-        })?;
+        let entry = self.live(ticket)?;
         match std::mem::replace(&mut entry.state, State::Out) {
             State::Ready(consent) => Ok(*consent),
             busy => {
@@ -117,18 +112,27 @@ impl Tickets {
 
     /// Releases a ticket without committing it.
     pub(super) fn release(&mut self, ticket: u32) -> Result<(), WireError> {
-        let entry = self.entries.get_mut(&ticket).ok_or_else(|| {
-            WireError::new(
-                ErrorCode::StaleTarget,
-                format!("no close ticket {ticket}"),
-            )
-        })?;
+        let entry = self.live(ticket)?;
         if matches!(entry.state, State::Ready(_)) {
             self.entries.remove(&ticket);
         } else {
             entry.released = true;
         }
         Ok(())
+    }
+
+    /// A ticket the client may still use: one that exists and was not
+    /// released while a job held it.
+    fn live(&mut self, ticket: u32) -> Result<&mut Entry, WireError> {
+        self.entries
+            .get_mut(&ticket)
+            .filter(|entry| !entry.released)
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::StaleTarget,
+                    format!("no close ticket {ticket}"),
+                )
+            })
     }
 
     /// Drops every ticket.

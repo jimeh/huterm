@@ -116,3 +116,67 @@ fn every_io_thread_exits_after_a_disconnect_and_the_driver_after_shutdown() {
     joined(replacement);
     let _ = server.lock().shutdown();
 }
+
+#[test]
+fn reconnecting_over_a_live_connection_resolves_with_the_new_handshake() {
+    let server = Arc::new(server(ServerConfig::default()));
+    let (stream, first) = serve_pair(&server);
+    let client = Client::spawn(config(), stream).unwrap();
+    let handle = client.handle();
+    block_on(handle.connected()).unwrap();
+
+    let (stream, second) = serve_pair(&server);
+    let reconnected = block_on(handle.reconnect(stream)).unwrap();
+    assert!(!reconnected.new_incarnation);
+    joined(first);
+    let created =
+        block_on(handle.request(Request::CreateSession { name: None }))
+            .unwrap();
+    assert!(matches!(created.response, Response::Session(_)));
+
+    client.shutdown().unwrap();
+    joined(second);
+    let _ = server.lock().shutdown();
+}
+
+#[test]
+fn an_undrained_event_receiver_stays_at_capacity_and_then_reports_one_lag() {
+    let server = Arc::new(server(ServerConfig::default()));
+    let (stream, connection) = serve_pair(&server);
+    let client = Client::spawn(config(), stream).unwrap();
+    let handle = client.handle();
+    let events = block_on(handle.events()).unwrap();
+    block_on(handle.connected()).unwrap();
+    block_on(handle.request(Request::SubscribeHierarchy)).unwrap();
+    let Response::Session(session) =
+        block_on(handle.request(Request::CreateSession { name: None }))
+            .unwrap()
+            .response
+    else {
+        panic!("a created session");
+    };
+    // More hierarchy events than the channel holds, none drained.
+    let mut last = 0;
+    for index in 0..EVENT_CHANNEL_CAPACITY {
+        let renamed = block_on(handle.request(Request::RenameSession {
+            session,
+            name: Some(format!("name {index}")),
+        }))
+        .unwrap();
+        last = renamed.committed.unwrap().seq;
+    }
+    assert_eq!(block_on(handle.wait_for(last)), Resolution::Ready);
+    assert_eq!(events.len(), EVENT_CHANNEL_CAPACITY);
+
+    let mut delivered = 0;
+    while block_on(events.recv()).unwrap() != ClientEvent::Lagged {
+        delivered += 1;
+    }
+    assert_eq!(delivered, EVENT_CHANNEL_CAPACITY);
+    let snapshot = block_on(handle.hierarchy()).unwrap();
+    assert_eq!(snapshot.state.seq(), last);
+
+    client.shutdown().unwrap();
+    joined(connection);
+    let _ = server.lock().shutdown();
+}

@@ -223,6 +223,17 @@ fn operation_completion(
             );
             Completion::Ended { outcome, ended }
         }
+        Operation::AttachSession {
+            session,
+            attachments,
+        } => {
+            let mut mux = server.lock();
+            let before = mux.hierarchy_seq();
+            let result = mux.attach_session(session);
+            let ended = ended(&mux, attachments);
+            let outcome = attached(&mux, before, digest, result);
+            Completion::Attached { outcome, ended }
+        }
         Operation::Restore { record, direction } => {
             let mut mux = server.lock();
             let before = mux.hierarchy_seq();
@@ -238,6 +249,24 @@ fn operation_completion(
             Completion::Restored { outcome, record }
         }
     }
+}
+
+/// An attachment's outcome with where it committed.
+fn attached(
+    mux: &Mux,
+    before: u64,
+    digest: Option<DigestProfile>,
+    result: Result<huterm_protocol::AttachmentId, MuxError>,
+) -> Result<(Success, huterm_protocol::AttachmentId), WireError> {
+    let attachment = result.map_err(|error| wire_error(&error))?;
+    finish(
+        mux,
+        before,
+        digest,
+        Ok::<_, MuxError>(Response::Attachment(attachment)),
+        |error| wire_error(&error),
+    )
+    .map(|success| (success, attachment))
 }
 
 /// The attachments of `attachments` that no longer exist.
@@ -442,17 +471,10 @@ fn plain(
         }
         Request::AttachSession { session } => {
             let result = mux.attach_session(session);
-            return Completion::Attached(match result {
-                Ok(attachment) => finish(
-                    mux,
-                    before,
-                    digest,
-                    Ok::<_, MuxError>(Response::Attachment(attachment)),
-                    |error| wire_error(&error),
-                )
-                .map(|success| (success, attachment)),
-                Err(error) => Err(wire_error(&error)),
-            });
+            return Completion::Attached {
+                outcome: attached(mux, before, digest, result),
+                ended: Vec::new(),
+            };
         }
         Request::DetachSession { attachment } => {
             unit(mux.detach_session(attachment))

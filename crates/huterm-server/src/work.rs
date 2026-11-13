@@ -88,6 +88,14 @@ pub enum Operation {
         /// the commit ended.
         attachments: Vec<AttachmentId>,
     },
+    /// Attach to a session.
+    AttachSession {
+        /// The session.
+        session: SessionId,
+        /// The connection's attachments, so the completion reports those
+        /// that no longer exist.
+        attachments: Vec<AttachmentId>,
+    },
     /// Close a session, which ends its attachments.
     CloseSession {
         /// The session.
@@ -140,8 +148,14 @@ pub enum Completion {
         /// Attachments the close ended.
         ended: Vec<AttachmentId>,
     },
-    /// An attachment the connection now owns.
-    Attached(Result<(Success, AttachmentId), WireError>),
+    /// An attachment the connection now owns, and the connection's
+    /// attachments that no longer exist.
+    Attached {
+        /// The result and the new attachment.
+        outcome: Result<(Success, AttachmentId), WireError>,
+        /// Attachments another caller ended.
+        ended: Vec<AttachmentId>,
+    },
     /// A rearrangement and the change its history slot files.
     Rearranged(Result<(Success, LayoutChange), WireError>),
     /// A restore's result and the record it restored, which the slot files

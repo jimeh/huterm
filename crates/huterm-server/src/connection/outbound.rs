@@ -219,7 +219,10 @@ impl Outbound {
         self.retained += len;
     }
 
-    /// Cuts frames, lanes taking turns, until about `room` bytes.
+    /// Cuts frames, lanes taking turns, until about `room` bytes. Only the
+    /// first frame is cut short to fit; a later frame that does not fit
+    /// whole waits for the next call, so a message that fits one frame is
+    /// never split across two.
     pub(crate) fn take(&mut self, room: usize) -> Option<Transmit> {
         let mut transmit = Transmit::default();
         if let Some(raw) = self.raw.take() {
@@ -238,15 +241,17 @@ impl Outbound {
             });
         }
         let mut idle = 0;
+        let mut first = true;
         while idle < LANES && transmit.len() < room {
             let lane = self.cursor;
             self.cursor = (self.cursor + 1) % LANES;
             // At least one byte of payload fits, so a frame always goes
             // out when one is ready.
             let space = (room - transmit.len()).max(HEADER_BYTES + 1);
-            match self.cut(lane, space) {
+            match self.cut(lane, space, first) {
                 Some(chunk) => {
                     idle = 0;
+                    first = false;
                     transmit.push(chunk);
                 }
                 None => idle += 1,
@@ -258,9 +263,27 @@ impl Outbound {
         (!transmit.is_empty()).then_some(transmit)
     }
 
-    fn cut(&mut self, index: usize, space: usize) -> Option<Chunk> {
+    /// Cuts `index`'s next frame within `space`, or, unless it is the
+    /// `first` frame of its transmit, nothing when the whole frame does
+    /// not fit.
+    fn cut(
+        &mut self,
+        index: usize,
+        space: usize,
+        first: bool,
+    ) -> Option<Chunk> {
         let lane = [Lane::Control, Lane::Hierarchy][index];
         let queue = &mut self.lanes[index];
+        if !first {
+            let remaining = match &queue.current {
+                Some(current) => current.message.bytes.len() - current.cut,
+                None => queue.queue.front()?.bytes.len(),
+            };
+            let limit = usize::try_from(self.limit).unwrap_or(usize::MAX);
+            if remaining.min(limit) + HEADER_BYTES > space {
+                return None;
+            }
+        }
         if queue.current.is_none() {
             let next = queue.queue.front()?;
             let stream = self.streams.open(next.bytes.len()).ok()?;
@@ -352,5 +375,31 @@ impl Outbound {
         self.handed.clear();
         self.written_into_front = 0;
         self.retained = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Frames the writer would send, as each frame's message bytes.
+    fn payloads(transmit: &Transmit) -> Vec<&[u8]> {
+        transmit.chunks.iter().map(Chunk::payload).collect()
+    }
+
+    #[test]
+    fn a_message_that_fits_one_frame_waits_for_the_next_batch_instead_of_splitting()
+     {
+        let mut outbound = Outbound::new(Vec::new(), 1 << 16);
+        let first = vec![1; 100];
+        let second = vec![2; 100];
+        outbound.push(Lane::Control, first.clone(), None);
+        outbound.push(Lane::Control, second.clone(), None);
+        let room = first.len() + HEADER_BYTES + second.len() / 2;
+        let batch = outbound.take(room).unwrap();
+        assert_eq!(payloads(&batch), [&[][..], &first[..]]);
+        outbound.written(batch.len());
+        let batch = outbound.take(room).unwrap();
+        assert_eq!(payloads(&batch), [&second[..]]);
     }
 }

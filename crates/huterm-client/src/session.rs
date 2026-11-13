@@ -62,6 +62,16 @@ use crate::projection::{
     Checkpoints, Outcome, Projection, ProjectionKind, Waiters,
 };
 
+/// The most structural digest checkpoints a session keeps for sequences
+/// its projection has not reached. A result frees its request slot while
+/// its checkpoint waits for the hierarchy, so in-flight requests do not
+/// bound them. Core queues 1,024 hierarchy events per subscription before
+/// the server lags and resynchronizes, and the resync snapshot drops the
+/// checkpoints it covers; four times that leaves room for the events the
+/// server's lane and the socket hold. Past it, the oldest checkpoint is
+/// dropped unchecked and counted in [`SessionStats::checkpoints_dropped`].
+pub const MAX_PENDING_CHECKPOINTS: usize = 4 * 1024;
+
 /// A request's identity for the life of its session, across connections.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CallId(u64);
@@ -178,6 +188,11 @@ pub enum ClientEvent {
         /// How.
         resolution: Resolution,
     },
+    /// The native client's event channel filled, so it dropped the events
+    /// after the last one it delivered: re-read the projection, and the
+    /// connection state if it matters, as after core's subscription lag.
+    /// The session itself never reports it.
+    Lagged,
 }
 
 /// Counts tests and diagnostics read.
@@ -189,6 +204,8 @@ pub struct SessionStats {
     /// Digests that disagreed with the projection: on events and at
     /// structural checkpoints.
     pub digest_mismatches: u64,
+    /// Checkpoints dropped unchecked at [`MAX_PENDING_CHECKPOINTS`].
+    pub checkpoints_dropped: u64,
 }
 
 #[derive(Debug)]
@@ -200,6 +217,9 @@ struct Call {
     internal: bool,
     /// The request number on the current connection once sent.
     sent: Option<RequestId>,
+    /// The caller cancelled it after it was sent, so a disconnect resolves
+    /// it `Cancelled` instead of sending it again.
+    cancelled: bool,
 }
 
 /// A hierarchy subscription or resync result, held until the projection
@@ -261,8 +281,8 @@ pub struct ClientSession {
     calls: HashMap<CallId, Call>,
     queue: VecDeque<CallId>,
     held: Vec<Held>,
-    /// The caller subscribed to the hierarchy, so every connection
-    /// subscribes again.
+    /// A subscription succeeded, so every later connection subscribes
+    /// again.
     subscribed: bool,
     /// A `ResyncHierarchy` of the session's own is outstanding.
     resyncing: bool,
@@ -489,13 +509,16 @@ impl ClientSession {
     }
 
     /// Asks the server to abandon `call` if it has not started; a call not
-    /// yet sent answers `Cancelled` at once. The call still gets exactly
-    /// one result.
+    /// yet sent answers `Cancelled` at once, and a sent query whose
+    /// connection ends before its result answers `Cancelled` instead of
+    /// waiting for the next connection. The call still gets exactly one
+    /// result.
     pub fn cancel(&mut self, call: CallId, now: Duration) {
-        let Some(entry) = self.calls.get(&call) else {
+        let Some(entry) = self.calls.get_mut(&call) else {
             return;
         };
         if let Some(request) = entry.sent {
+            entry.cancelled = true;
             self.send_cancel(request);
         } else if let Some(index) =
             self.queue.iter().position(|queued| *queued == call)
@@ -620,9 +643,6 @@ impl ClientSession {
         self.last_call += 1;
         let call = CallId(self.last_call);
         let kind = request.kind();
-        if kind == RequestKind::SubscribeHierarchy && !internal {
-            self.subscribed = true;
-        }
         self.calls.insert(
             call,
             Call {
@@ -630,6 +650,7 @@ impl ClientSession {
                 request: Some(request),
                 internal,
                 sent: None,
+                cancelled: false,
             },
         );
         if internal {
@@ -832,6 +853,9 @@ impl ClientSession {
         {
             self.checkpoint(seq, digest);
         }
+        if kind == RequestKind::SubscribeHierarchy && outcome.is_ok() {
+            self.subscribed = true;
+        }
         match outcome {
             Ok(success)
                 if matches!(
@@ -860,7 +884,11 @@ impl ClientSession {
                 self.check_digest(digest);
             }
             Some(projection) if projection.seq() > seq => {}
-            _ => self.checkpoints.insert(seq, digest),
+            _ => {
+                if self.checkpoints.insert(seq, digest) {
+                    self.stats.checkpoints_dropped += 1;
+                }
+            }
         }
     }
 
@@ -1101,7 +1129,8 @@ impl ClientSession {
 
     /// Ends the current connection for `reason` and applies the disconnect
     /// rules: mutations in flight resolve `OutcomeUnknown`, unsent ones and
-    /// viewer requests `Disconnected`, and queries wait for the next
+    /// viewer requests `Disconnected`, queries the caller cancelled after
+    /// sending them `Cancelled`, and other queries wait for the next
     /// connection in issue order. Nothing else is ever sent again.
     fn close(&mut self, reason: CloseReason) {
         if self.connection.take().is_none() {
@@ -1120,6 +1149,12 @@ impl ClientSession {
                 (true, _) => {
                     self.calls.remove(&call);
                     continue;
+                }
+                (false, RetryClass::Query) if entry.cancelled => {
+                    Some(WireError::new(
+                        ErrorCode::Cancelled,
+                        "cancelled before the connection ended",
+                    ))
                 }
                 (false, RetryClass::Query) => None,
                 (false, RetryClass::Mutation) if entry.sent.is_some() => {

@@ -804,6 +804,7 @@ fn a_result_ahead_of_its_event_is_checked_when_the_event_applies() {
         SessionStats {
             resync_requests: 1,
             digest_mismatches: 1,
+            ..SessionStats::default()
         }
     );
     shut_down(&server);
@@ -828,6 +829,7 @@ fn a_result_behind_its_event_is_checked_at_once() {
         SessionStats {
             resync_requests: 1,
             digest_mismatches: 1,
+            ..SessionStats::default()
         }
     );
     shut_down(&server);
@@ -1076,5 +1078,105 @@ fn cancelling_answers_an_unsent_request_locally_and_asks_the_server_for_a_sent_o
         ErrorCode::Cancelled
     );
     assert_eq!(server.lock().hierarchy_seq(), before, "nothing committed");
+    shut_down(&server);
+}
+
+/// The requests among the bytes a client sent.
+fn sent_requests(bytes: &[u8], runtime: RuntimeId) -> Vec<Request> {
+    client_messages(bytes, runtime)
+        .into_iter()
+        .filter_map(|message| match message {
+            Message::Request(message) => Some(message.request),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_sent_query_cancelled_before_a_disconnect_resolves_cancelled_and_is_not_resent()
+ {
+    let server = fresh_server(ServerConfig::default());
+    let mut pair = Pair::new(&server, ClientSession::new(config()));
+    let runtime = pair.runtime();
+    let session = SessionId::in_runtime(runtime, 1);
+    let select = pair
+        .session
+        .request(Request::SelectSession { session }, pair.now);
+    pair.send();
+    pair.session.cancel(select, pair.now);
+    pair.session.disconnected(pair.now);
+    pair.drain();
+    assert_eq!(
+        pair.outcome(select)
+            .map(|outcome| outcome.unwrap_err().code),
+        Some(ErrorCode::Cancelled)
+    );
+    pair.reconnect_quietly(&server);
+    let sent = pair.pump();
+    assert_eq!(sent_requests(&sent, runtime), []);
+    shut_down(&server);
+}
+
+#[test]
+fn only_a_subscribe_that_succeeded_makes_later_connections_subscribe() {
+    let server = fresh_server(ServerConfig::default());
+    let mut session = ClientSession::new(config());
+    session.connect(T0);
+    // Issued before the handshake completes, so it waits unsent.
+    let subscribe = session.request(Request::SubscribeHierarchy, T0);
+    session.cancel(subscribe, T0);
+    let mut pair = Pair {
+        server: Arc::clone(&server),
+        connection: server.connection(T0),
+        session,
+        now: T0,
+        log: Vec::new(),
+    };
+    let sent = pair.pump();
+    let runtime = pair.runtime();
+    assert_eq!(
+        pair.outcome(subscribe)
+            .map(|outcome| outcome.unwrap_err().code),
+        Some(ErrorCode::Cancelled)
+    );
+    assert_eq!(sent_requests(&sent, runtime), []);
+    pair.reconnect_quietly(&server);
+    let sent = pair.pump();
+    assert_eq!(sent_requests(&sent, runtime), []);
+
+    pair.call(Request::SubscribeHierarchy).unwrap();
+    pair.reconnect_quietly(&server);
+    let sent = pair.pump();
+    assert_eq!(sent_requests(&sent, runtime), [Request::SubscribeHierarchy]);
+    shut_down(&server);
+}
+
+#[test]
+fn past_the_checkpoint_bound_the_oldest_is_dropped_and_the_rest_still_check() {
+    let server = fresh_server(ServerConfig::default());
+    let (mut pair, session) = Pair::subscribed(&server);
+    // The server answers every rename while its events wait.
+    let renames = MAX_PENDING_CHECKPOINTS + 1;
+    let mut events = Vec::with_capacity(renames);
+    for index in 0..renames {
+        let frames = pair.rename_frames(session, &format!("name {index}"));
+        let mut result = of_kind(&frames, MessageKind::Result);
+        if index == 0 || index == renames - 1 {
+            result = pair.rewrite(&result, wrong_digest);
+        }
+        pair.deliver_frame(&result);
+        assert!(pair.session.checkpoints.len() <= MAX_PENDING_CHECKPOINTS);
+        events.push(of_kind(&frames, MessageKind::HierarchyEvent));
+    }
+    assert_eq!(pair.session.checkpoints.len(), MAX_PENDING_CHECKPOINTS);
+    assert_eq!(pair.session.stats().checkpoints_dropped, 1);
+
+    for event in &events {
+        pair.deliver_frame(event);
+    }
+    // The first rename's wrong digest was dropped unchecked; the last
+    // one's is checked when its event applies.
+    assert_eq!(pair.session.stats().digest_mismatches, 1);
+    assert_eq!(pair.session.checkpoints.len(), 0);
     shut_down(&server);
 }

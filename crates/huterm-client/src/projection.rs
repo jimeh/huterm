@@ -19,7 +19,7 @@ use huterm_wire::message::{DecodeContext, Message, decode_message};
 #[cfg(any(test, feature = "test-minor"))]
 use huterm_wire::test_minor::{TEST_MINOR, TestEvent, TestHierarchy};
 
-use crate::session::WaitId;
+use crate::session::{MAX_PENDING_CHECKPOINTS, WaitId};
 
 /// Which projection a session holds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -264,15 +264,22 @@ impl Waiters {
 }
 
 /// Structural digests results reported for sequences the projection has
-/// not reached yet. At most one per in-flight request.
+/// not reached yet, at most [`MAX_PENDING_CHECKPOINTS`].
 #[derive(Debug, Default)]
 pub(crate) struct Checkpoints {
     pending: BTreeSet<(u64, u64)>,
 }
 
 impl Checkpoints {
-    pub(crate) fn insert(&mut self, seq: u64, digest: u64) {
+    /// Keeps a checkpoint, dropping the oldest past the bound; returns
+    /// whether it dropped one.
+    pub(crate) fn insert(&mut self, seq: u64, digest: u64) -> bool {
         self.pending.insert((seq, digest));
+        let over = self.pending.len() > MAX_PENDING_CHECKPOINTS;
+        if over {
+            self.pending.pop_first();
+        }
+        over
     }
 
     /// Takes the digests to check now that the projection applied
@@ -303,5 +310,10 @@ impl Checkpoints {
 
     pub(crate) fn clear(&mut self) {
         self.pending.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.pending.len()
     }
 }

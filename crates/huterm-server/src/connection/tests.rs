@@ -704,6 +704,29 @@ fn committing_a_ticket_a_running_commit_holds_answers_busy() {
     assert!(f.mux().session(session).is_none());
 }
 
+#[test]
+fn a_ticket_released_while_its_commit_runs_answers_stale_target() {
+    let mut f = Fixture::new();
+    let session = f.session();
+    let (held, _) = ticket(f.call(Request::PrepareClose {
+        request: CloseRequest::Session(session),
+    }));
+    let commit = Request::CommitClose {
+        ticket: held,
+        confirmed: false,
+    };
+    f.send(commit.clone());
+    let work = f.connection().poll_work().unwrap();
+    let release = Request::ReleaseCloseTicket { ticket: held };
+    f.call(release.clone()).unwrap();
+    assert_eq!(code(f.call(commit)), ErrorCode::StaleTarget);
+    assert_eq!(code(f.call(release)), ErrorCode::StaleTarget);
+    let completion = execute(&f.server, work.job);
+    f.connection().complete(work.id, completion, T0);
+    f.settle();
+    assert_eq!(f.server.live_close_tickets(), 0);
+}
+
 // Layout history.
 
 #[test]
@@ -871,6 +894,36 @@ fn only_the_connection_that_attached_may_detach_retarget_or_close_its_window() {
         ErrorCode::NotPermitted,
         "the close ended it"
     );
+}
+
+#[test]
+fn attachments_another_caller_ended_leave_the_connections_set() {
+    let mut f = Fixture::new();
+    for round in 0..32 {
+        let session = f.session();
+        let id = f.send(Request::AttachSession { session });
+        let work = f.connection().poll_work().unwrap();
+        let completion = execute(&f.server, work.job);
+        // Another caller ends the attachment before its completion lands.
+        f.mux().close_session(session).unwrap();
+        f.connection().complete(work.id, completion, T0);
+        f.settle();
+        assert!(f.client.result(id).unwrap().is_ok());
+        assert!(
+            f.client.connection.attachments.len() <= 1,
+            "round {round}: {:?}",
+            f.client.connection.attachments
+        );
+    }
+    let cleanup = f.connection().close(T0);
+    let detached: usize = cleanup
+        .iter()
+        .map(|work| match &work.job {
+            Job::Detach(attachments) => attachments.len(),
+            job => panic!("not a detach: {job:?}"),
+        })
+        .sum();
+    assert!(detached <= 1, "cleanup detaches {detached}");
 }
 
 // Disconnect.

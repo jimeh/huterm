@@ -180,6 +180,10 @@ pub struct Connection {
     hierarchy: HierarchyLane,
     tickets: Tickets,
     history: History,
+    /// The attachments this connection made that it has not seen end.
+    /// Attach, commit, and session-close jobs read under the lock which of
+    /// them still exist, so ones another caller ended leave at the next
+    /// such job and the set stays near the connection's live attachments.
     attachments: BTreeSet<AttachmentId>,
     reading: bool,
     stalled_since: Option<Duration>,
@@ -887,11 +891,17 @@ impl Connection {
                     Operation::Plain(request),
                 ))
             }
-            Request::AttachSession { .. } => Some(self.request_work(
-                id,
-                Kind::Attach,
-                Operation::Plain(request),
-            )),
+            Request::AttachSession { session } => {
+                let attachments = self.attachments.iter().copied().collect();
+                Some(self.request_work(
+                    id,
+                    Kind::Attach,
+                    Operation::AttachSession {
+                        session,
+                        attachments,
+                    },
+                ))
+            }
             Request::SwapPanes { slot, .. }
             | Request::MovePane { slot, .. }
             | Request::MoveTabToPane { slot, .. }
@@ -1021,7 +1031,8 @@ impl Connection {
                 self.ended(&ended);
                 outcome
             }
-            (Kind::Attach, Completion::Attached(outcome)) => {
+            (Kind::Attach, Completion::Attached { outcome, ended }) => {
+                self.ended(&ended);
                 outcome.map(|(success, attachment)| {
                     self.attachments.insert(attachment);
                     success
@@ -1062,7 +1073,11 @@ impl Connection {
     /// Releases what a job created for a connection that has ended: an
     /// attachment is detached, everything else is dropped.
     fn release(&mut self, completion: &Completion) {
-        if let Completion::Attached(Ok((_, attachment))) = completion {
+        if let Completion::Attached {
+            outcome: Ok((_, attachment)),
+            ..
+        } = completion
+        {
             let work =
                 self.work(Pending::Cleanup, Job::Detach(vec![*attachment]));
             self.ready.push_back(work);

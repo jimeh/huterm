@@ -1927,7 +1927,10 @@ The server:
   adds one forwarding task per viewer wake. The reader reads only after the
   driver grants a permit while `wants_input()` holds, so at most one read
   buffer is in flight. The writer writes one batch at a time with vectored
-  writes straight from the shared message buffers. The event channel is
+  writes straight from the shared message buffers. Only a batch's first
+  frame is cut short to fit the batch; a later frame that does not fit
+  whole waits for the next batch, so a message that fits one frame is
+  never split across two. The event channel is
   unbounded, but each source is bounded: one read, one batch, the in-flight
   jobs, and one coalesced wake per feed. At the end, the driver shuts the
   socket down so blocked threads return and waits for every outstanding job
@@ -1944,6 +1947,9 @@ The server:
   cap of 9,617,517 bytes, so the default bound is 27,623,642 bytes. The
   largest snapshot measured is 8,725,140 bytes, for tabs of full splits, so
   with real event sizes a connection retains about 17 MiB at worst.
+  Without a hierarchy subscription only results flow, so a connection
+  retains at most `OUTBOUND_BUDGET` plus one result at its cap, which the
+  native flood test asserts.
 - **One replacement in flight.** A subscribe, a client resync, and a lag
   resync each replace the hierarchy feed, and at most one replacement runs
   per connection, so two replacement jobs never coexist. The contract's
@@ -1953,13 +1959,20 @@ The server:
 - **Close tickets and attachments.** An unknown, consumed, or released
   ticket answers `StaleTarget`; `StaleClose` stays core's revision check.
   Releasing a ticket that a job holds answers `Unit` and drops the record
-  when the job completes. `AttachSession` makes the attachment the
-  connection's. `DetachSession`, `RetargetAttachment`, and a `PrepareClose`
-  naming `Window` or `EmptiedWindow` accept only the connection's own
-  attachments and otherwise answer `NotPermitted`. `CommitClose` and
-  `CloseSession` report which of the connection's attachments they ended,
-  read under the lock. A disconnect detaches the rest on a worker, and an
-  attachment a late job creates is detached by cleanup work.
+  when the job completes; until then, a commit or another release of it
+  answers `StaleTarget`, as for any released ticket. `AttachSession` makes
+  the attachment the connection's. `DetachSession`, `RetargetAttachment`,
+  and a `PrepareClose` naming `Window` or `EmptiedWindow` accept only the
+  connection's own attachments and otherwise answer `NotPermitted`.
+  `AttachSession`, `CommitClose`, and `CloseSession` carry the connection's
+  attachments and report which of them no longer exist, read under the
+  lock, and the connection drops those. Another caller can end the
+  connection's attachments at any time, even between an attach job and its
+  completion, so the connection's set holds at most its live attachments
+  plus those ended since the last such job, and repeated attach and
+  external close cycles never grow it. A disconnect detaches the rest on a
+  worker, and an attachment a late job creates is detached by cleanup
+  work.
 - **History slots.** A rearrangement touches its slot when its job starts,
   which creates it or evicts the least recently used slot and records the
   slot's generation. On completion, the change is filed as the undo entry
@@ -1996,7 +2009,13 @@ The client:
   needs no executor. When a connection ends, the driver shuts the socket
   down and joins both I/O threads before it reports the end. The transport
   never reconnects on its own: `ClientHandle::reconnect` takes a new
-  stream, and slice 5 adds `connect`.
+  stream, reports the old connection's end, and resolves with the new
+  handshake; slice 5 adds `connect`. `ClientHandle::events` holds at most
+  `EVENT_CHANNEL_CAPACITY` (1,024) events, and the driver never waits for
+  its consumer: while it is full, events are dropped, and once there is
+  room the consumer gets one `ClientEvent::Lagged` and re-reads the
+  projection, as after core's subscription lag. Results, waiter
+  resolutions, and handshake outcomes travel on their own reply channels.
 - **Calls outlive connections.** A caller's request has a session-wide
   `CallId`, and each connection numbers what it sends from 1, as the
   server's request window requires, so a query resent on the next
@@ -2005,15 +2024,18 @@ The client:
   connection resolves `OutcomeUnknown`. A mutation never sent resolves
   `Disconnected`, because it did not run: one queued during a handshake,
   one held past the in-flight limit, or one issued with no connection.
-  Viewer requests resolve `Disconnected`. Queries wait for the next
+  Viewer requests resolve `Disconnected`. A sent query the caller
+  cancelled resolves `Cancelled`. Other queries wait for the next
   connection and go out in issue order. `abandon`, and shutting the native
   client down, fail the waiting queries with `Disconnected` and cancel
   every sequence waiter.
 - **The client subscribes because the caller did.** The session subscribes
-  only after the caller's first `SubscribeHierarchy`, and from then on
-  every connection subscribes again by itself. A `SubscribeHierarchy` or
-  `ResyncHierarchy` result is held until the projection reaches its
-  sequence.
+  only after a `SubscribeHierarchy` of the caller's succeeds, and from then
+  on every connection subscribes again by itself; a cancelled or failed
+  subscribe changes nothing, and a caller's subscribe that waits for the
+  next connection goes out there instead of a second one. A
+  `SubscribeHierarchy` or `ResyncHierarchy` result is held until the
+  projection reaches its sequence.
 - **Digest checks.** A snapshot whose digest disagrees with its state
   closes the connection as a contract fault. A mismatch on a digested event
   or at a structural checkpoint, a reducer gap, or an inconsistent event
@@ -2021,7 +2043,12 @@ The client:
   committed digest is checked at once when the projection holds that
   sequence, kept and checked right after that event applies when the
   projection is behind, and dropped when the projection has passed it. An
-  installed snapshot drops the checkpoints it covers, unchecked. A snapshot
+  installed snapshot drops the checkpoints it covers, unchecked. A result
+  frees its request slot while its checkpoint waits, so in-flight requests
+  do not bound checkpoints; `MAX_PENDING_CHECKPOINTS` (4,096, four times
+  core's 1,024-event subscription queue, past which the server lags and
+  resyncs) does. Past it, the oldest checkpoint is dropped unchecked and
+  counted in `SessionStats::checkpoints_dropped`. A snapshot
   behind the projection is a violation only after a snapshot installed on
   the same connection, and a hierarchy event before its connection's first
   snapshot is a violation.
