@@ -357,6 +357,9 @@ fn the_session_list_stays_huterms_and_its_row_menu_opens_natively(
             format!("session-rename:{theirs}"),
             format!("session-clear:{theirs}"),
             format!("session-window:{theirs}"),
+            format!("session-up:{theirs}"),
+            // The last session has nowhere further down to go.
+            format!("session-down:{theirs}!"),
             "-".to_owned(),
             format!("session-close:{theirs}"),
         ]
