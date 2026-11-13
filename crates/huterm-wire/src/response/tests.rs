@@ -290,3 +290,30 @@ fn selection_text_at_its_limit_fits_a_large_result_and_one_byte_more_is_refused(
         Err(crate::codec::EncodeError::LimitExceeded { field: "message" })
     ));
 }
+
+#[test]
+fn a_text_result_split_around_its_text_is_the_large_result_message() {
+    use crate::request::RequestId;
+    for (request, len) in
+        [(1, 0), (7, 1), (200, 127), (u64::MAX, 128), (9, 70_000)]
+    {
+        let text = "t".repeat(len);
+        let request = RequestId::new(request).unwrap();
+        let (head, tail) = text_result_parts(request, &text).unwrap();
+        let mut bytes = head;
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.extend_from_slice(&tail);
+        let message = Message::LargeResult(RequestResult {
+            request,
+            outcome: Ok(Success {
+                response: Response::Text { text: Some(text) },
+                committed: None,
+            }),
+        });
+        assert_eq!(
+            bytes,
+            encode_message(&message, vectors::scope(), CAPS).unwrap(),
+            "{len} bytes"
+        );
+    }
+}

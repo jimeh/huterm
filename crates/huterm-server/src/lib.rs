@@ -28,6 +28,7 @@ mod server;
 pub mod test_feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+pub mod viewer;
 pub mod work;
 
 pub use config::ServerConfig;

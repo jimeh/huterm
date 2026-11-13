@@ -35,6 +35,20 @@ pub const OUTBOUND_BUDGET: usize = 8 << 20;
 /// window keeps the record of used IDs bounded when a client skips one.
 pub const REQUEST_ID_WINDOW: u64 = 1024;
 
+/// The most viewers one connection holds, subscriptions in flight
+/// included. Past it, `SubscribeTerminal` answers `LimitExceeded`.
+pub const MAX_CONNECTION_VIEWERS: usize = 256;
+
+/// How long a viewer's staged ordered messages wait before the connection
+/// offers them to core again, the desktop's input retry interval. The
+/// deadline is armed only while something is staged.
+pub const STAGING_RETRY: std::time::Duration =
+    std::time::Duration::from_millis(16);
+
+/// The most ended viewers a connection remembers, so a request naming one
+/// answers `Revoked` or `Stopped` instead of `StaleTarget`.
+pub const MAX_ENDED_VIEWERS: usize = 256;
+
 /// Limits a server applies to each connection. The defaults are the named
 /// constants; tests lower them to reach a limit cheaply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +60,8 @@ pub struct ServerConfig {
     pub hierarchy_lane_budget: usize,
     /// See [`OUTBOUND_BUDGET`].
     pub outbound_budget: usize,
+    /// See [`MAX_CONNECTION_VIEWERS`].
+    pub max_viewers: usize,
 }
 
 impl Default for ServerConfig {
@@ -54,6 +70,7 @@ impl Default for ServerConfig {
             max_in_flight_requests: MAX_IN_FLIGHT_REQUESTS,
             hierarchy_lane_budget: HIERARCHY_LANE_BUDGET,
             outbound_budget: OUTBOUND_BUDGET,
+            max_viewers: MAX_CONNECTION_VIEWERS,
         }
     }
 }

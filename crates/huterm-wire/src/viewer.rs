@@ -128,6 +128,22 @@ pub struct SubscribeOptions {
     pub spawned: bool,
 }
 
+/// What one input counts against its viewer's input budget: its text's
+/// bytes, a paste's included, and at least one byte. Client and server count
+/// the same way, so the client's unacknowledged input and the server's
+/// staged input agree.
+#[must_use]
+pub fn input_cost(input: &TerminalInput) -> usize {
+    let bytes = match input {
+        TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
+        TerminalInput::Character { text, key, .. } => {
+            text.len() + key.as_ref().map_or(0, |key| key.text.len())
+        }
+        _ => 0,
+    };
+    bytes.max(1)
+}
+
 /// Encodes a focus report's record.
 ///
 /// # Errors

@@ -644,6 +644,45 @@ pub fn encode_result(
     })
 }
 
+/// A selection result's message split around its text: the bytes before
+/// the text and the bytes after it, so a sender streams the text from its
+/// own buffer instead of encoding a copy. The three parts together are the
+/// `LargeResult` message [`encode_result`] would write for a success with
+/// [`Response::Text`] and no commit.
+///
+/// # Errors
+/// Refuses text past [`SELECTION_PAYLOAD_LIMIT`] with
+/// [`EncodeError::LimitExceeded`].
+pub fn text_result_parts(
+    request: RequestId,
+    text: &str,
+) -> Result<(Vec<u8>, Vec<u8>), EncodeError> {
+    use crate::caps::MessageKind;
+    use crate::codec::varint_len;
+    let len = text.len();
+    if len > SELECTION_PAYLOAD_LIMIT {
+        return Err(EncodeError::LimitExceeded {
+            field: "selection text",
+        });
+    }
+    let vlen = |value: usize| varint_len(value as u64);
+    let response = 1 + vlen(len) + len;
+    let success = 1 + vlen(response) + response + 1;
+    let result = varint_len(request.get()) + 1 + vlen(success) + success;
+    let mut head = Writer::new();
+    head.u64(MessageKind::LargeResult.number());
+    head.usize(result);
+    write_request_id(&mut head, request);
+    head.tag(0);
+    head.usize(success);
+    head.tag(15);
+    head.usize(response);
+    head.fixed(&[1]);
+    head.usize(len);
+    // No commit.
+    Ok((head.into_bytes(), vec![0]))
+}
+
 /// Decodes a result record.
 ///
 /// # Errors

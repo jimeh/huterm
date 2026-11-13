@@ -7,14 +7,22 @@
 //! created. Both are plain values, so a test or a fault-injection harness
 //! can hold, reorder, or drop them.
 
-use huterm_core::{CloseAssessment, CloseRequest, RestoreDirection};
-use huterm_protocol::{AttachmentId, DigestProfile, LayoutChange, SessionId};
+use std::sync::Arc;
+
+use huterm_core::{
+    CloseAssessment, CloseRequest, RestoreDirection, RuntimeError,
+};
+use huterm_protocol::{
+    AttachmentId, BufferRange, DigestProfile, LayoutChange, SessionId,
+    TerminalId, TerminalStatus,
+};
 use huterm_wire::error::WireError;
 use huterm_wire::request::Request;
 use huterm_wire::response::Success;
 
 use crate::feed::{FeedEncoding, HierarchyFeed, SnapshotKind};
 use crate::server::Live;
+use crate::viewer::{SnapshotOutcome, ViewerJob, ViewerPort};
 
 /// A work item's identity on its connection.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -41,10 +49,6 @@ pub struct Work {
 
 /// What a worker runs.
 #[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "requests are nearly every job; boxing one would allocate per request"
-)]
 pub enum Job {
     /// A client's request.
     Request(RequestJob),
@@ -53,6 +57,9 @@ pub enum Job {
     Replace(ReplaceJob),
     /// Disconnect cleanup: detach the connection's attachments.
     Detach(Vec<AttachmentId>),
+    /// A viewer operation that answers later. It blocks no thread: an
+    /// adapter starts it with [`ViewerJob::start`] and awaits the result.
+    Viewer(ViewerJob),
 }
 
 /// A request to run, with the digest profile its committed sequence's
@@ -103,6 +110,17 @@ pub enum Operation {
         /// The connection's attachments, so the completion reports those
         /// the close ended.
         attachments: Vec<AttachmentId>,
+    },
+    /// Register a viewer of a terminal in one of the connection's
+    /// attachments, and read the terminal's status under the same lock.
+    Subscribe {
+        /// The attachment.
+        attachment: AttachmentId,
+        /// The terminal.
+        terminal: TerminalId,
+        /// The viewer's capabilities and initial state, with its own input
+        /// budget.
+        options: Box<huterm_core::ViewerOptions>,
     },
     /// Restore a layout history entry.
     Restore {
@@ -170,6 +188,42 @@ pub enum Completion {
     Replaced(Result<Replaced, WireError>),
     /// Cleanup finished.
     Cleaned,
+    /// A viewer subscription.
+    Subscribed(Result<Subscription, WireError>),
+    /// A viewer snapshot.
+    Snapshot(Result<SnapshotOutcome, RuntimeError>),
+    /// Selection text.
+    Selection(Result<Option<String>, RuntimeError>),
+    /// Selection units.
+    SelectUnits(Result<Option<BufferRange>, RuntimeError>),
+}
+
+/// What a subscription produced.
+pub enum Subscription {
+    /// A viewer, and its terminal's status when it registered.
+    Viewer {
+        /// The viewer.
+        port: Arc<dyn ViewerPort>,
+        /// The status.
+        status: Arc<TerminalStatus>,
+    },
+    /// The terminal's runtime stopped on its own; its final status.
+    Stopped(Arc<TerminalStatus>),
+}
+
+impl std::fmt::Debug for Subscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Viewer { port, status } => f
+                .debug_struct("Viewer")
+                .field("viewer", &port.id())
+                .field("revision", &status.revision)
+                .finish(),
+            Self::Stopped(status) => {
+                f.debug_tuple("Stopped").field(&status.revision).finish()
+            }
+        }
+    }
 }
 
 /// A captured hierarchy replacement.

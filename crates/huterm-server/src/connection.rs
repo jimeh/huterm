@@ -30,13 +30,16 @@ mod hierarchy;
 mod history;
 mod outbound;
 mod tickets;
+mod viewers;
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use huterm_protocol::{AttachmentId, DigestProfile, RuntimeId, StreamId};
+use huterm_protocol::{
+    AttachmentId, DigestProfile, RuntimeId, StreamId, TerminalInput, ViewerId,
+};
 use huterm_wire::caps::{
     Direction, MessageCaps, MessageKind, reassembly_budget,
 };
@@ -63,12 +66,14 @@ use huterm_wire::stream::Reassembler;
 use self::hierarchy::HierarchyLane;
 use self::history::{History, SlotRef};
 pub use self::outbound::Transmit;
-use self::outbound::{Lane, Outbound};
+use self::outbound::{Item, Lane, Outbound};
 use self::tickets::Tickets;
+use self::viewers::{Ended, Task, Viewer};
 use crate::config::{REQUEST_ID_WINDOW, ServerConfig};
 use crate::convert;
 use crate::feed::{FeedEncoding, FeedError, HierarchyFeed};
 use crate::server::{Counters, Live, Record};
+use crate::viewer::WakeSource;
 pub use crate::work::{Completion, Job, Work, WorkId};
 use crate::work::{Consent, Operation, ReplaceJob, RequestJob};
 
@@ -108,6 +113,17 @@ enum Pending {
     Request(RequestId, Kind),
     Replace,
     Cleanup,
+    /// A viewer job: its viewer and what it answers.
+    Viewer(ViewerId, Task),
+}
+
+/// A result waiting for room under the outbound budget, with the lane it
+/// travels on and the viewer whose lane it opens.
+#[derive(Debug)]
+struct Queued {
+    lane: Lane,
+    opens: Option<ViewerId>,
+    result: RequestResult,
 }
 
 #[derive(Debug)]
@@ -120,6 +136,7 @@ enum Kind {
     Detach(AttachmentId),
     Rearrange(SlotRef),
     Restore(SlotRef, huterm_core::RestoreDirection),
+    Subscribe,
 }
 
 /// Request IDs the client used: every ID up to `floor`, and those above it.
@@ -173,7 +190,7 @@ pub struct Connection {
     queued: VecDeque<RequestMessage>,
     used: UsedIds,
     large: Option<RequestId>,
-    results: VecDeque<RequestResult>,
+    results: VecDeque<Queued>,
     last_work: u64,
     works: HashMap<WorkId, Pending>,
     ready: VecDeque<Work>,
@@ -188,6 +205,25 @@ pub struct Connection {
     reading: bool,
     stalled_since: Option<Duration>,
     over_since: Option<Duration>,
+    /// The latest time any call passed in.
+    clock: Duration,
+    viewers: HashMap<ViewerId, Viewer>,
+    /// Recently ended viewers and why, oldest first.
+    ended: VecDeque<(ViewerId, Ended)>,
+    /// Subscriptions in flight, which count toward the viewer limit.
+    subscribing: usize,
+    /// Viewer jobs handed out and not completed. Disconnect cleanup waits
+    /// for them, because a job may hold a viewer that detaching would
+    /// revoke.
+    viewer_works: usize,
+    /// Attachments to detach once no viewer job remains.
+    deferred_detach: Vec<AttachmentId>,
+    watches: VecDeque<(ViewerId, Box<dyn WakeSource>)>,
+    unwatches: VecDeque<ViewerId>,
+    /// When staged ordered messages are offered to core again.
+    retry_at: Option<Duration>,
+    /// A pump found the outbound queue at its budget.
+    pumps_waiting: bool,
 }
 
 impl fmt::Debug for Connection {
@@ -197,6 +233,7 @@ impl fmt::Debug for Connection {
             .field("closed", &self.closed)
             .field("requests", &self.requests.len())
             .field("works", &self.works.len())
+            .field("viewers", &self.viewers.len())
             .field("retained", &self.outbound.retained())
             .finish_non_exhaustive()
     }
@@ -226,7 +263,11 @@ impl Connection {
             negotiated: None,
             rejecting: false,
             closed: None,
-            outbound: Outbound::new(preamble().to_vec(), HANDSHAKE_FRAME_LIMIT),
+            outbound: Outbound::new(
+                preamble().to_vec(),
+                HANDSHAKE_FRAME_LIMIT,
+                config.outbound_budget,
+            ),
             requests: HashMap::new(),
             queued: VecDeque::new(),
             used: UsedIds::default(),
@@ -242,6 +283,16 @@ impl Connection {
             reading: true,
             stalled_since: None,
             over_since: None,
+            clock: now,
+            viewers: HashMap::new(),
+            ended: VecDeque::new(),
+            subscribing: 0,
+            viewer_works: 0,
+            deferred_detach: Vec::new(),
+            watches: VecDeque::new(),
+            unwatches: VecDeque::new(),
+            retry_at: None,
+            pumps_waiting: false,
         }
     }
 
@@ -308,12 +359,28 @@ impl Connection {
         let Some(pending) = self.works.remove(&id) else {
             return;
         };
+        self.clock = now;
         match pending {
+            Pending::Request(request, Kind::Subscribe) => match completion {
+                Completion::Subscribed(outcome) => {
+                    self.subscribed(request, outcome);
+                }
+                other => {
+                    self.subscribing -= 1;
+                    self.finish(request, Kind::Subscribe, other);
+                }
+            },
             Pending::Request(request, kind) => {
                 self.finish(request, kind, completion);
             }
             Pending::Replace => self.replaced(id, completion),
             Pending::Cleanup => {}
+            Pending::Viewer(viewer, task) => {
+                self.viewer_completed(viewer, task, completion);
+                if self.closed.is_some() && self.viewer_works == 0 {
+                    self.detach_deferred();
+                }
+            }
         }
         self.progress(now);
     }
@@ -359,6 +426,7 @@ impl Connection {
             self.stalled_since
                 .map(|since| since + WRITER_STALL_DEADLINE),
             self.over_since.map(|since| since + WRITER_STALL_DEADLINE),
+            self.retry_at,
         ]
         .into_iter()
         .flatten()
@@ -369,6 +437,11 @@ impl Connection {
     pub fn tick(&mut self, now: Duration) {
         if self.closed.is_some() {
             return;
+        }
+        self.clock = now;
+        if self.retry_at.is_some_and(|at| now >= at) {
+            self.retry_at = None;
+            self.retry_staged();
         }
         if self.negotiated.is_none()
             && now >= self.opened_at + HANDSHAKE_DEADLINE
@@ -385,7 +458,9 @@ impl Connection {
         };
         if stalled(self.stalled_since) || stalled(self.over_since) {
             self.shut(CloseReason::Stalled);
+            return;
         }
+        self.progress(now);
     }
 
     /// Ends the connection, returning the cleanup work to run: detaching
@@ -413,7 +488,10 @@ impl Connection {
     /// it owes, remains.
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.closed.is_some() && self.works.is_empty() && self.ready.is_empty()
+        self.closed.is_some()
+            && self.works.is_empty()
+            && self.ready.is_empty()
+            && self.deferred_detach.is_empty()
     }
 
     /// The encoded bytes the connection retains.
@@ -453,11 +531,20 @@ impl Connection {
 
     /// Advances everything a call may have unblocked.
     fn progress(&mut self, now: Duration) {
+        self.clock = self.clock.max(now);
         if self.closed.is_none() {
             self.admit_results();
             self.read_frames(now);
             self.admit_results();
             self.drain_hierarchy();
+            if self.pumps_waiting && !self.at_budget() {
+                self.pumps_waiting = false;
+                self.pump_all();
+            }
+            if let Some(fault) = self.outbound.fault() {
+                let fault = fault.to_owned();
+                self.shut(CloseReason::Fault(fault));
+            }
             if self.rejecting && self.outbound.retained() == 0 {
                 self.shut(CloseReason::Rejected);
             }
@@ -527,11 +614,27 @@ impl Connection {
         match message {
             Message::Request(request) => self.request(request),
             Message::Cancel(cancel) => self.cancel(cancel),
+            Message::Input(input) => self.viewer_input(
+                input.viewer,
+                input.seq,
+                input.stamp,
+                input.input,
+            ),
+            Message::Paste(paste) => self.viewer_input(
+                paste.viewer,
+                paste.seq,
+                paste.stamp,
+                TerminalInput::Paste(paste.text),
+            ),
+            Message::Focus(focus) => {
+                self.viewer_focus(focus.viewer, focus.focused);
+            }
+            Message::Credit(credit) => self.viewer_credit(credit),
+            Message::ResyncViewer(resync) => self.viewer_resync(resync.viewer),
             Message::Hello(_) => {
                 self.shut(CloseReason::Violation("a second Hello".into()));
             }
-            // Slice 3a holds no viewers, so ordered viewer messages name
-            // none and are dropped, as for a viewer that ended.
+            // Decoding accepts only what a client sends.
             _ => {}
         }
     }
@@ -562,7 +665,12 @@ impl Connection {
                         return;
                     }
                 };
-                self.outbound.push(Lane::Control, encoded, Some(max_frame));
+                self.outbound.push_encoded(
+                    Lane::Control,
+                    encoded,
+                    Some(max_frame),
+                );
+                self.outbound.set_encoding(self.scope, caps);
                 self.decoder.set_limit(max_frame);
                 self.reassembler
                     .set_caps(caps, reassembly_budget(caps.minor()));
@@ -587,7 +695,11 @@ impl Connection {
                     MessageCaps::for_minor(0),
                 ) {
                     Ok(encoded) => {
-                        self.outbound.push(Lane::Control, encoded, None);
+                        self.outbound.push_encoded(
+                            Lane::Control,
+                            encoded,
+                            None,
+                        );
                         self.rejecting = true;
                     }
                     Err(error) => {
@@ -623,6 +735,12 @@ impl Connection {
         if large {
             self.large = Some(id);
         }
+        if message.request.viewer().is_some() {
+            // Handled as it arrives, in order with the viewer's input.
+            self.requests.insert(id, State::Started);
+            self.viewer_request(id, message.request);
+            return;
+        }
         self.requests.insert(id, State::Queued);
         self.queued.push_back(message);
     }
@@ -648,13 +766,18 @@ impl Connection {
         }
     }
 
-    /// Answers a request, whether or not it was in the table.
+    /// Answers a request on the control lane, whether or not it was in the
+    /// table.
     fn answer_now(
         &mut self,
         request: RequestId,
         outcome: Result<Success, WireError>,
     ) {
-        self.results.push_back(RequestResult { request, outcome });
+        self.results.push_back(Queued {
+            lane: Lane::Control,
+            opens: None,
+            result: RequestResult { request, outcome },
+        });
         self.admit_results();
     }
 
@@ -663,24 +786,92 @@ impl Connection {
         request: RequestId,
         outcome: Result<Success, WireError>,
     ) {
+        self.answer_on(Lane::Control, request, outcome);
+    }
+
+    /// Answers a request on `lane`: a viewer's lane for a request that
+    /// names the viewer, the large-result lane for selection text.
+    fn answer_on(
+        &mut self,
+        lane: Lane,
+        request: RequestId,
+        outcome: Result<Success, WireError>,
+    ) {
         self.requests.remove(&request);
         if self.large == Some(request) {
             self.large = None;
         }
-        self.answer_now(request, outcome);
+        self.results.push_back(Queued {
+            lane,
+            opens: None,
+            result: RequestResult { request, outcome },
+        });
+        self.admit_results();
     }
 
     /// Queues waiting results while the outbound queue is under budget.
     fn admit_results(&mut self) {
         while self.closed.is_none() && !self.at_budget() {
-            let Some(result) = self.results.pop_front() else {
+            let Some(Queued {
+                lane,
+                opens,
+                result,
+            }) = self.results.pop_front()
+            else {
                 return;
             };
-            let request = result.request;
             let Some(negotiated) = self.negotiated else {
                 return;
             };
-            let message = Message::Result(result);
+            // A viewer's lane that closed meanwhile cannot carry the
+            // result; the control lane still answers the request.
+            let lane = match lane {
+                Lane::Viewer(viewer) if !self.outbound.viewer_open(viewer) => {
+                    Lane::Control
+                }
+                lane => lane,
+            };
+            let request = result.request;
+            if lane == Lane::Large
+                && let Ok(Success {
+                    response: Response::Text { text: Some(text) },
+                    committed: None,
+                }) = &result.outcome
+            {
+                match huterm_wire::response::text_result_parts(request, text) {
+                    Ok((head, tail)) => {
+                        let Ok(Success {
+                            response: Response::Text { text: Some(text) },
+                            ..
+                        }) = result.outcome
+                        else {
+                            unreachable!("matched above");
+                        };
+                        self.outbound
+                            .push(lane, Item::Text { head, text, tail });
+                        continue;
+                    }
+                    Err(error) => {
+                        self.results.push_front(Queued {
+                            lane,
+                            opens,
+                            result: RequestResult {
+                                request,
+                                outcome: Err(WireError::new(
+                                    ErrorCode::LimitExceeded,
+                                    error.to_string(),
+                                )),
+                            },
+                        });
+                        continue;
+                    }
+                }
+            }
+            let message = if lane == Lane::Large {
+                Message::LargeResult(result)
+            } else {
+                Message::Result(result)
+            };
             let encoded = encode_message(&message, self.scope, negotiated.caps)
                 .or_else(|error| {
                     encode_message(
@@ -696,11 +887,14 @@ impl Connection {
                     )
                 });
             match encoded {
-                Ok(encoded) => self.outbound.push(Lane::Control, encoded, None),
+                Ok(encoded) => self.outbound.push_encoded(lane, encoded, None),
                 Err(error) => {
                     self.shut(CloseReason::Fault(error.to_string()));
                     return;
                 }
+            }
+            if let Some(viewer) = opens {
+                self.open_viewer(viewer);
             }
         }
     }
@@ -713,6 +907,9 @@ impl Connection {
     }
 
     fn work(&mut self, pending: Pending, job: Job) -> Work {
+        if matches!(pending, Pending::Viewer(..)) {
+            self.viewer_works += 1;
+        }
         self.last_work += 1;
         let id = WorkId(self.last_work);
         self.works.insert(id, pending);
@@ -800,15 +997,43 @@ impl Connection {
                 );
                 None
             }
-            Request::SetScrollback { .. }
-            | Request::ClearHistory { .. }
-            | Request::Reset { .. }
-            | Request::ReportGeometry { .. } => {
-                self.answer(
+            Request::SubscribeTerminal {
+                attachment,
+                terminal,
+                options,
+            } => {
+                if options.capabilities.host_effects {
+                    self.answer(
+                        id,
+                        refuse(
+                            ErrorCode::Unsupported,
+                            "host effects arrive with a later version",
+                        ),
+                    );
+                    return None;
+                }
+                if self.viewers.len() + self.subscribing
+                    >= self.config.max_viewers
+                {
+                    self.answer(
+                        id,
+                        refuse(
+                            ErrorCode::LimitExceeded,
+                            "the connection holds its most viewers",
+                        ),
+                    );
+                    return None;
+                }
+                self.subscribing += 1;
+                Some(self.request_work(
                     id,
-                    refuse(ErrorCode::StaleTarget, "no such viewer"),
-                );
-                None
+                    Kind::Subscribe,
+                    Operation::Subscribe {
+                        attachment,
+                        terminal,
+                        options: Box::new(convert::viewer_options(options)),
+                    },
+                ))
             }
             Request::PrepareClose { request } => {
                 let named = match &request {
@@ -1098,7 +1323,11 @@ impl Connection {
             Ok(replaced) => {
                 // The snapshot was admitted when the replacement was
                 // issued, so it is queued whatever the queue holds now.
-                self.outbound.push(Lane::Hierarchy, replaced.message, None);
+                self.outbound.push_encoded(
+                    Lane::Hierarchy,
+                    replaced.message,
+                    None,
+                );
                 self.hierarchy.install(generation, replaced.feed);
                 let committed = Committed {
                     seq: replaced.seq,
@@ -1140,7 +1369,7 @@ impl Connection {
             };
             match feed.next() {
                 Ok(encoded) => {
-                    self.outbound.push(Lane::Hierarchy, encoded, None);
+                    self.outbound.push_encoded(Lane::Hierarchy, encoded, None);
                 }
                 Err(FeedError::Empty) => return,
                 Err(FeedError::Lagged) => {
@@ -1171,17 +1400,42 @@ impl Connection {
         self.hierarchy.clear();
         self.tickets.clear();
         self.history.clear();
+        // Viewers drop first, so their admitted input still runs and the
+        // detach below finds them dropped rather than revoking them.
+        self.drop_viewers();
+        // Viewer jobs not yet handed out hold viewers; drop them too.
+        let works = &mut self.works;
+        let mut dropped = 0;
+        self.ready.retain(|work| {
+            let viewer = matches!(work.job, Job::Viewer(_));
+            if viewer {
+                works.remove(&work.id);
+                dropped += 1;
+            }
+            !viewer
+        });
+        self.viewer_works -= dropped;
         self.outbound.clear();
         self.stalled_since = None;
         self.over_since = None;
+        self.retry_at = None;
         if !self.attachments.is_empty() {
             let attachments = std::mem::take(&mut self.attachments);
-            let work = self.work(
-                Pending::Cleanup,
-                Job::Detach(attachments.into_iter().collect()),
-            );
-            self.ready.push_back(work);
+            self.deferred_detach = attachments.into_iter().collect();
+            if self.viewer_works == 0 {
+                self.detach_deferred();
+            }
         }
+    }
+
+    /// Hands out the disconnect's detach once no viewer job holds a viewer.
+    fn detach_deferred(&mut self) {
+        if self.deferred_detach.is_empty() {
+            return;
+        }
+        let attachments = std::mem::take(&mut self.deferred_detach);
+        let work = self.work(Pending::Cleanup, Job::Detach(attachments));
+        self.ready.push_back(work);
     }
 }
 

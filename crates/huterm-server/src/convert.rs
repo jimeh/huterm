@@ -128,3 +128,30 @@ pub(crate) fn opposite(
         core::RestoreDirection::Redo => core::RestoreDirection::Undo,
     }
 }
+
+/// Core viewer options for a remote viewer: what the client asked for, with
+/// the viewer's own input budget so one connection's paste cannot refuse
+/// another's keystrokes. Host effects arrive with slice 4.
+pub(crate) fn viewer_options(
+    options: huterm_wire::viewer::SubscribeOptions,
+) -> huterm_core::ViewerOptions {
+    let huterm_wire::viewer::SubscribeOptions {
+        capabilities,
+        focused,
+        geometry,
+        presentation,
+        spawned,
+    } = options;
+    huterm_core::ViewerOptions {
+        capabilities: huterm_protocol::ViewerCapabilities {
+            host_effects: false,
+            ..capabilities
+        },
+        host_effects: None,
+        focused,
+        geometry,
+        presentation: presentation.map(|presentation| *presentation),
+        spawned,
+        input_budget: Some(huterm_wire::caps::VIEWER_INPUT_BUDGET),
+    }
+}

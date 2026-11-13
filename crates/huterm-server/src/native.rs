@@ -18,6 +18,7 @@
 //! and its cleanup ran, and then exits; [`ConnectionHandle::join`] joins
 //! all three threads.
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -28,12 +29,14 @@ use std::time::Instant;
 
 use async_channel::{Receiver, Sender};
 use async_executor::{LocalExecutor, Task};
+use huterm_protocol::ViewerId;
 
 use crate::connection::{Connection, Transmit};
 use crate::feed::HierarchyFeed;
 use crate::runtime;
 use crate::server::Server;
-use crate::work::{Completion, Work, WorkId};
+use crate::viewer::WakeSource;
+use crate::work::{Completion, Job, Work, WorkId};
 
 /// The most bytes one read takes.
 const READ_BUFFER_BYTES: usize = 64 << 10;
@@ -50,6 +53,8 @@ enum Event {
     WriteFailed,
     Completed(WorkId, Box<Completion>),
     Hierarchy,
+    Viewer(ViewerId),
+    ViewerEnded(ViewerId),
     Close,
 }
 
@@ -266,9 +271,24 @@ impl Driver {
         let mut reading = false;
         let mut writer_idle = true;
         let mut feed: Option<(u64, Task<()>)> = None;
+        let mut watches: HashMap<ViewerId, (Task<()>, Arc<AtomicBool>)> =
+            HashMap::new();
         loop {
             while let Some(work) = connection.poll_work() {
                 self.spawn(executor, work);
+            }
+            while let Some((viewer, wake)) = connection.poll_watch() {
+                let queued = Arc::new(AtomicBool::new(false));
+                let task = executor.spawn(watch(
+                    viewer,
+                    wake,
+                    Arc::clone(&queued),
+                    self.events.clone(),
+                ));
+                watches.insert(viewer, (task, queued));
+            }
+            while let Some(viewer) = connection.poll_unwatch() {
+                watches.remove(&viewer);
             }
             match connection.hierarchy_feed() {
                 Some((generation, _))
@@ -302,6 +322,7 @@ impl Driver {
                 self.permits = None;
                 self.batches = None;
                 feed = None;
+                watches.clear();
             }
             if connection.is_finished() {
                 return;
@@ -329,6 +350,16 @@ impl Driver {
                     connection.complete(id, *completion, now());
                 }
                 Woke::Event(Event::Hierarchy) => connection.pump(now()),
+                Woke::Event(Event::Viewer(viewer)) => {
+                    if let Some((_, queued)) = watches.get(&viewer) {
+                        queued.store(false, Ordering::Release);
+                    }
+                    connection.viewer_woke(viewer, now());
+                }
+                Woke::Event(Event::ViewerEnded(viewer)) => {
+                    watches.remove(&viewer);
+                    connection.viewer_ended(viewer, now());
+                }
             }
         }
     }
@@ -354,11 +385,25 @@ impl Driver {
     }
 
     fn spawn(&self, executor: &LocalExecutor<'_>, work: Work) {
-        let server = Arc::clone(&self.server);
         let events = self.events.clone();
+        let Work { id, job } = work;
+        if let Job::Viewer(job) = job {
+            // A viewer job goes to its terminal at once and blocks no
+            // thread: the driver awaits its reply.
+            let reply = job.start();
+            executor
+                .spawn(async move {
+                    let completion = reply.await;
+                    let _ = events
+                        .send(Event::Completed(id, Box::new(completion)))
+                        .await;
+                })
+                .detach();
+            return;
+        }
+        let server = Arc::clone(&self.server);
         executor
             .spawn(async move {
-                let Work { id, job } = work;
                 let completion =
                     blocking::unblock(move || runtime::execute(&server, job))
                         .await;
@@ -386,6 +431,24 @@ impl Driver {
             .closed
             .store(connection.is_closed(), Ordering::Release);
     }
+}
+
+/// Forwards a viewer's wakes to the driver, at most one queued at a time,
+/// then its end.
+async fn watch(
+    viewer: ViewerId,
+    wake: Box<dyn WakeSource>,
+    queued: Arc<AtomicBool>,
+    events: Sender<Event>,
+) {
+    while wake.wait().await {
+        if !queued.swap(true, Ordering::AcqRel)
+            && events.send(Event::Viewer(viewer)).await.is_err()
+        {
+            return;
+        }
+    }
+    let _ = events.send(Event::ViewerEnded(viewer)).await;
 }
 
 async fn forward(feed: Arc<dyn HierarchyFeed>, events: Sender<Event>) {
