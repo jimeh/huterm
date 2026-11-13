@@ -475,9 +475,15 @@ fn contract_focus_reports_agree_in_process_and_over_ipc() {
             // `od` prints the two reports once a block fills; the text
             // that follows forces it.
             path.type_text(&format!("{}\r", "x".repeat(16)));
+            // Compared without spaces, since `od`'s columns wrap
+            // wherever the grid ends.
             seen.push(seen_until(path, |view| {
-                let text = screen_text(view).concat();
-                text.contains("[   O") && text.contains("I   x")
+                let text: String = screen_text(view)
+                    .concat()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .collect();
+                text.contains("[O") && text.contains("Ix")
             }));
             seen
         },
