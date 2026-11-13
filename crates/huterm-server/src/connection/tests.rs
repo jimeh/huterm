@@ -641,11 +641,27 @@ fn a_commit_keeps_its_ticket_only_when_confirmation_is_required() {
     let close = Request::PrepareClose {
         request: CloseRequest::Tab { workspace, tab },
     };
-    // The job starts on its own schedule; poll its assessment.
+    // The job starts on its own schedule; poll its assessment until it
+    // lists `sleep` itself. Until the forked shell execs it, the evidence
+    // still changes, and the commit's recheck would answer `StaleClose`.
+    let runs_sleep = |assessment: &huterm_wire::response::CloseAssessment| {
+        assessment.busy.iter().any(|terminal| {
+            matches!(
+                &terminal.jobs,
+                huterm_wire::response::TerminalJobs::Running(processes)
+                    if processes.iter().any(|process| process.command == "sleep")
+            )
+        })
+    };
     let deadline = Instant::now() + Duration::from_secs(20);
     let busy = loop {
-        let (ticket, needs_confirmation) = ticket(f.call(close.clone()));
-        if needs_confirmation {
+        let Response::CloseAssessment(assessment) =
+            f.call(close.clone()).expect("an assessment").response
+        else {
+            panic!("not an assessment");
+        };
+        let ticket = assessment.ticket;
+        if assessment.needs_confirmation && runs_sleep(&assessment) {
             break ticket;
         }
         f.call(Request::ReleaseCloseTicket { ticket }).unwrap();
