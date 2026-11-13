@@ -49,16 +49,21 @@ impl Content {
         }
     }
 
-    /// Row `index`'s cells, varied by `salt` so a changed row differs.
-    fn row(self, columns: u16, index: usize, salt: usize) -> Arc<TerminalRow> {
+    /// Row `index`'s cells, varied by `variant` so a changed row differs.
+    fn row(
+        self,
+        columns: u16,
+        index: usize,
+        variant: usize,
+    ) -> Arc<TerminalRow> {
         let columns = usize::from(columns);
         let text_columns = match self {
             Self::Plain | Self::Styled | Self::Wide => columns,
-            Self::Sparse => (index * 7 + salt) % (columns / 2) + 1,
+            Self::Sparse => (index * 7 + variant) % (columns / 2) + 1,
         };
         let cells = (0..columns)
             .map(|column| {
-                let varied = index * 31 + column + salt;
+                let varied = index * 31 + column + variant;
                 let text = match self {
                     // A spacer holds no text.
                     Self::Wide if column % 2 == 1 => CellText::EMPTY,
@@ -138,7 +143,13 @@ impl Samples {
     }
 }
 
+/// Untimed iterations before each operation's samples, so allocator and
+/// cache state from the previous operation does not reach its median.
+const WARMUP: usize = 20;
+
+/// The samples after the warm-up iterations, sorted.
 fn sorted(mut samples: Vec<u128>) -> Samples {
+    samples.drain(..WARMUP.min(samples.len()));
     samples.sort_unstable();
     Samples(samples)
 }
@@ -291,8 +302,9 @@ fn complete(content: Content, size: GridSize) -> Measured {
     let mut view = ViewerView::new(0);
     let (mut build, mut digest, mut encoding, mut decoding, mut apply) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut server, mut client) = (Vec::new(), Vec::new());
     let mut bytes = 0;
-    for _ in 0..iterations(size.cells()) {
+    for _ in 0..WARMUP + iterations(size.cells()) {
         encoder.resync();
         let started = Instant::now();
         let update = encoder.next(black_box(&current), false).unwrap();
@@ -315,6 +327,10 @@ fn complete(content: Content, size: GridSize) -> Measured {
         let disposal = view.apply(&update).unwrap();
         apply.push(started.elapsed().as_nanos());
         assert_eq!(disposal.outcome, crate::update::UpdateOutcome::Applied);
+        // Each side's whole operation, so its percentiles are of totals
+        // rather than sums of each step's percentile.
+        server.push(build[build.len() - 1] + encoding[encoding.len() - 1]);
+        client.push(decoding[decoding.len() - 1] + apply[apply.len() - 1]);
     }
     let shown = view.snapshot(current.terminal_id).unwrap();
     assert_eq!(shown.rows, current.rows, "the client shows the snapshot");
@@ -325,13 +341,12 @@ fn complete(content: Content, size: GridSize) -> Measured {
         sorted(decoding),
         sorted(apply),
     );
-    let server = build.p50() + encoding.p50();
-    let client = decoding.p50() + apply.p50();
+    let (server, client) = (sorted(server), sorted(client));
     Measured {
         line: format!(
             "fixture={} grid={}x{} op=complete bytes={bytes} bytes_per_cell={} \
              build_ns_p50={} digest_ns_p50={} encode_ns_p50={} decode_ns_p50={} \
-             apply_ns_p50={} server_ns_p50={server} client_ns_p50={client} \
+             apply_ns_p50={} server_ns_p50={} client_ns_p50={} \
              server_ns_p95={} client_ns_p95={}",
             content.name(),
             size.columns,
@@ -342,14 +357,16 @@ fn complete(content: Content, size: GridSize) -> Measured {
             encoding.p50(),
             decoding.p50(),
             apply.p50(),
-            build.p95() + encoding.p95(),
-            decoding.p95() + apply.p95(),
+            server.p50(),
+            client.p50(),
+            server.p95(),
+            client.p95(),
         ),
         failures: over_budget(
             content,
             size,
             "complete",
-            (server, client, bytes),
+            (server.p50(), client.p50(), bytes),
         ),
     }
 }
@@ -410,7 +427,8 @@ fn delta(content: Content, size: GridSize, change: Change) -> Measured {
     // The first delta's bytes: later ones grow as their sequence number's
     // varint does.
     let mut bytes = 0;
-    for iteration in 0..iterations(size.cells()) {
+    let total = WARMUP + iterations(size.cells());
+    for iteration in 0..total {
         let current = &snapshots[iteration % 2];
         let started = Instant::now();
         let message = encode(encoder.next(black_box(current), false).unwrap());
@@ -424,7 +442,7 @@ fn delta(content: Content, size: GridSize, change: Change) -> Measured {
         assert_eq!(disposal.outcome, crate::update::UpdateOutcome::Applied);
     }
     let shown = view.snapshot(snapshots[0].terminal_id).unwrap();
-    let last = &snapshots[(iterations(size.cells()) - 1) % 2];
+    let last = &snapshots[(total - 1) % 2];
     assert_eq!(shown.rows, last.rows, "the client shows the last snapshot");
     let (server, client) = (sorted(server), sorted(client));
     Measured {
