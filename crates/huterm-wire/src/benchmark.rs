@@ -161,10 +161,10 @@ fn per_cell(bytes: usize, size: GridSize) -> String {
     format!("{}.{:02}", hundredths / 100, hundredths % 100)
 }
 
-/// Enough samples for a stable median that keep the largest grid's run
-/// short.
+/// Enough samples for a stable median on a shared CI runner, at least 200,
+/// that keep the largest grid's run to a few seconds.
 fn iterations(cells: usize) -> usize {
-    (2_000_000 / cells).clamp(50, 1000)
+    (2_000_000 / cells).clamp(200, 1000)
 }
 
 /// One measured operation's report and the budgets it exceeded.
@@ -237,7 +237,7 @@ const BUDGETS: &[Budget] = &[
         op: "delta-row",
         server_us: 30,
         client_us: 15,
-        bytes: 74,
+        bytes: 73,
     },
     Budget {
         fixture: "wide",
@@ -303,7 +303,11 @@ fn complete(content: Content, size: GridSize) -> Measured {
         let started = Instant::now();
         let message = encode(update);
         encoding.push(started.elapsed().as_nanos());
-        bytes = message.len();
+        // The first update's bytes: later ones grow as their sequence
+        // number's varint does.
+        if bytes == 0 {
+            bytes = message.len();
+        }
         let started = Instant::now();
         let update = decode(black_box(&message));
         decoding.push(started.elapsed().as_nanos());
@@ -403,13 +407,17 @@ fn delta(content: Content, size: GridSize, change: Change) -> Measured {
     )))
     .unwrap();
     let (mut server, mut client) = (Vec::new(), Vec::new());
-    let mut bytes = Vec::new();
+    // The first delta's bytes: later ones grow as their sequence number's
+    // varint does.
+    let mut bytes = 0;
     for iteration in 0..iterations(size.cells()) {
         let current = &snapshots[iteration % 2];
         let started = Instant::now();
         let message = encode(encoder.next(black_box(current), false).unwrap());
         server.push(started.elapsed().as_nanos());
-        bytes.push(message.len());
+        if bytes == 0 {
+            bytes = message.len();
+        }
         let started = Instant::now();
         let disposal = view.apply(&decode(black_box(&message))).unwrap();
         client.push(started.elapsed().as_nanos());
@@ -418,12 +426,10 @@ fn delta(content: Content, size: GridSize, change: Change) -> Measured {
     let shown = view.snapshot(snapshots[0].terminal_id).unwrap();
     let last = &snapshots[(iterations(size.cells()) - 1) % 2];
     assert_eq!(shown.rows, last.rows, "the client shows the last snapshot");
-    bytes.sort_unstable();
-    let bytes = bytes[bytes.len() / 2];
     let (server, client) = (sorted(server), sorted(client));
     Measured {
         line: format!(
-            "fixture={} grid={}x{} op={} bytes_p50={} bytes_per_cell={} \
+            "fixture={} grid={}x{} op={} bytes={} bytes_per_cell={} \
              server_ns_p50={} client_ns_p50={} server_ns_p95={} \
              client_ns_p95={}",
             content.name(),
