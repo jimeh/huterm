@@ -15,6 +15,7 @@
 //! reuses them with a cell style flag that minor version 0 lacks.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
 use huterm_protocol::{
@@ -24,7 +25,9 @@ use huterm_protocol::{
     TerminalSnapshot, ViewerId, Viewport,
 };
 
-use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
+use crate::codec::{
+    DecodeError, EncodeError, IdScope, Reader, Writer, varint_len,
+};
 
 /// How many deltas pass between the digests deltas carry. Every complete
 /// snapshot carries one too.
@@ -326,7 +329,8 @@ pub fn build_row(row: &FullRow, styles: &[StyleEntry]) -> TerminalRow {
         prompt,
         runs,
     } = row;
-    let mut cells = Vec::new();
+    let mut cells =
+        Vec::with_capacity(runs.iter().map(|run| run.texts.len()).sum());
     for run in runs {
         let Some(style) = styles.get(run.style as usize) else {
             continue;
@@ -346,54 +350,73 @@ pub fn build_row(row: &FullRow, styles: &[StyleEntry]) -> TerminalRow {
     }
 }
 
-/// FNV-1a, 64-bit, over a canonical encoding.
-struct Fnv(u64);
+/// A 64-bit hash over a sequence of 64-bit words, with `MurmurHash64A`'s
+/// word step and finalizer (Austin Appleby, public domain). Every step is a
+/// bijection of the state for a fixed word and of the word for a fixed
+/// state, so two sequences of equal length that differ in one word always
+/// hash differently. Words are built arithmetically, never from memory, so
+/// the digest is the same on every platform and byte order.
+struct WordHash(u64);
 
-impl Fnv {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
+impl WordHash {
+    const MULTIPLIER: u64 = 0xc6a4_a793_5bd1_e995;
+    const SHIFT: u32 = 47;
+    const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
-    fn bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(Self::PRIME);
-        }
+    fn new() -> Self {
+        Self(Self::SEED)
     }
 
-    fn byte(&mut self, byte: u8) {
-        self.bytes(&[byte]);
+    fn word(&mut self, word: u64) {
+        let mut mixed = word.wrapping_mul(Self::MULTIPLIER);
+        mixed ^= mixed >> Self::SHIFT;
+        mixed = mixed.wrapping_mul(Self::MULTIPLIER);
+        self.0 = (self.0 ^ mixed).wrapping_mul(Self::MULTIPLIER);
     }
 
-    fn number(&mut self, value: u64) {
-        self.bytes(&value.to_le_bytes());
-    }
-
-    fn rgb(&mut self, rgb: Option<Rgb>) {
-        match rgb {
-            None => self.byte(0),
-            Some(Rgb { red, green, blue }) => {
-                self.bytes(&[1, red, green, blue]);
-            }
-        }
-    }
-
-    fn color(&mut self, color: CellColor) {
-        match color {
-            CellColor::DefaultForeground => self.byte(0),
-            CellColor::DefaultBackground => self.byte(1),
-            CellColor::Cursor => self.byte(2),
-            CellColor::Indexed(index) => self.bytes(&[3, index]),
-            CellColor::Rgb(rgb) => {
-                self.byte(4);
-                self.rgb(Some(rgb));
-            }
-        }
+    fn finish(self) -> u64 {
+        let mut hash = self.0;
+        hash ^= hash >> Self::SHIFT;
+        hash = hash.wrapping_mul(Self::MULTIPLIER);
+        hash ^ hash >> Self::SHIFT
     }
 }
 
+/// Up to 8 bytes as a little-endian word, zero-padded.
+fn le_word(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .rev()
+        .fold(0, |word, byte| word << 8 | u64::from(*byte))
+}
+
+/// An optional RGB color as 25 bits: a presence bit above the color.
+fn rgb_word(rgb: Option<Rgb>) -> u64 {
+    rgb.map_or(0, |Rgb { red, green, blue }| {
+        1 << 24 | u64::from(red) << 16 | u64::from(green) << 8 | u64::from(blue)
+    })
+}
+
+/// Cell text up to this many bytes shares the word that holds its length.
+const PACKED_TEXT_BYTES: usize = 6;
+
+/// Style flag bits that share the word that holds a cell's colors; a flag
+/// above them adds a word.
+const PACKED_FLAG_BITS: u32 = 14;
+
 /// The digest of a viewport's rows and metadata as a peer at `minor` holds
-/// them: FNV-1a over a canonical encoding that is independent of the wire
+/// them, over a canonical sequence of words that is independent of the wire
 /// codec. It covers exactly the fields of `minor`, so a projected view and
 /// its digest always agree.
+///
+/// The metadata takes nine words. Each row takes a word with its cell count,
+/// wrap flags, and prompt mark, then each cell's words: its colors and low
+/// style flags; its text length, with the text when it is at most
+/// [`PACKED_TEXT_BYTES`] bytes, as every single scalar is; any longer text
+/// as zero-padded little-endian words; and the flags above
+/// [`PACKED_FLAG_BITS`] when there are any, which the length word marks.
+/// Every count and length precedes what it counts, so distinct views give
+/// distinct word sequences.
 #[must_use]
 pub fn view_digest<R: UpdateRow>(
     metadata: &ViewMetadata,
@@ -412,27 +435,30 @@ pub fn view_digest<R: UpdateRow>(
         cursor_color,
         default_background,
     } = metadata;
-    let mut hash = Fnv(Fnv::OFFSET);
-    hash.number(*generation);
-    hash.number(*revision);
-    hash.number(*geometry_revision);
-    hash.number(u64::from(size.columns));
-    hash.number(u64::from(size.rows));
-    match cursor {
-        None => hash.byte(0),
-        Some(Cursor { row, column, shape }) => {
-            hash.byte(1);
-            hash.number(u64::from(*row));
-            hash.number(u64::from(*column));
-            hash.byte(shape_tag(*shape));
-        }
-    }
+    let mut hash = WordHash::new();
+    hash.word(*generation);
+    hash.word(*revision);
+    hash.word(*geometry_revision);
+    hash.word(
+        u64::from(size.columns)
+            | u64::from(size.rows) << 16
+            | (rows.len() as u64) << 32,
+    );
+    hash.word(cursor.map_or(0, |Cursor { row, column, shape }| {
+        1 | u64::from(row) << 8
+            | u64::from(column) << 24
+            | u64::from(shape_tag(shape)) << 40
+    }));
     let (kitty, flags, tracking, encoding) = mode_parts(*modes);
-    hash.bytes(&[kitty, flags, tracking, encoding]);
-    hash.number(viewport.bottom_offset as u64);
-    hash.number(*history_size as u64);
-    hash.rgb(*cursor_color);
-    hash.rgb(*default_background);
+    hash.word(
+        u64::from(kitty)
+            | u64::from(flags) << 8
+            | u64::from(tracking) << 16
+            | u64::from(encoding) << 24,
+    );
+    hash.word(viewport.bottom_offset as u64);
+    hash.word(*history_size as u64);
+    hash.word(rgb_word(*cursor_color) | rgb_word(*default_background) << 32);
     for row in rows {
         let TerminalRow {
             cells,
@@ -440,21 +466,37 @@ pub fn view_digest<R: UpdateRow>(
             wrap_continuation,
             prompt,
         } = row.row();
-        hash.byte(b'R');
-        hash.bytes(&[
-            u8::from(*wrapped),
-            u8::from(*wrap_continuation),
-            prompt_tag(*prompt),
-        ]);
+        hash.word(
+            u64::from(*wrapped)
+                | u64::from(*wrap_continuation) << 1
+                | u64::from(prompt_tag(*prompt)) << 2
+                | (cells.len() as u64) << 8,
+        );
         for (column, cell) in cells.iter().enumerate() {
-            hash.number(cell.text.len() as u64);
-            hash.bytes(cell.text.as_bytes());
-            hash.color(cell.foreground);
-            hash.color(cell.background);
-            hash.number(row.flags(column, minor));
+            let flags = row.flags(column, minor);
+            let high_flags = flags >> PACKED_FLAG_BITS;
+            hash.word(
+                u64::from(color_key(cell.foreground))
+                    | u64::from(color_key(cell.background)) << 25
+                    | (flags & ((1 << PACKED_FLAG_BITS) - 1)) << 50,
+            );
+            let text = cell.text.as_bytes();
+            // Cell text is far below 2^15 bytes (`MAX_CELL_TEXT_BYTES`).
+            let length = text.len() as u64 | u64::from(high_flags != 0) << 15;
+            if text.len() <= PACKED_TEXT_BYTES {
+                hash.word(length | le_word(text) << 16);
+            } else {
+                hash.word(length);
+                for chunk in text.chunks(8) {
+                    hash.word(le_word(chunk));
+                }
+            }
+            if high_flags != 0 {
+                hash.word(high_flags);
+            }
         }
     }
-    hash.0
+    hash.finish()
 }
 
 fn shape_tag(shape: CursorShape) -> u8 {
@@ -504,8 +546,8 @@ fn mode_parts(modes: TerminalModes) -> (u8, u8, u8, u8) {
     (kitty_keyboard.bits(), flags, tracking, encoding)
 }
 
-/// The key a style table deduplicates entries by: the colors' canonical
-/// forms and the flags.
+/// A cell color's canonical 25-bit form, which keys the style table and
+/// the view digest.
 fn color_key(color: CellColor) -> u32 {
     match color {
         CellColor::DefaultForeground => 0,
@@ -521,29 +563,87 @@ fn color_key(color: CellColor) -> u32 {
     }
 }
 
+/// Whether a cell's text travels in a packed run: no text, or exactly one
+/// scalar other than U+0000, which a packed run uses for no text.
+fn packs(text: &CellText) -> bool {
+    text.is_empty() || text.as_char().is_some_and(|scalar| scalar != '\0')
+}
+
+fn run(style: u32, cells: &[Cell]) -> Run {
+    Run {
+        style,
+        texts: cells.iter().map(|cell| cell.text.clone()).collect(),
+    }
+}
+
+/// A style-table key: a cell's two color keys in one word, and its flags.
+type StyleKey = (u64, u64);
+
+/// Hashes the encoder's map keys, row identities and [`StyleKey`]s, with
+/// [`WordHash`]'s word step, which costs less than the standard library's
+/// `SipHash`. No peer chooses these keys, and neither the order of a map nor
+/// the hash reaches the wire: the style table's order is the order styles
+/// first appear.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+/// A map keyed through [`KeyHasher`].
+type KeyMap<K, V> = HashMap<K, V, BuildHasherDefault<KeyHasher>>;
+
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            self.write_u64(le_word(chunk));
+        }
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        let mut hash = WordHash(self.0);
+        hash.word(word);
+        self.0 = hash.0;
+    }
+
+    fn write_usize(&mut self, word: usize) {
+        self.write_u64(word as u64);
+    }
+}
+
 /// Builds the style table and full rows of an update.
 struct RowBuilder {
     minor: u16,
     columns: usize,
     styles: Vec<StyleEntry>,
-    index: HashMap<(u32, u32, u64), u32>,
+    index: KeyMap<StyleKey, u32>,
+    /// The last style looked up, which most cells repeat.
+    last: Option<(StyleKey, u32)>,
 }
 
 impl RowBuilder {
     fn style(&mut self, cell: &Cell, flags: u64) -> u32 {
         let key = (
-            color_key(cell.foreground),
-            color_key(cell.background),
+            u64::from(color_key(cell.foreground))
+                | u64::from(color_key(cell.background)) << 32,
             flags,
         );
-        *self.index.entry(key).or_insert_with(|| {
+        if let Some((last, style)) = self.last
+            && last == key
+        {
+            return style;
+        }
+        let style = *self.index.entry(key).or_insert_with(|| {
             self.styles.push(StyleEntry {
                 foreground: cell.foreground,
                 background: cell.background,
                 flags,
             });
             u32::try_from(self.styles.len() - 1).unwrap_or(u32::MAX)
-        })
+        });
+        self.last = Some((key, style));
+        style
     }
 
     fn full<R: UpdateRow>(&mut self, row: &R) -> Result<FullRow, EncodeError> {
@@ -556,21 +656,30 @@ impl RowBuilder {
         if cells.len() != self.columns {
             return Err(EncodeError::Invalid("row width"));
         }
+        // A run ends where the style changes or where its cells stop or
+        // start packing, so each run's texts are copied once, at their
+        // exact size, and a packed run never holds a cell that cannot pack.
         let mut runs: Vec<Run> = Vec::new();
+        let mut open: Option<(usize, u32, bool)> = None;
         for (column, cell) in cells.iter().enumerate() {
             if cell.text.len() > MAX_CELL_TEXT_BYTES {
                 return Err(EncodeError::LimitExceeded { field: "cell text" });
             }
             let style = self.style(cell, row.flags(column, self.minor));
-            match runs.last_mut() {
-                Some(run) if run.style == style => {
-                    run.texts.push(cell.text.clone());
+            let packs = packs(&cell.text);
+            match open {
+                Some((_, open_style, open_packs))
+                    if open_style == style && open_packs == packs => {}
+                _ => {
+                    if let Some((start, style, _)) = open {
+                        runs.push(run(style, &cells[start..column]));
+                    }
+                    open = Some((column, style, packs));
                 }
-                _ => runs.push(Run {
-                    style,
-                    texts: vec![cell.text.clone()],
-                }),
             }
+        }
+        if let Some((start, style, _)) = open {
+            runs.push(run(style, &cells[start..]));
         }
         Ok(FullRow {
             wrapped: *wrapped,
@@ -646,9 +755,9 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
             previous.geometry_revision == metadata.geometry_revision
                 && previous.size == size
         });
-        let keep: HashMap<usize, u16> = baseline
+        let keep: KeyMap<usize, u16> = baseline
             .map(|baseline| {
-                let mut keep = HashMap::new();
+                let mut keep = KeyMap::default();
                 for (index, row) in baseline.rows().iter().enumerate() {
                     keep.entry(row.identity())
                         .or_insert(u16::try_from(index).unwrap_or(u16::MAX));
@@ -660,7 +769,8 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
             minor: self.minor,
             columns: usize::from(size.columns),
             styles: Vec::new(),
-            index: HashMap::new(),
+            index: HashMap::default(),
+            last: None,
         };
         let mut ops = Vec::with_capacity(rows.len());
         for row in rows {
@@ -1168,12 +1278,42 @@ fn encode_row(
         w.bool(*wrap_continuation);
         w.tag(u64::from(prompt_tag(*prompt)));
         w.seq(runs.iter(), columns, "runs", |w, run| {
-            w.u32(run.style);
+            let start = w.len();
+            if write_packed(w, run)? {
+                return Ok(());
+            }
+            w.truncate(start);
+            w.u64(u64::from(run.style) << 1);
             w.seq(run.texts.iter(), columns, "run", |w, text| {
                 w.str(text, MAX_CELL_TEXT_BYTES, "cell text")
             })
         })
     })
+}
+
+/// Writes a run in packed form: its texts as one UTF-8 string, one scalar
+/// per cell and U+0000 for no text. Returns `false`, with the bytes written
+/// so far left for the caller to discard, at a cell that does not pack.
+fn write_packed(w: &mut Writer, run: &Run) -> Result<bool, EncodeError> {
+    w.u64(u64::from(run.style) << 1 | 1);
+    let mut packed = true;
+    // A run takes at least a byte per cell, so the length rarely needs more
+    // room than its cell count does.
+    w.length_prefixed(varint_len(run.texts.len() as u64), |w| {
+        for text in &run.texts {
+            match text.as_bytes() {
+                [] => w.fixed(&[0]),
+                ascii @ [1..=0x7f] => w.fixed(ascii),
+                bytes if packs(text) => w.fixed(bytes),
+                _ => {
+                    packed = false;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(packed)
 }
 
 /// Reads an update record's grid without consuming the rest, so a receiver
@@ -1305,13 +1445,31 @@ fn decode_row(
         let prompt = read_prompt(r)?;
         let mut cells = 0_usize;
         let runs = r.seq(columns, "runs", |r| {
-            let style = r.u32()?;
-            if style as usize >= styles {
-                return Err(DecodeError::Invalid("style index"));
-            }
-            let texts = r.seq(columns - cells, "run", |r| {
-                Ok(CellText::new(r.str(MAX_CELL_TEXT_BYTES, "cell text")?))
-            })?;
+            let header = r.u64()?;
+            let style = u32::try_from(header >> 1)
+                .ok()
+                .filter(|style| (*style as usize) < styles)
+                .ok_or(DecodeError::Invalid("style index"))?;
+            let remaining = columns - cells;
+            let texts = if header & 1 == 0 {
+                r.seq(remaining, "run", |r| {
+                    Ok(CellText::new(r.str(MAX_CELL_TEXT_BYTES, "cell text")?))
+                })?
+            } else {
+                let packed = r.str(remaining * 4, "run")?;
+                let mut texts = Vec::with_capacity(packed.len().min(remaining));
+                for scalar in packed.chars() {
+                    if texts.len() == remaining {
+                        return Err(DecodeError::TooLong { field: "run" });
+                    }
+                    texts.push(if scalar == '\0' {
+                        CellText::EMPTY
+                    } else {
+                        CellText::from(scalar)
+                    });
+                }
+                texts
+            };
             if texts.is_empty() {
                 return Err(DecodeError::Invalid("empty run"));
             }

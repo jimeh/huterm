@@ -156,6 +156,11 @@ impl AsRef<str> for CellText {
 
 impl From<char> for CellText {
     fn from(character: char) -> Self {
+        if let Ok(byte) = u8::try_from(character)
+            && byte.is_ascii()
+        {
+            return Self::inline_ascii(byte);
+        }
         Self::new(character.encode_utf8(&mut [0; 4]))
     }
 }

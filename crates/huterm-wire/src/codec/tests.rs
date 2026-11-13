@@ -215,3 +215,23 @@ proptest! {
         });
     }
 }
+
+#[test]
+fn length_prefixes_fit_their_reserved_room_or_move_the_bytes() {
+    // Less, exactly, and more than the reserved two bytes take.
+    for (length, reserve) in [(5, 2), (300, 2), (20_000, 2), (0, 1)] {
+        let mut w = Writer::new();
+        w.fixed(&[0xaa]);
+        w.length_prefixed(reserve, |w| {
+            w.fixed(&vec![0x55; length]);
+            Ok(())
+        })
+        .unwrap();
+        let bytes = w.into_bytes();
+        let mut expected = Writer::new();
+        expected.fixed(&[0xaa]);
+        expected.usize(length);
+        expected.fixed(&vec![0x55; length]);
+        assert_eq!(bytes, expected.into_bytes(), "{length} bytes");
+    }
+}

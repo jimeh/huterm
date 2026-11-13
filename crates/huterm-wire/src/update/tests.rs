@@ -912,3 +912,137 @@ fn malformed_snapshots_refuse_to_encode_and_nothing_advances() {
     assert_eq!(server.seq(), 0);
     assert_eq!(server.next(&snapshot, false).unwrap().seq, 1);
 }
+
+fn styled_cell(text: &str) -> Cell {
+    Cell {
+        text: CellText::from(text),
+        foreground: CellColor::DefaultForeground,
+        background: CellColor::DefaultBackground,
+        style: CellStyle::default(),
+    }
+}
+
+#[test]
+fn packed_runs_keep_no_text_apart_from_a_space_and_from_graphemes() {
+    // No text, a written space, a 2-byte and a 3-byte scalar pack; a
+    // combining sequence and a written U+0000 do not.
+    let texts = ["a", "", " ", "é", "界", "e\u{301}", "b", "\0", "c"];
+    let mut snapshot = (*screen(&[""], texts.len())).clone();
+    snapshot.rows[0] = Arc::new(TerminalRow {
+        cells: texts.iter().map(|text| styled_cell(text)).collect(),
+        ..TerminalRow::default()
+    });
+    let snapshot = Arc::new(snapshot);
+    let update = encoder().next(&snapshot, false).unwrap();
+    let mut update_copy = update.clone();
+    let runs: Vec<Vec<&str>> = first_row(&mut update_copy)
+        .runs
+        .iter()
+        .map(|run| run.texts.iter().map(CellText::as_str).collect())
+        .collect();
+    assert_eq!(
+        runs,
+        [
+            vec!["a", "", " ", "é", "界"],
+            vec!["e\u{301}"],
+            vec!["b"],
+            vec!["\0"],
+            vec!["c"],
+        ],
+        "a run ends where its cells stop packing"
+    );
+    // Each run's header carries its form: packed runs hold their texts as
+    // one string with U+0000 for no text.
+    let bytes = update_bytes(&update);
+    let packed = [0x01, 0x08, b'a', 0x00, b' ', 0xc3, 0xa9, 0xe7, 0x95, 0x8c];
+    let unpacked = [0x00, 0x01, 0x03, b'e', 0xcc, 0x81];
+    let row = [
+        &packed[..],
+        &unpacked,
+        &[0x01, 0x01, b'b'],
+        &[0x00, 0x01, 0x01, 0x00],
+        &[0x01, 0x01, b'c'],
+    ]
+    .concat();
+    assert!(bytes.ends_with(&row), "{bytes:02x?}");
+    let mut client: ViewerView = ViewerView::new(0);
+    applied(&mut client, &update);
+    assert!(shows(&client, &snapshot));
+    let shown = client.snapshot(terminal()).unwrap();
+    assert!(shown.rows[0].cells[1].text.is_empty());
+    assert_eq!(shown.rows[0].cells[2].text, CellText::BLANK);
+    assert_eq!(shown.rows[0].cells[7].text, "\0");
+}
+
+#[test]
+fn malformed_packed_runs_are_rejected() {
+    // A run of three ASCII cells ends the message: its header, its byte
+    // length, and its text.
+    let bytes = update_bytes(&uniform_update(3, "x"));
+    assert!(bytes.ends_with(&[0x01, 0x03, b'x', b'x', b'x']));
+    let mut invalid = bytes.clone();
+    *invalid.last_mut().unwrap() = 0xff;
+    assert_eq!(decode(&invalid), Err(DecodeError::InvalidUtf8));
+    // More cells than the row has left: the header claims two columns.
+    let mut narrow = bytes.clone();
+    narrow[2] = 2;
+    assert_eq!(decode(&narrow), Err(DecodeError::TooLong { field: "run" }));
+    // More bytes than the row's remaining cells could take: two 3-byte
+    // scalars where one column is left.
+    let mut wide = update_bytes(&uniform_update(2, "界"));
+    assert!(wide.ends_with(&[0x01, 0x06, 0xe7, 0x95, 0x8c, 0xe7, 0x95, 0x8c]));
+    wide[2] = 1;
+    assert_eq!(decode(&wide), Err(DecodeError::TooLong { field: "run" }));
+}
+
+#[test]
+fn every_single_field_of_damage_changes_the_view_digest() {
+    let snapshot = vectors::sample_snapshot();
+    let digest = |snapshot: &TerminalSnapshot| {
+        view_digest(&ViewMetadata::of(snapshot), &snapshot.rows, 0)
+    };
+    let cell = |edit: fn(&mut Cell)| {
+        publish(&snapshot, |next| {
+            edit(&mut Arc::make_mut(&mut next.rows[0]).cells[1]);
+        })
+    };
+    let damaged = [
+        publish(&snapshot, |next| next.modes.bracketed_paste ^= true),
+        publish(&snapshot, |next| next.generation += 1),
+        publish(&snapshot, |next| next.cursor = None),
+        publish(&snapshot, |next| next.history_size += 1),
+        publish(&snapshot, |next| {
+            next.default_background = next.cursor_color;
+        }),
+        publish(&snapshot, |next| next.rows.swap(0, 1)),
+        publish(&snapshot, |next| {
+            Arc::make_mut(&mut next.rows[0]).cells.swap(1, 2);
+        }),
+        publish(&snapshot, |next| {
+            Arc::make_mut(&mut next.rows[1]).wrapped = false;
+        }),
+        publish(&snapshot, |next| {
+            Arc::make_mut(&mut next.rows[0]).prompt =
+                huterm_protocol::RowPrompt::None;
+        }),
+        cell(|cell| cell.text = CellText::from("L")),
+        cell(|cell| cell.text = CellText::from("ls")),
+        cell(|cell| cell.text = CellText::EMPTY),
+        cell(|cell| cell.foreground = CellColor::Indexed(0)),
+        cell(|cell| cell.background = CellColor::DefaultForeground),
+        cell(|cell| cell.style.italic = true),
+        publish(&snapshot, |next| {
+            let row = Arc::make_mut(&mut next.rows[1]);
+            row.cells[2].text = CellText::BLANK;
+        }),
+    ];
+    // `publish` advances the revision, so compare against the original at
+    // that revision.
+    let original = digest(&publish(&snapshot, |_| {}));
+    let mut seen = vec![original];
+    for (index, damaged) in damaged.iter().enumerate() {
+        let value = digest(damaged);
+        assert!(!seen.contains(&value), "damage {index} went unnoticed");
+        seen.push(value);
+    }
+}
