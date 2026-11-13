@@ -472,7 +472,7 @@ fn malformed_rows_and_references_are_rejected() {
         Run {
             style: 0,
             wide: false,
-            texts: Vec::new(),
+            cells: 0,
         },
     );
     rejected(&empty, "empty run", "run");
@@ -778,9 +778,10 @@ fn worst_case_length(size: GridSize) -> usize {
                 .map(|column| Run {
                     style: u32::try_from(row * columns + column).unwrap(),
                     wide: false,
-                    texts: vec![CellText::from(text.as_str())],
+                    cells: 1,
                 })
                 .collect(),
+            texts: vec![CellText::from(text.as_str()); columns],
         };
         write_op(&mut w, &WireOp::Full(&full), columns).unwrap();
         record += w.len();
@@ -938,9 +939,8 @@ fn packed_runs_keep_no_text_apart_from_a_space_and_from_graphemes() {
     let update = encoder().next(&snapshot, false).unwrap();
     let mut update_copy = update.clone();
     let runs: Vec<Vec<&str>> = first_row(&mut update_copy)
-        .runs
-        .iter()
-        .map(|run| run.texts.iter().map(CellText::as_str).collect())
+        .run_texts()
+        .map(|(_, texts)| texts.iter().map(CellText::as_str).collect())
         .collect();
     assert_eq!(
         runs,
@@ -1092,13 +1092,9 @@ fn shape(update: &TerminalUpdate) -> Vec<(bool, Vec<String>)> {
     let RowOp::Full(row) = &update.rows[0] else {
         unreachable!("a complete snapshot's rows are full")
     };
-    row.runs
-        .iter()
-        .map(|run| {
-            (
-                run.wide,
-                run.texts.iter().map(ToString::to_string).collect(),
-            )
+    row.run_texts()
+        .map(|(run, texts)| {
+            (run.wide, texts.iter().map(ToString::to_string).collect())
         })
         .collect()
 }
@@ -1166,7 +1162,7 @@ fn malformed_wide_runs_are_rejected() {
     );
     // A spacer that holds text cannot be derived.
     let mut spacer_text = update;
-    first_row(&mut spacer_text).runs[0].texts[1] = CellText::from("x");
+    first_row(&mut spacer_text).texts[1] = CellText::from("x");
     assert_eq!(
         encode_update(
             &mut Writer::new(),
@@ -1304,9 +1300,14 @@ proptest! {
         let cells: Vec<Cell> = texts.iter().map(|text| styled_cell(text)).collect();
         let mut runs = Vec::new();
         push_runs(&mut runs, 0, Kind::Packed, &cells);
+        let mut rest = texts.as_slice();
         let runs: Vec<Vec<String>> = runs
             .iter()
-            .map(|run| run.texts.iter().map(ToString::to_string).collect())
+            .map(|run| {
+                let (run, after) = rest.split_at(run.cells);
+                rest = after;
+                run.iter().map(ToString::to_string).collect()
+            })
             .collect();
         prop_assert_eq!(runs, reference_runs(&texts));
     }

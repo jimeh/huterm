@@ -335,10 +335,9 @@ fn sample_update() -> TerminalUpdate {
         background: CellColor::DefaultBackground,
         flags: crate::update::flags_of(style),
     };
-    let run = |style, texts: &[&str]| Run {
-        style,
-        wide: false,
-        texts: texts.iter().map(|text| CellText::from(*text)).collect(),
+    let run = |style, wide, cells| Run { style, wide, cells };
+    let texts = |texts: &[&str]| -> Vec<CellText> {
+        texts.iter().map(|text| CellText::from(*text)).collect()
     };
     TerminalUpdate {
         viewer: viewer(),
@@ -363,20 +362,15 @@ fn sample_update() -> TerminalUpdate {
                 wrapped: false,
                 wrap_continuation: false,
                 prompt: RowPrompt::Primary,
-                runs: vec![run(0, &["$"]), run(1, &["l", "s"])],
+                runs: vec![run(0, false, 1), run(1, false, 2)],
+                texts: texts(&["$", "l", "s"]),
             }),
             RowOp::Full(FullRow {
                 wrapped: true,
                 wrap_continuation: false,
                 prompt: RowPrompt::None,
-                runs: vec![
-                    Run {
-                        style: 2,
-                        wide: true,
-                        texts: vec!["界".into(), CellText::EMPTY],
-                    },
-                    run(1, &[""]),
-                ],
+                runs: vec![run(2, true, 2), run(1, false, 1)],
+                texts: texts(&["界", "", ""]),
             }),
         ],
     }
@@ -389,10 +383,10 @@ fn scrolled_update() -> TerminalUpdate {
     metadata.revision = 14;
     metadata.size = GridSize::clamped(10, 3);
     metadata.cursor = None;
-    let run = |texts: Vec<CellText>| Run {
+    let run = |cells| Run {
         style: 0,
         wide: false,
-        texts,
+        cells,
     };
     TerminalUpdate {
         viewer: viewer(),
@@ -413,10 +407,10 @@ fn scrolled_update() -> TerminalUpdate {
                 wrapped: false,
                 wrap_continuation: false,
                 prompt: RowPrompt::None,
-                runs: vec![
-                    run(vec!["o".into(), "k".into()]),
-                    run(vec![CellText::EMPTY; 8]),
-                ],
+                runs: vec![run(2), run(8)],
+                texts: ["o", "k", "", "", "", "", "", "", "", ""]
+                    .map(CellText::from)
+                    .to_vec(),
             }),
         ],
     }
@@ -456,8 +450,9 @@ fn delta_update() -> TerminalUpdate {
                 runs: vec![Run {
                     style: 0,
                     wide: false,
-                    texts: vec!["e\u{301}".into(), " ".into(), "!".into()],
+                    cells: 3,
                 }],
+                texts: vec!["e\u{301}".into(), " ".into(), "!".into()],
             }),
         ],
     }
