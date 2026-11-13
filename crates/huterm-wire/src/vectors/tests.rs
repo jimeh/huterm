@@ -108,3 +108,11 @@ fn the_sample_view_digest_pins_the_canonical_view_digest_encoding() {
         SAMPLE_VIEW_DIGEST
     );
 }
+
+#[test]
+fn the_encoder_builds_the_complete_update_vector() {
+    let update = crate::update::UpdateEncoder::new(viewer(), 0)
+        .next(&sample_snapshot(), false)
+        .unwrap();
+    assert_eq!(update, sample_update());
+}

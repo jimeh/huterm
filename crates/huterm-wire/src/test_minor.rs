@@ -434,7 +434,7 @@ impl ViewRow for Arc<TestRow> {
                 let curly = styles
                     .get(run.style as usize)
                     .is_some_and(|style| style.flags & CURLY_UNDERLINE != 0);
-                std::iter::repeat_n(curly, run.texts.len())
+                std::iter::repeat_n(curly, run.cells)
             })
             .collect();
         Arc::new(TestRow {

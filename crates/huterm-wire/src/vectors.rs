@@ -326,7 +326,7 @@ pub fn sample_snapshot() -> Arc<TerminalSnapshot> {
 
 /// The digest of [`sample_snapshot`] at minor version 0, which pins the
 /// view digest's canonical encoding.
-pub const SAMPLE_VIEW_DIGEST: u64 = 0x4865_712a_100b_ac07;
+pub const SAMPLE_VIEW_DIGEST: u64 = 0xee6a_3172_e47b_cec8;
 
 fn sample_update() -> TerminalUpdate {
     let snapshot = sample_snapshot();
@@ -335,9 +335,9 @@ fn sample_update() -> TerminalUpdate {
         background: CellColor::DefaultBackground,
         flags: crate::update::flags_of(style),
     };
-    let run = |style, texts: &[&str]| Run {
-        style,
-        texts: texts.iter().map(|text| CellText::from(*text)).collect(),
+    let run = |style, wide, cells| Run { style, wide, cells };
+    let texts = |texts: &[&str]| -> Vec<CellText> {
+        texts.iter().map(|text| CellText::from(*text)).collect()
     };
     TerminalUpdate {
         viewer: viewer(),
@@ -356,26 +356,61 @@ fn sample_update() -> TerminalUpdate {
                     ..CellStyle::default()
                 },
             ),
-            entry(
-                CellColor::DefaultForeground,
-                CellStyle {
-                    wide_spacer: true,
-                    ..CellStyle::default()
-                },
-            ),
         ],
         rows: vec![
             RowOp::Full(FullRow {
                 wrapped: false,
                 wrap_continuation: false,
                 prompt: RowPrompt::Primary,
-                runs: vec![run(0, &["$"]), run(1, &["l", "s"])],
+                runs: vec![run(0, false, 1), run(1, false, 2)],
+                texts: texts(&["$", "l", "s"]),
             }),
             RowOp::Full(FullRow {
                 wrapped: true,
                 wrap_continuation: false,
                 prompt: RowPrompt::None,
-                runs: vec![run(2, &["界"]), run(3, &[""]), run(1, &[""])],
+                runs: vec![run(2, true, 2), run(1, false, 1)],
+                texts: texts(&["界", "", ""]),
+            }),
+        ],
+    }
+}
+
+/// A 10-by-3 delta that scrolls by a line: two kept rows travel as one
+/// range, and the new row's eight cells with no text as a fill.
+fn scrolled_update() -> TerminalUpdate {
+    let mut metadata = ViewMetadata::of(&sample_snapshot());
+    metadata.revision = 14;
+    metadata.size = GridSize::clamped(10, 3);
+    metadata.cursor = None;
+    let run = |cells| Run {
+        style: 0,
+        wide: false,
+        cells,
+    };
+    TerminalUpdate {
+        viewer: viewer(),
+        seq: 3,
+        baseline: Some(2),
+        credited: true,
+        digest: None,
+        metadata,
+        styles: vec![StyleEntry {
+            foreground: CellColor::DefaultForeground,
+            background: CellColor::DefaultBackground,
+            flags: 0,
+        }],
+        rows: vec![
+            RowOp::Keep(1),
+            RowOp::Keep(2),
+            RowOp::Full(FullRow {
+                wrapped: false,
+                wrap_continuation: false,
+                prompt: RowPrompt::None,
+                runs: vec![run(2), run(8)],
+                texts: ["o", "k", "", "", "", "", "", "", "", ""]
+                    .map(CellText::from)
+                    .to_vec(),
             }),
         ],
     }
@@ -414,8 +449,10 @@ fn delta_update() -> TerminalUpdate {
                 prompt: RowPrompt::Continuation,
                 runs: vec![Run {
                     style: 0,
-                    texts: vec!["e\u{301}".into(), " ".into(), "!".into()],
+                    wide: false,
+                    cells: 3,
                 }],
+                texts: vec!["e\u{301}".into(), " ".into(), "!".into()],
             }),
         ],
     }
@@ -525,6 +562,11 @@ fn viewer_vectors() -> Vec<MessageVector> {
             "delta update",
             Message::TerminalUpdate(delta_update()),
             DELTA_UPDATE,
+        ),
+        from_server(
+            "scrolled update",
+            Message::TerminalUpdate(scrolled_update()),
+            SCROLLED_UPDATE,
         ),
         from_server(
             "viewer status",
@@ -1086,21 +1128,27 @@ const EVENTS: [&[u8]; 23] = [
     &[0x04, 0x06, 0x41, 0x16, 0x02, 0x15, 0x01, 0x00],
 ];
 const COMPLETE_UPDATE: &[u8] = &[
-    0x08, 0x59, 0x03, 0x02, 0x1e, 0x01, 0x00, 0x00, 0x01, 0x07, 0xac, 0x0b,
-    0x10, 0x2a, 0x71, 0x65, 0x48, 0x09, 0x0c, 0x02, 0x01, 0x03, 0x01, 0x02,
+    0x08, 0x4d, 0x03, 0x02, 0x1e, 0x01, 0x00, 0x00, 0x01, 0xc8, 0xce, 0x7b,
+    0xe4, 0x72, 0x31, 0x6a, 0xee, 0x09, 0x0c, 0x02, 0x01, 0x03, 0x01, 0x02,
     0x02, 0x04, 0x01, 0x04, 0x01, 0x02, 0x00, 0x28, 0x01, 0xff, 0x80, 0x00,
-    0x00, 0x04, 0x04, 0x03, 0x01, 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x03,
-    0x00, 0x01, 0x40, 0x04, 0x00, 0x01, 0x80, 0x01, 0x02, 0x01, 0x0e, 0x00,
-    0x00, 0x01, 0x02, 0x00, 0x01, 0x01, 0x24, 0x01, 0x02, 0x01, 0x6c, 0x01,
-    0x73, 0x01, 0x10, 0x01, 0x00, 0x00, 0x03, 0x02, 0x01, 0x03, 0xe7, 0x95,
-    0x8c, 0x03, 0x01, 0x00, 0x01, 0x01, 0x00,
+    0x00, 0x03, 0x04, 0x03, 0x01, 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x03,
+    0x00, 0x01, 0x40, 0x02, 0x01, 0x0b, 0x00, 0x00, 0x01, 0x02, 0x01, 0x01,
+    0x24, 0x05, 0x02, 0x6c, 0x73, 0x01, 0x0c, 0x01, 0x00, 0x00, 0x02, 0x0b,
+    0x03, 0xe7, 0x95, 0x8c, 0x05, 0x01, 0x00,
+];
+const SCROLLED_UPDATE: &[u8] = &[
+    0x08, 0x2f, 0x0a, 0x03, 0x1e, 0x03, 0x01, 0x02, 0x01, 0x00, 0x09, 0x0e,
+    0x02, 0x00, 0x04, 0x01, 0x04, 0x01, 0x02, 0x00, 0x28, 0x01, 0xff, 0x80,
+    0x00, 0x00, 0x01, 0x03, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x02, 0x01,
+    0x0c, 0x00, 0x00, 0x00, 0x02, 0x01, 0x02, 0x6f, 0x6b, 0x02, 0x08, 0x01,
+    0x00,
 ];
 const DELTA_UPDATE: &[u8] = &[
-    0x08, 0x36, 0x03, 0x02, 0x1e, 0x02, 0x01, 0x01, 0x01, 0x00, 0x09, 0x0d,
+    0x08, 0x37, 0x03, 0x02, 0x1e, 0x02, 0x01, 0x01, 0x01, 0x00, 0x09, 0x0d,
     0x02, 0x00, 0x04, 0x01, 0x04, 0x01, 0x02, 0x00, 0x28, 0x01, 0xff, 0x80,
     0x00, 0x01, 0x10, 0x20, 0x30, 0x01, 0x06, 0x04, 0x01, 0x02, 0x03, 0x02,
-    0x08, 0x02, 0x00, 0x01, 0x01, 0x0e, 0x00, 0x01, 0x02, 0x01, 0x00, 0x03,
-    0x03, 0x65, 0xcc, 0x81, 0x01, 0x20, 0x01, 0x21,
+    0x08, 0x02, 0x00, 0x01, 0x01, 0x01, 0x0e, 0x00, 0x01, 0x02, 0x01, 0x00,
+    0x03, 0x03, 0x65, 0xcc, 0x81, 0x01, 0x20, 0x01, 0x21,
 ];
 const VIEWER_STATUS: &[u8] = &[
     0x09, 0x6b, 0x1e, 0x69, 0x07, 0x03, 0x76, 0x69, 0x6d, 0x1f, 0x01, 0x0c,

@@ -527,6 +527,23 @@ dependency rule.
   field needs a flag bit, a minor version, and a projection in
   `UpdateRow::flags` for older peers, because a decoder rejects unknown
   bits. `view_digest` covers exactly the negotiated minor version's fields.
+- `view_digest` hashes a canonical sequence of 64-bit words, built with
+  shifts and masks rather than read from memory so every byte order agrees,
+  and puts every count and length before what it counts so distinct views
+  give distinct sequences. A new digested field changes that layout and
+  `vectors::SAMPLE_VIEW_DIGEST`.
+- A run travels in one of four forms: one text per cell, packed (one UTF-8
+  string, one scalar per cell, U+0000 for no text), fill (identical packed
+  cells as a count and one cell), or wide (characters whose spacers are
+  derived).
+  The encoder splits runs where the form would change, picks each run's
+  form from its cells, and fills only repeats of 8 or more; decoders accept
+  any form a run's cells fit, a fill of one cell included. Only
+  inline cell text may come from a few bytes (packed, fill, wide), so
+  decoded memory stays bounded by the grid. Kept rows travel as ranges, and
+  decoders bound the expanded row count at every operation. `mise run
+  bench:wire` measures the codec and gates its time and bytes; see
+  [the plan's performance pass](../plans/runtime-ipc.md#wire-performance-pass).
 - Core keeps every state encodable on every path, embedded mode included:
   `GridSize::clamped` caps grids at `MAX_GRID_CELLS`, row extraction cuts
   cell text at `MAX_CELL_TEXT_BYTES`, and `StatusPublisher` cuts status text

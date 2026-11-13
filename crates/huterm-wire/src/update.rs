@@ -15,6 +15,7 @@
 //! reuses them with a cell style flag that minor version 0 lacks.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
 use huterm_protocol::{
@@ -24,7 +25,9 @@ use huterm_protocol::{
     TerminalSnapshot, ViewerId, Viewport,
 };
 
-use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
+use crate::codec::{
+    DecodeError, EncodeError, IdScope, Reader, Writer, varint_len,
+};
 
 /// How many deltas pass between the digests deltas carry. Every complete
 /// snapshot carries one too.
@@ -148,12 +151,18 @@ pub struct StyleEntry {
 }
 
 /// Consecutive cells of one row that share a style-table entry.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Run {
     /// The style-table entry.
     pub style: u32,
-    /// Each cell's text, at most [`MAX_CELL_TEXT_BYTES`] bytes.
-    pub texts: Vec<CellText>,
+    /// Whether the cells are wide characters in `style`, each followed by
+    /// its spacer: a cell with no text, `style`'s colors, and the spacer
+    /// flag in place of the wide flag. `style` holds the wide flag, and each
+    /// character is no text or one scalar other than U+0000.
+    pub wide: bool,
+    /// How many cells the run covers, a wide run's spacers included: the
+    /// next texts of its row.
+    pub cells: usize,
 }
 
 /// A row sent in full.
@@ -167,6 +176,24 @@ pub struct FullRow {
     pub prompt: RowPrompt,
     /// The row's cells as runs, filling exactly the grid's columns.
     pub runs: Vec<Run>,
+    /// Each cell's text in column order, at most [`MAX_CELL_TEXT_BYTES`]
+    /// bytes, as many as the runs cover.
+    pub texts: Vec<CellText>,
+}
+
+impl FullRow {
+    /// Each run with its cells' texts. A run past the end of the texts gets
+    /// the texts that remain.
+    pub fn run_texts(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Run, &[CellText])> {
+        let mut rest = self.texts.as_slice();
+        self.runs.iter().map(move |run| {
+            let (texts, after) = rest.split_at(run.cells.min(rest.len()));
+            rest = after;
+            (*run, texts)
+        })
+    }
 }
 
 /// How one row of an update is built.
@@ -324,18 +351,25 @@ pub fn build_row(row: &FullRow, styles: &[StyleEntry]) -> TerminalRow {
         wrapped,
         wrap_continuation,
         prompt,
-        runs,
+        runs: _,
+        texts,
     } = row;
-    let mut cells = Vec::new();
-    for run in runs {
+    let mut cells = Vec::with_capacity(texts.len());
+    for (run, texts) in row.run_texts() {
         let Some(style) = styles.get(run.style as usize) else {
             continue;
         };
-        cells.extend(run.texts.iter().map(|text| Cell {
+        let flags = style_of(style.flags);
+        let spacer = style_of(spacer_flags(style.flags));
+        cells.extend(texts.iter().enumerate().map(|(index, text)| Cell {
             text: text.clone(),
             foreground: style.foreground,
             background: style.background,
-            style: style_of(style.flags),
+            style: if run.wide && index % 2 == 1 {
+                spacer
+            } else {
+                flags
+            },
         }));
     }
     TerminalRow {
@@ -346,54 +380,73 @@ pub fn build_row(row: &FullRow, styles: &[StyleEntry]) -> TerminalRow {
     }
 }
 
-/// FNV-1a, 64-bit, over a canonical encoding.
-struct Fnv(u64);
+/// A 64-bit hash over a sequence of 64-bit words, with `MurmurHash64A`'s
+/// word step and finalizer (Austin Appleby, public domain). Every step is a
+/// bijection of the state for a fixed word and of the word for a fixed
+/// state, so two sequences of equal length that differ in one word always
+/// hash differently. Words are built arithmetically, never from memory, so
+/// the digest is the same on every platform and byte order.
+struct WordHash(u64);
 
-impl Fnv {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
+impl WordHash {
+    const MULTIPLIER: u64 = 0xc6a4_a793_5bd1_e995;
+    const SHIFT: u32 = 47;
+    const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
-    fn bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(Self::PRIME);
-        }
+    fn new() -> Self {
+        Self(Self::SEED)
     }
 
-    fn byte(&mut self, byte: u8) {
-        self.bytes(&[byte]);
+    fn word(&mut self, word: u64) {
+        let mut mixed = word.wrapping_mul(Self::MULTIPLIER);
+        mixed ^= mixed >> Self::SHIFT;
+        mixed = mixed.wrapping_mul(Self::MULTIPLIER);
+        self.0 = (self.0 ^ mixed).wrapping_mul(Self::MULTIPLIER);
     }
 
-    fn number(&mut self, value: u64) {
-        self.bytes(&value.to_le_bytes());
-    }
-
-    fn rgb(&mut self, rgb: Option<Rgb>) {
-        match rgb {
-            None => self.byte(0),
-            Some(Rgb { red, green, blue }) => {
-                self.bytes(&[1, red, green, blue]);
-            }
-        }
-    }
-
-    fn color(&mut self, color: CellColor) {
-        match color {
-            CellColor::DefaultForeground => self.byte(0),
-            CellColor::DefaultBackground => self.byte(1),
-            CellColor::Cursor => self.byte(2),
-            CellColor::Indexed(index) => self.bytes(&[3, index]),
-            CellColor::Rgb(rgb) => {
-                self.byte(4);
-                self.rgb(Some(rgb));
-            }
-        }
+    fn finish(self) -> u64 {
+        let mut hash = self.0;
+        hash ^= hash >> Self::SHIFT;
+        hash = hash.wrapping_mul(Self::MULTIPLIER);
+        hash ^ hash >> Self::SHIFT
     }
 }
 
+/// Up to 8 bytes as a little-endian word, zero-padded.
+fn le_word(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .rev()
+        .fold(0, |word, byte| word << 8 | u64::from(*byte))
+}
+
+/// An optional RGB color as 25 bits: a presence bit above the color.
+fn rgb_word(rgb: Option<Rgb>) -> u64 {
+    rgb.map_or(0, |Rgb { red, green, blue }| {
+        1 << 24 | u64::from(red) << 16 | u64::from(green) << 8 | u64::from(blue)
+    })
+}
+
+/// Cell text up to this many bytes shares the word that holds its length.
+const PACKED_TEXT_BYTES: usize = 6;
+
+/// Style flag bits that share the word that holds a cell's colors; a flag
+/// above them adds a word.
+const PACKED_FLAG_BITS: u32 = 14;
+
 /// The digest of a viewport's rows and metadata as a peer at `minor` holds
-/// them: FNV-1a over a canonical encoding that is independent of the wire
+/// them, over a canonical sequence of words that is independent of the wire
 /// codec. It covers exactly the fields of `minor`, so a projected view and
 /// its digest always agree.
+///
+/// The metadata takes nine words. Each row takes a word with its cell count,
+/// wrap flags, and prompt mark, then each cell's words: its colors and low
+/// style flags; its text length, with the text when it is at most
+/// [`PACKED_TEXT_BYTES`] bytes, as every single scalar is; any longer text
+/// as zero-padded little-endian words; and the flags above
+/// [`PACKED_FLAG_BITS`] when there are any, which the length word marks.
+/// Every count and length precedes what it counts, so distinct views give
+/// distinct word sequences.
 #[must_use]
 pub fn view_digest<R: UpdateRow>(
     metadata: &ViewMetadata,
@@ -412,27 +465,30 @@ pub fn view_digest<R: UpdateRow>(
         cursor_color,
         default_background,
     } = metadata;
-    let mut hash = Fnv(Fnv::OFFSET);
-    hash.number(*generation);
-    hash.number(*revision);
-    hash.number(*geometry_revision);
-    hash.number(u64::from(size.columns));
-    hash.number(u64::from(size.rows));
-    match cursor {
-        None => hash.byte(0),
-        Some(Cursor { row, column, shape }) => {
-            hash.byte(1);
-            hash.number(u64::from(*row));
-            hash.number(u64::from(*column));
-            hash.byte(shape_tag(*shape));
-        }
-    }
+    let mut hash = WordHash::new();
+    hash.word(*generation);
+    hash.word(*revision);
+    hash.word(*geometry_revision);
+    hash.word(
+        u64::from(size.columns)
+            | u64::from(size.rows) << 16
+            | (rows.len() as u64) << 32,
+    );
+    hash.word(cursor.map_or(0, |Cursor { row, column, shape }| {
+        1 | u64::from(row) << 8
+            | u64::from(column) << 24
+            | u64::from(shape_tag(shape)) << 40
+    }));
     let (kitty, flags, tracking, encoding) = mode_parts(*modes);
-    hash.bytes(&[kitty, flags, tracking, encoding]);
-    hash.number(viewport.bottom_offset as u64);
-    hash.number(*history_size as u64);
-    hash.rgb(*cursor_color);
-    hash.rgb(*default_background);
+    hash.word(
+        u64::from(kitty)
+            | u64::from(flags) << 8
+            | u64::from(tracking) << 16
+            | u64::from(encoding) << 24,
+    );
+    hash.word(viewport.bottom_offset as u64);
+    hash.word(*history_size as u64);
+    hash.word(rgb_word(*cursor_color) | rgb_word(*default_background) << 32);
     for row in rows {
         let TerminalRow {
             cells,
@@ -440,21 +496,37 @@ pub fn view_digest<R: UpdateRow>(
             wrap_continuation,
             prompt,
         } = row.row();
-        hash.byte(b'R');
-        hash.bytes(&[
-            u8::from(*wrapped),
-            u8::from(*wrap_continuation),
-            prompt_tag(*prompt),
-        ]);
+        hash.word(
+            u64::from(*wrapped)
+                | u64::from(*wrap_continuation) << 1
+                | u64::from(prompt_tag(*prompt)) << 2
+                | (cells.len() as u64) << 8,
+        );
         for (column, cell) in cells.iter().enumerate() {
-            hash.number(cell.text.len() as u64);
-            hash.bytes(cell.text.as_bytes());
-            hash.color(cell.foreground);
-            hash.color(cell.background);
-            hash.number(row.flags(column, minor));
+            let flags = row.flags(column, minor);
+            let high_flags = flags >> PACKED_FLAG_BITS;
+            hash.word(
+                u64::from(color_key(cell.foreground))
+                    | u64::from(color_key(cell.background)) << 25
+                    | (flags & ((1 << PACKED_FLAG_BITS) - 1)) << 50,
+            );
+            let text = cell.text.as_bytes();
+            // Cell text is far below 2^15 bytes (`MAX_CELL_TEXT_BYTES`).
+            let length = text.len() as u64 | u64::from(high_flags != 0) << 15;
+            if text.len() <= PACKED_TEXT_BYTES {
+                hash.word(length | le_word(text) << 16);
+            } else {
+                hash.word(length);
+                for chunk in text.chunks(8) {
+                    hash.word(le_word(chunk));
+                }
+            }
+            if high_flags != 0 {
+                hash.word(high_flags);
+            }
         }
     }
-    hash.0
+    hash.finish()
 }
 
 fn shape_tag(shape: CursorShape) -> u8 {
@@ -504,8 +576,8 @@ fn mode_parts(modes: TerminalModes) -> (u8, u8, u8, u8) {
     (kitty_keyboard.bits(), flags, tracking, encoding)
 }
 
-/// The key a style table deduplicates entries by: the colors' canonical
-/// forms and the flags.
+/// A cell color's canonical 25-bit form, which keys the style table and
+/// the view digest.
 fn color_key(color: CellColor) -> u32 {
     match color {
         CellColor::DefaultForeground => 0,
@@ -521,29 +593,183 @@ fn color_key(color: CellColor) -> u32 {
     }
 }
 
+/// Whether a cell's text travels in a packed run: no text, or exactly one
+/// scalar other than U+0000, which a packed run uses for no text.
+fn packs(text: &CellText) -> bool {
+    text.is_empty() || text.as_char().is_some_and(|scalar| scalar != '\0')
+}
+
+/// Minor version 0's wide-character flag.
+const WIDE_FLAG: u64 = 1 << 6;
+
+/// Minor version 0's wide-character spacer flag.
+const SPACER_FLAG: u64 = 1 << 7;
+
+/// The flags of the spacer that follows a wide character with `flags`.
+const fn spacer_flags(flags: u64) -> u64 {
+    flags & !WIDE_FLAG | SPACER_FLAG
+}
+
+/// Whether a style can head a wide run: it has the wide flag and not the
+/// spacer flag.
+const fn heads_wide(flags: u64) -> bool {
+    flags & WIDE_FLAG != 0 && flags & SPACER_FLAG == 0
+}
+
+/// Whether a wide run's texts alternate a character that packs and a spacer
+/// with no text.
+fn wide_texts(texts: &[CellText]) -> bool {
+    texts.len().is_multiple_of(2)
+        && texts
+            .chunks(2)
+            .all(|pair| packs(&pair[0]) && pair[1].is_empty())
+}
+
+/// The fewest identical cells that travel as a fill run. A fill costs about
+/// four bytes, a packed cell one or more, and splitting a run costs a run
+/// header, so shorter repeats stay in their run.
+const FILL_CELLS: usize = 8;
+
+// `push_runs` finds repeats by comparing cells 4 apart.
+const _: () = assert!(FILL_CELLS >= 8);
+
+/// How a run's cells travel, the low bits of its header.
+const FORM_TEXTS: u64 = 0;
+const FORM_PACKED: u64 = 1;
+const FORM_FILL: u64 = 2;
+const FORM_WIDE: u64 = 3;
+
+/// What the row builder groups cells into runs by.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Kind {
+    /// A cell whose text does not pack.
+    Texts,
+    /// A cell whose text packs.
+    Packed,
+    /// A wide character and its spacer.
+    Wide,
+}
+
+fn run(style: u32, wide: bool, cells: &[Cell]) -> Run {
+    Run {
+        style,
+        wide,
+        cells: cells.len(),
+    }
+}
+
+/// Pushes the runs of `cells`, which share a style and kind. Repeats of at
+/// least [`FILL_CELLS`] packed cells become runs of their own, which travel
+/// as fills.
+fn push_runs(runs: &mut Vec<Run>, style: u32, kind: Kind, cells: &[Cell]) {
+    if kind != Kind::Packed {
+        runs.push(run(style, kind == Kind::Wide, cells));
+        return;
+    }
+    // Any 8 consecutive cells hold a multiple of 4 and the cell 4 after it,
+    // so comparing those pairs finds every repeat long enough to fill while
+    // reading a quarter of the cells of text that never repeats.
+    let mut pending = 0;
+    let mut probe = 0;
+    while probe + 4 < cells.len() {
+        let text = &cells[probe].text;
+        if cells[probe + 4].text != *text {
+            probe += 4;
+            continue;
+        }
+        let start = probe
+            - cells[pending..probe]
+                .iter()
+                .rev()
+                .take_while(|cell| cell.text == *text)
+                .count();
+        let end = probe
+            + cells[probe..]
+                .iter()
+                .take_while(|cell| cell.text == *text)
+                .count();
+        if end - start >= FILL_CELLS {
+            if pending < start {
+                runs.push(run(style, false, &cells[pending..start]));
+            }
+            runs.push(run(style, false, &cells[start..end]));
+            pending = end;
+        }
+        probe = end.next_multiple_of(4).max(probe + 4);
+    }
+    if pending < cells.len() {
+        runs.push(run(style, false, &cells[pending..]));
+    }
+}
+
+/// A style-table key: a cell's two color keys in one word, and its flags.
+type StyleKey = (u64, u64);
+
+/// Hashes the encoder's map keys, row identities and [`StyleKey`]s, with
+/// [`WordHash`]'s word step, which costs less than the standard library's
+/// `SipHash`. No peer chooses these keys, and neither the order of a map nor
+/// the hash reaches the wire: the style table's order is the order styles
+/// first appear.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+/// A map keyed through [`KeyHasher`].
+type KeyMap<K, V> = HashMap<K, V, BuildHasherDefault<KeyHasher>>;
+
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            self.write_u64(le_word(chunk));
+        }
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        let mut hash = WordHash(self.0);
+        hash.word(word);
+        self.0 = hash.0;
+    }
+
+    fn write_usize(&mut self, word: usize) {
+        self.write_u64(word as u64);
+    }
+}
+
 /// Builds the style table and full rows of an update.
 struct RowBuilder {
     minor: u16,
     columns: usize,
     styles: Vec<StyleEntry>,
-    index: HashMap<(u32, u32, u64), u32>,
+    index: KeyMap<StyleKey, u32>,
+    /// The last style looked up, which most cells repeat.
+    last: Option<(StyleKey, u32)>,
 }
 
 impl RowBuilder {
     fn style(&mut self, cell: &Cell, flags: u64) -> u32 {
         let key = (
-            color_key(cell.foreground),
-            color_key(cell.background),
+            u64::from(color_key(cell.foreground))
+                | u64::from(color_key(cell.background)) << 32,
             flags,
         );
-        *self.index.entry(key).or_insert_with(|| {
+        if let Some((last, style)) = self.last
+            && last == key
+        {
+            return style;
+        }
+        let style = *self.index.entry(key).or_insert_with(|| {
             self.styles.push(StyleEntry {
                 foreground: cell.foreground,
                 background: cell.background,
                 flags,
             });
             u32::try_from(self.styles.len() - 1).unwrap_or(u32::MAX)
-        })
+        });
+        self.last = Some((key, style));
+        style
     }
 
     fn full<R: UpdateRow>(&mut self, row: &R) -> Result<FullRow, EncodeError> {
@@ -556,27 +782,51 @@ impl RowBuilder {
         if cells.len() != self.columns {
             return Err(EncodeError::Invalid("row width"));
         }
+        // A run ends where the style or the kind of its cells changes, so a
+        // run's form never meets a cell it cannot hold.
         let mut runs: Vec<Run> = Vec::new();
-        for (column, cell) in cells.iter().enumerate() {
+        let mut open: Option<(usize, u32, Kind)> = None;
+        let mut column = 0;
+        while let Some(cell) = cells.get(column) {
             if cell.text.len() > MAX_CELL_TEXT_BYTES {
                 return Err(EncodeError::LimitExceeded { field: "cell text" });
             }
-            let style = self.style(cell, row.flags(column, self.minor));
-            match runs.last_mut() {
-                Some(run) if run.style == style => {
-                    run.texts.push(cell.text.clone());
+            let flags = row.flags(column, self.minor);
+            let style = self.style(cell, flags);
+            let packs = packs(&cell.text);
+            let wide = packs
+                && heads_wide(flags)
+                && cells.get(column + 1).is_some_and(|spacer| {
+                    spacer.text.is_empty()
+                        && spacer.foreground == cell.foreground
+                        && spacer.background == cell.background
+                        && row.flags(column + 1, self.minor)
+                            == spacer_flags(flags)
+                });
+            let kind = match (wide, packs) {
+                (true, _) => Kind::Wide,
+                (false, true) => Kind::Packed,
+                (false, false) => Kind::Texts,
+            };
+            if open.is_none_or(|(_, open_style, open_kind)| {
+                open_style != style || open_kind != kind
+            }) {
+                if let Some((start, style, kind)) = open {
+                    push_runs(&mut runs, style, kind, &cells[start..column]);
                 }
-                _ => runs.push(Run {
-                    style,
-                    texts: vec![cell.text.clone()],
-                }),
+                open = Some((column, style, kind));
             }
+            column += if wide { 2 } else { 1 };
+        }
+        if let Some((start, style, kind)) = open {
+            push_runs(&mut runs, style, kind, &cells[start..]);
         }
         Ok(FullRow {
             wrapped: *wrapped,
             wrap_continuation: *wrap_continuation,
             prompt: *prompt,
             runs,
+            texts: cells.iter().map(|cell| cell.text.clone()).collect(),
         })
     }
 }
@@ -646,9 +896,9 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
             previous.geometry_revision == metadata.geometry_revision
                 && previous.size == size
         });
-        let keep: HashMap<usize, u16> = baseline
+        let keep: KeyMap<usize, u16> = baseline
             .map(|baseline| {
-                let mut keep = HashMap::new();
+                let mut keep = KeyMap::default();
                 for (index, row) in baseline.rows().iter().enumerate() {
                     keep.entry(row.identity())
                         .or_insert(u16::try_from(index).unwrap_or(u16::MAX));
@@ -660,7 +910,8 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
             minor: self.minor,
             columns: usize::from(size.columns),
             styles: Vec::new(),
-            index: HashMap::new(),
+            index: HashMap::default(),
+            last: None,
         };
         let mut ops = Vec::with_capacity(rows.len());
         for row in rows {
@@ -1033,8 +1284,13 @@ pub fn encode_update(
                 return Err(EncodeError::Invalid("keep index"));
             }
             RowOp::Full(row)
-                if row.runs.iter().any(|run| {
-                    run.texts.is_empty() || run.style as usize >= styles.len()
+                if row.run_texts().any(|(run, texts)| {
+                    run.cells == 0
+                        || styles.get(run.style as usize).is_none_or(|style| {
+                            run.wide
+                                && !(heads_wide(style.flags)
+                                    && wide_texts(texts))
+                        })
                 }) =>
             {
                 return Err(EncodeError::Invalid("run"));
@@ -1111,7 +1367,8 @@ fn write_update(
             Ok(())
         })?;
         w.seq(styles.iter(), size.cells(), "style table", write_style)?;
-        w.seq(rows.iter(), usize::from(size.rows), "rows", |w, op| {
+        let ops = wire_ops(rows);
+        w.seq(ops.iter(), usize::from(size.rows), "rows", |w, op| {
             write_op(w, op, usize::from(size.columns))
         })
     })
@@ -1131,18 +1388,47 @@ fn write_style(w: &mut Writer, style: &StyleEntry) -> Result<(), EncodeError> {
     })
 }
 
+/// A row operation as it travels: consecutive kept rows become one range.
+enum WireOp<'a> {
+    /// `count` baseline rows from `start`, in order.
+    Keep { start: u16, count: u16 },
+    /// A row in full.
+    Full(&'a FullRow),
+}
+
+fn wire_ops(rows: &[RowOp]) -> Vec<WireOp<'_>> {
+    let mut ops: Vec<WireOp<'_>> = Vec::new();
+    for op in rows {
+        match (op, ops.last_mut()) {
+            (RowOp::Keep(index), Some(WireOp::Keep { start, count }))
+                if u32::from(*start) + u32::from(*count)
+                    == u32::from(*index) =>
+            {
+                *count += 1;
+            }
+            (RowOp::Keep(index), _) => ops.push(WireOp::Keep {
+                start: *index,
+                count: 1,
+            }),
+            (RowOp::Full(row), _) => ops.push(WireOp::Full(row)),
+        }
+    }
+    ops
+}
+
 fn write_op(
     w: &mut Writer,
-    op: &RowOp,
+    op: &WireOp<'_>,
     columns: usize,
 ) -> Result<(), EncodeError> {
     match op {
-        RowOp::Keep(index) => {
+        WireOp::Keep { start, count } => {
             w.tag(0);
-            w.u16(*index);
+            w.u16(*start);
+            w.u16(*count);
             Ok(())
         }
-        RowOp::Full(row) => {
+        WireOp::Full(row) => {
             w.tag(1);
             encode_row(w, row, columns)
         }
@@ -1159,21 +1445,113 @@ fn encode_row(
         wrap_continuation,
         prompt,
         runs,
+        texts,
     } = row;
-    if runs.iter().map(|run| run.texts.len()).sum::<usize>() != columns {
+    let covered = runs
+        .iter()
+        .try_fold(0_usize, |covered, run| covered.checked_add(run.cells));
+    if texts.len() != columns || covered != Some(columns) {
         return Err(EncodeError::Invalid("row width"));
     }
     w.record(|w| {
         w.bool(*wrapped);
         w.bool(*wrap_continuation);
         w.tag(u64::from(prompt_tag(*prompt)));
-        w.seq(runs.iter(), columns, "runs", |w, run| {
-            w.u32(run.style);
-            w.seq(run.texts.iter(), columns, "run", |w, text| {
-                w.str(text, MAX_CELL_TEXT_BYTES, "cell text")
-            })
+        w.seq(row.run_texts(), columns, "runs", |w, (run, texts)| {
+            write_run(w, run, texts, columns)
         })
     })
+}
+
+/// Writes a run behind a header of its style index and form: a wide run
+/// as its characters, packed; at least [`FILL_CELLS`] identical cells that
+/// pack as a count and one packed cell; other cells that all pack as one
+/// packed string; and any other run as one length-prefixed text per cell.
+fn write_run(
+    w: &mut Writer,
+    run: Run,
+    texts: &[CellText],
+    columns: usize,
+) -> Result<(), EncodeError> {
+    let header = u64::from(run.style) << 2;
+    if run.wide {
+        w.u64(header | FORM_WIDE);
+        let characters = texts.iter().step_by(2);
+        return if write_packed(w, characters.len(), characters)? {
+            Ok(())
+        } else {
+            Err(EncodeError::Invalid("run"))
+        };
+    }
+    if let [first, rest @ ..] = texts
+        && texts.len() >= FILL_CELLS
+        && packs(first)
+        && rest.iter().all(|text| text == first)
+    {
+        w.u64(header | FORM_FILL);
+        w.usize(texts.len());
+        write_packed(w, 1, [first])?;
+        return Ok(());
+    }
+    let start = w.len();
+    w.u64(header | FORM_PACKED);
+    if write_packed(w, texts.len(), texts)? {
+        return Ok(());
+    }
+    w.truncate(start);
+    w.u64(header | FORM_TEXTS);
+    w.seq(texts.iter(), columns, "run", |w, text| {
+        w.str(text, MAX_CELL_TEXT_BYTES, "cell text")
+    })
+}
+
+/// Writes `count` texts as one length-prefixed UTF-8 string, one scalar per
+/// cell and U+0000 for no text. Returns `false`, with the bytes written so
+/// far left for the caller to discard, at a text that does not pack.
+fn write_packed<'a>(
+    w: &mut Writer,
+    count: usize,
+    texts: impl IntoIterator<Item = &'a CellText>,
+) -> Result<bool, EncodeError> {
+    let mut packed = true;
+    // A cell takes at least a byte, so the length rarely needs more room
+    // than the cell count does.
+    w.length_prefixed(varint_len(count as u64), |w| {
+        for text in texts {
+            match text.as_bytes() {
+                [] => w.fixed(&[0]),
+                ascii @ [1..=0x7f] => w.fixed(ascii),
+                bytes if packs(text) => w.fixed(bytes),
+                _ => {
+                    packed = false;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(packed)
+}
+
+/// Reads a packed string of at most `cells` scalars, passing each cell's
+/// text to `push`.
+fn read_packed(
+    r: &mut Reader<'_>,
+    cells: usize,
+    mut push: impl FnMut(CellText),
+) -> Result<(), DecodeError> {
+    let packed = r.str(cells * 4, "run")?;
+    for (index, scalar) in packed.chars().enumerate() {
+        if index == cells {
+            return Err(DecodeError::TooLong { field: "run" });
+        }
+        push(if scalar == '\0' {
+            CellText::EMPTY
+        } else {
+            CellText::from(scalar)
+        });
+    }
+    Ok(())
 }
 
 /// Reads an update record's grid without consuming the rest, so a receiver
@@ -1252,21 +1630,7 @@ pub fn decode_update(
             })
         })?;
         let columns = usize::from(size.columns);
-        let rows =
-            r.seq(usize::from(size.rows), "rows", |r| match r.tag()? {
-                0 => {
-                    let index = r.u16()?;
-                    if baseline.is_none() || index >= size.rows {
-                        return Err(DecodeError::Invalid("keep index"));
-                    }
-                    Ok(RowOp::Keep(index))
-                }
-                1 => decode_row(r, columns, styles.len()).map(RowOp::Full),
-                tag => Err(DecodeError::UnknownTag {
-                    field: "row op",
-                    tag,
-                }),
-            })?;
+        let rows = decode_ops(r, size, baseline.is_some(), columns, &styles)?;
         if rows.len() != usize::from(size.rows) {
             return Err(DecodeError::Invalid("row count"));
         }
@@ -1294,31 +1658,116 @@ pub fn decode_update(
     })
 }
 
+/// Reads an update's row operations, expanding each range of kept rows,
+/// which a complete snapshot never holds.
+fn decode_ops(
+    r: &mut Reader<'_>,
+    size: GridSize,
+    delta: bool,
+    columns: usize,
+    styles: &[StyleEntry],
+) -> Result<Vec<RowOp>, DecodeError> {
+    let total = usize::from(size.rows);
+    let count = r.usize()?;
+    if count > total {
+        return Err(DecodeError::TooLong { field: "rows" });
+    }
+    let mut rows = Vec::with_capacity(total.min(r.remaining()));
+    for _ in 0..count {
+        match r.tag()? {
+            0 => {
+                let start = r.u16()?;
+                let kept = r.u16()?;
+                let end = usize::from(start) + usize::from(kept);
+                if !delta || kept == 0 || end > total {
+                    return Err(DecodeError::Invalid("keep index"));
+                }
+                // Checked per operation, so repeated ranges never build
+                // more rows than the grid holds.
+                if rows.len() + usize::from(kept) > total {
+                    return Err(DecodeError::TooLong { field: "rows" });
+                }
+                rows.extend((start..).take(usize::from(kept)).map(RowOp::Keep));
+            }
+            1 if rows.len() == total => {
+                return Err(DecodeError::TooLong { field: "rows" });
+            }
+            1 => rows.push(RowOp::Full(decode_row(r, columns, styles)?)),
+            tag => {
+                return Err(DecodeError::UnknownTag {
+                    field: "row op",
+                    tag,
+                });
+            }
+        }
+    }
+    Ok(rows)
+}
+
 fn decode_row(
     r: &mut Reader<'_>,
     columns: usize,
-    styles: usize,
+    styles: &[StyleEntry],
 ) -> Result<FullRow, DecodeError> {
     r.record(|r| {
         let wrapped = r.bool()?;
         let wrap_continuation = r.bool()?;
         let prompt = read_prompt(r)?;
-        let mut cells = 0_usize;
+        let mut texts: Vec<CellText> =
+            Vec::with_capacity(columns.min(r.remaining()));
         let runs = r.seq(columns, "runs", |r| {
-            let style = r.u32()?;
-            if style as usize >= styles {
-                return Err(DecodeError::Invalid("style index"));
+            let header = r.u64()?;
+            let style = u32::try_from(header >> 2)
+                .ok()
+                .filter(|style| (*style as usize) < styles.len())
+                .ok_or(DecodeError::Invalid("style index"))?;
+            let start = texts.len();
+            let remaining = columns - start;
+            match header & 3 {
+                FORM_TEXTS => {
+                    let count = r.usize()?;
+                    if count > remaining {
+                        return Err(DecodeError::TooLong { field: "run" });
+                    }
+                    for _ in 0..count {
+                        let text = r.str(MAX_CELL_TEXT_BYTES, "cell text")?;
+                        texts.push(CellText::new(text));
+                    }
+                }
+                FORM_PACKED => {
+                    read_packed(r, remaining, |text| texts.push(text))?;
+                }
+                FORM_FILL => {
+                    let count = r.usize()?;
+                    if count > remaining {
+                        return Err(DecodeError::TooLong { field: "run" });
+                    }
+                    let mut fill = None;
+                    read_packed(r, 1, |text| fill = Some(text))?;
+                    let fill = fill.ok_or(DecodeError::Invalid("fill text"))?;
+                    texts.extend(std::iter::repeat_n(fill, count));
+                }
+                _ => {
+                    if !heads_wide(styles[style as usize].flags) {
+                        return Err(DecodeError::Invalid("wide run style"));
+                    }
+                    read_packed(r, remaining / 2, |text| {
+                        texts.push(text);
+                        texts.push(CellText::EMPTY);
+                    })?;
+                }
             }
-            let texts = r.seq(columns - cells, "run", |r| {
-                Ok(CellText::new(r.str(MAX_CELL_TEXT_BYTES, "cell text")?))
-            })?;
-            if texts.is_empty() {
+            let cells = texts.len() - start;
+            if cells == 0 {
                 return Err(DecodeError::Invalid("empty run"));
             }
-            cells += texts.len();
-            Ok(Run { style, texts })
+            Ok(Run {
+                style,
+                wide: header & 3 == FORM_WIDE,
+                cells,
+            })
         })?;
-        if cells != columns {
+        if texts.len() != columns {
             return Err(DecodeError::Invalid("row width"));
         }
         Ok(FullRow {
@@ -1326,6 +1775,7 @@ fn decode_row(
             wrap_continuation,
             prompt,
             runs,
+            texts,
         })
     })
 }

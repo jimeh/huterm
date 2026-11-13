@@ -294,13 +294,44 @@ impl Writer {
         &mut self,
         encode: impl FnOnce(&mut Self) -> Result<(), EncodeError>,
     ) -> Result<(), EncodeError> {
+        self.length_prefixed(1, encode)
+    }
+
+    /// Writes the bytes `encode` writes behind their varint byte length.
+    /// The length's room is reserved for a varint of `reserve` bytes, so
+    /// the bytes move only when their length takes another size.
+    ///
+    /// # Errors
+    /// Returns the encoder's error.
+    pub fn length_prefixed(
+        &mut self,
+        reserve: usize,
+        encode: impl FnOnce(&mut Self) -> Result<(), EncodeError>,
+    ) -> Result<(), EncodeError> {
         let start = self.bytes.len();
+        self.bytes.resize(start + reserve, 0);
         encode(self)?;
-        let length = self.bytes.len() - start;
-        let mut prefix = Self::new();
-        prefix.usize(length);
-        self.bytes.splice(start..start, prefix.bytes);
+        let length = self.bytes.len() - start - reserve;
+        let size = varint_len(length as u64);
+        if size > reserve {
+            let at = start + reserve;
+            self.bytes
+                .splice(at..at, std::iter::repeat_n(0, size - reserve));
+        } else if size < reserve {
+            self.bytes.drain(start + size..start + reserve);
+        }
+        let mut value = length as u64;
+        for byte in &mut self.bytes[start..start + size] {
+            *byte = (value & 0x7f) as u8 | 0x80;
+            value >>= 7;
+        }
+        self.bytes[start + size - 1] &= 0x7f;
         Ok(())
+    }
+
+    /// Discards everything written after the first `length` bytes.
+    pub fn truncate(&mut self, length: usize) {
+        self.bytes.truncate(length);
     }
 
     /// Writes an identity as its bare numeric value in the connection's

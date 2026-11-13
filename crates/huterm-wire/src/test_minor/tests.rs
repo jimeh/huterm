@@ -340,7 +340,7 @@ mod updates {
     use crate::message::{Message, decode_message, encode_message};
     use crate::update::{
         TerminalUpdate, UPDATE_DIGEST_INTERVAL, UpdateEncoder, UpdateOutcome,
-        ViewMetadata, ViewerView, decode_update, encode_update,
+        ViewMetadata, ViewerView, decode_update, encode_update, view_digest,
     };
     use crate::vectors;
 
@@ -486,5 +486,175 @@ mod updates {
             ),
             Err(EncodeError::Unsupported)
         );
+    }
+
+    const COLUMNS: usize = 10;
+
+    /// One generated piece of a row: a cell kind and its style choices.
+    type Piece = (u8, bool, bool, bool, bool);
+
+    /// A row of [`COLUMNS`] cells from generated pieces: ASCII, written
+    /// spaces, cells with no text, U+0000, combining sequences, wide
+    /// characters with derivable or mismatched spacers, and runs of eight
+    /// identical cells, in two colors, bold or not, and curly underlined or
+    /// not.
+    fn generated_row(pieces: &[Piece]) -> Arc<TestRow> {
+        let mut cells = Vec::new();
+        let mut curly = Vec::new();
+        let mut pieces = pieces.iter().cycle();
+        while cells.len() < COLUMNS {
+            let &(kind, red, bold, curled, spacer_curled) =
+                pieces.next().unwrap();
+            let style = CellStyle {
+                bold,
+                ..CellStyle::default()
+            };
+            let foreground = if red {
+                CellColor::Indexed(1)
+            } else {
+                CellColor::DefaultForeground
+            };
+            let cell = |text: &str, style: CellStyle| Cell {
+                text: CellText::from(text),
+                foreground,
+                background: CellColor::DefaultBackground,
+                style,
+            };
+            let room = COLUMNS - cells.len();
+            match kind % 9 {
+                0 => cells.push(cell(if bold { "a" } else { "b" }, style)),
+                1 => cells.push(cell(" ", style)),
+                3 => cells.push(cell("\0", style)),
+                4 => cells.push(cell("e\u{301}", style)),
+                5 | 6 if room >= 2 => {
+                    let wide = CellStyle {
+                        wide: true,
+                        ..style
+                    };
+                    let spacer = CellStyle {
+                        wide: false,
+                        wide_spacer: true,
+                        ..style
+                    };
+                    cells.push(cell(if red { "界" } else { "🙂" }, wide));
+                    let mut tail = cell("", spacer);
+                    if kind % 9 == 6 {
+                        // A spacer in another color is not derivable.
+                        tail.foreground = CellColor::Indexed(2);
+                    }
+                    cells.push(tail);
+                    curly.push(curled);
+                }
+                7 | 8 if room >= 8 => {
+                    let text = if kind % 9 == 7 { "" } else { "-" };
+                    cells.extend((0..8).map(|_| cell(text, style)));
+                    curly.extend([curled; 7]);
+                }
+                // No text, and a wide character or repeat with no room.
+                _ => cells.push(cell("", style)),
+            }
+            curly.push(if kind % 9 == 5 || kind % 9 == 6 {
+                spacer_curled
+            } else {
+                curled
+            });
+        }
+        curly.truncate(COLUMNS);
+        Arc::new(TestRow {
+            row: TerminalRow {
+                cells,
+                ..TerminalRow::default()
+            },
+            curly,
+        })
+    }
+
+    fn piece() -> impl proptest::strategy::Strategy<Value = Piece> {
+        use proptest::prelude::*;
+        (
+            0..9_u8,
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
+        )
+    }
+
+    /// The row a minor 0 client shows: curly underlines become underlines.
+    fn projected(row: &TestRow) -> Vec<Cell> {
+        row.row
+            .cells
+            .iter()
+            .zip(&row.curly)
+            .map(|(cell, curly)| {
+                let mut cell = cell.clone();
+                cell.style.underline |= *curly;
+                cell
+            })
+            .collect()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        /// Clients at minor 0 and at the test-only minor version converge
+        /// on rows of every run form, and each view's digest equals the
+        /// server's at that minor version after every update.
+        #[test]
+        fn clients_at_each_minor_converge_on_rows_of_every_run_form(
+            steps in proptest::collection::vec(
+                (0..3_usize, proptest::collection::vec(piece(), 1..12)),
+                1..16,
+            ),
+        ) {
+            let mut current = TestSnapshot {
+                metadata: ViewMetadata {
+                    size: GridSize { columns: 10, rows: 3 },
+                    ..metadata(0)
+                },
+                rows: vec![generated_row(&[(2, false, false, false, false)]); 3],
+            };
+            let mut old: UpdateEncoder<Arc<TestSnapshot>> =
+                UpdateEncoder::new(vectors::viewer(), 0);
+            let mut new: UpdateEncoder<Arc<TestSnapshot>> =
+                UpdateEncoder::new(vectors::viewer(), TEST_MINOR);
+            let mut old_client: ViewerView = ViewerView::new(0);
+            let mut new_client: ViewerView<Arc<TestRow>> =
+                ViewerView::new(TEST_MINOR);
+            for (revision, (row, pieces)) in (1..).zip(&steps) {
+                current.metadata.revision = revision;
+                current.rows[*row] = generated_row(pieces);
+                let snapshot = Arc::new(current.clone());
+
+                let update = old.next(&snapshot, true).unwrap();
+                old_client.apply(&minor_0_wire(&update)).unwrap();
+                let (metadata, rows) = old_client.view().unwrap();
+                for (shown, sent) in rows.iter().zip(&snapshot.rows) {
+                    proptest::prop_assert_eq!(&shown.cells, &projected(sent));
+                }
+                proptest::prop_assert_eq!(
+                    view_digest(metadata, rows, 0),
+                    view_digest(&snapshot.metadata, &snapshot.rows, 0)
+                );
+
+                let update = new.next(&snapshot, true).unwrap();
+                let mut w = Writer::new();
+                encode_update(&mut w, vectors::scope(), &update, TEST_STYLE_FLAGS)
+                    .unwrap();
+                let received = decode_update(
+                    &mut Reader::new(&w.into_bytes()),
+                    vectors::scope(),
+                    TEST_STYLE_FLAGS,
+                )
+                .unwrap();
+                new_client.apply(&received).unwrap();
+                let (metadata, rows) = new_client.view().unwrap();
+                proptest::prop_assert_eq!(rows, snapshot.rows.as_slice());
+                proptest::prop_assert_eq!(
+                    view_digest(metadata, rows, TEST_MINOR),
+                    view_digest(&snapshot.metadata, &snapshot.rows, TEST_MINOR)
+                );
+            }
+        }
     }
 }
