@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use huterm_core::Mux;
 use huterm_protocol::{
     CellSize, DigestProfile, GridSize, ScrollbackLimit, SessionId, TabId,
+    ViewerId,
 };
 use huterm_server::runtime::execute;
 use huterm_server::test_feed::TestSource;
@@ -646,8 +647,9 @@ fn the_same_incarnation_at_another_minor_keeps_ids_and_waiters_and_takes_the_new
     let _ = mux.lock().unwrap().shutdown();
 }
 
-#[test]
-fn requests_in_flight_at_disconnect_follow_their_retry_class() {
+/// A server whose `Mux` holds a session with one quiet tab, and the
+/// server's numbers for the session and the tab's terminal.
+fn session_with_tab() -> (Arc<Server>, u64, u64) {
     let server = fresh_server(ServerConfig::default());
     let (session, terminal) = {
         let mut mux = server.lock();
@@ -656,17 +658,23 @@ fn requests_in_flight_at_disconnect_follow_their_retry_class() {
         let opened = mux.open_tab(workspace, &quiet_command()).unwrap();
         (session.get(), opened.tab.terminals()[0].get())
     };
-    let mut pair = Pair::new(&server, ClientSession::new(config()));
+    (server, session, terminal)
+}
+
+/// Attaches `pair`'s client to `session` and subscribes a writable viewer
+/// of `terminal`, both in the server's numbers.
+fn subscribe(pair: &mut Pair, session: u64, terminal: u64) -> ViewerId {
     let runtime = pair.runtime();
-    let session = SessionId::in_runtime(runtime, session);
     let Response::Attachment(attachment) = pair
-        .call(Request::AttachSession { session })
+        .call(Request::AttachSession {
+            session: SessionId::in_runtime(runtime, session),
+        })
         .unwrap()
         .response
     else {
         panic!("an attachment");
     };
-    let subscribe = pair.session.subscribe_terminal(
+    let call = pair.session.subscribe_terminal(
         attachment,
         huterm_protocol::TerminalId::in_runtime(runtime, terminal),
         huterm_wire::viewer::SubscribeOptions {
@@ -679,16 +687,27 @@ fn requests_in_flight_at_disconnect_follow_their_retry_class() {
             presentation: None,
             spawned: false,
         },
+        true,
         pair.now,
     );
     pair.pump();
     let Some(Ok(Success {
         response: Response::Viewer { viewer, .. },
         ..
-    })) = pair.outcome(subscribe)
+    })) = pair.outcome(call)
     else {
-        panic!("a viewer: {:?}", pair.outcome(subscribe));
+        panic!("a viewer: {:?}", pair.outcome(call));
     };
+    viewer
+}
+
+#[test]
+fn requests_in_flight_at_disconnect_follow_their_retry_class() {
+    let (server, session, terminal) = session_with_tab();
+    let mut pair = Pair::new(&server, ClientSession::new(config()));
+    let runtime = pair.runtime();
+    let viewer = subscribe(&mut pair, session, terminal);
+    let session = SessionId::in_runtime(runtime, session);
     let rename = pair.session.request(
         Request::RenameSession {
             session,

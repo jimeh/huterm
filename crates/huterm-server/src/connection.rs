@@ -562,7 +562,7 @@ impl Connection {
             }
             self.reading = reading;
         }
-        if self.closed.is_some() || self.outbound.retained() == 0 {
+        if self.closed.is_some() || !self.outbound.pending() {
             self.stalled_since = None;
         } else {
             self.stalled_since.get_or_insert(now);

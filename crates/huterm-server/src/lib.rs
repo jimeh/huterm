@@ -12,6 +12,8 @@
 
 #![deny(missing_docs)]
 
+#[cfg(test)]
+mod acceptance;
 #[cfg(all(test, unix))]
 mod benchmark;
 pub mod config;
@@ -20,6 +22,8 @@ pub mod connection;
 mod contract_tests;
 mod convert;
 pub mod feed;
+#[cfg(any(test, feature = "test-support"))]
+pub mod model;
 #[cfg(unix)]
 pub mod native;
 pub mod runtime;
@@ -29,7 +33,11 @@ pub mod test_feed;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod viewer;
+#[cfg(all(test, unix))]
+mod viewer_tests;
 pub mod work;
+#[cfg(test)]
+mod world;
 
 pub use config::ServerConfig;
 pub use connection::{CloseReason, Connection, Transmit};

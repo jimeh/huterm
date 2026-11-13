@@ -396,6 +396,17 @@ impl Outbound {
         self.retained
     }
 
+    /// Whether anything waits to be written: bytes the queue retains, or an
+    /// item not yet encoded.
+    pub(crate) fn pending(&self) -> bool {
+        self.retained > 0
+            || self.raw.is_some()
+            || [&self.control, &self.large, &self.hierarchy]
+                .into_iter()
+                .chain(self.viewers.values())
+                .any(LaneQueue::has_work)
+    }
+
     /// The bytes `lane`'s messages hold.
     pub(crate) fn lane_retained(&self, lane: Lane) -> usize {
         self.queue(lane).map_or(0, |queue| queue.retained)

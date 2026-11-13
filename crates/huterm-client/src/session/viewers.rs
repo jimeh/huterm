@@ -136,6 +136,7 @@ pub(super) struct ClientViewer {
 pub(super) struct Subscribing {
     terminal: TerminalId,
     spawned: bool,
+    visible: bool,
 }
 
 /// What the session keeps per incarnation.
@@ -147,13 +148,16 @@ pub(super) struct Carried {
 
 impl ClientSession {
     /// Subscribes a viewer of `terminal` in `attachment` at `now`. The
-    /// result carries the viewer, and its first update follows; a viewer
-    /// starts visible.
+    /// result carries the viewer, and its first update follows, which
+    /// spends no credit. A `visible` viewer keeps the credit window full
+    /// from the start; a hidden one, such as a background tab's, gets no
+    /// rows until [`Self::set_visible`] shows it.
     pub fn subscribe_terminal(
         &mut self,
         attachment: AttachmentId,
         terminal: TerminalId,
         options: SubscribeOptions,
+        visible: bool,
         now: std::time::Duration,
     ) -> CallId {
         let spawned = options.spawned;
@@ -166,8 +170,14 @@ impl ClientSession {
             now,
         );
         if self.calls.contains_key(&call) {
-            self.subscribing
-                .insert(call, Subscribing { terminal, spawned });
+            self.subscribing.insert(
+                call,
+                Subscribing {
+                    terminal,
+                    spawned,
+                    visible,
+                },
+            );
         }
         call
     }
@@ -444,8 +454,11 @@ impl ClientSession {
 
     /// Takes a subscription's success.
     pub(super) fn subscribed(&mut self, call: CallId, success: &Success) {
-        let Some(Subscribing { terminal, spawned }) =
-            self.subscribing.remove(&call)
+        let Some(Subscribing {
+            terminal,
+            spawned,
+            visible,
+        }) = self.subscribing.remove(&call)
         else {
             return;
         };
@@ -480,7 +493,7 @@ impl ClientSession {
                     },
                 );
                 self.observe(terminal, Some(*viewer), status);
-                self.set_visible(*viewer, true);
+                self.set_visible(*viewer, visible);
             }
             Response::Stopped { status } => {
                 let status = Arc::new((**status).clone());

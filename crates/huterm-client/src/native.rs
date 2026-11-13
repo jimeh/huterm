@@ -690,9 +690,9 @@ impl Driver {
                 self.waits.insert(wait, reply);
             }
             Command::Subscribe(attachment, terminal, options, reply) => {
-                let call = self
-                    .session
-                    .subscribe_terminal(attachment, terminal, *options, now);
+                let call = self.session.subscribe_terminal(
+                    attachment, terminal, *options, true, now,
+                );
                 self.replies.insert(call, reply);
             }
             Command::Input(viewer, input, geometry) => {
