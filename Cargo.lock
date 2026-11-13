@@ -2724,6 +2724,20 @@ name = "huterm-protocol"
 version = "0.34.0"
 
 [[package]]
+name = "huterm-server"
+version = "0.34.0"
+dependencies = [
+ "async-channel",
+ "async-executor",
+ "async-io",
+ "blocking",
+ "futures-lite",
+ "huterm-core",
+ "huterm-protocol",
+ "huterm-wire",
+]
+
+[[package]]
 name = "huterm-state"
 version = "0.34.0"
 dependencies = [

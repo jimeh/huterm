@@ -149,7 +149,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, and IPC simulation boundaries"
+description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, server, and IPC simulation boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -199,6 +199,12 @@ fi
 wire_dependencies="$(cargo tree --locked -p huterm-wire --target all --all-features --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if echo "$wire_dependencies" | rg -v '^huterm-protocol '; then
   echo "huterm-wire may depend only on huterm-protocol" >&2
+  exit 1
+fi
+# huterm-server serves a runtime to clients and never links the desktop.
+server_dependencies="$(cargo tree --locked -p huterm-server --target all --all-features --prefix none --edges normal,build | tail -n +2)"
+if echo "$server_dependencies" | rg '^gpui-pre( |-)'; then
+  echo "huterm-server must not depend on gpui-pre" >&2
   exit 1
 fi
 # huterm-ipc-sim is a standalone design simulation, not product code.
