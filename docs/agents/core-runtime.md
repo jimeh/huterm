@@ -519,6 +519,18 @@ dependency rule.
   still change its records until then.
 - `test_minor.rs`, behind the `test-minor` feature, is `MINOR + 1` and
   exercises the downgrade rules; shipping code never enables it.
+- Terminal updates (`update.rs`) diff by `Arc<TerminalRow>` identity on the
+  server only; the wire carries baseline row positions. A new `CellStyle`
+  field needs a flag bit, a minor version, and a projection in
+  `UpdateRow::flags` for older peers, because a decoder rejects unknown
+  bits. `view_digest` covers exactly the negotiated minor version's fields.
+- Core keeps every state encodable on every path, embedded mode included:
+  `GridSize::clamped` caps grids at `MAX_GRID_CELLS`, row extraction cuts
+  cell text at `MAX_CELL_TEXT_BYTES`, and `StatusPublisher` cuts status text
+  at `MAX_STATUS_TEXT_BYTES`. A new path that builds a grid, a cell, or
+  status text must apply the same cap.
+- `StatusBaseline` in `huterm-protocol` derives exits, bells, and failures
+  from status for `TerminalViewer::poll` and remote clients alike.
 - `fuzz/` holds cargo-fuzz targets outside the workspace;
   `mise run fuzz:wire` runs them (see
   [the dependencies guide](dependencies.md#fuzzing-toolchain)). Turn a crash

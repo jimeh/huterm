@@ -11,6 +11,12 @@ pub const TERMINAL_FAILURE_CAPACITY: usize = 8;
 /// Command records a terminal status retains, newest last.
 pub const COMMAND_RECORD_CAPACITY: usize = 256;
 
+/// The most bytes of one status text: the title, each metadata string, each
+/// failure message, and each command record's text. Core truncates longer
+/// text at a character boundary when it publishes status, so every status
+/// stays encodable for a remote client.
+pub const MAX_STATUS_TEXT_BYTES: usize = 4096;
+
 /// What one viewer may do to its terminal. The runtime checks each flag on
 /// every request, so a client that lacks a flag cannot act around it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -232,6 +238,83 @@ impl TerminalStatus {
     }
 }
 
+/// What one viewer has already seen of a terminal's status, so it reports
+/// each exit, bell, and failure once.
+///
+/// Status revisions, the bell count, and failure numbers are terminal-wide
+/// and never go backwards within a server incarnation, so a client that
+/// keeps a terminal's baseline across a reconnect reports what happened
+/// while it was away.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StatusBaseline {
+    revision: Option<u64>,
+    running: bool,
+    bells: u64,
+    failure: u64,
+}
+
+/// What changed in a terminal's status since a [`StatusBaseline`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StatusChanges {
+    /// The root process's exit, the first time the baseline sees it.
+    pub exited: Option<ExitStatus>,
+    /// Bells rung since the baseline.
+    pub bells: u64,
+    /// Failures reported since the baseline, oldest first.
+    pub failures: Vec<TerminalFailure>,
+    /// Failures since the baseline that the bounded log dropped.
+    pub missed_failures: u64,
+}
+
+impl StatusBaseline {
+    /// The baseline of a viewer whose client spawned the terminal: nothing
+    /// has happened yet, so every exit, bell, and failure reports.
+    pub const SPAWNED: Self = Self {
+        revision: None,
+        running: true,
+        bells: 0,
+        failure: 0,
+    };
+
+    /// A baseline that takes `status` as already seen, so a viewer that
+    /// starts late reports no exit, bell, or failure from before it.
+    #[must_use]
+    pub fn seen(status: &TerminalStatus) -> Self {
+        Self {
+            revision: None,
+            running: status.lifecycle == TerminalLifecycle::Running,
+            bells: status.bells,
+            failure: status.last_failure(),
+        }
+    }
+
+    /// Advances the baseline to `status` and reports what changed, or
+    /// `None` when its revision is the one already observed.
+    pub fn observe(
+        &mut self,
+        status: &TerminalStatus,
+    ) -> Option<StatusChanges> {
+        if self.revision == Some(status.revision) {
+            return None;
+        }
+        self.revision = Some(status.revision);
+        let mut changes = StatusChanges::default();
+        if let TerminalLifecycle::Exited(exit) = status.lifecycle
+            && self.running
+        {
+            self.running = false;
+            changes.exited = Some(exit);
+        }
+        changes.bells = status.bells.saturating_sub(self.bells);
+        self.bells = status.bells;
+        let (failures, missed) = status.failures_since(self.failure);
+        changes.failures = failures.to_vec();
+        changes.missed_failures = missed;
+        self.failure = status.last_failure();
+        Some(changes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +347,46 @@ mod tests {
                 .collect(),
             ..TerminalStatus::default()
         }
+    }
+
+    #[test]
+    fn a_baseline_reports_each_exit_bell_and_failure_once() {
+        let mut current = status(&[1, 2]);
+        current.revision = 3;
+        current.bells = 4;
+        let mut spawned = StatusBaseline::SPAWNED;
+        let mut late = StatusBaseline::seen(&current);
+
+        let changes = spawned.observe(&current).unwrap();
+        assert_eq!((changes.bells, changes.failures.len()), (4, 2));
+        let changes = late.observe(&current).unwrap();
+        assert_eq!(changes, StatusChanges::default(), "nothing new to it");
+        assert_eq!(spawned.observe(&current), None, "same revision");
+
+        current.revision = 4;
+        current.bells = 6;
+        current.failures = status(&[2, 5]).failures;
+        current.lifecycle = TerminalLifecycle::Exited(ExitStatus {
+            code: Some(1),
+            success: false,
+        });
+        for baseline in [&mut spawned, &mut late] {
+            let changes = baseline.observe(&current).unwrap();
+            assert_eq!(changes.bells, 2);
+            assert!(changes.exited.is_some());
+            assert_eq!(
+                changes
+                    .failures
+                    .iter()
+                    .map(|f| f.sequence)
+                    .collect::<Vec<_>>(),
+                [5]
+            );
+            assert_eq!(changes.missed_failures, 2, "3 and 4 were dropped");
+        }
+        current.revision = 5;
+        let changes = spawned.observe(&current).unwrap();
+        assert_eq!(changes.exited, None, "an exit reports once");
     }
 
     #[test]

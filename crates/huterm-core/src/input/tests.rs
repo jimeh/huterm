@@ -21,7 +21,13 @@ fn report(
             mouse_encoding: encoding,
             ..TerminalModes::default()
         },
-        GridSize::clamped(4000, 4000),
+        // Larger than the encodings' limits in both dimensions, which
+        // MAX_GRID_CELLS rules out for a real grid, so the encoding limit
+        // alone decides the coordinates.
+        GridSize {
+            columns: 4000,
+            rows: 4000,
+        },
     )
 }
 

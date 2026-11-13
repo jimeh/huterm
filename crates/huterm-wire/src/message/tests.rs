@@ -9,6 +9,7 @@ fn paste(text: String) -> Message {
     Message::Paste(Paste {
         viewer: ViewerId::in_runtime(vectors::RUNTIME, u64::MAX),
         seq: u64::MAX,
+        stamp: huterm_protocol::InputStamp::default(),
         text,
     })
 }
@@ -78,6 +79,7 @@ fn an_identity_from_another_runtime_refuses_to_encode() {
     let foreign = Message::Paste(Paste {
         viewer: ViewerId::in_runtime(RuntimeId::new(99), 1),
         seq: 1,
+        stamp: huterm_protocol::InputStamp::default(),
         text: String::new(),
     });
     assert_eq!(

@@ -6,7 +6,7 @@
 //! rejects trailing bytes.
 
 use huterm_protocol::{
-    ClipboardDestination, HostEffectKind, TerminalId, ViewerId,
+    ClipboardDestination, HostEffectKind, InputStamp, TerminalId, ViewerId,
 };
 
 use crate::caps::{
@@ -22,6 +22,15 @@ use crate::hierarchy::{
     HierarchyContext, HierarchySnapshot, SequencedEvent, decode_sequenced,
     decode_snapshot, encode_sequenced, encode_snapshot,
 };
+use crate::update::{
+    TerminalUpdate, decode_update, encode_update, read_grid, style_flags,
+};
+use crate::viewer::{
+    Credit, Input, InputAck, ResyncViewer, ViewerStatus, decode_credit,
+    decode_input, decode_input_ack, decode_resync, decode_stamp,
+    decode_viewer_status, encode_credit, encode_input, encode_input_ack,
+    encode_resync, encode_stamp, encode_viewer_status,
+};
 
 /// A viewer's paste: text the server admits as one bracketed input.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +39,8 @@ pub struct Paste {
     pub viewer: ViewerId,
     /// The viewer's input sequence number for this input.
     pub seq: u64,
+    /// What the client knew when the user pasted.
+    pub stamp: InputStamp,
     /// The pasted text, at most [`PASTE_PAYLOAD_LIMIT`] bytes.
     pub text: String,
 }
@@ -95,6 +106,18 @@ pub enum Message {
     Paste(Paste),
     /// A host effect.
     HostEffect(HostEffect),
+    /// A viewer's rows and metadata.
+    TerminalUpdate(TerminalUpdate),
+    /// A viewer's terminal status.
+    ViewerStatus(ViewerStatus),
+    /// One ordered input other than a paste.
+    Input(Input),
+    /// A viewer's highest admitted input.
+    InputAck(InputAck),
+    /// Credit for a viewer's updates.
+    Credit(Credit),
+    /// A request for a complete snapshot.
+    ResyncViewer(ResyncViewer),
 }
 
 impl Message {
@@ -110,6 +133,12 @@ impl Message {
             Self::HierarchyResync(_) => MessageKind::HierarchyResync,
             Self::Paste(_) => MessageKind::Paste,
             Self::HostEffect(_) => MessageKind::HostEffect,
+            Self::TerminalUpdate(_) => MessageKind::TerminalUpdate,
+            Self::ViewerStatus(_) => MessageKind::ViewerStatus,
+            Self::Input(_) => MessageKind::Input,
+            Self::InputAck(_) => MessageKind::InputAck,
+            Self::Credit(_) => MessageKind::Credit,
+            Self::ResyncViewer(_) => MessageKind::ResyncViewer,
         }
     }
 }
@@ -136,10 +165,16 @@ fn encode_paste(
     scope: IdScope,
     paste: &Paste,
 ) -> Result<(), EncodeError> {
-    let Paste { viewer, seq, text } = paste;
+    let Paste {
+        viewer,
+        seq,
+        stamp,
+        text,
+    } = paste;
     w.record(|w| {
         w.id(scope, *viewer)?;
         w.u64(*seq);
+        encode_stamp(w, *stamp)?;
         w.str(text, PASTE_PAYLOAD_LIMIT, "paste")
     })
 }
@@ -152,6 +187,7 @@ fn decode_paste(
         Ok(Paste {
             viewer: r.id(scope)?,
             seq: r.u64()?,
+            stamp: decode_stamp(r)?,
             text: r.string(PASTE_PAYLOAD_LIMIT, "paste")?,
         })
     })
@@ -264,7 +300,26 @@ pub fn encode_message(
         Message::HostEffect(effect) => {
             encode_host_effect(&mut w, scope, effect)?;
         }
+        Message::TerminalUpdate(update) => {
+            encode_update(&mut w, scope, update, style_flags(caps.minor()))?;
+        }
+        Message::ViewerStatus(status) => {
+            encode_viewer_status(&mut w, scope, status)?;
+        }
+        Message::Input(input) => encode_input(&mut w, scope, input)?,
+        Message::InputAck(ack) => encode_input_ack(&mut w, scope, *ack)?,
+        Message::Credit(credit) => encode_credit(&mut w, scope, *credit)?,
+        Message::ResyncViewer(resync) => {
+            encode_resync(&mut w, scope, *resync)?;
+        }
     }
+    // An update's cap follows its grid, which the encoder already checked.
+    let cap = match message {
+        Message::TerminalUpdate(update) => {
+            caps.update_cap(update.metadata.size).unwrap_or(cap)
+        }
+        _ => cap,
+    };
     if w.len() > cap {
         return Err(EncodeError::LimitExceeded { field: "message" });
     }
@@ -307,9 +362,42 @@ pub fn decode_message(
         MessageKind::HostEffect => {
             Message::HostEffect(decode_host_effect(&mut r, scope)?)
         }
+        MessageKind::TerminalUpdate => {
+            // Bytes past the cap the update's own grid allows are refused
+            // before the rest decodes.
+            let cap = grid_cap(r.peek(), context.caps)?;
+            if bytes.len() > cap {
+                return Err(DecodeError::TooLong { field: "update" });
+            }
+            Message::TerminalUpdate(decode_update(
+                &mut r,
+                scope,
+                style_flags(context.caps.minor()),
+            )?)
+        }
+        MessageKind::ViewerStatus => {
+            Message::ViewerStatus(decode_viewer_status(&mut r, scope)?)
+        }
+        MessageKind::Input => Message::Input(decode_input(&mut r, scope)?),
+        MessageKind::InputAck => {
+            Message::InputAck(decode_input_ack(&mut r, scope)?)
+        }
+        MessageKind::Credit => Message::Credit(decode_credit(&mut r, scope)?),
+        MessageKind::ResyncViewer => {
+            Message::ResyncViewer(decode_resync(&mut r, scope)?)
+        }
     };
     r.finish()?;
     Ok(message)
+}
+
+/// The cap of the update whose record starts `record`: its length prefix,
+/// then its grid.
+fn grid_cap(record: &[u8], caps: MessageCaps) -> Result<usize, DecodeError> {
+    let mut r = Reader::new(record);
+    r.usize()?;
+    caps.update_cap(read_grid(&mut r)?)
+        .ok_or(DecodeError::Invalid("grid size"))
 }
 
 #[cfg(test)]

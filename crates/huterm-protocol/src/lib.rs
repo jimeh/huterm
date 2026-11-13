@@ -17,7 +17,7 @@ pub use capture::{
     CaptureError, MAX_DIRECTORY_CANDIDATES, RuntimeCapture, SessionCapture,
     TerminalCapture, TerminalLaunch, WorkspaceCapture,
 };
-pub use cell_text::CellText;
+pub use cell_text::{CellText, MAX_CELL_TEXT_BYTES};
 pub use command::{
     ArgumentKind, ArgumentSpec, CommandArgument, CommandError, CommandId,
     CommandInvocation, CommandOutcome, CommandScope, CommandSpec, CommandValue,
@@ -40,6 +40,7 @@ pub use pane_layout::{
 };
 pub use viewer::{
     COMMAND_RECORD_CAPACITY, CommandRecord, CommandState, InputStamp,
+    MAX_STATUS_TEXT_BYTES, StatusBaseline, StatusChanges,
     TERMINAL_FAILURE_CAPACITY, TerminalFailure, TerminalLifecycle,
     TerminalProgress, TerminalStatus, ViewerCapabilities,
 };
@@ -341,6 +342,11 @@ pub struct HostEffectMetadata {
     pub recipient_generation: u64,
 }
 
+/// The most cells a terminal grid holds. Core clamps every grid it is given
+/// (spawn, split, resize, and geometry reports) to it, so every viewport
+/// stays encodable for a remote client.
+pub const MAX_GRID_CELLS: usize = 1 << 20;
+
 /// Terminal grid size in character cells.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GridSize {
@@ -351,13 +357,49 @@ pub struct GridSize {
 }
 
 impl GridSize {
-    /// Creates a grid size, clamping both dimensions to at least one cell.
+    /// Creates a grid size with at least one cell in each dimension and at
+    /// most [`MAX_GRID_CELLS`] cells, shrinking a larger grid while keeping
+    /// its aspect.
     #[must_use]
     pub fn clamped(columns: u16, rows: u16) -> Self {
-        Self {
-            columns: columns.max(1),
-            rows: rows.max(1),
+        let mut columns = columns.max(1);
+        let mut rows = rows.max(1);
+        let cells = usize::from(columns) * usize::from(rows);
+        if cells > MAX_GRID_CELLS {
+            // Both dimensions scale by the same factor, so the aspect stays.
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "cell counts are far below f64's exact integer range"
+            )]
+            let scale = (MAX_GRID_CELLS as f64 / cells as f64).sqrt();
+            let scaled = |value: u16| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "scale is below one, so the result fits u16"
+                )]
+                let scaled = (f64::from(value) * scale).floor() as u16;
+                scaled.max(1)
+            };
+            columns = scaled(columns);
+            rows = scaled(rows);
+            // Rounding can leave the product a cell over; trim the longer
+            // side until it fits.
+            while usize::from(columns) * usize::from(rows) > MAX_GRID_CELLS {
+                if columns >= rows {
+                    columns -= 1;
+                } else {
+                    rows -= 1;
+                }
+            }
         }
+        Self { columns, rows }
+    }
+
+    /// The number of cells.
+    #[must_use]
+    pub const fn cells(self) -> usize {
+        self.columns as usize * self.rows as usize
     }
 }
 
@@ -1147,6 +1189,17 @@ impl TerminalDirectory {
         Self { host, path, local }
     }
 
+    /// Cuts the host and path to at most [`MAX_STATUS_TEXT_BYTES`] each.
+    #[must_use]
+    pub fn bounded(self) -> Self {
+        let Self { host, path, local } = self;
+        Self {
+            host: host.map(bound_status_text),
+            path: bound_status_text(path),
+            local,
+        }
+    }
+
     /// Returns the reported URI host, when the report carried one.
     #[must_use]
     pub fn host(&self) -> Option<&str> {
@@ -1164,6 +1217,14 @@ impl TerminalDirectory {
     pub fn is_local(&self) -> bool {
         self.local
     }
+}
+
+/// Cuts `text` to at most [`MAX_STATUS_TEXT_BYTES`] at a character
+/// boundary.
+#[must_use]
+pub fn bound_status_text(mut text: String) -> String {
+    text.truncate(text.floor_char_boundary(MAX_STATUS_TEXT_BYTES));
+    text
 }
 
 /// Current non-cell terminal metadata.
@@ -1188,6 +1249,24 @@ impl TerminalMetadata {
             foreground_process,
             foreground_title: None,
             shell_directory: None,
+        }
+    }
+
+    /// Cuts every string to at most [`MAX_STATUS_TEXT_BYTES`] at a
+    /// character boundary, as core does when it publishes status.
+    #[must_use]
+    pub fn bounded(self) -> Self {
+        let Self {
+            directory,
+            foreground_process,
+            foreground_title,
+            shell_directory,
+        } = self;
+        Self {
+            directory: directory.map(TerminalDirectory::bounded),
+            foreground_process: foreground_process.map(bound_status_text),
+            foreground_title: foreground_title.map(bound_status_text),
+            shell_directory: shell_directory.map(TerminalDirectory::bounded),
         }
     }
 
@@ -1303,6 +1382,71 @@ mod tests {
         assert_eq!(largest.bytes(), Some(16 << 30));
         assert_eq!(largest.rows(), 10_000);
         assert_eq!(rows.with_bytes((16 << 30) + 1), None);
+    }
+
+    #[test]
+    fn clamped_grids_hold_at_most_the_cell_cap_and_keep_their_aspect() {
+        assert_eq!(
+            GridSize::clamped(0, 0),
+            GridSize {
+                columns: 1,
+                rows: 1
+            }
+        );
+        assert_eq!(
+            GridSize::clamped(80, 24),
+            GridSize {
+                columns: 80,
+                rows: 24
+            }
+        );
+        // Exactly at the cap stays.
+        assert_eq!(GridSize::clamped(1024, 1024).cells(), MAX_GRID_CELLS);
+        let square = GridSize::clamped(u16::MAX, u16::MAX);
+        assert_eq!(
+            square,
+            GridSize {
+                columns: 1024,
+                rows: 1024
+            }
+        );
+        let wide = GridSize::clamped(u16::MAX, 100);
+        assert!(wide.cells() <= MAX_GRID_CELLS, "{wide:?}");
+        assert!(wide.cells() > MAX_GRID_CELLS - usize::from(wide.columns));
+        let ratio = f64::from(wide.columns) / f64::from(wide.rows);
+        assert!((ratio - 655.35).abs() < 655.35 * 0.03, "{wide:?}");
+        // One long dimension under the cap is untouched.
+        assert_eq!(
+            GridSize::clamped(u16::MAX, 1),
+            GridSize {
+                columns: u16::MAX,
+                rows: 1
+            }
+        );
+    }
+
+    #[test]
+    fn bounded_metadata_cuts_every_string_at_a_character_boundary() {
+        let long = format!("{}\u{e9}", "x".repeat(MAX_STATUS_TEXT_BYTES - 1));
+        let cut = "x".repeat(MAX_STATUS_TEXT_BYTES - 1);
+        let directory =
+            TerminalDirectory::new(Some(long.clone()), long.clone(), true);
+        let metadata =
+            TerminalMetadata::new(Some(directory.clone()), Some(long.clone()))
+                .with_foreground_title(Some(long.clone()))
+                .with_shell_directory(Some(directory))
+                .bounded();
+        for text in [
+            metadata.directory().unwrap().host().unwrap(),
+            metadata.directory().unwrap().path(),
+            metadata.foreground_process().unwrap(),
+            metadata.foreground_title().unwrap(),
+            metadata.shell_directory().unwrap().host().unwrap(),
+            metadata.shell_directory().unwrap().path(),
+        ] {
+            assert_eq!(text, cut);
+        }
+        assert_eq!(bound_status_text("short".into()), "short");
     }
 
     #[test]

@@ -2,6 +2,11 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
+/// The most bytes one cell's text holds. Core truncates a longer grapheme
+/// cluster at a character boundary when it extracts a row, so every row a
+/// client receives, in process or over IPC, holds the same bounded text.
+pub const MAX_CELL_TEXT_BYTES: usize = 1024;
+
 /// Bytes stored without allocation. Together with the length and variant tag,
 /// this keeps [`CellText`] no larger than `String`.
 const INLINE_CAPACITY: usize = 22;
@@ -66,6 +71,13 @@ impl CellText {
         let mut bytes = [0; INLINE_CAPACITY];
         bytes[..text.len()].copy_from_slice(text.as_bytes());
         Self(Repr::Inline { len, bytes })
+    }
+
+    /// Stores `text` cut to at most [`MAX_CELL_TEXT_BYTES`] at a character
+    /// boundary.
+    #[must_use]
+    pub fn truncated(text: &str) -> Self {
+        Self::new(&text[..text.floor_char_boundary(MAX_CELL_TEXT_BYTES)])
     }
 
     /// Returns the cell text.
@@ -206,6 +218,20 @@ mod tests {
 
     fn is_inline(text: &CellText) -> bool {
         matches!(text.0, Repr::Inline { .. })
+    }
+
+    #[test]
+    fn truncated_text_stops_at_the_cap_on_a_character_boundary() {
+        let fits = "x".repeat(MAX_CELL_TEXT_BYTES);
+        assert_eq!(CellText::truncated(&fits).as_str(), fits);
+        // A two-byte character that straddles the cap is dropped whole.
+        let straddles =
+            format!("{}\u{e9}", "x".repeat(MAX_CELL_TEXT_BYTES - 1));
+        assert_eq!(
+            CellText::truncated(&straddles).as_str(),
+            "x".repeat(MAX_CELL_TEXT_BYTES - 1)
+        );
+        assert_eq!(CellText::truncated("e\u{301}"), CellText::from("e\u{301}"));
     }
 
     #[test]

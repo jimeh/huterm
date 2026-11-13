@@ -488,3 +488,90 @@ fn a_workspace_with_a_tab_that_would_pass_the_limit_changes_nothing() {
     assert_eq!(full.mux.hierarchy_items(), MAX_HIERARCHY_ITEMS);
     full.mux.shutdown().unwrap();
 }
+
+#[test]
+fn grids_past_the_cell_cap_are_clamped_and_their_first_update_fits_its_cap() {
+    use huterm_protocol::{CellSize, GridSize, MAX_GRID_CELLS, SplitDirection};
+    use huterm_wire::caps::MessageCaps;
+    use huterm_wire::codec::IdScope;
+    use huterm_wire::message::{Message, encode_message};
+    use huterm_wire::update::UpdateEncoder;
+
+    use crate::test_support::{wait_for_text, wait_until};
+
+    let huge = GridSize {
+        columns: u16::MAX,
+        rows: u16::MAX,
+    };
+    let clamped = GridSize::clamped(huge.columns, huge.rows);
+    assert!(clamped.cells() <= MAX_GRID_CELLS);
+    let first_update_fits =
+        |viewer: &crate::TerminalViewer,
+         snapshot: &Arc<huterm_protocol::TerminalSnapshot>| {
+            let caps = MessageCaps::for_minor(0);
+            let update = UpdateEncoder::new(viewer.id(), 0)
+                .next(snapshot, false)
+                .unwrap();
+            let bytes = encode_message(
+                &Message::TerminalUpdate(update),
+                IdScope::new(viewer.id().runtime()),
+                caps,
+            )
+            .unwrap();
+            assert!(bytes.len() <= caps.update_cap(snapshot.size).unwrap());
+        };
+    let oversized = TerminalCommand {
+        grid_size: huge,
+        ..command("printf READY; read value")
+    };
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+
+    let spawned = mux.open_test_tab(workspace, &oversized).unwrap();
+    let snapshot = wait_for_text(&spawned.client, "READY");
+    assert_eq!(snapshot.size, clamped, "spawn");
+    first_update_fits(&spawned.client, &snapshot);
+
+    let pane = spawned.tab.first_pane().id;
+    let split = mux
+        .split_test_pane(
+            workspace,
+            spawned.tab.id,
+            pane,
+            SplitDirection::Right,
+            &oversized,
+        )
+        .unwrap();
+    let snapshot = wait_for_text(&split.client, "READY");
+    assert_eq!(snapshot.size, clamped, "split");
+    first_update_fits(&split.client, &snapshot);
+
+    // A resize report past the cap keeps its aspect within the cap.
+    let wide = GridSize {
+        columns: u16::MAX,
+        rows: 100,
+    };
+    spawned
+        .client
+        .resize(
+            wide,
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        )
+        .unwrap();
+    let snapshot = wait_until("the clamped resize", || {
+        let snapshot = spawned.client.read_snapshot().unwrap();
+        if snapshot.size == GridSize::clamped(wide.columns, wide.rows) {
+            Ok(snapshot)
+        } else {
+            Err(snapshot.size)
+        }
+    });
+    assert!(snapshot.size.cells() <= MAX_GRID_CELLS);
+    assert!(snapshot.size.columns > 10 * snapshot.size.rows, "resize");
+    first_update_fits(&spawned.client, &snapshot);
+    mux.shutdown().unwrap();
+}

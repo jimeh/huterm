@@ -55,15 +55,15 @@ dependencies = [
 
 [[package]]
 name = "huterm-ipc-sim"
-version = "0.31.0"
+version = "0.34.0"
 
 [[package]]
 name = "huterm-protocol"
-version = "0.31.0"
+version = "0.34.0"
 
 [[package]]
 name = "huterm-wire"
-version = "0.31.0"
+version = "0.34.0"
 dependencies = [
  "huterm-protocol",
 ]

@@ -21,5 +21,10 @@ url = "=2.5.8"
 filedescriptor.workspace = true
 nix.workspace = true
 
+[dev-dependencies]
+# Core's grid and cell invariants exist so every state encodes; its tests
+# encode a clamped terminal's first update to show it.
+huterm-wire.workspace = true
+
 [lints]
 workspace = true

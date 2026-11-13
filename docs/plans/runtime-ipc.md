@@ -1,7 +1,7 @@
 # Local runtime IPC
 
-Status: in progress for [issue #44][issue-44]. Slice 1 is implemented, with
-the revisions recorded under it; slices 2 to 5 remain.
+Status: in progress for [issue #44][issue-44]. Slices 1 and 2 are
+implemented, with the revisions recorded under each; slices 3a to 5 remain.
 
 Named server mode moves the runtime out of the desktop process. This plan
 defines the contract that carries runtime requests, results, the hierarchy
@@ -328,7 +328,8 @@ than one per payload kind:
   fields.
 - **Server memory.** The server holds at most `SERVER_REASSEMBLY_BUDGET`
   of unfinished client messages: `MAX_OPEN_STREAMS` times the largest client
-  message cap, which is a paste at its limit, so a little over 4 MiB.
+  message cap, which is text input or a paste at its limit, so a little over
+  4 MiB.
   `Welcome` advertises it with every cap that binds the client. A client
   waits rather than exceed it, so a well-behaved client never meets the
   limit, and exceeding it is a protocol violation.
@@ -978,10 +979,11 @@ A disconnect never closes a terminal, workspace, or session.
 | `OUTBOUND_BUDGET` per connection | 8 MiB | Producers wait; inbound reading pauses |
 | `WRITER_STALL_DEADLINE` | 30 s | Disconnect |
 | `MAX_OPEN_STREAMS` per direction per connection | 4, one of the server's kept for host effects | Sender waits; receiving more is a protocol violation |
-| `SERVER_REASSEMBLY_BUDGET` per connection, advertised in `Welcome` | `MAX_OPEN_STREAMS` times the paste message cap, about 4 MiB | Sender waits; receiving more is a protocol violation |
+| `SERVER_REASSEMBLY_BUDGET` per connection, advertised in `Welcome` | `MAX_OPEN_STREAMS` times the largest client message cap, text input at its limit, about 4 MiB | Sender waits; receiving more is a protocol violation |
 | `STREAM_IDLE_DEADLINE` | 30 s, paused while the server is not reading | Protocol violation |
 | `CLIPBOARD_PAYLOAD_LIMIT`, `SELECTION_PAYLOAD_LIMIT` | 64 MiB of text each | Sender refuses with `LimitExceeded` |
-| `PASTE_PAYLOAD_LIMIT` | `VIEWER_INPUT_BUDGET` | Sender refuses with `LimitExceeded` |
+| `PASTE_PAYLOAD_LIMIT`, `INPUT_TEXT_PAYLOAD_LIMIT` | `VIEWER_INPUT_BUDGET` | Sender refuses with `LimitExceeded` |
+| `MAX_CHARACTER_TEXT_BYTES` | 256 bytes for a character chord's text and its layout text | Sender refuses with `LimitExceeded` |
 | `EFFECT_RESPONSE_PAYLOAD_LIMIT` | 64 KiB | Sender refuses with `LimitExceeded` |
 | `MessageCaps`, per kind and negotiated minor version | The kind's payload limit or core invariants plus its worst-case encoding overhead; 64 KiB for requests without a payload | Receiving more is a protocol violation |
 | `MAX_GRID_CELLS`, a core invariant | 1,048,576 cells | Core clamps every grid it is given: spawn, split, resize, and geometry reports |
@@ -1598,6 +1600,86 @@ Acceptance:
   profile and matches.
 - A digest mismatch on a complete snapshot closes the viewer as a contract
   fault without a resync, and a mismatch on a delta resyncs once.
+
+#### Revisions during slice 2
+
+None of these changes a settled decision; each is an implementation choice
+within the contract, or a narrow correction to its text.
+
+- **Ghostty bounds graphemes below the cell text limit.** The pinned Ghostty
+  keeps a cluster's first codepoint and at most 64 more
+  (`grapheme_max_len` in `src/terminal/page.zig`), so a cell holds at most
+  260 bytes and core's cut at `MAX_CELL_TEXT_BYTES` guards a pin that raises
+  that bound. No grapheme can reach the limit through the engine today, so
+  the core test pins Ghostty's bound through the engine and checks the
+  extraction helper's cut directly; the wire tests encode rows at the limit.
+- **The grid opens an update's record.** A receiver needs the grid to know
+  an update's cap, so `columns` and `rows` are the record's first fields.
+  The reassembler reads them with the kind and length before it buffers
+  more, and the decoder checks the whole message against
+  `MessageCaps::update_cap` for that grid. The kind's own cap is the largest
+  any grid allows, about 1.1 GiB at `MAX_GRID_CELLS`, which only a worst case
+  near the cell cap approaches.
+- **One clamp for every grid.** `GridSize::clamped` applies
+  `MAX_GRID_CELLS` as well as its one-cell minimum, shrinking both
+  dimensions by one factor so the aspect stays. Geometry reports, initial
+  viewer geometry, and PTY sizes already went through it, and
+  `TerminalRuntime::spawn_in` now clamps a command's grid past the cap, which
+  covers spawns and splits. A smaller grid reaches the engine unchanged, so
+  an empty one still fails initialization before the child starts.
+- **Style flags.** A style-table entry is a foreground, a background, and a
+  flag bitset. Minor version 0 defines the eight `CellStyle` flags in
+  declaration order, and a decoder rejects any other bit, so a sender
+  projects a newer flag onto an older peer through
+  `UpdateRow::flags(column, minor)`. The test-only minor version's flag is a
+  curly underline, projected as a plain underline. Runs are packed, a style
+  index and then a sequence of cell texts, while full rows and style entries
+  are records so a later minor version can append fields; the cap reserves 4
+  bytes for each.
+- **Every update carries the default background.** The list of non-row
+  fields above omits `default_background` (OSC 11), which
+  `TerminalSnapshot` carries; every update carries it and the digest covers
+  it.
+- **The view digest lives in `huterm-wire`.** `update::view_digest` is
+  FNV-1a over a canonical encoding that is independent of the codec, and it
+  hashes each cell's flags as `UpdateRow::flags` projects them for the
+  negotiated minor version. Unlike the hierarchy digest, core never computes
+  it: the server's encoder and the client's view both sit on
+  `huterm-wire`. `vectors::SAMPLE_VIEW_DIGEST` pins the encoding.
+- **Stale updates.** A client discards any update whose number is not above
+  the last one it applied, complete or delta, without a resync, so a
+  duplicated or late complete snapshot never rolls the view back. A delta
+  applies only when it names exactly the last applied update. A delta whose
+  digest differs is still installed, as the best view the client has, while
+  the client waits for the snapshot that answers its one `ResyncViewer`.
+- **Viewer messages.** Slice 2 adds the kinds `TerminalUpdate` 8,
+  `ViewerStatus` 9, `Input` 10, `InputAck` 11, `Credit` 12, and
+  `ResyncViewer` 13. `Paste` gains the `InputStamp` that `Input` carries,
+  after its sequence. `Credit` grants 1 to `MAX_VIEWER_CREDIT` credits and
+  names the last applied update. Text input is bounded by
+  `INPUT_TEXT_PAYLOAD_LIMIT`, the viewer input budget, as a paste is, so
+  `Input` is now the largest client message; a character chord's texts are
+  bounded by `MAX_CHARACTER_TEXT_BYTES`. Focus, scroll, and geometry stay
+  with slice 3a's request inventory and slice 3b.
+- **Status text covers command records and metadata.**
+  `MAX_STATUS_TEXT_BYTES` also bounds each command record's text, which core
+  already cut at 4096 bytes, and every metadata string: directory hosts and
+  paths and the foreground process and title. The status cap includes the
+  256 command records. Times travel as signed seconds and nanoseconds from
+  the Unix epoch. A decoder rejects failures or command records out of
+  increasing sequence order, which `StatusBaseline` and the record lookups
+  assume.
+- **Generic rows.** `UpdateEncoder` and `ViewerView` are generic over the
+  rows they encode and hold (`UpdateSource`, `SourceRow`, `ViewRow`), with
+  `Arc<TerminalSnapshot>` and `Arc<TerminalRow>` as the defaults, so the
+  test-only minor version reuses them with its own rows.
+- **Core's grid test encodes.** `huterm-core` gains a dev-dependency on
+  `huterm-wire`, so its grid test encodes the first update of a clamped
+  spawn, split, and resize. Its normal dependencies are unchanged.
+- **The worst case at the cell cap is measured, not built.** A worst-case
+  update at `MAX_GRID_CELLS` is over 1 GiB. The test encodes its header with
+  every row kept, then encodes each full row and its style entries one row
+  at a time and sums the lengths, so the whole message never exists.
 
 ### Slice 3a: server and client, requests and hierarchy
 

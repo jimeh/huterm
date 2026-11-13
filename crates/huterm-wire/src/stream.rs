@@ -29,8 +29,10 @@ pub const STREAM_IDLE_DEADLINE: Duration = Duration::from_secs(30);
 pub const HOST_EFFECT_STREAM: u32 = 3;
 const _: () = assert!(HOST_EFFECT_STREAM as usize == MAX_OPEN_STREAMS - 1);
 
-/// The most bytes a message's kind varint and record length prefix take.
-const MAX_HEADER_BYTES: usize = 20;
+/// The most bytes a message's header takes: its kind varint, its record
+/// length prefix, and, for a terminal update, the grid whose size bounds
+/// the update.
+const MAX_HEADER_BYTES: usize = 20 + 2 * 3;
 
 /// Why a received frame broke the stream rules. Every one ends the
 /// connection.
@@ -297,8 +299,23 @@ fn declared(
     let kind = MessageKind::from_number(number)
         .filter(|kind| kind.direction() == from)
         .ok_or(StreamError::UnexpectedKind(number))?;
-    let cap = caps.cap(kind).ok_or(StreamError::UnexpectedKind(number))?;
+    let mut cap = caps.cap(kind).ok_or(StreamError::UnexpectedKind(number))?;
     let header_len = bytes.len().min(MAX_HEADER_BYTES) - reader.remaining();
+    if kind == MessageKind::TerminalUpdate {
+        // An update's cap follows the grid that opens its record, so the
+        // receiver waits for the grid before it buffers more.
+        match crate::update::read_grid(&mut reader) {
+            Ok(size) => {
+                cap = caps.update_cap(size).ok_or(StreamError::Header(
+                    DecodeError::Invalid("grid size"),
+                ))?;
+            }
+            Err(DecodeError::Truncated) if bytes.len() < MAX_HEADER_BYTES => {
+                return Ok(None);
+            }
+            Err(error) => return Err(StreamError::Header(error)),
+        }
+    }
     let total = header_len
         .checked_add(record)
         .filter(|total| *total <= cap)

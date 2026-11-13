@@ -1257,6 +1257,21 @@ fn row_prompt(mark: RowSemanticPrompt) -> RowPrompt {
     }
 }
 
+/// A cell's grapheme cluster as cell text. A cluster past
+/// [`MAX_CELL_TEXT_BYTES`] is cut here, the one place rows are extracted, so
+/// every client sees the same bounded text. The pinned Ghostty stores at
+/// most 64 codepoints after a cluster's first, so this guards a pin that
+/// raises that bound.
+///
+/// [`MAX_CELL_TEXT_BYTES`]: huterm_protocol::MAX_CELL_TEXT_BYTES
+pub(super) fn grapheme_text(grapheme: &[u8]) -> CellText {
+    if grapheme.is_empty() {
+        CellText::EMPTY
+    } else {
+        CellText::truncated(&String::from_utf8_lossy(grapheme))
+    }
+}
+
 /// Reads one row's cells and flags into `out`, reusing its allocation.
 fn extract_row(
     row: &mut ghostty::RenderRow<'_>,
@@ -1309,11 +1324,7 @@ fn extract_row(
             // is not zero, so a written space is text and these are not.
             CellContent::Grapheme => {
                 cells.graphemes_utf8(grapheme)?;
-                let text = if grapheme.is_empty() {
-                    CellText::EMPTY
-                } else {
-                    CellText::new(&String::from_utf8_lossy(grapheme))
-                };
+                let text = grapheme_text(grapheme);
                 (text, style.background)
             }
             CellContent::BackgroundPalette => (
