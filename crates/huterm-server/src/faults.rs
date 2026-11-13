@@ -10,7 +10,10 @@
 //! the simulation's broker profiles as their specification: latency,
 //! jitter, fragmentation, bounded buffers, stalled and trickling readers,
 //! connection cuts, work held and completed out of order, and decodable
-//! damage to deltas.
+//! damage to deltas. Every viewer also receives host effects: terminals
+//! ask for clipboard writes, large ones on faulty links so writes miss
+//! their deadlines, and clients on faulty links toggle their permission
+//! while effects are on their way.
 //!
 //! After the faults stop, each run makes every viewer visible, lets the
 //! terminals publish past the next update digest, waits for quiescence,
@@ -19,16 +22,21 @@
 //! recovered by resync; without damage no client resyncs or faults, so no
 //! lane reordered a message and no credit went wrong; no input reaches a
 //! terminal twice or out of order; on a healthy link every input arrives;
-//! and no connection ever retains more than its bound.
+//! and no connection ever retains more than its bound. For host effects:
+//! each effect reaches at most one client, the one whose viewer core chose,
+//! in order per viewer; on a healthy link every effect arrives; and no
+//! terminal holds a reservation once its effects are done.
 //!
 //! The normal suite runs every scenario over a few seeds. `mise run
 //! faults:ipc` runs many more in release, and `mise run faults:ipc --
 //! SCENARIO SEED` replays one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use huterm_client::{ClientEvent, CloseReason};
-use huterm_protocol::{GridSize, TerminalInput};
+use huterm_client::{ClientEvent, CloseReason, ViewerEvent};
+use huterm_protocol::{GridSize, HostEffectKind, TerminalInput, ViewerId};
+use huterm_wire::effect::EffectPayload;
+use huterm_wire::response::{Response, Success};
 
 use crate::ServerConfig;
 use crate::model::ModelLimits;
@@ -195,6 +203,23 @@ pub(crate) struct Report {
     pub(crate) resyncs: u64,
     pub(crate) revoked: usize,
     pub(crate) closed: usize,
+    pub(crate) effects_admitted: usize,
+    pub(crate) effects_delivered: usize,
+    pub(crate) effects_discarded: u64,
+    pub(crate) effects_expired: u64,
+    pub(crate) permission_changes: usize,
+}
+
+/// The text of terminal `terminal`'s `n`th clipboard write, padded with
+/// `padding` bytes so a large write misses its deadline on a slow link.
+fn effect_token(terminal: usize, n: u64, padding: usize) -> String {
+    format!("e{terminal}.{n}~{}", "~".repeat(padding))
+}
+
+fn parse_effect(text: &str) -> Option<(usize, u64)> {
+    let (head, _) = text.split_once('~')?;
+    let (terminal, n) = head.strip_prefix('e')?.split_once('.')?;
+    Some((terminal.parse().ok()?, n.parse().ok()?))
 }
 
 /// The token peer `peer` types into terminal `terminal` as its `n`th input.
@@ -237,13 +262,18 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
     for peer in 0..scenario.peers {
         for terminal in 0..scenario.terminals {
             let visible = world.rng.chance(700);
-            world.want(peer, terminal, visible);
+            world.want_effects(peer, terminal, visible);
         }
         if scenario.damage > 0 {
             world.tamper(peer, scenario.damage);
         }
     }
     let mut typed: BTreeMap<(usize, usize), u64> = BTreeMap::new();
+    // Each terminal's writes so far, and the viewer core chose for each.
+    let mut written: BTreeMap<usize, u64> = BTreeMap::new();
+    let mut admitted: BTreeMap<(usize, u64), ViewerId> = BTreeMap::new();
+    // Viewers whose client revoked the clipboard.
+    let mut revoked_clipboard: BTreeSet<ViewerId> = BTreeSet::new();
     let mut reconnect_at: BTreeMap<usize, u64> = BTreeMap::new();
     let start = world.now;
     let deadline = u64::try_from(
@@ -263,6 +293,18 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
                 ),
                 45..60 => model.move_cursor(u16::try_from(roll).unwrap_or(0)),
                 60..62 => model.bell(),
+                62..67 => {
+                    // Now and then a large write, on a faulty link.
+                    let large = roll == 66 && !scenario.healthy;
+                    let n = written.get(&terminal).copied().unwrap_or(0) + 1;
+                    let padding = if large { 256 << 10 } else { 0 };
+                    let text = effect_token(terminal, n, padding);
+                    if let Some(viewer) = model.admit_clipboard(&text) {
+                        written.insert(terminal, n);
+                        admitted.insert((terminal, n), viewer);
+                        report.effects_admitted += 1;
+                    }
+                }
                 _ => {}
             }
             // The PTY drains its queue at its own pace.
@@ -284,6 +326,15 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
                         let text = token(peer, terminal, n);
                         if world.type_text(peer, terminal, &text).is_some() {
                             typed.insert((peer, terminal), n);
+                            // Typing makes the viewer the most recently
+                            // active, as in core.
+                            if let Some(viewer) = world.viewer(peer, terminal) {
+                                let model = &world.terminals[terminal];
+                                model.activate(ViewerId::in_runtime(
+                                    model.id().runtime(),
+                                    viewer.get(),
+                                ));
+                            }
                         }
                     }
                     20..23 => {
@@ -310,6 +361,29 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
                             world.peers[peer]
                                 .session
                                 .send_focus(viewer, focused);
+                        }
+                    }
+                    // Faulty links only: on a healthy one every effect
+                    // must arrive.
+                    28..33 if !scenario.healthy => {
+                        if let Some(viewer) = world.viewer(peer, terminal) {
+                            let allowed = revoked_clipboard.contains(&viewer);
+                            if world.peers[peer]
+                                .session
+                                .set_host_effect_permission(
+                                    viewer,
+                                    HostEffectKind::Clipboard,
+                                    allowed,
+                                )
+                                .is_ok()
+                            {
+                                if allowed {
+                                    revoked_clipboard.remove(&viewer);
+                                } else {
+                                    revoked_clipboard.insert(viewer);
+                                }
+                                report.permission_changes += 1;
+                            }
                         }
                     }
                     _ => {}
@@ -381,6 +455,21 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
         }
     }
     world.hold_work = false;
+    world.settle(60_000);
+    // Every live viewer permits the clipboard again.
+    for peer in 0..scenario.peers {
+        for terminal in 0..scenario.terminals {
+            if let Some(viewer) = world.viewer(peer, terminal)
+                && revoked_clipboard.remove(&viewer)
+            {
+                let _ = world.peers[peer].session.set_host_effect_permission(
+                    viewer,
+                    HostEffectKind::Clipboard,
+                    true,
+                );
+            }
+        }
+    }
     world.settle(60_000);
     // Publish past the next update digest, so damage a kept row still
     // carries is found and repaired.
@@ -461,6 +550,7 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
     if report.damaged == 0 && report.resyncs > 0 {
         return Err(format!("{} resyncs without damage", report.resyncs));
     }
+    check_effects(&world, scenario, &admitted, &mut report)?;
     // Input reaches each terminal at most once and in order, and on a
     // healthy link every input arrives.
     for (terminal, model) in world.terminals.iter().enumerate() {
@@ -502,6 +592,93 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
         }
     }
     Ok(report)
+}
+
+/// Checks the host effects every peer received against what each terminal
+/// admitted and to which viewer.
+fn check_effects(
+    world: &World,
+    scenario: &Scenario,
+    admitted: &BTreeMap<(usize, u64), ViewerId>,
+    report: &mut Report,
+) -> Result<(), String> {
+    // Viewer numbers are unique across the world, so each names its peer.
+    let mut owners: BTreeMap<u64, usize> = BTreeMap::new();
+    for (index, peer) in world.peers.iter().enumerate() {
+        for event in &peer.log {
+            if let ClientEvent::Result {
+                outcome:
+                    Ok(Success {
+                        response: Response::Viewer { viewer, .. },
+                        ..
+                    }),
+                ..
+            } = event
+            {
+                owners.insert(viewer.get(), index);
+            }
+        }
+    }
+    let mut delivered: BTreeSet<(usize, u64)> = BTreeSet::new();
+    let mut last: BTreeMap<u64, u64> = BTreeMap::new();
+    for (index, peer) in world.peers.iter().enumerate() {
+        report.effects_discarded += peer.session.stats().effects_discarded;
+        report.effects_expired += peer.effects_expired
+            + peer
+                .connection
+                .as_ref()
+                .map_or(0, |connection| connection.effect_stats().expired);
+        for event in &peer.log {
+            let ClientEvent::Viewer(ViewerEvent::HostEffect(delivery)) = event
+            else {
+                continue;
+            };
+            let EffectPayload::ClipboardWrite { text, .. } = &delivery.payload
+            else {
+                return Err(format!("peer {index} got {:?}", delivery.payload));
+            };
+            let Some(key) = parse_effect(text) else {
+                return Err(format!("peer {index} got a write {text:.32?}"));
+            };
+            if !delivered.insert(key) {
+                return Err(format!("effect {key:?} arrived twice"));
+            }
+            let Some(chosen) = admitted.get(&key) else {
+                return Err(format!("effect {key:?} was never admitted"));
+            };
+            if chosen.get() != delivery.viewer.get()
+                || owners.get(&chosen.get()) != Some(&index)
+            {
+                return Err(format!(
+                    "effect {key:?} for viewer {} reached peer {index}'s viewer {}",
+                    chosen.get(),
+                    delivery.viewer.get()
+                ));
+            }
+            let previous = last.insert(chosen.get(), key.1).unwrap_or(0);
+            if key.1 <= previous {
+                return Err(format!(
+                    "viewer {} got effect {key:?} after {previous}",
+                    chosen.get()
+                ));
+            }
+            report.effects_delivered += 1;
+        }
+    }
+    if scenario.healthy
+        && let Some(lost) = admitted.keys().find(|key| !delivered.contains(key))
+    {
+        return Err(format!("effect {lost:?} never arrived on a healthy link"));
+    }
+    for (index, terminal) in world.terminals.iter().enumerate() {
+        if terminal.effects_held() != (0, 0) {
+            return Err(format!(
+                "terminal {index} still holds {:?} for effects",
+                terminal.effects_held()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_retained(world: &World) -> Result<(), String> {
@@ -549,6 +726,16 @@ mod tests {
             let written: usize =
                 reports.iter().map(|report| report.inputs_written).sum();
             assert!(written > 0, "{} wrote no input", scenario.name);
+            let effects: usize =
+                reports.iter().map(|report| report.effects_delivered).sum();
+            assert!(effects > 0, "{} delivered no effect", scenario.name);
+            if !scenario.healthy {
+                assert!(
+                    reports.iter().any(|report| report.permission_changes > 0),
+                    "{} changed no permission",
+                    scenario.name
+                );
+            }
             if scenario.cut > 0 {
                 assert!(
                     reports.iter().any(|report| report.cuts > 0),
@@ -626,7 +813,7 @@ mod tests {
         for scenario in scenarios() {
             let reports = check(&scenario, 0..seeds);
             println!(
-                "faults scenario={} seeds={seeds} cuts={} stalls={} stall_disconnects={} revoked={} closed={} damaged={} resyncs={} inputs={}",
+                "faults scenario={} seeds={seeds} cuts={} stalls={} stall_disconnects={} revoked={} closed={} damaged={} resyncs={} inputs={} effects={}/{} discarded={} expired={} permission_changes={}",
                 scenario.name,
                 reports.iter().map(|r| r.cuts).sum::<usize>(),
                 reports.iter().map(|r| r.stalls).sum::<usize>(),
@@ -636,6 +823,11 @@ mod tests {
                 reports.iter().map(|r| r.damaged).sum::<u64>(),
                 reports.iter().map(|r| r.resyncs).sum::<u64>(),
                 reports.iter().map(|r| r.inputs_written).sum::<usize>(),
+                reports.iter().map(|r| r.effects_delivered).sum::<usize>(),
+                reports.iter().map(|r| r.effects_admitted).sum::<usize>(),
+                reports.iter().map(|r| r.effects_discarded).sum::<u64>(),
+                reports.iter().map(|r| r.effects_expired).sum::<u64>(),
+                reports.iter().map(|r| r.permission_changes).sum::<usize>(),
             );
         }
         for seed in 0..seeds {

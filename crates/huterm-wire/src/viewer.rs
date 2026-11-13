@@ -16,6 +16,9 @@ use huterm_protocol::{
 
 use crate::caps::{INPUT_TEXT_PAYLOAD_LIMIT, MAX_CHARACTER_TEXT_BYTES};
 use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
+#[cfg(doc)]
+use crate::effect::INITIAL_EFFECT_GENERATION;
+use crate::effect::{EffectKinds, read_kinds, write_kinds};
 use crate::handshake::MAX_VIEWER_CREDIT;
 use crate::status::{decode_status, encode_status};
 
@@ -114,8 +117,8 @@ pub const MAX_LINK_TEXT_BYTES: usize = 32 << 10;
 /// with, as core's viewer options carry them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubscribeOptions {
-    /// The requests the viewer may make. Host effects arrive with slice 4;
-    /// a server refuses them until then.
+    /// The requests the viewer may make. A viewer with the `host_effects`
+    /// capability registers a host-effect recipient.
     pub capabilities: ViewerCapabilities,
     /// Whether the viewer starts focused.
     pub focused: bool,
@@ -126,6 +129,11 @@ pub struct SubscribeOptions {
     /// Set only by the client that created the terminal, so an exit before
     /// its first status counts as an exit transition.
     pub spawned: bool,
+    /// The host-effect kinds the client permits terminal content to use
+    /// through this viewer from the start, each at
+    /// [`INITIAL_EFFECT_GENERATION`]. Ignored without the `host_effects`
+    /// capability.
+    pub allowed_effects: EffectKinds,
 }
 
 /// What a key or mouse report counts against its viewer's input window,
@@ -430,6 +438,7 @@ pub(crate) fn encode_subscribe_options(
         geometry,
         presentation,
         spawned,
+        allowed_effects,
     } = options;
     w.record(|w| {
         write_capabilities(w, *capabilities);
@@ -441,6 +450,7 @@ pub(crate) fn encode_subscribe_options(
         })?;
         w.option(presentation.as_deref(), crate::launch::encode_presentation)?;
         w.bool(*spawned);
+        write_kinds(w, *allowed_effects);
         Ok(())
     })
 }
@@ -466,6 +476,7 @@ pub(crate) fn decode_subscribe_options(
                 crate::launch::decode_presentation(r).map(Box::new)
             })?,
             spawned: r.bool()?,
+            allowed_effects: read_kinds(r)?,
         })
     })
 }

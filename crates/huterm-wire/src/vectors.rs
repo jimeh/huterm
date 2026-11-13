@@ -32,6 +32,9 @@ use huterm_protocol::{
 use crate::caps::{Direction, MessageCaps};
 use crate::codec::IdScope;
 use crate::command::DecodedInvocation;
+use crate::effect::{
+    EffectKinds, EffectPayload, HostEffect, SetHostEffectPermission,
+};
 use crate::error::{ErrorCode, Retry, WireError};
 use crate::frame::{Frame, FrameEnd};
 use crate::handshake::{
@@ -39,9 +42,7 @@ use crate::handshake::{
     TransportProfile, Welcome,
 };
 use crate::hierarchy::{HierarchyContext, HierarchySnapshot, SequencedEvent};
-use crate::message::{
-    DecodeContext, EffectPayload, HostEffect, Message, Paste,
-};
+use crate::message::{DecodeContext, Message, Paste};
 use crate::request::{
     Beside, Cancel, CloseEffect, CloseRequest, MoveDestination, PaneRef,
     Request, RequestId, RequestMessage, RestoreDirection,
@@ -1074,7 +1075,7 @@ fn viewer_requests() -> Vec<Request> {
                     input: true,
                     viewport: true,
                     size: true,
-                    host_effects: false,
+                    host_effects: true,
                 },
                 focused: true,
                 geometry: Some((
@@ -1089,6 +1090,8 @@ fn viewer_requests() -> Vec<Request> {
                 )),
                 presentation: None,
                 spawned: true,
+                allowed_effects: EffectKinds::NONE
+                    .with(huterm_protocol::HostEffectKind::Clipboard, true),
             },
         },
         Request::CloseViewer { viewer: viewer() },
@@ -1583,21 +1586,6 @@ pub fn minor_0_messages() -> Vec<MessageVector> {
             }),
             PASTE,
         ),
-        from_server(
-            "clipboard write",
-            Message::HostEffect(HostEffect {
-                effect: 1,
-                viewer: ViewerId::in_runtime(RUNTIME, 30),
-                permission_generation: 2,
-                terminal: TerminalId::in_runtime(RUNTIME, 6),
-                payload: EffectPayload::ClipboardWrite {
-                    destination: ClipboardDestination::System,
-                    text: "copied".into(),
-                },
-                response_deadline_ms: None,
-            }),
-            CLIPBOARD_WRITE,
-        ),
     ];
     for ((event, bytes), seq) in every_event().into_iter().zip(EVENTS).zip(43..)
     {
@@ -1611,9 +1599,66 @@ pub fn minor_0_messages() -> Vec<MessageVector> {
             bytes,
         ));
     }
+    vectors.extend(effect_vectors());
     vectors.extend(viewer_vectors());
     vectors.extend(request_vectors());
     vectors
+}
+
+/// The host-effect vectors, slice 4's.
+fn effect_vectors() -> Vec<MessageVector> {
+    let from_server = |name, message, bytes| MessageVector {
+        name,
+        from: Direction::ServerToClient,
+        message,
+        bytes,
+    };
+    let from_client = |name, message, bytes| MessageVector {
+        name,
+        from: Direction::ClientToServer,
+        message,
+        bytes,
+    };
+    vec![
+        from_server(
+            "clipboard write",
+            Message::HostEffect(HostEffect {
+                effect: 1,
+                viewer: ViewerId::in_runtime(RUNTIME, 30),
+                permission_generation: 2,
+                terminal: TerminalId::in_runtime(RUNTIME, 6),
+                payload: EffectPayload::ClipboardWrite {
+                    destination: ClipboardDestination::System,
+                    text: "copied".into(),
+                },
+            }),
+            CLIPBOARD_WRITE,
+        ),
+        from_server(
+            "notification",
+            Message::HostEffect(HostEffect {
+                effect: 2,
+                viewer: ViewerId::in_runtime(RUNTIME, 30),
+                permission_generation: 3,
+                terminal: TerminalId::in_runtime(RUNTIME, 6),
+                payload: EffectPayload::Notification {
+                    title: "build".into(),
+                    body: "done".into(),
+                },
+            }),
+            NOTIFICATION,
+        ),
+        from_client(
+            "host effect permission",
+            Message::SetHostEffectPermission(SetHostEffectPermission {
+                viewer: ViewerId::in_runtime(RUNTIME, 30),
+                kind: huterm_protocol::HostEffectKind::Notification,
+                generation: 2,
+                allowed: false,
+            }),
+            SET_HOST_EFFECT_PERMISSION,
+        ),
+    ]
 }
 
 /// The request, result, and cancel vectors.
@@ -1775,16 +1820,17 @@ const HELLO: &[u8] = &[
     0x75, 0x74, 0x65, 0x72, 0x6d, 0x06, 0x30, 0x2e, 0x33, 0x31, 0x2e, 0x30,
 ];
 const WELCOME: &[u8] = &[
-    0x01, 0x76, 0x01, 0x00, 0x00, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
+    0x01, 0x7a, 0x01, 0x00, 0x00, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
     0xfe, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xa5, 0xa5, 0xa5,
     0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
     0xa5, 0x06, 0x64, 0x65, 0x76, 0x62, 0x6f, 0x78, 0x07, 0x64, 0x65, 0x66,
     0x61, 0x75, 0x6c, 0x74, 0x06, 0x30, 0x2e, 0x33, 0x31, 0x2e, 0x30, 0x92,
-    0x21, 0x80, 0x80, 0x40, 0x37, 0x40, 0x02, 0x80, 0x80, 0x40, 0xd4, 0x87,
-    0x80, 0x02, 0x08, 0x00, 0x80, 0x80, 0x01, 0x06, 0xb1, 0x81, 0x40, 0x0a,
+    0x21, 0x80, 0x80, 0x40, 0x3b, 0x40, 0x02, 0x80, 0x80, 0x40, 0xd4, 0x87,
+    0x80, 0x02, 0x09, 0x00, 0x80, 0x80, 0x01, 0x06, 0xb1, 0x81, 0x40, 0x0a,
     0xf5, 0x81, 0x40, 0x0c, 0x80, 0x80, 0x04, 0x0d, 0x80, 0x80, 0x04, 0x0e,
-    0x88, 0xb1, 0x26, 0x10, 0x80, 0x80, 0x04, 0x11, 0x80, 0x80, 0x04, 0xb0,
-    0xea, 0x01, 0xb0, 0xea, 0x01, 0xd0, 0x0f, 0x80, 0x80, 0x80, 0x04, 0x00,
+    0x88, 0xb1, 0x26, 0x10, 0x80, 0x80, 0x04, 0x11, 0x80, 0x80, 0x04, 0x15,
+    0x80, 0x80, 0x04, 0xb0, 0xea, 0x01, 0xb0, 0xea, 0x01, 0xd0, 0x0f, 0x80,
+    0x80, 0x80, 0x04, 0x00,
 ];
 const REJECT_MAJOR: &[u8] = &[
     0x02, 0x0c, 0x00, 0x02, 0x01, 0x00, 0x07, 0x75, 0x70, 0x67, 0x72, 0x61,
@@ -1826,9 +1872,14 @@ const PASTE: &[u8] = &[
     0x20, 0x68, 0x69, 0x0a,
 ];
 const CLIPBOARD_WRITE: &[u8] = &[
-    0x07, 0x0f, 0x01, 0x1e, 0x02, 0x06, 0x00, 0x08, 0x00, 0x06, 0x63, 0x6f,
-    0x70, 0x69, 0x65, 0x64, 0x00,
+    0x07, 0x0e, 0x01, 0x1e, 0x02, 0x06, 0x00, 0x08, 0x00, 0x06, 0x63, 0x6f,
+    0x70, 0x69, 0x65, 0x64,
 ];
+const NOTIFICATION: &[u8] = &[
+    0x07, 0x11, 0x02, 0x1e, 0x03, 0x06, 0x01, 0x0b, 0x05, 0x62, 0x75, 0x69,
+    0x6c, 0x64, 0x04, 0x64, 0x6f, 0x6e, 0x65,
+];
+const SET_HOST_EFFECT_PERMISSION: &[u8] = &[0x15, 0x04, 0x1e, 0x01, 0x02, 0x00];
 const EVENTS: [&[u8]; 23] = [
     &[
         0x04, 0x1a, 0x2b, 0x00, 0x0e, 0x0c, 0x14, 0x00, 0x09, 0x53, 0x65, 0x73,
@@ -2265,8 +2316,8 @@ const REQUESTS: [&[u8]; 63] = [
         0x63, 0x6f, 0x75, 0x6e, 0x74, 0x01, 0x01, 0x04,
     ],
     &[
-        0x0e, 0x0f, 0x37, 0x2e, 0x0c, 0x1a, 0x06, 0x09, 0x07, 0x01, 0x01, 0x50,
-        0x18, 0x09, 0x12, 0x00, 0x01,
+        0x0e, 0x10, 0x37, 0x2e, 0x0d, 0x1a, 0x06, 0x0a, 0x0f, 0x01, 0x01, 0x50,
+        0x18, 0x09, 0x12, 0x00, 0x01, 0x01,
     ],
     &[0x0e, 0x04, 0x38, 0x2f, 0x01, 0x1e],
     &[

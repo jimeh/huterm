@@ -7,9 +7,11 @@ use std::time::{Duration, Instant};
 use huterm_protocol::TerminalNotification;
 
 /// Characters a notification title keeps; longer titles end in an ellipsis.
-pub(crate) const TITLE_CHAR_LIMIT: usize = 128;
+pub(crate) const TITLE_CHAR_LIMIT: usize =
+    huterm_protocol::NOTIFICATION_TITLE_CHARS;
 /// Characters a notification body keeps; longer bodies end in an ellipsis.
-pub(crate) const BODY_CHAR_LIMIT: usize = 512;
+pub(crate) const BODY_CHAR_LIMIT: usize =
+    huterm_protocol::NOTIFICATION_BODY_CHARS;
 /// Notifications one terminal may send at once before the limit applies.
 pub(crate) const NOTIFICATION_BURST: u32 = 4;
 /// How long one terminal waits for each notification after its burst.
@@ -186,6 +188,16 @@ mod tests {
         assert_eq!(long.0.chars().count(), TITLE_CHAR_LIMIT + 1);
         assert!(long.0.ends_with("t…"));
         assert_eq!(long.1, format!("{exact}…"));
+    }
+
+    #[test]
+    fn the_longest_fields_fit_their_byte_bounds() {
+        // Four-byte characters past each limit, so the ellipsis follows.
+        let title = "😀".repeat(TITLE_CHAR_LIMIT + 1);
+        let body = "😀".repeat(BODY_CHAR_LIMIT + 1);
+        let (title, body) = text(&title, &body).unwrap();
+        assert_eq!(title.len(), huterm_protocol::MAX_NOTIFICATION_TITLE_BYTES);
+        assert_eq!(body.len(), huterm_protocol::MAX_NOTIFICATION_BODY_BYTES);
     }
 
     #[test]

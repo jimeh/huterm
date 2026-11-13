@@ -26,7 +26,7 @@ pub use config::{
 };
 pub use outbound::{FRAME_HEADER_LEN, Transmit};
 pub use session::{
-    CallId, ClientEvent, ClientSession, CloseReason, Connected,
+    CallId, ClientEvent, ClientSession, CloseReason, Connected, EffectDelivery,
     HierarchyUpdate, MAX_PENDING_CHECKPOINTS, Resolution, SessionStats,
     ViewerEvent, WaitId,
 };

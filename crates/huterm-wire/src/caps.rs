@@ -12,8 +12,9 @@
 
 use huterm_protocol::{
     COMMAND_RECORD_CAPACITY, GridSize, MAX_CELL_TEXT_BYTES, MAX_GRID_CELLS,
-    MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, MAX_SPLIT_CHILDREN,
-    MAX_STATUS_TEXT_BYTES, TERMINAL_FAILURE_CAPACITY,
+    MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, MAX_NOTIFICATION_BODY_BYTES,
+    MAX_NOTIFICATION_TITLE_BYTES, MAX_SPLIT_CHILDREN, MAX_STATUS_TEXT_BYTES,
+    TERMINAL_FAILURE_CAPACITY,
 };
 
 use crate::codec::{MAX_VARINT_BYTES, varint_len};
@@ -132,11 +133,14 @@ pub enum MessageKind {
     /// The result of a request whose result may exceed the `Result` cap,
     /// such as selection text, on the large-result lane.
     LargeResult,
+    /// A client's change to one host-effect kind's permission for a
+    /// viewer, numbered by the client and ordered with the viewer's input.
+    SetHostEffectPermission,
 }
 
 impl MessageKind {
     /// Every kind, in number order.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::Hello,
         Self::Welcome,
         Self::Reject,
@@ -158,6 +162,7 @@ impl MessageKind {
         Self::ViewerStopped,
         Self::ViewerRevoked,
         Self::LargeResult,
+        Self::SetHostEffectPermission,
     ];
 
     /// The kind's stable number.
@@ -185,6 +190,7 @@ impl MessageKind {
             Self::ViewerStopped => 18,
             Self::ViewerRevoked => 19,
             Self::LargeResult => 20,
+            Self::SetHostEffectPermission => 21,
         }
     }
 
@@ -205,7 +211,8 @@ impl MessageKind {
             | Self::ResyncViewer
             | Self::Request
             | Self::Cancel
-            | Self::Focus => Direction::ClientToServer,
+            | Self::Focus
+            | Self::SetHostEffectPermission => Direction::ClientToServer,
             Self::Welcome
             | Self::Reject
             | Self::HierarchySnapshot
@@ -288,7 +295,8 @@ impl MessageCaps {
             | MessageKind::Cancel
             | MessageKind::Focus
             | MessageKind::ViewerStopped
-            | MessageKind::ViewerRevoked => SMALL_MESSAGE_CAP,
+            | MessageKind::ViewerRevoked
+            | MessageKind::SetHostEffectPermission => SMALL_MESSAGE_CAP,
         })
     }
 
@@ -394,19 +402,24 @@ const fn paste_record_cap() -> usize {
         + string(PASTE_PAYLOAD_LIMIT)
 }
 
-/// A host effect record: effect, viewer, generation, and terminal, the
-/// payload's tag and record with its destination and text, and the
-/// response option.
+/// A host effect record: effect, viewer, generation, and terminal, then
+/// the payload's tag and record. A clipboard write, its destination and
+/// text, is the largest payload; a notification's title and body are far
+/// smaller.
 const fn host_effect_record_cap() -> usize {
+    let clipboard = 1 + string(CLIPBOARD_PAYLOAD_LIMIT);
+    let notification = string(MAX_NOTIFICATION_TITLE_BYTES)
+        + string(MAX_NOTIFICATION_BODY_BYTES);
+    let payload = if clipboard > notification {
+        clipboard
+    } else {
+        notification
+    } + APPENDED_HEADROOM;
     APPENDED_HEADROOM
         + 4 * MAX_VARINT_BYTES
         + 1
-        + record_prefix(CLIPBOARD_PAYLOAD_LIMIT + APPENDED_HEADROOM)
-        + 1
-        + string(CLIPBOARD_PAYLOAD_LIMIT)
-        + APPENDED_HEADROOM
-        + 1
-        + MAX_VARINT_BYTES
+        + record_prefix(payload)
+        + payload
 }
 
 /// Bytes each style-table entry and each full row reserve for fields later

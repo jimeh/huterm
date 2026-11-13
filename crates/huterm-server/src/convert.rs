@@ -132,8 +132,11 @@ pub(crate) fn opposite(
 /// Core viewer options for a remote viewer: what the client asked for, with
 /// the viewer's own input budget so one connection's paste cannot refuse
 /// another's keystrokes. Host effects arrive with slice 4.
+/// Core's options for a remote viewer: its own input budget, and the
+/// host-effect recipient the connection chose, if the client asked for one.
 pub(crate) fn viewer_options(
     options: huterm_wire::viewer::SubscribeOptions,
+    host_effects: Option<huterm_core::HostEffectViewerOptions>,
 ) -> huterm_core::ViewerOptions {
     let huterm_wire::viewer::SubscribeOptions {
         capabilities,
@@ -141,13 +144,14 @@ pub(crate) fn viewer_options(
         geometry,
         presentation,
         spawned,
+        allowed_effects: _,
     } = options;
     huterm_core::ViewerOptions {
         capabilities: huterm_protocol::ViewerCapabilities {
-            host_effects: false,
+            host_effects: host_effects.is_some(),
             ..capabilities
         },
-        host_effects: None,
+        host_effects,
         focused,
         geometry,
         presentation: presentation.map(|presentation| *presentation),
@@ -164,14 +168,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_remote_viewer_gets_an_input_budget_of_its_own_and_no_host_effects() {
-        let options = viewer_options(SubscribeOptions {
-            capabilities: ViewerCapabilities::ALL,
-            focused: true,
-            geometry: None,
-            presentation: None,
-            spawned: false,
-        });
+    fn a_remote_viewer_gets_an_input_budget_of_its_own_and_only_the_host_effects_granted()
+     {
+        let options = viewer_options(
+            SubscribeOptions {
+                capabilities: ViewerCapabilities::ALL,
+                focused: true,
+                geometry: None,
+                presentation: None,
+                spawned: false,
+                allowed_effects: huterm_wire::effect::EffectKinds::ALL,
+            },
+            None,
+        );
         // One connection's paste then cannot refuse another connection's
         // keystrokes; core's viewer tests cover the budget itself.
         assert_eq!(

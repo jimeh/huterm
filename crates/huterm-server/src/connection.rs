@@ -18,6 +18,8 @@
 //!   handshake, stream idle, and stall deadlines.
 //! - [`Connection::pump`] drains the hierarchy feed after it signals
 //!   activity.
+//! - [`Connection::viewer_woke`] reads what changed for a viewer, its host
+//!   effects included, which go out on the connection's effect lane.
 //! - [`Connection::close`] ends the connection and returns its cleanup
 //!   work. Work still running completes into a closed connection, which
 //!   releases what it created; [`Connection::is_finished`] says when
@@ -26,6 +28,7 @@
 //! A test or a fault-injection harness drives it with any transport and
 //! clock it likes, holding, reordering, or failing work in between.
 
+mod effects;
 mod hierarchy;
 mod history;
 mod outbound;
@@ -51,7 +54,8 @@ use huterm_wire::frame::{
     FrameDecoder, HANDSHAKE_FRAME_LIMIT, PREAMBLE_LEN, check_preamble, preamble,
 };
 use huterm_wire::handshake::{
-    HANDSHAKE_DEADLINE, ServerOffer, WRITER_STALL_DEADLINE, negotiate,
+    ClientKind, HANDSHAKE_DEADLINE, ServerOffer, WRITER_STALL_DEADLINE,
+    negotiate_hello,
 };
 use huterm_wire::hierarchy::HierarchyContext;
 use huterm_wire::message::{
@@ -63,6 +67,8 @@ use huterm_wire::request::{
 use huterm_wire::response::{Committed, RequestResult, Response, Success};
 use huterm_wire::stream::Reassembler;
 
+pub use self::effects::EffectStats;
+use self::effects::Sending;
 use self::hierarchy::HierarchyLane;
 use self::history::{History, SlotRef};
 pub use self::outbound::Transmit;
@@ -136,7 +142,10 @@ enum Kind {
     Detach(AttachmentId),
     Rearrange(SlotRef),
     Restore(SlotRef, huterm_core::RestoreDirection),
-    Subscribe,
+    /// A subscription, and whether it registers a host-effect recipient.
+    Subscribe {
+        effects: bool,
+    },
 }
 
 /// Request IDs the client used: every ID up to `floor`, and those above it.
@@ -170,6 +179,8 @@ struct Negotiation {
     caps: MessageCaps,
     context: DecodeContext,
     encoding: FeedEncoding,
+    /// What kind of client connected, which host-effect policy follows.
+    client_kind: ClientKind,
 }
 
 /// One client connection's protocol state.
@@ -228,6 +239,18 @@ pub struct Connection {
     retry_at: Option<Duration>,
     /// A pump found the outbound queue at its budget.
     pumps_waiting: bool,
+    /// The host-effect budget every recipient of this connection draws
+    /// from, as one desktop process's recipients do.
+    effect_client: huterm_core::DesktopHostEffectClient,
+    /// Viewers that may hold effects, in turn order, and the same set for
+    /// membership.
+    effect_queue: VecDeque<ViewerId>,
+    effect_ready: BTreeSet<ViewerId>,
+    /// The last effect identity this connection assigned.
+    last_effect: u64,
+    /// The effect being sent and its deadlines.
+    sending: Option<Sending>,
+    effect_stats: EffectStats,
 }
 
 impl fmt::Debug for Connection {
@@ -298,6 +321,12 @@ impl Connection {
             unwatches: VecDeque::new(),
             retry_at: None,
             pumps_waiting: false,
+            effect_client: huterm_core::DesktopHostEffectClient::new(),
+            effect_queue: VecDeque::new(),
+            effect_ready: BTreeSet::new(),
+            last_effect: 0,
+            sending: None,
+            effect_stats: EffectStats::default(),
         }
     }
 
@@ -366,15 +395,21 @@ impl Connection {
         };
         self.clock = now;
         match pending {
-            Pending::Request(request, Kind::Subscribe) => match completion {
-                Completion::Subscribed(outcome) => {
-                    self.subscribed(request, outcome);
+            Pending::Request(request, Kind::Subscribe { effects }) => {
+                match completion {
+                    Completion::Subscribed(outcome) => {
+                        self.subscribed(request, outcome, effects);
+                    }
+                    other => {
+                        self.subscribing -= 1;
+                        self.finish(
+                            request,
+                            Kind::Subscribe { effects },
+                            other,
+                        );
+                    }
                 }
-                other => {
-                    self.subscribing -= 1;
-                    self.finish(request, Kind::Subscribe, other);
-                }
-            },
+            }
             Pending::Request(request, kind) => {
                 self.finish(request, kind, completion);
             }
@@ -432,6 +467,7 @@ impl Connection {
                 .map(|since| since + WRITER_STALL_DEADLINE),
             self.over_since.map(|since| since + WRITER_STALL_DEADLINE),
             self.retry_at,
+            self.effect_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -458,6 +494,7 @@ impl Connection {
             self.shut(CloseReason::Violation(error.to_string()));
             return;
         }
+        self.check_effect_deadline(now);
         let stalled = |since: Option<Duration>| {
             since.is_some_and(|since| now >= since + WRITER_STALL_DEADLINE)
         };
@@ -499,10 +536,11 @@ impl Connection {
             && self.deferred_detach.is_empty()
     }
 
-    /// The encoded bytes the connection retains.
+    /// The encoded bytes the connection retains, the effect frame with the
+    /// writer included.
     #[must_use]
     pub fn retained(&self) -> usize {
-        self.outbound.retained()
+        self.outbound.retained() + self.outbound.effect_retained()
     }
 
     /// The most bytes this connection ever retains at its negotiated caps.
@@ -555,6 +593,7 @@ impl Connection {
                 self.pumps_waiting = false;
                 self.pump_all();
             }
+            self.offer_effects();
             if let Some(fault) = self.outbound.fault() {
                 let fault = fault.to_owned();
                 self.shut(CloseReason::Fault(fault));
@@ -645,6 +684,9 @@ impl Connection {
             }
             Message::Credit(credit) => self.viewer_credit(credit),
             Message::ResyncViewer(resync) => self.viewer_resync(resync.viewer),
+            Message::SetHostEffectPermission(change) => {
+                self.effect_permission(change);
+            }
             Message::Hello(_) => {
                 self.shut(CloseReason::Violation("a second Hello".into()));
             }
@@ -661,8 +703,8 @@ impl Connection {
             self.shut(CloseReason::Violation("a message before Hello".into()));
             return;
         }
-        match negotiate(bytes, &self.offer) {
-            Ok(mut welcome) => {
+        match negotiate_hello(bytes, &self.offer) {
+            Ok((mut welcome, hello)) => {
                 welcome.profile.max_in_flight_requests =
                     self.config.max_in_flight_requests;
                 let caps = MessageCaps::for_minor(welcome.minor);
@@ -700,6 +742,7 @@ impl Connection {
                         scope: self.scope,
                         caps,
                     },
+                    client_kind: hello.client_kind,
                 });
             }
             Err(reject) => {
@@ -1019,16 +1062,6 @@ impl Connection {
                 terminal,
                 options,
             } => {
-                if options.capabilities.host_effects {
-                    self.answer(
-                        id,
-                        refuse(
-                            ErrorCode::Unsupported,
-                            "host effects arrive with a later version",
-                        ),
-                    );
-                    return None;
-                }
                 if self.viewers.len() + self.subscribing
                     >= self.config.max_viewers
                 {
@@ -1042,13 +1075,22 @@ impl Connection {
                     return None;
                 }
                 self.subscribing += 1;
+                let effects = options
+                    .capabilities
+                    .host_effects
+                    .then(|| self.effect_options(options.allowed_effects))
+                    .flatten();
                 Some(self.request_work(
                     id,
-                    Kind::Subscribe,
+                    Kind::Subscribe {
+                        effects: effects.is_some(),
+                    },
                     Operation::Subscribe {
                         attachment,
                         terminal,
-                        options: Box::new(convert::viewer_options(options)),
+                        options: Box::new(convert::viewer_options(
+                            options, effects,
+                        )),
                     },
                 ))
             }
@@ -1418,6 +1460,9 @@ impl Connection {
         self.hierarchy.clear();
         self.tickets.clear();
         self.history.clear();
+        // Recipients go before anything else, so no effect is queued for a
+        // viewer a job may still hold, and nothing pending is replayed.
+        self.revoke_effects();
         // Viewers drop first, so their admitted input still runs and the
         // detach below finds them dropped rather than revoking them.
         self.drop_viewers();

@@ -1,6 +1,8 @@
-use huterm_protocol::RuntimeId;
+use huterm_protocol::{ClipboardDestination, RuntimeId, TerminalId};
 
 use super::*;
+use crate::caps::CLIPBOARD_PAYLOAD_LIMIT;
+use crate::effect::EffectPayload;
 use crate::vectors;
 
 const CAPS: MessageCaps = MessageCaps::for_minor(0);
@@ -24,7 +26,6 @@ fn clipboard(text: String) -> Message {
             destination: ClipboardDestination::System,
             text,
         },
-        response_deadline_ms: Some(u64::MAX),
     })
 }
 
@@ -64,14 +65,6 @@ fn payloads_at_their_limits_fit_their_caps_and_one_byte_more_is_refused_locally(
             Err(EncodeError::LimitExceeded { field: over })
         );
     }
-}
-
-#[test]
-fn a_payload_names_the_kind_whose_permission_governs_it() {
-    let Message::HostEffect(effect) = clipboard(String::new()) else {
-        unreachable!("clipboard builds a host effect");
-    };
-    assert_eq!(effect.payload.kind(), HostEffectKind::Clipboard);
 }
 
 #[test]

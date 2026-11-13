@@ -329,6 +329,19 @@ impl std::error::Error for HandshakeError {}
 /// # Errors
 /// Returns the `Reject` to send before closing.
 pub fn negotiate(hello: &[u8], offer: &ServerOffer) -> Result<Welcome, Reject> {
+    negotiate_hello(hello, offer).map(|(welcome, _)| welcome)
+}
+
+/// Answers a client's `Hello` as [`negotiate`] does, and returns the
+/// decoded `Hello` with the `Welcome`, so the server can apply policy that
+/// follows the client's kind.
+///
+/// # Errors
+/// Returns the `Reject` to send before closing.
+pub fn negotiate_hello(
+    hello: &[u8],
+    offer: &ServerOffer,
+) -> Result<(Welcome, Hello), Reject> {
     let (major, _) = hello_versions(hello).map_err(Reject::malformed)?;
     if major != MAJOR {
         return Err(Reject {
@@ -349,7 +362,7 @@ pub fn negotiate(hello: &[u8], offer: &ServerOffer) -> Result<Welcome, Reject> {
         )));
     }
     let minor = hello.minor.min(offer.minor);
-    Ok(Welcome {
+    let welcome = Welcome {
         major: MAJOR,
         minor,
         features: hello
@@ -365,7 +378,8 @@ pub fn negotiate(hello: &[u8], offer: &ServerOffer) -> Result<Welcome, Reject> {
         process_id: offer.process_id,
         max_frame: hello.max_frame.min(offer.max_frame),
         profile: TransportProfile::local(minor),
-    })
+    };
+    Ok((welcome, hello))
 }
 
 /// Checks a server's `Welcome` against the `Hello` the client sent.

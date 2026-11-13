@@ -25,10 +25,11 @@ use std::time::Duration;
 
 use huterm_core::RuntimeError;
 use huterm_protocol::{
-    InputStamp, MousePosition, ScrollCommand, TerminalInput, TerminalSnapshot,
-    TerminalStatus, ViewerId,
+    HostEffectKind, InputStamp, MousePosition, ScrollCommand, TerminalInput,
+    TerminalSnapshot, TerminalStatus, ViewerId,
 };
 use huterm_wire::caps::VIEWER_INPUT_BUDGET;
+use huterm_wire::effect::INITIAL_EFFECT_GENERATION;
 use huterm_wire::error::{ErrorCode, WireError};
 use huterm_wire::handshake::MAX_VIEWER_CREDIT;
 use huterm_wire::request::{Request, RequestId};
@@ -89,7 +90,7 @@ struct Staged {
     reason = "the pump's independent conditions"
 )]
 pub(super) struct Viewer {
-    port: Arc<dyn ViewerPort>,
+    pub(super) port: Arc<dyn ViewerPort>,
     encoder: UpdateEncoder,
     /// The snapshot last planned, which a stopped terminal's complete final
     /// update shows.
@@ -120,10 +121,13 @@ pub(super) struct Viewer {
     received: u64,
     /// The highest input sequence core admitted or refused.
     acked: u64,
+    /// The last permission generation the client numbered for each effect
+    /// kind, for a viewer with a host-effect recipient.
+    pub(super) effects: Option<[u64; HostEffectKind::ALL.len()]>,
 }
 
 impl Viewer {
-    fn new(port: Arc<dyn ViewerPort>, minor: u16) -> Self {
+    fn new(port: Arc<dyn ViewerPort>, minor: u16, effects: bool) -> Self {
         let id = port.id();
         Self {
             port,
@@ -142,6 +146,9 @@ impl Viewer {
             window: 0,
             received: 0,
             acked: 0,
+            effects: effects.then_some(
+                [INITIAL_EFFECT_GENERATION; HostEffectKind::ALL.len()],
+            ),
         }
     }
 }
@@ -191,6 +198,8 @@ impl Connection {
     /// Reads what changed for `viewer` after its wake signalled at `now`.
     pub fn viewer_woke(&mut self, viewer: ViewerId, now: Duration) {
         self.clock = now;
+        // Core signals an admitted effect through the same wake.
+        self.effect_woke(viewer);
         self.poll_viewer(viewer);
         self.progress(now);
     }
@@ -251,6 +260,7 @@ impl Connection {
         &mut self,
         request: RequestId,
         outcome: Result<Subscription, WireError>,
+        effects: bool,
     ) {
         self.subscribing -= 1;
         if self.closed.is_some() {
@@ -263,8 +273,13 @@ impl Connection {
             Ok(Subscription::Viewer { port, status }) => {
                 let id = port.id();
                 self.watches.push_back((id, port.wake()));
-                self.viewers
-                    .insert(id, Viewer::new(port, negotiated.caps.minor()));
+                self.viewers.insert(
+                    id,
+                    Viewer::new(port, negotiated.caps.minor(), effects),
+                );
+                // Core may have admitted effects before the wake is
+                // watched; they go out once the result is written.
+                self.effect_woke(id);
                 self.outbound.open_viewer(id);
                 // The result opens the viewer's lane, ahead of every other
                 // message of the viewer's.
@@ -495,6 +510,10 @@ impl Connection {
         let Some(mut viewer) = self.viewers.remove(&id) else {
             return;
         };
+        if viewer.effects.is_some() {
+            // A job may still hold the viewer; its recipient goes now.
+            viewer.port.revoke_effects();
+        }
         self.unwatches.push_back(id);
         let lane = Lane::Viewer(id);
         match ended {

@@ -33,8 +33,8 @@ use std::time::Instant;
 
 use async_channel::{Receiver, Sender, TrySendError};
 use huterm_protocol::{
-    AttachmentId, HierarchyState, ScrollCommand, TerminalId, TerminalInput,
-    TerminalSnapshot, TerminalStatus, ViewerId,
+    AttachmentId, HierarchyState, HostEffectKind, ScrollCommand, TerminalId,
+    TerminalInput, TerminalSnapshot, TerminalStatus, ViewerId,
 };
 use huterm_wire::error::{ErrorCode, WireError};
 use huterm_wire::hierarchy::HierarchySnapshot;
@@ -75,6 +75,13 @@ enum Command {
     Input(ViewerId, TerminalInput, Option<u64>),
     Focus(ViewerId, bool),
     Visible(ViewerId, bool),
+    EffectPermission(
+        ViewerId,
+        HostEffectKind,
+        bool,
+        Reply<Result<u64, WireError>>,
+    ),
+    EffectCurrent(ViewerId, HostEffectKind, u64, Reply<bool>),
     Scroll(ViewerId, ScrollCommand, Reply<Result<Success, WireError>>),
     View(ViewerId, Reply<Option<TerminalSnapshot>>),
     Status(ViewerId, Reply<Option<TerminalStatus>>),
@@ -294,6 +301,43 @@ impl ClientHandle {
     /// input.
     pub fn send_focus(&self, viewer: ViewerId, focused: bool) {
         self.command(Command::Focus(viewer, focused));
+    }
+
+    /// Sets whether terminal content may use `kind` through `viewer`, as
+    /// [`ClientSession::set_host_effect_permission`] does, resolving with
+    /// the change's generation.
+    ///
+    /// # Errors
+    /// Returns the session's refusal, or `Disconnected` once the client
+    /// shut down.
+    pub async fn set_host_effect_permission(
+        &self,
+        viewer: ViewerId,
+        kind: HostEffectKind,
+        allowed: bool,
+    ) -> Result<u64, WireError> {
+        let (reply, outcome) = async_channel::bounded(1);
+        self.command(Command::EffectPermission(viewer, kind, allowed, reply));
+        outcome.recv().await.unwrap_or_else(|_| {
+            Err(WireError::new(
+                ErrorCode::Disconnected,
+                "the client shut down",
+            ))
+        })
+    }
+
+    /// Whether an effect `viewer` received under `generation` for `kind`
+    /// may still be executed, as [`ClientSession::host_effect_current`]
+    /// answers; check right before acting.
+    pub async fn host_effect_current(
+        &self,
+        viewer: ViewerId,
+        kind: HostEffectKind,
+        generation: u64,
+    ) -> bool {
+        let (reply, current) = async_channel::bounded(1);
+        self.command(Command::EffectCurrent(viewer, kind, generation, reply));
+        current.recv().await.unwrap_or(false)
     }
 
     /// Shows or hides `viewer`; a hidden viewer receives status but no
@@ -783,6 +827,17 @@ impl Driver {
             Command::Visible(viewer, visible) => {
                 self.session.set_visible(viewer, visible);
             }
+            Command::EffectPermission(viewer, kind, allowed, reply) => {
+                let _ = reply.try_send(
+                    self.session
+                        .set_host_effect_permission(viewer, kind, allowed),
+                );
+            }
+            Command::EffectCurrent(viewer, kind, generation, reply) => {
+                let _ = reply.try_send(
+                    self.session.host_effect_current(viewer, kind, generation),
+                );
+            }
             Command::Scroll(viewer, command, reply) => {
                 let call = self.session.scroll(viewer, command, now);
                 self.replies.insert(call, reply);
@@ -829,32 +884,37 @@ impl Driver {
                 }
             },
             Command::Reconnect(stream, reply) => {
-                self.session.disconnected(now);
-                if let Some(io) = self.io.take() {
-                    io.close();
-                }
-                // Report the old connection's end before the new one opens,
-                // so its `Closed` never reaches the new handshake's waiter.
-                self.route();
-                self.generation += 1;
-                match Io::spawn(
-                    stream,
-                    self.generation,
-                    &self.events,
-                    &self.stats,
-                ) {
-                    Ok(io) => {
-                        self.io = Some(io);
-                        self.session.connect(now);
-                        self.handshakes.push(reply);
-                    }
-                    Err(_) => {
-                        let _ = reply.try_send(Err(CloseReason::Disconnected));
-                    }
-                }
+                self.reconnect(stream, reply, now);
             }
             // The run loop handles shutdown before dispatching commands.
             Command::Shutdown => {}
+        }
+    }
+
+    /// Ends the current connection and starts a handshake on `stream`.
+    fn reconnect(
+        &mut self,
+        stream: UnixStream,
+        reply: Reply<Handshake>,
+        now: std::time::Duration,
+    ) {
+        self.session.disconnected(now);
+        if let Some(io) = self.io.take() {
+            io.close();
+        }
+        // Report the old connection's end before the new one opens, so its
+        // `Closed` never reaches the new handshake's waiter.
+        self.route();
+        self.generation += 1;
+        match Io::spawn(stream, self.generation, &self.events, &self.stats) {
+            Ok(io) => {
+                self.io = Some(io);
+                self.session.connect(now);
+                self.handshakes.push(reply);
+            }
+            Err(_) => {
+                let _ = reply.try_send(Err(CloseReason::Disconnected));
+            }
         }
     }
 

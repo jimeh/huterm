@@ -18,12 +18,28 @@ const PROCESS_EFFECT_LIMIT: usize = 32;
 /// Room for two terminals to each hold one maximum Kitty write.
 const PROCESS_BYTE_LIMIT: usize = 2 * TERMINAL_BYTE_LIMIT;
 const TERMINAL_RECIPIENT_LIMIT: usize = 32;
+/// The fewest effects one client may queue on a terminal while several
+/// clients have recipients there.
+const MIN_CLIENT_SHARE: usize = 2;
+
+/// The effects one client's recipients may hold on a terminal while
+/// `clients` clients have recipients there: every effect for a lone
+/// client, so it keeps the whole queue for bursts, and otherwise an equal
+/// share of at least [`MIN_CLIENT_SHARE`].
+fn client_share(clients: usize) -> usize {
+    if clients <= 1 {
+        TERMINAL_EFFECT_LIMIT
+    } else {
+        (TERMINAL_EFFECT_LIMIT / clients).max(MIN_CLIENT_SHARE)
+    }
+}
 
 /// Connection boundary represented by a host-effect recipient.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostEffectClientOrigin {
-    /// A view embedded in the local desktop process.
-    LocalEmbeddedDesktop,
+    /// A local desktop: a view embedded in the desktop process, or a
+    /// desktop client on local IPC.
+    LocalDesktop,
     /// A local text client without desktop clipboard authority.
     LocalText,
     /// A client connected across a process or network boundary.
@@ -73,14 +89,17 @@ impl HostEffectRecipientOptions {
     #[must_use]
     pub const fn local_desktop(permissions: HostEffectPermissions) -> Self {
         Self {
-            origin: HostEffectClientOrigin::LocalEmbeddedDesktop,
+            origin: HostEffectClientOrigin::LocalDesktop,
             writable: true,
             permissions,
         }
     }
 }
 
-/// Shared desktop-process budget used by every window and terminal registration.
+/// One client's host-effect budget, shared by every window and terminal
+/// registration of that client: the desktop process in embedded mode, or
+/// one IPC connection. Each terminal also counts the client's effects
+/// against its share of the terminal's queue.
 #[derive(Clone, Debug)]
 pub struct DesktopHostEffectClient {
     process_budget: Arc<Budget>,
@@ -140,12 +159,14 @@ impl Budget {
 struct EffectReservation {
     terminal: Arc<Budget>,
     process: Arc<Budget>,
+    /// The client's share of the terminal's queue.
+    share: Arc<Budget>,
     bytes: usize,
 }
 
 impl Drop for EffectReservation {
     fn drop(&mut self) {
-        for budget in [&self.terminal, &self.process] {
+        for budget in [&self.terminal, &self.process, &self.share] {
             let mut state = budget
                 .state
                 .lock()
@@ -177,6 +198,19 @@ impl PendingHostEffect {
     pub fn effect(&self) -> &HostEffect {
         &self.effect
     }
+
+    /// Whether the delivery still belongs to its recipient's live
+    /// generation for its kind, as [`HostEffectRecipient::is_current`]
+    /// checks, for a holder without the recipient.
+    #[must_use]
+    pub fn is_current(&self) -> bool {
+        let kind = self.effect.kind();
+        self.registration.upgrade().is_some_and(|registration| {
+            registration.is_eligible(kind)
+                && registration.generation(kind)
+                    == self.metadata.recipient_generation
+        })
+    }
 }
 
 /// How a recipient's viewer wakes and how recently it was used.
@@ -206,6 +240,9 @@ struct Registration {
     link: RecipientLink,
     order: u64,
     process_budget: Arc<Budget>,
+    /// The client's share of this terminal's queue, which every
+    /// registration of the client on the terminal counts against.
+    share: Arc<Budget>,
     queue: Mutex<VecDeque<PendingHostEffect>>,
 }
 
@@ -215,7 +252,7 @@ impl Registration {
     }
 
     fn is_eligible(&self, kind: HostEffectKind) -> bool {
-        self.options.origin == HostEffectClientOrigin::LocalEmbeddedDesktop
+        self.options.origin == HostEffectClientOrigin::LocalDesktop
             && self.options.writable
             && self.active.load(Ordering::Acquire)
             && self.kind(kind).allowed.load(Ordering::Acquire)
@@ -298,6 +335,48 @@ impl HostEffectRecipient {
         }
     }
 
+    /// Sets whether terminal content may use `kind`, under a `generation`
+    /// the caller numbers, as a client across IPC numbers its permission
+    /// changes. Every effect admitted from now on carries `generation`,
+    /// and deliveries of `kind` admitted under an earlier one are no
+    /// longer current; removing permission also cancels them. Returns
+    /// false, changing nothing, for a generation not above the current
+    /// one.
+    #[must_use = "a refused generation changed nothing"]
+    pub fn set_permission(
+        &self,
+        kind: HostEffectKind,
+        allowed: bool,
+        generation: u64,
+    ) -> bool {
+        let state = self.registration.kind(kind);
+        if generation <= state.generation.load(Ordering::Acquire) {
+            return false;
+        }
+        if allowed {
+            state.generation.store(generation, Ordering::Release);
+            if self.registration.active.load(Ordering::Acquire) {
+                state.allowed.store(true, Ordering::Release);
+            }
+            // Deliveries under the earlier generation are no longer
+            // current; they leave as `try_next` meets them.
+        } else {
+            // Permission goes first, so admission racing the change sees
+            // it denied or sees the new generation, as in revocation.
+            state.allowed.store(false, Ordering::Release);
+            state.generation.store(generation, Ordering::Release);
+            self.registration.clear_queue(|queued| queued == kind);
+        }
+        true
+    }
+
+    /// Withdraws the recipient for good, as dropping it does, while its
+    /// owner still holds it: every queued and popped delivery stops being
+    /// current, and no effect selects it again.
+    pub fn revoke(&self) {
+        self.registration.revoke_permanently();
+    }
+
     /// Removes and returns the next currently valid delivery without blocking.
     #[must_use]
     pub fn try_next(&self) -> Option<PendingHostEffect> {
@@ -344,6 +423,10 @@ impl Drop for HostEffectRecipient {
 struct SinkState {
     registrations: Vec<Weak<Registration>>,
     next_registration: u64,
+    /// Each client's share of the terminal's queue, by its budget, kept
+    /// while the client lives so effects it still holds keep counting
+    /// when its recipients come and go.
+    shares: Vec<(Weak<Budget>, Arc<Budget>)>,
 }
 
 #[derive(Debug)]
@@ -374,7 +457,7 @@ pub(crate) enum HostEffectAdmission {
 /// waits instead of dropping the effect: a lost write is visible to the
 /// user, and every holder keeps these locks briefly. Admission releases
 /// the sink state before it takes the terminal budget, then the process
-/// budget, then the queue. Other threads may take the queue or a budget
+/// budget, then the client's share, then the queue. Other threads may take the queue or a budget
 /// while holding the sink state, but never take another of these locks
 /// while holding the queue or a budget, so the waits cannot form a cycle.
 /// That is why reservations are freed after the queue is released.
@@ -397,6 +480,7 @@ impl HostEffectSink {
                 state: Mutex::new(SinkState {
                     registrations: Vec::new(),
                     next_registration: 0,
+                    shares: Vec::new(),
                 }),
                 #[cfg(test)]
                 waits: AtomicU64::new(0),
@@ -435,7 +519,7 @@ impl HostEffectSink {
         if self.inner.closed.load(Ordering::Acquire) {
             return HostEffectAdmission::Closed;
         }
-        let (registration, selected_generation) =
+        let (registration, selected_generation, clients) =
             match self.select_recipient(kind) {
                 Ok(selected) => selected,
                 Err(status) => return status,
@@ -443,6 +527,7 @@ impl HostEffectSink {
 
         let mut terminal_budget = self.lock(&self.inner.terminal_budget.state);
         let mut process_budget = self.lock(&registration.process_budget.state);
+        let mut share = self.lock(&registration.share.state);
         if !self
             .inner
             .terminal_budget
@@ -450,6 +535,7 @@ impl HostEffectSink {
             || !registration
                 .process_budget
                 .can_reserve(&process_budget, bytes)
+            || share.effects >= client_share(clients)
         {
             return HostEffectAdmission::Full;
         }
@@ -484,6 +570,8 @@ impl HostEffectSink {
         terminal_budget.bytes += actual_bytes;
         process_budget.effects += 1;
         process_budget.bytes += actual_bytes;
+        share.effects += 1;
+        share.bytes += actual_bytes;
         queue.push_back(PendingHostEffect {
             metadata: HostEffectMetadata {
                 origin: HostEffectOrigin {
@@ -498,6 +586,7 @@ impl HostEffectSink {
             _reservation: EffectReservation {
                 terminal: Arc::clone(&self.inner.terminal_budget),
                 process: Arc::clone(&registration.process_budget),
+                share: Arc::clone(&registration.share),
                 bytes: actual_bytes,
             },
         });
@@ -508,32 +597,48 @@ impl HostEffectSink {
         HostEffectAdmission::Accepted
     }
 
+    /// Selects the recipient for an effect of `kind`, with its generation
+    /// and the number of clients whose recipients share the terminal.
     fn select_recipient(
         &self,
         kind: HostEffectKind,
-    ) -> Result<(Arc<Registration>, u64), HostEffectAdmission> {
+    ) -> Result<(Arc<Registration>, u64, usize), HostEffectAdmission> {
         let mut state = self.lock(&self.inner.state);
         state.registrations.retain(|weak| weak.strong_count() != 0);
         if state.registrations.is_empty() {
             return Err(HostEffectAdmission::NoRecipient);
         }
-        let Some(registration) = state
+        let eligible: Vec<Arc<Registration>> = state
             .registrations
             .iter()
             .filter_map(Weak::upgrade)
             .filter(|registration| registration.is_eligible(kind))
-            .max_by(|left, right| {
-                left.link
-                    .ordinal
-                    .load(Ordering::Acquire)
-                    .cmp(&right.link.ordinal.load(Ordering::Acquire))
-                    .then_with(|| left.order.cmp(&right.order))
-            })
-        else {
+            .collect();
+        drop(state);
+        // Clients that could receive this effect share the terminal's
+        // queue; one whose recipients cannot, such as a text client, takes
+        // no share.
+        let mut clients: Vec<&Arc<Budget>> = Vec::new();
+        for registration in &eligible {
+            if !clients
+                .iter()
+                .any(|client| Arc::ptr_eq(client, &registration.process_budget))
+            {
+                clients.push(&registration.process_budget);
+            }
+        }
+        let clients = clients.len();
+        let Some(registration) = eligible.iter().max_by(|left, right| {
+            left.link
+                .ordinal
+                .load(Ordering::Acquire)
+                .cmp(&right.link.ordinal.load(Ordering::Acquire))
+                .then_with(|| left.order.cmp(&right.order))
+        }) else {
             return Err(HostEffectAdmission::Denied);
         };
         let selected_generation = registration.generation(kind);
-        Ok((registration, selected_generation))
+        Ok((Arc::clone(registration), selected_generation, clients))
     }
 
     /// Locks one of admission's mutexes, waiting while another thread
@@ -614,6 +719,25 @@ impl HostEffectSink {
         }
         state.next_registration = state.next_registration.checked_add(1)?;
         let registration_order = state.next_registration;
+        state
+            .shares
+            .retain(|(client, _)| client.strong_count() != 0);
+        // Dead clients left above, so a pointer names one live client.
+        let client = Arc::as_ptr(&process.process_budget);
+        let existing = state
+            .shares
+            .iter()
+            .find(|(known, _)| std::ptr::eq(known.as_ptr(), client))
+            .map(|(_, share)| Arc::clone(share));
+        let share = existing.unwrap_or_else(|| {
+            let share =
+                Arc::new(Budget::new(TERMINAL_EFFECT_LIMIT, usize::MAX));
+            state.shares.push((
+                Arc::downgrade(&process.process_budget),
+                Arc::clone(&share),
+            ));
+            share
+        });
         let registration = Arc::new(Registration {
             id: HostEffectRecipientId::new(registration_order),
             active: AtomicBool::new(true),
@@ -626,6 +750,7 @@ impl HostEffectSink {
             link,
             order: registration_order,
             process_budget: Arc::clone(&process.process_budget),
+            share,
             queue: Mutex::new(VecDeque::new()),
         });
         state.registrations.push(Arc::downgrade(&registration));
@@ -982,7 +1107,7 @@ mod tests {
             (
                 6,
                 HostEffectRecipientOptions {
-                    origin: HostEffectClientOrigin::LocalEmbeddedDesktop,
+                    origin: HostEffectClientOrigin::LocalDesktop,
                     writable: false,
                     permissions: HostEffectPermissions::ALL,
                 },
@@ -1191,5 +1316,156 @@ mod tests {
         });
 
         assert!(recipient.try_next().is_none());
+    }
+
+    /// A recipient of a client of its own whose most recent activity is
+    /// `ordinal`, so tests choose which one admission selects.
+    fn client_recipient(
+        sink: &HostEffectSink,
+        process: &DesktopHostEffectClient,
+        attachment: u64,
+        ordinal: u64,
+    ) -> HostEffectRecipient {
+        sink.register(
+            Some(AttachmentId::new(attachment)),
+            process,
+            HostEffectRecipientOptions::local_desktop(
+                HostEffectPermissions::ALL,
+            ),
+            RecipientLink {
+                activity: None,
+                ordinal: Arc::new(AtomicU64::new(ordinal)),
+            },
+        )
+        .expect("test registration should fit")
+    }
+
+    #[test]
+    fn a_lone_client_keeps_the_whole_queue_and_two_clients_split_it() {
+        let sink = HostEffectSink::new(TerminalId::new(19));
+        let first = DesktopHostEffectClient::new();
+        let lone = client_recipient(&sink, &first, 1, 3);
+        // Another of the same client's viewers is still one client.
+        let sibling = client_recipient(&sink, &first, 2, 2);
+        for _ in 0..TERMINAL_EFFECT_LIMIT {
+            assert_eq!(sink.admit_borrowed(""), HostEffectAdmission::Accepted);
+        }
+        assert_eq!(sink.admit_borrowed(""), HostEffectAdmission::Full);
+        while lone.try_next().is_some() {}
+
+        // A second client halves the share. The first, more active, fills
+        // its half; the second still gets every effect once it is chosen.
+        let second = DesktopHostEffectClient::new();
+        let other = client_recipient(&sink, &second, 3, 1);
+        let half = TERMINAL_EFFECT_LIMIT / 2;
+        for _ in 0..half {
+            assert_eq!(sink.admit_borrowed(""), HostEffectAdmission::Accepted);
+        }
+        assert_eq!(sink.admit_borrowed(""), HostEffectAdmission::Full);
+        drop(lone);
+        drop(sibling);
+        assert!(
+            other.try_next().is_none(),
+            "nothing was redirected to the other client"
+        );
+        let third = DesktopHostEffectClient::new();
+        let _idle = client_recipient(&sink, &third, 4, 0);
+        // The dropped client's reservations went with its queue, so the
+        // remaining two clients each take their half.
+        for _ in 0..half {
+            assert_eq!(sink.admit_borrowed(""), HostEffectAdmission::Accepted);
+        }
+        assert_eq!(sink.admit_borrowed(""), HostEffectAdmission::Full);
+        let mut delivered = 0;
+        while other.try_next().is_some() {
+            delivered += 1;
+        }
+        assert_eq!(delivered, half);
+    }
+
+    #[test]
+    fn ineligible_clients_take_no_share_and_shares_have_a_floor() {
+        let sink = HostEffectSink::new(TerminalId::new(20));
+        let desktop = DesktopHostEffectClient::new();
+        let recipient = client_recipient(&sink, &desktop, 1, 1);
+        let text = DesktopHostEffectClient::new();
+        let _text = sink
+            .register(
+                Some(AttachmentId::new(2)),
+                &text,
+                HostEffectRecipientOptions {
+                    origin: HostEffectClientOrigin::LocalText,
+                    writable: true,
+                    permissions: HostEffectPermissions::ALL,
+                },
+                RecipientLink::default(),
+            )
+            .unwrap();
+        for _ in 0..TERMINAL_EFFECT_LIMIT {
+            assert_eq!(sink.admit_borrowed(""), HostEffectAdmission::Accepted);
+        }
+        while recipient.try_next().is_some() {}
+        assert_eq!(client_share(5), MIN_CLIENT_SHARE);
+        assert_eq!(client_share(2), TERMINAL_EFFECT_LIMIT / 2);
+    }
+
+    #[test]
+    fn caller_numbered_permissions_stamp_effects_and_refuse_stale_numbers() {
+        let (sink, recipient) = test_fixture(TerminalId::new(21));
+        assert!(recipient.set_permission(HostEffectKind::Clipboard, true, 5));
+        assert_eq!(sink.admit_borrowed("five"), HostEffectAdmission::Accepted);
+        let five = recipient.try_next().unwrap();
+        assert_eq!(five.metadata().recipient_generation, 5);
+        assert!(five.is_current());
+
+        // A revoke cancels queued deliveries and a re-grant does not
+        // revive one already popped.
+        assert_eq!(
+            sink.admit_borrowed("queued"),
+            HostEffectAdmission::Accepted
+        );
+        assert!(recipient.set_permission(HostEffectKind::Clipboard, false, 6));
+        assert!(!five.is_current());
+        assert!(recipient.try_next().is_none(), "the queued copy is gone");
+        assert_eq!(sink.admit_borrowed("denied"), HostEffectAdmission::Denied);
+        assert!(recipient.set_permission(HostEffectKind::Clipboard, true, 7));
+        assert!(!five.is_current());
+        assert_eq!(sink.admit_borrowed("seven"), HostEffectAdmission::Accepted);
+        let seven = recipient.try_next().unwrap();
+        assert_eq!(seven.metadata().recipient_generation, 7);
+        assert!(seven.is_current() && recipient.is_current(&seven));
+
+        // A stale or repeated number changes nothing.
+        assert!(!recipient.set_permission(HostEffectKind::Clipboard, false, 7));
+        assert!(!recipient.set_permission(HostEffectKind::Clipboard, false, 3));
+        assert!(seven.is_current());
+        // Another kind keeps its own numbers.
+        assert!(recipient.set_permission(
+            HostEffectKind::Notification,
+            false,
+            2
+        ));
+        assert!(seven.is_current());
+    }
+
+    #[test]
+    fn revoking_a_held_recipient_ends_its_deliveries_and_selection() {
+        let (sink, recipient) = test_fixture(TerminalId::new(22));
+        assert_eq!(
+            sink.admit_borrowed("popped"),
+            HostEffectAdmission::Accepted
+        );
+        let popped = recipient.try_next().unwrap();
+        assert_eq!(
+            sink.admit_borrowed("queued"),
+            HostEffectAdmission::Accepted
+        );
+        recipient.revoke();
+        assert!(!popped.is_current());
+        assert!(recipient.try_next().is_none());
+        assert_eq!(sink.admit_borrowed("late"), HostEffectAdmission::Denied);
+        // Granting again cannot bring a revoked recipient back.
+        assert!(recipient.set_permission(HostEffectKind::Clipboard, true, 9));
+        assert_eq!(sink.admit_borrowed("later"), HostEffectAdmission::Denied);
     }
 }

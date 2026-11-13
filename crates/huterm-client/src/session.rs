@@ -38,8 +38,8 @@ use huterm_protocol::{
     HierarchyState, RuntimeId, ServerIncarnation, StreamId, Touched, ViewerId,
 };
 
-pub use self::viewers::ViewerEvent;
 use self::viewers::{Carried, ClientViewer, EndedViewers, Subscribing};
+pub use self::viewers::{EffectDelivery, ViewerEvent};
 use huterm_wire::caps::{Direction, MessageCaps, MessageKind};
 use huterm_wire::codec::{EncodeError, IdScope, Reader, Writer};
 use huterm_wire::error::{ErrorCode, WireError};
@@ -225,6 +225,9 @@ pub struct SessionStats {
     /// `ResyncViewer` messages the session sent after a delta did not
     /// apply or its digest differed.
     pub viewer_resyncs: u64,
+    /// Host effects dropped because their viewer had ended or changed the
+    /// kind's permission since the effect was admitted.
+    pub effects_discarded: u64,
 }
 
 #[derive(Debug)]
@@ -783,7 +786,8 @@ impl ClientSession {
             | MessageKind::ViewerStatus
             | MessageKind::InputAck
             | MessageKind::ViewerStopped
-            | MessageKind::ViewerRevoked => {
+            | MessageKind::ViewerRevoked
+            | MessageKind::HostEffect => {
                 match decode_message(
                     &assembled.bytes,
                     Direction::ServerToClient,

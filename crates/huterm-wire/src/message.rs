@@ -5,15 +5,14 @@
 //! [`decode_message`] accepts only the kinds the receiving side may get and
 //! rejects trailing bytes.
 
-use huterm_protocol::{
-    ClipboardDestination, HostEffectKind, InputStamp, TerminalId, ViewerId,
-};
+use huterm_protocol::{InputStamp, ViewerId};
 
-use crate::caps::{
-    CLIPBOARD_PAYLOAD_LIMIT, Direction, MessageCaps, MessageKind,
-    PASTE_PAYLOAD_LIMIT,
-};
+use crate::caps::{Direction, MessageCaps, MessageKind, PASTE_PAYLOAD_LIMIT};
 use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
+use crate::effect::{
+    HostEffect, SetHostEffectPermission, decode_host_effect,
+    decode_set_permission, encode_host_effect, encode_set_permission,
+};
 use crate::handshake::{
     Hello, Reject, Welcome, decode_hello, decode_reject, decode_welcome,
     encode_hello, encode_reject, encode_welcome,
@@ -49,48 +48,6 @@ pub struct Paste {
     pub stamp: InputStamp,
     /// The pasted text, at most [`PASTE_PAYLOAD_LIMIT`] bytes.
     pub text: String,
-}
-
-/// What a host effect asks the client to do.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum EffectPayload {
-    /// Replace a clipboard with text, as OSC 52 asks.
-    ClipboardWrite {
-        /// The clipboard.
-        destination: ClipboardDestination,
-        /// The text, at most [`CLIPBOARD_PAYLOAD_LIMIT`] bytes.
-        text: String,
-    },
-}
-
-impl EffectPayload {
-    /// The kind whose permission and generation govern this payload.
-    #[must_use]
-    pub fn kind(&self) -> HostEffectKind {
-        match self {
-            Self::ClipboardWrite { .. } => HostEffectKind::Clipboard,
-        }
-    }
-}
-
-/// A host effect routed to one client.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HostEffect {
-    /// The effect's identity on this connection.
-    pub effect: u64,
-    /// The viewer whose recipient core selected.
-    pub viewer: ViewerId,
-    /// The viewer's permission generation for the payload's effect kind
-    /// when the effect was admitted. Permission is per kind, so the
-    /// payload's variant names the kind this generation counts.
-    pub permission_generation: u64,
-    /// The terminal whose content asked for the effect.
-    pub terminal: TerminalId,
-    /// What to do.
-    pub payload: EffectPayload,
-    /// How long the server waits for an answer, in milliseconds, for an
-    /// effect that needs one.
-    pub response_deadline_ms: Option<u64>,
 }
 
 /// One message.
@@ -138,6 +95,8 @@ pub enum Message {
     ViewerRevoked(ViewerRevoked),
     /// A result that may exceed the `Result` cap.
     LargeResult(RequestResult),
+    /// A client's change to a viewer's host-effect permission.
+    SetHostEffectPermission(SetHostEffectPermission),
 }
 
 impl Message {
@@ -166,6 +125,9 @@ impl Message {
             Self::ViewerStopped(_) => MessageKind::ViewerStopped,
             Self::ViewerRevoked(_) => MessageKind::ViewerRevoked,
             Self::LargeResult(_) => MessageKind::LargeResult,
+            Self::SetHostEffectPermission(_) => {
+                MessageKind::SetHostEffectPermission
+            }
         }
     }
 }
@@ -179,12 +141,6 @@ pub struct DecodeContext {
     pub hierarchy: HierarchyContext,
     /// The negotiated caps.
     pub caps: MessageCaps,
-}
-
-fn destination_tag(destination: ClipboardDestination) -> u64 {
-    match destination {
-        ClipboardDestination::System => 0,
-    }
 }
 
 fn encode_paste(
@@ -216,81 +172,6 @@ fn decode_paste(
             seq: r.u64()?,
             stamp: decode_stamp(r)?,
             text: r.string(PASTE_PAYLOAD_LIMIT, "paste")?,
-        })
-    })
-}
-
-fn encode_host_effect(
-    w: &mut Writer,
-    scope: IdScope,
-    effect: &HostEffect,
-) -> Result<(), EncodeError> {
-    let HostEffect {
-        effect,
-        viewer,
-        permission_generation,
-        terminal,
-        payload,
-        response_deadline_ms,
-    } = effect;
-    w.record(|w| {
-        w.u64(*effect);
-        w.id(scope, *viewer)?;
-        w.u64(*permission_generation);
-        w.id(scope, *terminal)?;
-        match payload {
-            EffectPayload::ClipboardWrite { destination, text } => {
-                w.tag(0);
-                w.record(|w| {
-                    w.tag(destination_tag(*destination));
-                    w.str(text, CLIPBOARD_PAYLOAD_LIMIT, "clipboard text")
-                })?;
-            }
-        }
-        w.option(*response_deadline_ms, |w, deadline| {
-            w.u64(deadline);
-            Ok(())
-        })
-    })
-}
-
-fn decode_host_effect(
-    r: &mut Reader<'_>,
-    scope: IdScope,
-) -> Result<HostEffect, DecodeError> {
-    r.record(|r| {
-        Ok(HostEffect {
-            effect: r.u64()?,
-            viewer: r.id(scope)?,
-            permission_generation: r.u64()?,
-            terminal: r.id(scope)?,
-            payload: match r.tag()? {
-                0 => r.record(|r| {
-                    let destination = match r.tag()? {
-                        0 => ClipboardDestination::System,
-                        tag => {
-                            return Err(DecodeError::UnknownTag {
-                                field: "clipboard destination",
-                                tag,
-                            });
-                        }
-                    };
-                    Ok(EffectPayload::ClipboardWrite {
-                        destination,
-                        text: r.string(
-                            CLIPBOARD_PAYLOAD_LIMIT,
-                            "clipboard text",
-                        )?,
-                    })
-                })?,
-                tag => {
-                    return Err(DecodeError::UnknownTag {
-                        field: "effect payload",
-                        tag,
-                    });
-                }
-            },
-            response_deadline_ms: r.option("response deadline", Reader::u64)?,
         })
     })
 }
@@ -350,6 +231,9 @@ pub fn encode_message(
         Message::ViewerStopped(ViewerStopped { viewer })
         | Message::ViewerRevoked(ViewerRevoked { viewer }) => {
             encode_viewer_only(&mut w, scope, *viewer)?;
+        }
+        Message::SetHostEffectPermission(change) => {
+            encode_set_permission(&mut w, scope, *change)?;
         }
     }
     // An update's cap follows its grid, which the encoder already checked.
@@ -441,6 +325,11 @@ pub fn decode_message(
         }),
         MessageKind::LargeResult => {
             Message::LargeResult(decode_result(&mut r, scope)?)
+        }
+        MessageKind::SetHostEffectPermission => {
+            Message::SetHostEffectPermission(decode_set_permission(
+                &mut r, scope,
+            )?)
         }
     };
     r.finish()?;

@@ -49,6 +49,10 @@ pub const STAGING_RETRY: std::time::Duration =
 /// answers `Revoked` or `Stopped` instead of `StaleTarget`.
 pub const MAX_ENDED_VIEWERS: usize = 256;
 
+/// The most bytes a frame header takes beyond the frame limit's count: the
+/// length that does not count itself.
+const EFFECT_FRAME_HEADER: usize = 4;
+
 /// Limits a server applies to each connection. The defaults are the named
 /// constants; tests lower them to reach a limit cheaply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,8 +84,10 @@ impl ServerConfig {
     /// and frames of at most `max_frame` bytes ever retains: the outbound
     /// budget, one result or hierarchy message a producer admitted just
     /// below it, the one replacement snapshot a connection may have in
-    /// flight, which it admits whatever the queue holds, and the one status
-    /// or frame the queue starts over the budget so it keeps moving.
+    /// flight, which it admits whatever the queue holds, the one status
+    /// or frame the queue starts over the budget so it keeps moving, and the
+    /// host effect's one frame with the writer, which its slot holds outside
+    /// the budget.
     #[must_use]
     pub fn retained_bound(&self, caps: MessageCaps, max_frame: u32) -> usize {
         let cap = |kind| caps.cap(kind).unwrap_or(0);
@@ -95,5 +101,7 @@ impl ServerConfig {
             + cap(MessageKind::ViewerStatus)
                 .max(cap(MessageKind::InputAck))
                 .max(frame)
+            + EFFECT_FRAME_HEADER
+            + frame
     }
 }
