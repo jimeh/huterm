@@ -423,13 +423,15 @@ fn delta(content: Content, size: GridSize, change: Change) -> Measured {
     let (server, client) = (sorted(server), sorted(client));
     Measured {
         line: format!(
-            "fixture={} grid={}x{} op={} bytes_p50={} server_ns_p50={} \
-             client_ns_p50={} server_ns_p95={} client_ns_p95={}",
+            "fixture={} grid={}x{} op={} bytes_p50={} bytes_per_cell={} \
+             server_ns_p50={} client_ns_p50={} server_ns_p95={} \
+             client_ns_p95={}",
             content.name(),
             size.columns,
             size.rows,
             change.name(),
             bytes,
+            per_cell(bytes, size),
             server.p50(),
             client.p50(),
             server.p95(),

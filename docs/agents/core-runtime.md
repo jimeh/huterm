@@ -533,10 +533,12 @@ dependency rule.
   give distinct sequences. A new digested field changes that layout and
   `vectors::SAMPLE_VIEW_DIGEST`.
 - A run travels in one of four forms: one text per cell, packed (one UTF-8
-  string, one scalar per cell, U+0000 for no text), fill (8 or more
-  identical packed cells), or wide (characters whose spacers are derived).
-  The encoder splits runs where the form would change and picks each run's
-  form from its cells; decoders accept any form a run's cells fit. Only
+  string, one scalar per cell, U+0000 for no text), fill (identical packed
+  cells as a count and one cell), or wide (characters whose spacers are
+  derived).
+  The encoder splits runs where the form would change, picks each run's
+  form from its cells, and fills only repeats of 8 or more; decoders accept
+  any form a run's cells fit, a fill of one cell included. Only
   inline cell text may come from a few bytes (packed, fill, wide), so
   decoded memory stays bounded by the grid. Kept rows travel as ranges, and
   decoders bound the expanded row count at every operation. `mise run

@@ -476,6 +476,29 @@ fn malformed_rows_and_references_are_rejected() {
         },
     );
     rejected(&empty, "empty run", "run");
+    // Run counts whose sum overflows past the row's width.
+    let mut overflow = uniform_update(2, "x");
+    first_row(&mut overflow).runs = vec![
+        Run {
+            style: 0,
+            wide: false,
+            cells: usize::MAX,
+        },
+        Run {
+            style: 0,
+            wide: false,
+            cells: 3,
+        },
+    ];
+    assert_eq!(
+        encode_update(
+            &mut Writer::new(),
+            vectors::scope(),
+            &overflow,
+            STYLE_FLAGS
+        ),
+        Err(EncodeError::Invalid("row width"))
+    );
     // A complete snapshot always carries its digest, so a client can always
     // tell a contract fault.
     let mut digestless = complete;
@@ -1029,6 +1052,9 @@ fn every_single_field_of_damage_changes_the_view_digest() {
         }),
         cell(|cell| cell.text = CellText::from("L")),
         cell(|cell| cell.text = CellText::from("ls")),
+        // Text past the length word's six bytes, changed in its second word.
+        cell(|cell| cell.text = CellText::from("0123456789abcdef!")),
+        cell(|cell| cell.text = CellText::from("0123456789abcdef?")),
         cell(|cell| cell.text = CellText::EMPTY),
         cell(|cell| cell.foreground = CellColor::Indexed(0)),
         cell(|cell| cell.background = CellColor::DefaultForeground),

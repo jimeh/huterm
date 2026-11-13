@@ -1718,8 +1718,9 @@ replace the slice 2 text above where they differ:
   index and two form bits. A *texts* run keeps slice 2's length-prefixed
   text per cell. A *packed* run holds cells that each have no text or one
   scalar other than U+0000, as one UTF-8 string with U+0000 standing for no
-  text, so no text stays distinct from a written space. A *fill* run is at
-  least 8 identical packed cells, as a count and one packed cell. A *wide*
+  text, so no text stays distinct from a written space. A *fill* run is
+  identical packed cells as a count and one packed cell; the encoder fills
+  only repeats of at least 8 cells, and decoders accept any count from 1. A *wide*
   run alternates wide characters and their spacers: it carries only the
   characters, and each spacer has no text, the same colors, and the spacer
   flag in place of the wide flag. Ghostty writes spacers that way, and a
@@ -1735,9 +1736,10 @@ replace the slice 2 text above where they differ:
   operation for every kept row. Decoders bound the expanded row count at
   every operation.
 - **Caps.** The run header's two form bits raise its worst-case varint by
-  at most one byte, and `update_record_cap` uses it. Every new form costs at
-  most four bytes per cell, so the worst case remains a texts run per cell
-  at `MAX_CELL_TEXT_BYTES`, and the worst-case tests still hold.
+  at most one byte, and `update_record_cap` uses it. A packed or wide cell
+  costs at most four bytes, and a fill at most a few bytes for any number of
+  cells, so the worst case remains a texts run per cell at
+  `MAX_CELL_TEXT_BYTES`, and the worst-case tests still hold.
 - **In-memory shape.** A `FullRow` holds its cells' texts in one vector,
   and each `Run` holds a style, a wide flag, and a cell count, so neither
   side allocates per run. The encoder looks up a style only when it differs

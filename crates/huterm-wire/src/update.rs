@@ -1447,9 +1447,10 @@ fn encode_row(
         runs,
         texts,
     } = row;
-    if texts.len() != columns
-        || runs.iter().map(|run| run.cells).sum::<usize>() != columns
-    {
+    let covered = runs
+        .iter()
+        .try_fold(0_usize, |covered, run| covered.checked_add(run.cells));
+    if texts.len() != columns || covered != Some(columns) {
         return Err(EncodeError::Invalid("row width"));
     }
     w.record(|w| {

@@ -386,10 +386,11 @@ const fn update_header_bytes() -> usize {
 /// An update record over `cells` cells in `rows` rows, at its worst case:
 /// a style-table entry per cell, every row in full, and a run per cell
 /// whose text is at [`MAX_CELL_TEXT_BYTES`]. A run opens with its style
-/// index and two form bits in one varint. A packed, fill, or wide run's cell
-/// costs at most four bytes and shares its run's header, and kept rows
-/// travel as ranges no larger than a full row's operation, so the worst
-/// case is a run of its own per cell with one length-prefixed text.
+/// index and two form bits in one varint. A packed or wide cell costs at
+/// most four bytes and a fill at most a few for any count, far below a
+/// length-prefixed text at the limit, and kept rows travel as ranges no
+/// larger than a full row's operation, so the worst case is a run of its
+/// own per cell with one length-prefixed text.
 const fn update_record_cap(cells: usize, rows: usize) -> usize {
     let index = varint_len((MAX_GRID_CELLS as u64) << 2 | 3);
     let count = varint_len(u16::MAX as u64);
