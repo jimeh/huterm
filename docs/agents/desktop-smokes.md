@@ -138,13 +138,16 @@ not read it:
 - `mise run bench:wire` measures `huterm-wire`'s terminal update and status
   codec on synthetic snapshots: plain, styled, sparse, and wide (CJK) text
   at 80x24, 200x60, and 400x120, as complete snapshots and as deltas of one
-  row, a one-line scroll, and every row. It reports the server's build and encode,
-  the client's decode and apply, the view digest, and bytes per cell, and
-  gates the medians and bytes of complete snapshots and one-row deltas at
-  400x120. It needs no Ghostty and runs in a second or two. `ci:benchmarks`
-  runs it; the budgets and the CI measurements behind them sit in
-  `crates/huterm-wire/src/benchmark.rs`. Byte counts are deterministic, so a
-  byte budget fails on any format change that grows an update.
+  row, a one-line scroll, and every row. It reports the server's build and
+  encode, the client's decode and apply, the view digest, and bytes per
+  cell, and gates the medians and bytes of complete snapshots and one-row
+  deltas at 400x120. It needs no Ghostty and runs in a few seconds.
+  `ci:benchmarks` runs it; the budgets and the CI measurements behind them
+  sit in `crates/huterm-wire/src/benchmark.rs`. Byte counts are
+  deterministic, so a byte budget fails on any format change that grows an
+  update. On CI's x86_64 runners one fixture's client median sometimes runs
+  about 1.5 times its usual time, a different fixture from run to run, so
+  the client budgets allow for it on every fixture.
 
 Headless Xvfb does not deliver continuous GPUI frames after the initial
 presentation. Keep Linux scroll gates based on completion-time snapshot and

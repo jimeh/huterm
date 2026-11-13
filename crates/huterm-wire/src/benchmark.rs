@@ -198,63 +198,77 @@ struct Budget {
 /// The largest grid, where budgets apply.
 const GATED_GRID: (u16, u16) = (400, 120);
 
-// PROVISIONAL: Apple silicon measurements times about three, until CI
-// measurements replace them.
+/// Budgets at [`GATED_GRID`]. Bytes are exact: an update's bytes are
+/// deterministic, so any growth fails. Times are medians, which absorb the
+/// scheduler noise a maximum would not, set at least 50% above the slowest
+/// median that CI's Ubuntu runners measured across six runs on AMD EPYC
+/// 7763, 9V45, and 9V74 hosts (2026-11-13). Complete snapshots measured, by fixture, a
+/// server median of 0.77 to 1.35 ms (plain), 0.86 to 1.56 (styled), 0.82
+/// to 1.42 (sparse), and 0.97 to 1.74 (wide), slowest on the 7763 and
+/// fastest on the 9V45. Client medians varied more: in some runs one
+/// fixture's client took about 1.5 times its usual time, a different
+/// fixture from run to run, while an `x86_64` build under Rosetta and an
+/// aarch64 Linux container showed no such outlier. The client budgets of
+/// plain, styled, and sparse therefore share the slowest of their medians,
+/// 1.84 ms (plain, 7763); wide's slowest was 2.22 ms. One-row deltas
+/// measured at most 15.8 us on the server and 9.2 us on the client. An
+/// Apple M3 Max measures 0.66 ms on the server and 0.38 ms on the client for
+/// a plain complete snapshot. Raise a budget only with new CI measurements.
 const BUDGETS: &[Budget] = &[
     Budget {
         fixture: "plain",
         op: "complete",
-        server_us: 2_000,
-        client_us: 1_300,
+        server_us: 2_200,
+        client_us: 2_800,
         bytes: 49_242,
     },
     Budget {
         fixture: "styled",
         op: "complete",
-        server_us: 2_600,
-        client_us: 1_800,
+        server_us: 2_400,
+        client_us: 2_800,
         bytes: 60_958,
     },
     Budget {
         fixture: "sparse",
         op: "complete",
-        server_us: 2_100,
-        client_us: 1_300,
+        server_us: 2_200,
+        client_us: 2_800,
         bytes: 13_391,
     },
     Budget {
         fixture: "wide",
         op: "complete",
-        server_us: 2_500,
-        client_us: 1_600,
+        server_us: 2_700,
+        client_us: 3_400,
         bytes: 73_242,
     },
     Budget {
         fixture: "plain",
         op: "delta-row",
-        server_us: 30,
-        client_us: 15,
+        server_us: 21,
+        client_us: 12,
         bytes: 450,
     },
     Budget {
         fixture: "styled",
         op: "delta-row",
-        server_us: 40,
-        client_us: 20,
+        server_us: 24,
+        client_us: 14,
         bytes: 623,
     },
     Budget {
         fixture: "sparse",
         op: "delta-row",
-        server_us: 30,
-        client_us: 15,
+        server_us: 21,
+        client_us: 12,
         bytes: 73,
     },
     Budget {
         fixture: "wide",
         op: "delta-row",
-        server_us: 30,
-        client_us: 15,
+        server_us: 24,
+        client_us: 14,
         bytes: 650,
     },
 ];
