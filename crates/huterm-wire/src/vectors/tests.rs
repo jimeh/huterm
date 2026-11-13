@@ -95,3 +95,16 @@ fn frame_and_preamble_vectors_keep_their_bytes() {
 fn the_sample_hierarchy_digest_pins_the_canonical_digest_encoding() {
     assert_eq!(sample_hierarchy().digest(), SAMPLE_HIERARCHY_DIGEST);
 }
+
+#[test]
+fn the_sample_view_digest_pins_the_canonical_view_digest_encoding() {
+    let snapshot = sample_snapshot();
+    assert_eq!(
+        crate::update::view_digest(
+            &crate::update::ViewMetadata::of(&snapshot),
+            &snapshot.rows,
+            0
+        ),
+        SAMPLE_VIEW_DIGEST
+    );
+}

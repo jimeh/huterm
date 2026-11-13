@@ -90,6 +90,9 @@ pub enum EncodeError {
     StaleTarget,
     /// The value has no encoding in this version.
     Unsupported,
+    /// The value breaks an invariant of its type, such as a row whose width
+    /// differs from its grid.
+    Invalid(&'static str),
 }
 
 impl fmt::Display for EncodeError {
@@ -102,6 +105,7 @@ impl fmt::Display for EncodeError {
                 f.write_str("identity belongs to another connection's scope")
             }
             Self::Unsupported => f.write_str("value has no wire encoding"),
+            Self::Invalid(what) => write!(f, "invalid {what}"),
         }
     }
 }

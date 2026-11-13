@@ -32,6 +32,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "updates"
+path = "fuzz_targets/updates.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "sim_schedule"
 path = "fuzz_targets/sim_schedule.rs"
 test = false

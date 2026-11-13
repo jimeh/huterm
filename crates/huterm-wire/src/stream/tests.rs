@@ -25,6 +25,7 @@ fn paste(text: &str) -> Vec<u8> {
         &Message::Paste(Paste {
             viewer: huterm_protocol::ViewerId::in_runtime(vectors::RUNTIME, 30),
             seq: 1,
+            stamp: huterm_protocol::InputStamp::default(),
             text: text.into(),
         }),
         vectors::scope(),
@@ -135,7 +136,7 @@ fn unfinished_messages_past_the_reassembly_budget_are_rejected_and_a_sender_wait
     // The advertised budget holds every stream at the largest client cap.
     assert_eq!(
         reassembly_budget(0),
-        MAX_OPEN_STREAMS * CAPS.cap(MessageKind::Paste).unwrap()
+        MAX_OPEN_STREAMS * CAPS.cap(MessageKind::Input).unwrap()
     );
 }
 

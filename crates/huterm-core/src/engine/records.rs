@@ -14,12 +14,15 @@ use huterm_ghostty::{
     self as ghostty, Point, PromptKind, Screen, SemanticPrompt,
     SemanticPromptKind, Terminal, TrackedRef,
 };
-use huterm_protocol::{COMMAND_RECORD_CAPACITY, CommandRecord, CommandState};
+use huterm_protocol::{
+    COMMAND_RECORD_CAPACITY, CommandRecord, CommandState, MAX_STATUS_TEXT_BYTES,
+};
 
-/// Longest command line a record keeps, in UTF-8 bytes. The pinned parser
-/// already rejects an OSC 133 whose text after `133;` exceeds 2,048 bytes;
-/// this guards against a pin that raises that limit.
-const COMMAND_TEXT_LIMIT: usize = 4096;
+/// Longest command line a record keeps, in UTF-8 bytes: the status text
+/// limit, so every status stays encodable. The pinned parser already rejects
+/// an OSC 133 whose text after `133;` exceeds 2,048 bytes; this guards
+/// against a pin that raises that limit.
+const COMMAND_TEXT_LIMIT: usize = MAX_STATUS_TEXT_BYTES;
 
 /// A tracked reference that marks where a command's block starts.
 #[derive(Debug)]

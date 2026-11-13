@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use huterm_protocol::{
     CommandRecord, ExitStatus, TERMINAL_FAILURE_CAPACITY, TerminalFailure,
     TerminalLifecycle, TerminalMetadata, TerminalProgress, TerminalStatus,
+    bound_status_text,
 };
 
 use super::Registry;
@@ -28,6 +29,7 @@ pub(crate) struct StatusPublisher {
 
 impl StatusPublisher {
     pub(crate) fn title(&mut self, title: String) {
+        let title = bound_status_text(title);
         if self.status.title != title {
             self.status.title = title;
             self.dirty = true;
@@ -39,8 +41,9 @@ impl StatusPublisher {
         revision: u64,
         metadata: &TerminalMetadata,
     ) {
-        if self.status.metadata != *metadata {
-            self.status.metadata = metadata.clone();
+        let metadata = metadata.clone().bounded();
+        if self.status.metadata != metadata {
+            self.status.metadata = metadata;
             self.status.metadata_revision = revision;
             self.dirty = true;
         }
@@ -119,6 +122,7 @@ impl StatusPublisher {
     /// Records a failure. A message identical to the latest one is not
     /// repeated, so a failure that recurs on every turn cannot flood the log.
     pub(crate) fn failure(&mut self, message: String) {
+        let message = bound_status_text(message);
         if self
             .status
             .failures
@@ -210,6 +214,34 @@ mod tests {
             status.status.last_failure(),
             u64::try_from(TERMINAL_FAILURE_CAPACITY).unwrap() + 1
         );
+    }
+
+    #[test]
+    fn published_text_is_cut_to_the_status_text_limit() {
+        use huterm_protocol::{
+            MAX_STATUS_TEXT_BYTES, TerminalDirectory, TerminalMetadata,
+        };
+
+        let long = format!("{}\u{e9}", "x".repeat(MAX_STATUS_TEXT_BYTES - 1));
+        let cut = "x".repeat(MAX_STATUS_TEXT_BYTES - 1);
+        let mut status = StatusPublisher::default();
+        status.title(long.clone());
+        status.failure(long.clone());
+        let metadata = TerminalMetadata::new(
+            Some(TerminalDirectory::new(None, long.clone(), true)),
+            Some(long.clone()),
+        );
+        status.metadata(1, &metadata);
+        assert_eq!(status.status.title, cut);
+        assert_eq!(status.status.failures[0].message, cut);
+        assert_eq!(status.status.metadata.directory().unwrap().path(), cut);
+        assert_eq!(status.status.metadata.foreground_process(), Some(&*cut));
+        // The same over-long text again is no change, so nothing republishes.
+        assert!(std::mem::take(&mut status.dirty));
+        status.title(long.clone());
+        status.failure(long);
+        status.metadata(2, &metadata);
+        assert!(!status.dirty);
     }
 
     #[test]

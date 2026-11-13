@@ -6,14 +6,22 @@
 //! `vectors` feature, and the native tests decode every vector.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use huterm_protocol::{
-    AttachmentId, ClipboardDestination, CommandArgument, CommandInvocation,
-    CommandOutcome, CommandValue, HierarchyEvent, HierarchyState, PaneId,
-    PaneInfo, PaneLayout, PaneNode, RuntimeId, SPLIT_TOTAL, ServerIncarnation,
-    SessionId, SessionInfo, SplitAxis, SplitChild, SplitId, SplitNode,
-    StreamId, TabChange, TabId, TabInfo, TerminalId, ViewerId, WorkspaceId,
-    WorkspaceInfo, ids,
+    AttachmentId, Cell, CellColor, CellStyle, CellText, CharacterKey,
+    ClipboardDestination, CommandArgument, CommandInvocation, CommandOutcome,
+    CommandRecord, CommandState, CommandValue, Cursor, CursorShape, ExitStatus,
+    GridSize, HierarchyEvent, HierarchyState, InputStamp, KittyKeyboardFlags,
+    Modifiers, MouseAction, MouseButton, MouseEncoding, MouseInput,
+    MousePosition, MouseTracking, PaneId, PaneInfo, PaneLayout, PaneNode, Rgb,
+    RowPrompt, RuntimeId, SPLIT_TOTAL, ServerIncarnation, SessionId,
+    SessionInfo, SplitAxis, SplitChild, SplitId, SplitNode, StreamId,
+    TabChange, TabId, TabInfo, TerminalDirectory, TerminalFailure, TerminalId,
+    TerminalInput, TerminalKey, TerminalLifecycle, TerminalMetadata,
+    TerminalModes, TerminalProgress, TerminalRow, TerminalSnapshot,
+    TerminalStatus, ViewerId, Viewport, WorkspaceId, WorkspaceInfo, ids,
 };
 
 use crate::caps::{Direction, MessageCaps};
@@ -28,6 +36,10 @@ use crate::hierarchy::{HierarchyContext, HierarchySnapshot, SequencedEvent};
 use crate::message::{
     DecodeContext, EffectPayload, HostEffect, Message, Paste,
 };
+use crate::update::{
+    FullRow, RowOp, Run, StyleEntry, TerminalUpdate, ViewMetadata,
+};
+use crate::viewer::{Credit, Input, InputAck, ResyncViewer, ViewerStatus};
 
 /// The client-local runtime the vectors' identities are scoped to.
 pub const RUNTIME: RuntimeId = RuntimeId::new(1);
@@ -216,6 +228,388 @@ pub fn sample_hierarchy() -> HierarchyState {
 /// The digest of [`sample_hierarchy`] under the base profile, which pins
 /// `HierarchyState::digest`'s documented encoding.
 pub const SAMPLE_HIERARCHY_DIGEST: u64 = 0xdd18_0ff3_aced_d957;
+
+/// The viewer the update and input vectors belong to.
+#[must_use]
+pub const fn viewer() -> ViewerId {
+    ViewerId::in_runtime(RUNTIME, 30)
+}
+
+fn cell(text: &str, foreground: CellColor, style: CellStyle) -> Cell {
+    Cell {
+        text: CellText::from(text),
+        foreground,
+        background: CellColor::DefaultBackground,
+        style,
+    }
+}
+
+fn bold() -> CellStyle {
+    CellStyle {
+        bold: true,
+        ..CellStyle::default()
+    }
+}
+
+/// A 3-by-2 viewport of terminal 6: a bold red prompt mark and "ls" on a
+/// prompt row, then a wide character and its spacer on a wrapped row.
+#[must_use]
+pub fn sample_snapshot() -> Arc<TerminalSnapshot> {
+    let red = CellColor::Indexed(1);
+    let plain = CellColor::DefaultForeground;
+    Arc::new(TerminalSnapshot {
+        terminal_id: TerminalId::in_runtime(RUNTIME, 6),
+        generation: 9,
+        revision: 12,
+        geometry_revision: 2,
+        size: GridSize::clamped(3, 2),
+        rows: vec![
+            Arc::new(TerminalRow {
+                cells: vec![
+                    cell("$", red, bold()),
+                    cell("l", plain, CellStyle::default()),
+                    cell("s", plain, CellStyle::default()),
+                ],
+                wrapped: false,
+                wrap_continuation: false,
+                prompt: RowPrompt::Primary,
+            }),
+            Arc::new(TerminalRow {
+                cells: vec![
+                    cell(
+                        "界",
+                        plain,
+                        CellStyle {
+                            wide: true,
+                            ..CellStyle::default()
+                        },
+                    ),
+                    cell(
+                        "",
+                        plain,
+                        CellStyle {
+                            wide_spacer: true,
+                            ..CellStyle::default()
+                        },
+                    ),
+                    cell("", plain, CellStyle::default()),
+                ],
+                wrapped: true,
+                wrap_continuation: false,
+                prompt: RowPrompt::None,
+            }),
+        ],
+        cursor: Some(Cursor {
+            row: 1,
+            column: 2,
+            shape: CursorShape::Beam,
+        }),
+        modes: TerminalModes {
+            kitty_keyboard: KittyKeyboardFlags::from_bits(1),
+            application_cursor: false,
+            alternate_screen: false,
+            bracketed_paste: true,
+            focus_reporting: false,
+            mouse_tracking: MouseTracking::Buttons,
+            mouse_encoding: MouseEncoding::Sgr,
+        },
+        viewport: Viewport { bottom_offset: 0 },
+        history_size: 40,
+        cursor_color: Some(Rgb {
+            red: 0xff,
+            green: 0x80,
+            blue: 0,
+        }),
+        default_background: None,
+    })
+}
+
+/// The digest of [`sample_snapshot`] at minor version 0, which pins the
+/// view digest's canonical encoding.
+pub const SAMPLE_VIEW_DIGEST: u64 = 0x4865_712a_100b_ac07;
+
+fn sample_update() -> TerminalUpdate {
+    let snapshot = sample_snapshot();
+    let entry = |foreground, style| StyleEntry {
+        foreground,
+        background: CellColor::DefaultBackground,
+        flags: crate::update::flags_of(style),
+    };
+    let run = |style, texts: &[&str]| Run {
+        style,
+        texts: texts.iter().map(|text| CellText::from(*text)).collect(),
+    };
+    TerminalUpdate {
+        viewer: viewer(),
+        seq: 1,
+        baseline: None,
+        credited: false,
+        digest: Some(SAMPLE_VIEW_DIGEST),
+        metadata: ViewMetadata::of(&snapshot),
+        styles: vec![
+            entry(CellColor::Indexed(1), bold()),
+            entry(CellColor::DefaultForeground, CellStyle::default()),
+            entry(
+                CellColor::DefaultForeground,
+                CellStyle {
+                    wide: true,
+                    ..CellStyle::default()
+                },
+            ),
+            entry(
+                CellColor::DefaultForeground,
+                CellStyle {
+                    wide_spacer: true,
+                    ..CellStyle::default()
+                },
+            ),
+        ],
+        rows: vec![
+            RowOp::Full(FullRow {
+                wrapped: false,
+                wrap_continuation: false,
+                prompt: RowPrompt::Primary,
+                runs: vec![run(0, &["$"]), run(1, &["l", "s"])],
+            }),
+            RowOp::Full(FullRow {
+                wrapped: true,
+                wrap_continuation: false,
+                prompt: RowPrompt::None,
+                runs: vec![run(2, &["界"]), run(3, &[""]), run(1, &[""])],
+            }),
+        ],
+    }
+}
+
+fn delta_update() -> TerminalUpdate {
+    let mut metadata = ViewMetadata::of(&sample_snapshot());
+    metadata.revision = 13;
+    metadata.cursor = None;
+    metadata.default_background = Some(Rgb {
+        red: 0x10,
+        green: 0x20,
+        blue: 0x30,
+    });
+    TerminalUpdate {
+        viewer: viewer(),
+        seq: 2,
+        baseline: Some(1),
+        credited: true,
+        digest: None,
+        metadata,
+        styles: vec![StyleEntry {
+            foreground: CellColor::Rgb(Rgb {
+                red: 1,
+                green: 2,
+                blue: 3,
+            }),
+            background: CellColor::Cursor,
+            flags: 0b1000,
+        }],
+        rows: vec![
+            RowOp::Keep(1),
+            RowOp::Full(FullRow {
+                wrapped: false,
+                wrap_continuation: true,
+                prompt: RowPrompt::Continuation,
+                runs: vec![Run {
+                    style: 0,
+                    texts: vec!["e\u{301}".into(), " ".into(), "!".into()],
+                }],
+            }),
+        ],
+    }
+}
+
+/// A status with every field set: an exited root, two failures, a
+/// finished and a running command, and paused progress.
+#[must_use]
+pub fn sample_status() -> TerminalStatus {
+    let start = SystemTime::UNIX_EPOCH + Duration::new(1_700_000_000, 5);
+    TerminalStatus {
+        revision: 7,
+        title: "vim".into(),
+        metadata: TerminalMetadata::new(
+            Some(TerminalDirectory::new(
+                Some("host".into()),
+                "/src".into(),
+                true,
+            )),
+            Some("vim".into()),
+        )
+        .with_foreground_title(Some("edit".into()))
+        .with_shell_directory(Some(TerminalDirectory::new(
+            None,
+            "/".into(),
+            true,
+        ))),
+        metadata_revision: 3,
+        lifecycle: TerminalLifecycle::Exited(ExitStatus {
+            code: Some(2),
+            success: false,
+        }),
+        bells: 4,
+        failures: vec![
+            TerminalFailure {
+                sequence: 1,
+                message: "read".into(),
+            },
+            TerminalFailure {
+                sequence: 3,
+                message: "write".into(),
+            },
+        ],
+        commands: Arc::from(vec![
+            CommandRecord {
+                sequence: 5,
+                text: Some("make".into()),
+                state: CommandState::Finished {
+                    exit_code: Some(-1),
+                },
+                started_at: start,
+                finished_at: Some(start + Duration::from_secs(2)),
+                duration: Some(Duration::from_millis(2001)),
+            },
+            CommandRecord {
+                sequence: 6,
+                text: None,
+                state: CommandState::Running,
+                started_at: SystemTime::UNIX_EPOCH
+                    - Duration::from_millis(1500),
+                finished_at: None,
+                duration: None,
+            },
+        ]),
+        progress: Some(TerminalProgress::Paused(Some(40))),
+    }
+}
+
+fn input(seq: u64, input: TerminalInput) -> Message {
+    Message::Input(Input {
+        viewer: viewer(),
+        seq,
+        stamp: InputStamp {
+            scrolls: 2,
+            geometry: Some(5),
+        },
+        input,
+    })
+}
+
+#[expect(clippy::too_many_lines, reason = "one short value per message kind")]
+fn viewer_vectors() -> Vec<MessageVector> {
+    let from_server = |name, message, bytes| MessageVector {
+        name,
+        from: Direction::ServerToClient,
+        message,
+        bytes,
+    };
+    let from_client = |name, message, bytes| MessageVector {
+        name,
+        from: Direction::ClientToServer,
+        message,
+        bytes,
+    };
+    let shift = Modifiers {
+        control: false,
+        alt: false,
+        shift: true,
+    };
+    vec![
+        from_server(
+            "complete update",
+            Message::TerminalUpdate(sample_update()),
+            COMPLETE_UPDATE,
+        ),
+        from_server(
+            "delta update",
+            Message::TerminalUpdate(delta_update()),
+            DELTA_UPDATE,
+        ),
+        from_server(
+            "viewer status",
+            Message::ViewerStatus(ViewerStatus {
+                viewer: viewer(),
+                status: sample_status(),
+            }),
+            VIEWER_STATUS,
+        ),
+        from_client(
+            "text input",
+            input(8, TerminalInput::Text("héllo".into())),
+            INPUT_TEXT,
+        ),
+        from_client(
+            "character input",
+            input(
+                9,
+                TerminalInput::Character {
+                    text: "\u{3}".into(),
+                    meta: true,
+                    key: Some(Box::new(CharacterKey {
+                        unshifted: 'c',
+                        text: "C".into(),
+                        base_layout: Some('c'),
+                        modifiers: Modifiers {
+                            control: true,
+                            alt: false,
+                            shift: true,
+                        },
+                    })),
+                },
+            ),
+            INPUT_CHARACTER,
+        ),
+        from_client(
+            "key input",
+            input(
+                10,
+                TerminalInput::Key {
+                    key: TerminalKey::F12,
+                    modifiers: shift,
+                },
+            ),
+            INPUT_KEY,
+        ),
+        from_client(
+            "mouse input",
+            input(
+                11,
+                TerminalInput::Mouse(MouseInput {
+                    position: MousePosition {
+                        column: 300,
+                        row: 4,
+                    },
+                    action: MouseAction::Motion(Some(MouseButton::Right)),
+                    modifiers: Modifiers::default(),
+                }),
+            ),
+            INPUT_MOUSE,
+        ),
+        from_server(
+            "input ack",
+            Message::InputAck(InputAck {
+                viewer: viewer(),
+                seq: 11,
+            }),
+            INPUT_ACK,
+        ),
+        from_client(
+            "credit",
+            Message::Credit(Credit {
+                viewer: viewer(),
+                grant: 2,
+                applied: 1,
+            }),
+            CREDIT,
+        ),
+        from_client(
+            "resync viewer",
+            Message::ResyncViewer(ResyncViewer { viewer: viewer() }),
+            RESYNC_VIEWER,
+        ),
+    ]
+}
 
 /// One event of every variant, in tag order, each valid on its own.
 #[must_use]
@@ -439,6 +833,7 @@ pub fn minor_0_messages() -> Vec<MessageVector> {
             Message::Paste(Paste {
                 viewer: ViewerId::in_runtime(RUNTIME, 30),
                 seq: 7,
+                stamp: huterm_protocol::InputStamp::default(),
                 text: "echo hi\n".into(),
             }),
             PASTE,
@@ -471,6 +866,7 @@ pub fn minor_0_messages() -> Vec<MessageVector> {
             bytes,
         ));
     }
+    vectors.extend(viewer_vectors());
     vectors
 }
 
@@ -582,13 +978,14 @@ const HELLO: &[u8] = &[
     0x75, 0x74, 0x65, 0x72, 0x6d, 0x06, 0x30, 0x2e, 0x33, 0x31, 0x2e, 0x30,
 ];
 const WELCOME: &[u8] = &[
-    0x01, 0x5e, 0x01, 0x00, 0x00, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
+    0x01, 0x6a, 0x01, 0x00, 0x00, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
     0xfe, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xa5, 0xa5, 0xa5,
     0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
     0xa5, 0x06, 0x64, 0x65, 0x76, 0x62, 0x6f, 0x78, 0x07, 0x64, 0x65, 0x66,
     0x61, 0x75, 0x6c, 0x74, 0x06, 0x30, 0x2e, 0x33, 0x31, 0x2e, 0x30, 0x92,
-    0x21, 0x80, 0x80, 0x40, 0x1f, 0x40, 0x02, 0x80, 0x80, 0x40, 0xec, 0x82,
-    0x80, 0x02, 0x02, 0x00, 0x80, 0x80, 0x01, 0x06, 0xdb, 0x80, 0x40, 0xb0,
+    0x21, 0x80, 0x80, 0x40, 0x2b, 0x40, 0x02, 0x80, 0x80, 0x40, 0xd4, 0x87,
+    0x80, 0x02, 0x05, 0x00, 0x80, 0x80, 0x01, 0x06, 0xb1, 0x81, 0x40, 0x0a,
+    0xf5, 0x81, 0x40, 0x0c, 0x80, 0x80, 0x04, 0x0d, 0x80, 0x80, 0x04, 0xb0,
     0xea, 0x01, 0xb0, 0xea, 0x01, 0xd0, 0x0f, 0x80, 0x80, 0x80, 0x04, 0x00,
 ];
 const REJECT_MAJOR: &[u8] = &[
@@ -627,8 +1024,8 @@ const HIERARCHY_RESYNC: &[u8] = &[
     0x01, 0x02, 0x0e, 0x03,
 ];
 const PASTE: &[u8] = &[
-    0x06, 0x0b, 0x1e, 0x07, 0x08, 0x65, 0x63, 0x68, 0x6f, 0x20, 0x68, 0x69,
-    0x0a,
+    0x06, 0x0e, 0x1e, 0x07, 0x02, 0x00, 0x00, 0x08, 0x65, 0x63, 0x68, 0x6f,
+    0x20, 0x68, 0x69, 0x0a,
 ];
 const CLIPBOARD_WRITE: &[u8] = &[
     0x07, 0x0f, 0x01, 0x1e, 0x02, 0x06, 0x00, 0x08, 0x00, 0x06, 0x63, 0x6f,
@@ -688,6 +1085,53 @@ const EVENTS: [&[u8]; 23] = [
     &[0x04, 0x06, 0x40, 0x15, 0x02, 0x03, 0x00, 0x00],
     &[0x04, 0x06, 0x41, 0x16, 0x02, 0x15, 0x01, 0x00],
 ];
+const COMPLETE_UPDATE: &[u8] = &[
+    0x08, 0x59, 0x03, 0x02, 0x1e, 0x01, 0x00, 0x00, 0x01, 0x07, 0xac, 0x0b,
+    0x10, 0x2a, 0x71, 0x65, 0x48, 0x09, 0x0c, 0x02, 0x01, 0x03, 0x01, 0x02,
+    0x02, 0x04, 0x01, 0x04, 0x01, 0x02, 0x00, 0x28, 0x01, 0xff, 0x80, 0x00,
+    0x00, 0x04, 0x04, 0x03, 0x01, 0x01, 0x01, 0x03, 0x00, 0x01, 0x00, 0x03,
+    0x00, 0x01, 0x40, 0x04, 0x00, 0x01, 0x80, 0x01, 0x02, 0x01, 0x0e, 0x00,
+    0x00, 0x01, 0x02, 0x00, 0x01, 0x01, 0x24, 0x01, 0x02, 0x01, 0x6c, 0x01,
+    0x73, 0x01, 0x10, 0x01, 0x00, 0x00, 0x03, 0x02, 0x01, 0x03, 0xe7, 0x95,
+    0x8c, 0x03, 0x01, 0x00, 0x01, 0x01, 0x00,
+];
+const DELTA_UPDATE: &[u8] = &[
+    0x08, 0x36, 0x03, 0x02, 0x1e, 0x02, 0x01, 0x01, 0x01, 0x00, 0x09, 0x0d,
+    0x02, 0x00, 0x04, 0x01, 0x04, 0x01, 0x02, 0x00, 0x28, 0x01, 0xff, 0x80,
+    0x00, 0x01, 0x10, 0x20, 0x30, 0x01, 0x06, 0x04, 0x01, 0x02, 0x03, 0x02,
+    0x08, 0x02, 0x00, 0x01, 0x01, 0x0e, 0x00, 0x01, 0x02, 0x01, 0x00, 0x03,
+    0x03, 0x65, 0xcc, 0x81, 0x01, 0x20, 0x01, 0x21,
+];
+const VIEWER_STATUS: &[u8] = &[
+    0x09, 0x6b, 0x1e, 0x69, 0x07, 0x03, 0x76, 0x69, 0x6d, 0x1f, 0x01, 0x0c,
+    0x01, 0x04, 0x68, 0x6f, 0x73, 0x74, 0x04, 0x2f, 0x73, 0x72, 0x63, 0x01,
+    0x01, 0x03, 0x76, 0x69, 0x6d, 0x01, 0x04, 0x65, 0x64, 0x69, 0x74, 0x01,
+    0x04, 0x00, 0x01, 0x2f, 0x01, 0x03, 0x01, 0x03, 0x01, 0x02, 0x00, 0x04,
+    0x02, 0x06, 0x01, 0x04, 0x72, 0x65, 0x61, 0x64, 0x07, 0x03, 0x05, 0x77,
+    0x72, 0x69, 0x74, 0x65, 0x02, 0x1c, 0x05, 0x01, 0x04, 0x6d, 0x61, 0x6b,
+    0x65, 0x01, 0x01, 0x01, 0x80, 0xc4, 0x9f, 0xd5, 0x0c, 0x05, 0x01, 0x84,
+    0xc4, 0x9f, 0xd5, 0x0c, 0x05, 0x01, 0x02, 0xc0, 0x84, 0x3d, 0x0b, 0x06,
+    0x00, 0x00, 0x03, 0x80, 0xca, 0xb5, 0xee, 0x01, 0x00, 0x00, 0x03, 0x01,
+    0x28,
+];
+const INPUT_TEXT: &[u8] = &[
+    0x0a, 0x0f, 0x1e, 0x08, 0x03, 0x02, 0x01, 0x05, 0x00, 0x07, 0x06, 0x68,
+    0xc3, 0xa9, 0x6c, 0x6c, 0x6f,
+];
+const INPUT_CHARACTER: &[u8] = &[
+    0x0a, 0x13, 0x1e, 0x09, 0x03, 0x02, 0x01, 0x05, 0x01, 0x0b, 0x01, 0x03,
+    0x01, 0x01, 0x06, 0x63, 0x01, 0x43, 0x01, 0x63, 0x05,
+];
+const INPUT_KEY: &[u8] = &[
+    0x0a, 0x0a, 0x1e, 0x0a, 0x03, 0x02, 0x01, 0x05, 0x02, 0x02, 0x19, 0x04,
+];
+const INPUT_MOUSE: &[u8] = &[
+    0x0a, 0x0f, 0x1e, 0x0b, 0x03, 0x02, 0x01, 0x05, 0x03, 0x07, 0xac, 0x02,
+    0x04, 0x02, 0x01, 0x02, 0x00,
+];
+const INPUT_ACK: &[u8] = &[0x0b, 0x02, 0x1e, 0x0b];
+const CREDIT: &[u8] = &[0x0c, 0x03, 0x1e, 0x02, 0x01];
+const RESYNC_VIEWER: &[u8] = &[0x0d, 0x01, 0x1e];
 const INVOCATION: &[u8] = &[
     0x21, 0x0a, 0x72, 0x65, 0x6e, 0x61, 0x6d, 0x65, 0x5f, 0x74, 0x61, 0x62,
     0x02, 0x0c, 0x04, 0x6e, 0x61, 0x6d, 0x65, 0x02, 0x05, 0x04, 0x6c, 0x6f,

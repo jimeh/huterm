@@ -11,12 +11,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use huterm_protocol::{
-    AttachmentId, BufferPoint, BufferRange, ExitStatus, InputStamp,
-    MouseTracking, RuntimeId, ScrollCommand, SelectionUnit, TerminalCommand,
-    TerminalId, TerminalInput, TerminalMetadata, TerminalSnapshot,
+    AttachmentId, BufferPoint, BufferRange, ExitStatus, GridSize, InputStamp,
+    MAX_GRID_CELLS, MouseTracking, RuntimeId, ScrollCommand, SelectionUnit,
+    TerminalCommand, TerminalId, TerminalInput, TerminalMetadata,
+    TerminalSnapshot,
 };
 #[cfg(test)]
-use huterm_protocol::{CellSize, GridSize, TerminalPresentation};
+use huterm_protocol::{CellSize, TerminalPresentation};
 use thiserror::Error;
 
 use crate::compression::{self, CompressionSchedule, CompressionStats};
@@ -401,6 +402,19 @@ pub struct TerminalRuntime {
     launch_directory: PathBuf,
 }
 
+/// `command` with a grid past `MAX_GRID_CELLS` clamped to it, so every
+/// spawn and split starts encodable; geometry reports clamp the same way.
+/// A smaller grid passes unchanged, so an empty one still fails engine
+/// initialization before the child starts.
+fn bounded(command: &TerminalCommand) -> TerminalCommand {
+    let mut command = command.clone();
+    let GridSize { columns, rows } = command.grid_size;
+    if command.grid_size.cells() > MAX_GRID_CELLS {
+        command.grid_size = GridSize::clamped(columns, rows);
+    }
+    command
+}
+
 impl TerminalRuntime {
     /// Starts a PTY, child process, emulator owner, and I/O workers.
     ///
@@ -420,7 +434,7 @@ impl TerminalRuntime {
         terminal_id: TerminalId,
         command: &TerminalCommand,
     ) -> Result<Self, RuntimeError> {
-        let command = command.clone();
+        let command = bounded(command);
         let launch_directory = command.working_directory.clone();
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (message_sender, message_receiver) =

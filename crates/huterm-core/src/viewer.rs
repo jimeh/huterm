@@ -17,8 +17,8 @@ use std::time::Instant;
 use huterm_protocol::{
     AttachmentId, BufferPoint, BufferRange, CellSize, ExitStatus, GridSize,
     InputStamp, MousePosition, RuntimeId, ScrollCommand, ScrollbackLimit,
-    SelectionUnit, TerminalFailure, TerminalId, TerminalInput,
-    TerminalLifecycle, TerminalPresentation, TerminalSnapshot, TerminalStatus,
+    SelectionUnit, StatusBaseline, StatusChanges, TerminalFailure, TerminalId,
+    TerminalInput, TerminalPresentation, TerminalSnapshot, TerminalStatus,
     ViewerCapabilities, ViewerId,
 };
 
@@ -519,14 +519,6 @@ impl ViewerWake {
     }
 }
 
-#[derive(Debug)]
-struct Baseline {
-    revision: Option<u64>,
-    running: bool,
-    bells: u64,
-    failure: u64,
-}
-
 /// One client's registration to display and drive a terminal.
 ///
 /// Dropping the viewer unregisters it without blocking: requests it already
@@ -541,7 +533,7 @@ pub struct TerminalViewer {
     scrolls: AtomicU64,
     /// The slot's publication count this handle last reported.
     reported: AtomicU64,
-    baseline: Mutex<Baseline>,
+    baseline: Mutex<StatusBaseline>,
     host_effects: Option<HostEffectRecipient>,
 }
 
@@ -601,19 +593,9 @@ impl TerminalViewer {
             })?;
         let status = registry.status();
         let baseline = if options.spawned {
-            Baseline {
-                revision: None,
-                running: true,
-                bells: 0,
-                failure: 0,
-            }
+            StatusBaseline::SPAWNED
         } else {
-            Baseline {
-                revision: None,
-                running: status.lifecycle == TerminalLifecycle::Running,
-                bells: status.bells,
-                failure: status.last_failure(),
-            }
+            StatusBaseline::seen(&status)
         };
         Ok(Self {
             slot,
@@ -1021,23 +1003,20 @@ impl TerminalViewer {
         let mut baseline =
             self.baseline.lock().unwrap_or_else(PoisonError::into_inner);
         let status = self.registry.status();
-        if baseline.revision == Some(status.revision) {
+        let Some(changes) = baseline.observe(&status) else {
             return update;
-        }
-        baseline.revision = Some(status.revision);
-        if let TerminalLifecycle::Exited(exit) = status.lifecycle
-            && baseline.running
-        {
-            baseline.running = false;
-            update.exited = Some(exit);
-        }
-        update.bells = status.bells.saturating_sub(baseline.bells);
-        baseline.bells = status.bells;
-        let (failures, missed) = status.failures_since(baseline.failure);
-        update.failures = failures.to_vec();
-        update.missed_failures = missed;
-        baseline.failure = status.last_failure();
+        };
         drop(baseline);
+        let StatusChanges {
+            exited,
+            bells,
+            failures,
+            missed_failures,
+        } = changes;
+        update.exited = exited;
+        update.bells = bells;
+        update.failures = failures;
+        update.missed_failures = missed_failures;
         update.status = Some(status);
         update
     }

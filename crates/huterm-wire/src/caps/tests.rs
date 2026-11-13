@@ -28,12 +28,15 @@ fn every_minor_0_kind_has_a_cap_covering_its_payload() {
     assert!(
         caps.cap(MessageKind::HostEffect).unwrap() > CLIPBOARD_PAYLOAD_LIMIT
     );
+    assert!(caps.cap(MessageKind::Input).unwrap() > INPUT_TEXT_PAYLOAD_LIMIT);
+    // Text input carries a whole input budget, as a paste does, plus a
+    // stamp and a tag, so it is the largest client message.
     assert_eq!(
         caps.largest(Direction::ClientToServer),
-        caps.cap(MessageKind::Paste).unwrap()
+        caps.cap(MessageKind::Input).unwrap()
     );
     assert_eq!(
         reassembly_budget(0),
-        crate::stream::MAX_OPEN_STREAMS * caps.cap(MessageKind::Paste).unwrap()
+        crate::stream::MAX_OPEN_STREAMS * caps.cap(MessageKind::Input).unwrap()
     );
 }

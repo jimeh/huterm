@@ -2647,6 +2647,7 @@ dependencies = [
  "huterm-ghostty",
  "huterm-procinfo",
  "huterm-protocol",
+ "huterm-wire",
  "memchr",
  "nix 0.29.0",
  "portable-pty",

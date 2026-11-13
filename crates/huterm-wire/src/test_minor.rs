@@ -13,21 +13,29 @@
 //!   older event expresses, so an older peer receives a resync snapshot
 //!   projected onto its version.
 //!
-//! Its digest covers the appended field only for peers at its version, so a
-//! projected state and its digest always agree. Shipping clients and
-//! servers never enable it.
+//! It also adds a cell style flag, [`CURLY_UNDERLINE`], which a server
+//! projects onto an older peer as a plain underline.
+//!
+//! Its digests cover the appended field and the style flag only for peers at
+//! its version, so a projected state and its digest always agree. Shipping
+//! clients and servers never enable it.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use huterm_protocol::{
     ApplyOutcome, HierarchyEnvelope, HierarchyEvent, HierarchyState,
-    MAX_NAME_BYTES, StreamId, TabId, TabInfo,
+    MAX_NAME_BYTES, StreamId, TabId, TabInfo, TerminalRow,
 };
 
 use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
 use crate::hierarchy::{
     HierarchyContext, decode_event, decode_state_with, encode_event,
     encode_state_with,
+};
+use crate::update::{
+    FullRow, STYLE_FLAGS, SourceRow, StyleEntry, UpdateRow, UpdateSource,
+    ViewMetadata, ViewRow, build_row, flags_of,
 };
 use crate::{MINOR, digest_profile};
 
@@ -367,6 +375,93 @@ pub fn decode_test_event(
                 }),
             })
         }
+    }
+}
+
+/// The cell style flag the test-only minor version adds: a curly
+/// underline, which an older peer shows as a plain underline.
+pub const CURLY_UNDERLINE: u64 = 1 << 8;
+
+/// Minor version 0's underline flag, which [`CURLY_UNDERLINE`] projects to.
+const UNDERLINE: u64 = 1 << 3;
+
+/// The style flags a peer at the test-only minor version understands.
+pub const TEST_STYLE_FLAGS: u64 = STYLE_FLAGS | CURLY_UNDERLINE;
+
+/// A row at the test-only minor version: minor version 0's row, and which
+/// of its cells have a curly underline.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TestRow {
+    /// Minor version 0's row.
+    pub row: TerminalRow,
+    /// Each cell's curly underline.
+    pub curly: Vec<bool>,
+}
+
+impl UpdateRow for Arc<TestRow> {
+    fn row(&self) -> &TerminalRow {
+        &self.row
+    }
+
+    fn flags(&self, column: usize, minor: u16) -> u64 {
+        let base = self
+            .row
+            .cells
+            .get(column)
+            .map_or(0, |cell| flags_of(cell.style));
+        if !self.curly.get(column).copied().unwrap_or(false) {
+            base
+        } else if minor >= TEST_MINOR {
+            base | CURLY_UNDERLINE
+        } else {
+            base | UNDERLINE
+        }
+    }
+}
+
+impl SourceRow for Arc<TestRow> {
+    fn identity(&self) -> usize {
+        Arc::as_ptr(self).addr()
+    }
+}
+
+impl ViewRow for Arc<TestRow> {
+    fn build(row: &FullRow, styles: &[StyleEntry]) -> Self {
+        let curly = row
+            .runs
+            .iter()
+            .flat_map(|run| {
+                let curly = styles
+                    .get(run.style as usize)
+                    .is_some_and(|style| style.flags & CURLY_UNDERLINE != 0);
+                std::iter::repeat_n(curly, run.texts.len())
+            })
+            .collect();
+        Arc::new(TestRow {
+            row: build_row(row, styles),
+            curly,
+        })
+    }
+}
+
+/// A viewport at the test-only minor version.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TestSnapshot {
+    /// Everything besides rows.
+    pub metadata: ViewMetadata,
+    /// The rows.
+    pub rows: Vec<Arc<TestRow>>,
+}
+
+impl UpdateSource for Arc<TestSnapshot> {
+    type Row = Arc<TestRow>;
+
+    fn metadata(&self) -> ViewMetadata {
+        self.metadata
+    }
+
+    fn rows(&self) -> &[Self::Row] {
+        &self.rows
     }
 }
 

@@ -326,3 +326,165 @@ fn closing_a_pinned_tabs_workspace_drops_its_pin_so_snapshots_agree() {
     assert_eq!(installed, server);
     assert_eq!(digest, installed.digest(TEST_MINOR));
 }
+
+mod updates {
+    use std::sync::Arc;
+
+    use huterm_protocol::{
+        Cell, CellColor, CellStyle, CellText, GridSize, TerminalRow,
+        TerminalSnapshot,
+    };
+
+    use super::super::*;
+    use crate::caps::{Direction, MessageCaps};
+    use crate::message::{Message, decode_message, encode_message};
+    use crate::update::{
+        TerminalUpdate, UPDATE_DIGEST_INTERVAL, UpdateEncoder, UpdateOutcome,
+        ViewMetadata, ViewerView, decode_update, encode_update,
+    };
+    use crate::vectors;
+
+    fn cell(text: &str) -> Cell {
+        Cell {
+            text: CellText::from(text),
+            foreground: CellColor::DefaultForeground,
+            background: CellColor::DefaultBackground,
+            style: CellStyle::default(),
+        }
+    }
+
+    fn test_row(text: &str, curly: [bool; 2]) -> Arc<TestRow> {
+        Arc::new(TestRow {
+            row: TerminalRow {
+                cells: text.chars().map(|c| cell(&c.to_string())).collect(),
+                ..TerminalRow::default()
+            },
+            curly: curly.to_vec(),
+        })
+    }
+
+    fn metadata(revision: u64) -> ViewMetadata {
+        let mut metadata = ViewMetadata::of(&vectors::sample_snapshot());
+        metadata.size = GridSize {
+            columns: 2,
+            rows: 2,
+        };
+        metadata.cursor = None;
+        metadata.revision = revision;
+        metadata
+    }
+
+    /// A test-minor viewport whose rows change with `step`, some cells
+    /// curly underlined.
+    fn viewport(step: u64, kept: &Arc<TestRow>) -> Arc<TestSnapshot> {
+        let curly = [step.is_multiple_of(2), step.is_multiple_of(3)];
+        Arc::new(TestSnapshot {
+            metadata: metadata(step),
+            rows: vec![Arc::clone(kept), test_row("ab", curly)],
+        })
+    }
+
+    /// Sends `update` as minor version 0 bytes, which a minor 0 decoder
+    /// must accept.
+    fn minor_0_wire(update: &TerminalUpdate) -> TerminalUpdate {
+        let bytes = encode_message(
+            &Message::TerminalUpdate(update.clone()),
+            vectors::scope(),
+            MessageCaps::for_minor(0),
+        )
+        .unwrap();
+        match decode_message(
+            &bytes,
+            Direction::ServerToClient,
+            vectors::context(0),
+        ) {
+            Ok(Message::TerminalUpdate(update)) => update,
+            other => panic!("decoded {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_curly_underline_reaches_a_minor_0_client_as_an_underline_without_a_resync()
+     {
+        let kept = test_row("$ ", [true, false]);
+        let mut server: UpdateEncoder<Arc<TestSnapshot>> =
+            UpdateEncoder::new(vectors::viewer(), 0);
+        let mut client: ViewerView = ViewerView::new(0);
+        let mut digests = 0;
+        for step in 0..=UPDATE_DIGEST_INTERVAL + 1 {
+            let update = server.next(&viewport(step, &kept), true).unwrap();
+            digests += usize::from(update.digest.is_some());
+            let disposal = client.apply(&minor_0_wire(&update)).unwrap();
+            assert_eq!(disposal.outcome, UpdateOutcome::Applied, "{step}");
+        }
+        assert_eq!(digests, 2, "the complete snapshot and the 64th delta");
+        let (_, rows) = client.view().unwrap();
+        assert!(rows[0].cells[0].style.underline, "projected");
+        assert!(!rows[0].cells[1].style.underline);
+    }
+
+    #[test]
+    fn a_test_minor_client_of_a_minor_0_server_digests_at_minor_0() {
+        let snapshot = vectors::sample_snapshot();
+        let mut server: UpdateEncoder<Arc<TerminalSnapshot>> =
+            UpdateEncoder::new(vectors::viewer(), 0);
+        let mut client: ViewerView<Arc<TestRow>> = ViewerView::new(0);
+        for _ in 0..=UPDATE_DIGEST_INTERVAL {
+            let update = minor_0_wire(&server.next(&snapshot, true).unwrap());
+            assert_eq!(
+                client.apply(&update).unwrap().outcome,
+                UpdateOutcome::Applied
+            );
+        }
+        let (_, rows) = client.view().unwrap();
+        assert!(rows.iter().all(|row| row.curly.iter().all(|curly| !curly)));
+    }
+
+    #[test]
+    fn test_minor_peers_keep_the_flag_and_a_minor_0_decoder_refuses_it() {
+        let kept = test_row("$ ", [true, false]);
+        let mut server: UpdateEncoder<Arc<TestSnapshot>> =
+            UpdateEncoder::new(vectors::viewer(), TEST_MINOR);
+        let mut client: ViewerView<Arc<TestRow>> = ViewerView::new(TEST_MINOR);
+        let mut sent = Vec::new();
+        for step in 0..=UPDATE_DIGEST_INTERVAL {
+            let current = viewport(step, &kept);
+            let update = server.next(&current, true).unwrap();
+            let mut w = Writer::new();
+            encode_update(&mut w, vectors::scope(), &update, TEST_STYLE_FLAGS)
+                .unwrap();
+            let bytes = w.into_bytes();
+            let received = decode_update(
+                &mut Reader::new(&bytes),
+                vectors::scope(),
+                TEST_STYLE_FLAGS,
+            )
+            .unwrap();
+            assert_eq!(
+                client.apply(&received).unwrap().outcome,
+                UpdateOutcome::Applied
+            );
+            let (_, rows) = client.view().unwrap();
+            assert_eq!(rows, current.rows.as_slice());
+            sent.push(bytes);
+        }
+        // The native flag is not minor 0's to read, and a sender withholds it.
+        assert_eq!(
+            decode_update(
+                &mut Reader::new(&sent[0]),
+                vectors::scope(),
+                crate::update::STYLE_FLAGS
+            ),
+            Err(DecodeError::Invalid("style flags"))
+        );
+        let native = server.next(&viewport(0, &kept), true).unwrap();
+        assert_eq!(
+            encode_message(
+                &Message::TerminalUpdate(native),
+                vectors::scope(),
+                MessageCaps::for_minor(0)
+            ),
+            Err(EncodeError::Unsupported)
+        );
+    }
+}

@@ -554,3 +554,27 @@ fn ghostty_reports_modes_and_owned_effects() {
         assert!(modes.focus_reporting);
     });
 }
+
+#[test]
+fn graphemes_reach_rows_within_the_cell_text_limit() {
+    use huterm_protocol::MAX_CELL_TEXT_BYTES;
+
+    // Ghostty keeps a cluster's first codepoint and at most 64 more, so the
+    // longest cell it stores is 65 four-byte codepoints. A pin that raises
+    // that bound past the cell text limit must still truncate.
+    with_engine(|engine| {
+        let cluster = format!("e{}", "\u{1d167}".repeat(700));
+        engine.process(format!("{cluster}x").as_bytes()).unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        let cells = &snapshot.rows[0].cells;
+        assert_eq!(cells[0].text.len(), 1 + 64 * 4);
+        assert!(cluster.starts_with(cells[0].text.as_str()));
+        assert_eq!(cells[1].text, "x", "the next cell is unaffected");
+    });
+    // Past the limit, extraction cuts at a character boundary.
+    let cluster = format!("e{}", "\u{1d167}".repeat(700));
+    let text = super::ghostty::grapheme_text(cluster.as_bytes());
+    assert_eq!(text.len(), MAX_CELL_TEXT_BYTES - 3);
+    assert!(cluster.starts_with(text.as_str()));
+    assert!(super::ghostty::grapheme_text(b"").is_empty());
+}
