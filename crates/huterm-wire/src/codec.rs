@@ -132,6 +132,13 @@ impl Writer {
         Self::default()
     }
 
+    /// Creates an empty writer that reuses `bytes`'s allocation.
+    #[must_use]
+    pub fn reusing(mut bytes: Vec<u8>) -> Self {
+        bytes.clear();
+        Self { bytes }
+    }
+
     /// Returns the bytes written so far.
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {

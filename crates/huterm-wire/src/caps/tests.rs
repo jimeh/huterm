@@ -42,18 +42,21 @@ fn every_minor_0_kind_has_a_cap_covering_its_payload() {
 }
 
 #[test]
-fn requests_stay_below_the_largest_client_cap_and_results_fit_one_frame() {
+fn requests_stay_below_the_largest_client_cap_and_results_cover_a_status() {
     let caps = MessageCaps::for_minor(0);
     let cap = |kind| caps.cap(kind).unwrap();
     // Requests may span frames, but none raises the reassembly budget.
     assert!(cap(MessageKind::Request) < cap(MessageKind::Input));
     assert!(cap(MessageKind::Cancel) < cap(MessageKind::Input));
+    assert!(cap(MessageKind::Focus) < cap(MessageKind::Input));
+    // A subscription's result carries a whole status, so results may span
+    // frames; selection text travels as a large result instead.
+    assert!(cap(MessageKind::Result) > cap(MessageKind::ViewerStatus));
+    assert!(cap(MessageKind::LargeResult) > SELECTION_PAYLOAD_LIMIT);
     assert!(
         cap(MessageKind::Result)
-            <= crate::frame::Frame::capacity(
-                u32::try_from(crate::stream::MAX_OPEN_STREAMS).unwrap() - 1,
-                crate::frame::MIN_MAX_FRAME,
-            )
+            < cap(MessageKind::HierarchySnapshot)
+                .min(cap(MessageKind::LargeResult))
     );
     assert_eq!(MessageKind::Request.direction(), Direction::ClientToServer);
     assert_eq!(MessageKind::Cancel.direction(), Direction::ClientToServer);

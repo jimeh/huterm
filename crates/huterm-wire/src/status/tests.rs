@@ -91,6 +91,43 @@ fn a_status_at_every_limit_fits_its_cap_and_round_trips() {
     );
 }
 
+#[test]
+fn a_subscription_result_with_a_status_at_every_limit_fits_the_result_cap() {
+    use crate::request::RequestId;
+    use crate::response::{Committed, RequestResult, Response, Success};
+    for response in [
+        Response::Viewer {
+            viewer: ViewerId::in_runtime(vectors::RUNTIME, u64::MAX),
+            status: Box::new(worst_status()),
+        },
+        Response::Stopped {
+            status: Box::new(worst_status()),
+        },
+    ] {
+        let message = Message::Result(RequestResult {
+            request: RequestId::new(u64::MAX).unwrap(),
+            outcome: Ok(Success {
+                response,
+                committed: Some(Committed {
+                    seq: u64::MAX,
+                    digest: Some(u64::MAX),
+                }),
+            }),
+        });
+        let bytes = encode_message(&message, vectors::scope(), CAPS).unwrap();
+        let cap = CAPS.cap(MessageKind::Result).unwrap();
+        assert!(bytes.len() <= cap, "{} bytes over {cap}", bytes.len());
+        assert_eq!(
+            decode_message(
+                &bytes,
+                Direction::ServerToClient,
+                vectors::context(0)
+            ),
+            Ok(message)
+        );
+    }
+}
+
 fn status_bytes(status: &TerminalStatus) -> Vec<u8> {
     let mut w = Writer::new();
     encode_status(&mut w, status).unwrap();

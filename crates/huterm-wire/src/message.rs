@@ -31,10 +31,11 @@ use crate::update::{
     TerminalUpdate, decode_update, encode_update, read_grid, style_flags,
 };
 use crate::viewer::{
-    Credit, Input, InputAck, ResyncViewer, ViewerStatus, decode_credit,
-    decode_input, decode_input_ack, decode_resync, decode_stamp,
-    decode_viewer_status, encode_credit, encode_input, encode_input_ack,
-    encode_resync, encode_stamp, encode_viewer_status,
+    Credit, Focus, Input, InputAck, ResyncViewer, ViewerRevoked, ViewerStatus,
+    ViewerStopped, decode_credit, decode_focus, decode_input, decode_input_ack,
+    decode_resync, decode_stamp, decode_viewer_only, decode_viewer_status,
+    encode_credit, encode_focus, encode_input, encode_input_ack, encode_resync,
+    encode_stamp, encode_viewer_only, encode_viewer_status,
 };
 
 /// A viewer's paste: text the server admits as one bracketed input.
@@ -129,6 +130,14 @@ pub enum Message {
     Result(RequestResult),
     /// A request to abandon a request that has not started.
     Cancel(Cancel),
+    /// A viewer's focus report.
+    Focus(Focus),
+    /// A viewer's terminal stopped.
+    ViewerStopped(ViewerStopped),
+    /// A viewer's authority was withdrawn.
+    ViewerRevoked(ViewerRevoked),
+    /// A result that may exceed the `Result` cap.
+    LargeResult(RequestResult),
 }
 
 impl Message {
@@ -153,6 +162,10 @@ impl Message {
             Self::Request(_) => MessageKind::Request,
             Self::Result(_) => MessageKind::Result,
             Self::Cancel(_) => MessageKind::Cancel,
+            Self::Focus(_) => MessageKind::Focus,
+            Self::ViewerStopped(_) => MessageKind::ViewerStopped,
+            Self::ViewerRevoked(_) => MessageKind::ViewerRevoked,
+            Self::LargeResult(_) => MessageKind::LargeResult,
         }
     }
 }
@@ -329,8 +342,15 @@ pub fn encode_message(
         Message::Request(request) => {
             encode_request(&mut w, scope, request, caps.minor())?;
         }
-        Message::Result(result) => encode_result(&mut w, scope, result)?,
+        Message::Result(result) | Message::LargeResult(result) => {
+            encode_result(&mut w, scope, result)?;
+        }
         Message::Cancel(cancel) => encode_cancel(&mut w, *cancel)?,
+        Message::Focus(focus) => encode_focus(&mut w, scope, *focus)?,
+        Message::ViewerStopped(ViewerStopped { viewer })
+        | Message::ViewerRevoked(ViewerRevoked { viewer }) => {
+            encode_viewer_only(&mut w, scope, *viewer)?;
+        }
     }
     // An update's cap follows its grid, which the encoder already checked.
     let cap = match message {
@@ -412,6 +432,16 @@ pub fn decode_message(
         )?),
         MessageKind::Result => Message::Result(decode_result(&mut r, scope)?),
         MessageKind::Cancel => Message::Cancel(decode_cancel(&mut r)?),
+        MessageKind::Focus => Message::Focus(decode_focus(&mut r, scope)?),
+        MessageKind::ViewerStopped => Message::ViewerStopped(ViewerStopped {
+            viewer: decode_viewer_only(&mut r, scope)?,
+        }),
+        MessageKind::ViewerRevoked => Message::ViewerRevoked(ViewerRevoked {
+            viewer: decode_viewer_only(&mut r, scope)?,
+        }),
+        MessageKind::LargeResult => {
+            Message::LargeResult(decode_result(&mut r, scope)?)
+        }
     };
     r.finish()?;
     Ok(message)

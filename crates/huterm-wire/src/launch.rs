@@ -164,7 +164,7 @@ fn read_rgb(r: &mut Reader<'_>) -> Result<Rgb, DecodeError> {
     Ok(Rgb { red, green, blue })
 }
 
-fn encode_presentation(
+pub(crate) fn encode_presentation(
     w: &mut Writer,
     presentation: &TerminalPresentation,
 ) -> Result<(), EncodeError> {
@@ -185,7 +185,7 @@ fn encode_presentation(
     })
 }
 
-fn decode_presentation(
+pub(crate) fn decode_presentation(
     r: &mut Reader<'_>,
 ) -> Result<TerminalPresentation, DecodeError> {
     r.record(|r| {
