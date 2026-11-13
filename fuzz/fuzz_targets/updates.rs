@@ -1,8 +1,9 @@
 //! Arbitrary sequences of terminal updates applied to one client view.
 //! The input is a series of messages, each behind a two-byte little-endian
 //! length. Every update that decodes is applied in order: applying must
-//! never panic, an applied view must hold exactly its grid, and the test-only
-//! minor version's view must agree with the same bytes where it accepts them.
+//! never panic, and the view must always hold exactly its grid. The same
+//! records also go through the test-only minor version's decoder and view,
+//! which must not panic either.
 
 #![no_main]
 
@@ -26,11 +27,15 @@ fuzz_target!(|data: &[u8]| {
             usize::from(u16::from_le_bytes([*low, *high])).min(tail.len());
         let (message, tail) = tail.split_at(len);
         rest = tail;
+        // A fuzzed complete snapshot rarely matches its digest, but a
+        // contract fault still installs the view, so check its shape
+        // whatever the outcome.
         if let Ok(Message::TerminalUpdate(update)) =
             decode_message(message, Direction::ServerToClient, context(0))
-            && view.apply(&update).is_ok()
-            && let Some((metadata, rows)) = view.view()
         {
+            let _ = view.apply(&update);
+        }
+        if let Some((metadata, rows)) = view.view() {
             assert_eq!(rows.len(), usize::from(metadata.size.rows));
             assert!(rows.iter().all(|row| {
                 row.cells.len() == usize::from(metadata.size.columns)

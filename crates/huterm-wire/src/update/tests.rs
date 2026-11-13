@@ -633,7 +633,9 @@ fn a_grid_past_the_cell_cap_or_bytes_past_the_grids_cap_are_rejected() {
                 kind: MessageKind::TerminalUpdate
             })
         );
-        assert!(receiver.buffered() <= 3, "{split}");
+        // Only the split header's first bytes were ever buffered.
+        let header = if split < over.len() { split } else { 0 };
+        assert_eq!(receiver.buffered(), header, "{split}");
     }
     // One byte less fits, and the decoder skips the padding.
     assert!(decode(&at_cap).is_ok());

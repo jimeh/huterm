@@ -27,9 +27,9 @@ fn directory() -> TerminalDirectory {
 
 /// Every text at its limit, every log full, every number at its widest.
 fn worst_status() -> TerminalStatus {
-    // The earliest time a decoder accepts, whose seconds take the widest
-    // zigzag varint.
-    let far = SystemTime::UNIX_EPOCH - Duration::from_secs(1 << 63);
+    // The earliest time a decoder accepts with a fraction: `i64::MIN`
+    // seconds and 999,999,999 nanoseconds, each at its widest varint.
+    let far = SystemTime::UNIX_EPOCH - Duration::new((1 << 63) - 1, 1);
     TerminalStatus {
         revision: u64::MAX,
         title: longest(),
