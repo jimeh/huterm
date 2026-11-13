@@ -528,3 +528,58 @@ fn effects_back_to_back_still_let_updates_through() {
     world.settle(SETTLE);
     assert!(world.shows_current(peer, 0));
 }
+
+#[test]
+fn a_streaming_effect_lets_a_started_update_finish() {
+    let size = GridSize {
+        columns: 200,
+        rows: 40,
+    };
+    let mut world = world(1, size);
+    let peer = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want_effects(peer, 0, true);
+    world.settle(SETTLE);
+    // A writer that takes 2 KiB batches at 1 KiB a millisecond, so an
+    // update of the varied screen takes several batches.
+    world.peers[peer].batch = Some(2 << 10);
+    world.peers[peer].write_rate = 1 << 10;
+    let terminal = world.terminals[0].clone();
+    let updated = |world: &World| {
+        world
+            .viewer_events(peer, 0)
+            .iter()
+            .filter(|event| {
+                matches!(event, huterm_client::ViewerEvent::Updated { .. })
+            })
+            .count()
+    };
+    let before = updated(&world);
+    for row in 0..40 {
+        terminal.write_line(&varied(row * 13));
+    }
+    // The update's first frame is out when the terminal asks for a write
+    // that takes far longer than the rest of the update.
+    for _ in 0..1_000 {
+        if world.peers[peer].writing.is_some() {
+            break;
+        }
+        world.step();
+    }
+    assert!(world.peers[peer].writing.is_some(), "nothing was written");
+    assert!(terminal.clipboard(&"c".repeat(1 << 20)));
+    let mut steps = 0;
+    while updated(&world) == before {
+        world.step();
+        steps += 1;
+        assert!(steps < 5_000, "the update never applied");
+    }
+    assert_eq!(
+        world.effects(peer).len(),
+        0,
+        "the update waited {steps} ms for the whole write"
+    );
+    until_effects(&mut world, peer, 1, 5_000);
+    world.settle(SETTLE);
+    assert!(world.shows_current(peer, 0));
+}

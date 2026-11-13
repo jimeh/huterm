@@ -1,7 +1,7 @@
 # Local runtime IPC
 
-Status: in progress for [issue #44][issue-44]. Slices 1, 2, 3a, and 3b are
-implemented, with the revisions recorded under each; slices 4 and 5 remain.
+Status: in progress for [issue #44][issue-44]. Slices 1, 2, 3a, 3b, and 4
+are implemented, with the revisions recorded under each; slice 5 remains.
 
 Named server mode moves the runtime out of the desktop process. This plan
 defines the contract that carries runtime requests, results, the hierarchy
@@ -2492,6 +2492,153 @@ Acceptance:
   recipients.
 - A timed-out response produces the fallback without stalling terminal
   output.
+
+#### Revisions during slice 4
+
+None of these changes a settled decision. Two acceptance items are
+deferred, response correlation and its timeout fallback, because no effect
+kind needs a response; two rules were added to "Effect frames go first"
+after the fault harness found the starvation they prevent.
+
+The wire inventory:
+
+- **Messages and payloads.** Message kind `SetHostEffectPermission` 21
+  carries a viewer, a kind (tag 0 clipboard, 1 notification), the client's
+  generation, and whether the kind is allowed; its cap is the small-message
+  cap. `EffectPayload` gains `Notification { title, body }` (tag 1), bounded
+  by `MAX_NOTIFICATION_TITLE_BYTES` and `MAX_NOTIFICATION_BODY_BYTES` in
+  `huterm-protocol`: core's character limits moved there, at four bytes a
+  character plus the ellipsis, with a core test at the bound. The host
+  effect types live in a new `huterm_wire::effect` module, and
+  `host_effect_head` encodes a `HostEffect` message up to its streamed text,
+  which ends every payload record, so a 64 MiB write streams from core's
+  pending effect without a copy.
+- **No response field yet.** `HostEffect` loses `response_deadline_ms`.
+  Clipboard reads stay silent and notifications need no answer, so no kind
+  needs a response, and the field, `HostEffectResult`,
+  `EFFECT_RESPONSE_PAYLOAD_LIMIT`, `MAX_PENDING_EFFECT_RESPONSES`, and the
+  fallback a disconnect answers all arrive with the minor version that adds
+  such a kind, since that kind's payload variant needs one anyway. The two
+  acceptance items about responses wait for it.
+- **Subscriptions carry initial permissions.** `SubscribeOptions` gains
+  `allowed_effects`, a bit set of kinds (`EffectKinds`), each at
+  `INITIAL_EFFECT_GENERATION` (1), which is also core's first generation.
+  `negotiate_hello` returns the decoded `Hello` with the `Welcome`, so the
+  server keeps the client kind. The clipboard-write, `Welcome`, and
+  subscription vectors changed; notification and permission vectors are new.
+
+Policy and core:
+
+- **Origins.** `LocalEmbeddedDesktop` became `LocalDesktop`, which the
+  embedded desktop keeps. A desktop client registers as `LocalDesktop`, a
+  text or command-line client as `LocalText`, and a gateway as `Remote`.
+  Slice 5's peer check admits only local peers of the same user, so policy
+  reads the client kind alone until a remote transport adds a peer
+  identity.
+- **Eligibility by negotiated kind.** `effect_kind_since` names each kind's
+  minor version, all 0 today. The server grants a recipient only the kinds
+  its connection's minor version knows (`EffectKinds::known_at`), and a
+  client cannot name a newer kind's tag, so a newer kind never selects an
+  older client.
+- **Client-numbered generations in core.**
+  `HostEffectRecipient::set_permission(kind, allowed, generation)` stores the
+  caller's number, stamps every later admission with it, and on a revoke
+  clears the kind's queue; it refuses a number not above the current one.
+  The connection applies a change as it arrives, in order on the viewer's
+  stream, rather than staging it with input, because core never refuses it.
+  A non-increasing generation, or a change for a viewer without host
+  effects, is a protocol violation. The client applies a change at once,
+  sends it in order with the viewer's input, hands the caller only effects
+  at the viewer's current generation, and offers `host_effect_current` for
+  the recheck right before acting.
+- **Shares.** Each connection has its own `DesktopHostEffectClient`, the
+  name kept although it now means one client's budget. Core counts a
+  client's effects on each terminal against its share in the reservation,
+  so effects being sent still count, and counts only clients with a
+  recipient eligible for the effect's kind, so a text client takes no
+  share. An effect over its client's share answers `Full`, which OSC 52
+  reports as busy; it is never redirected.
+- **No admission time.** Deadlines run from the head of the lane on the
+  connection's injected clock, so core records no admission time; an
+  `Instant` from core could not be driven by the tests' clock. The
+  completion deadline counts the whole message, header included.
+- **Revocation at once.** A disconnect revokes every recipient
+  (`HostEffectRecipient::revoke`) before it drops the viewers, and a
+  viewer's end revokes its recipient, because a viewer job may still hold
+  the viewer and its recipient would otherwise stay selectable.
+
+The effect lane:
+
+- **An effect waits for its viewer's result.** The effect stream overtakes
+  the viewer's lane, so an effect admitted while the subscription's result
+  still waited in the queue reached the client first, which dropped it for
+  a viewer it did not know. The lane offers a viewer's effects only once
+  that result was written whole.
+- **A streaming effect alternates with the lanes.** An effect's first frame
+  and its abort still go ahead of every lane's. While lanes have work, its
+  later frames lead only every other batch and otherwise take the room the
+  lanes leave, so a started message keeps receiving frames. With every
+  frame first, a large write kept another stream's started message from
+  the link, and a client that resumed reading after a long pause met that
+  stream past its idle deadline and closed the connection
+  (`stalled-readers` seed 28). With no other traffic the effect still has
+  the whole link, so the 64 MiB acceptance case is unchanged; under
+  contention an effect has about half the link and may miss its deadline,
+  which drops it, rather than idling another stream.
+- **Effects yield to each other.** After an effect's last frame or abort is
+  cut, every lane with work cuts a frame before the next effect starts.
+  Without it, effects back to back over a reader that took a byte at a
+  time kept stream 0 idle past its deadline (`stalled-readers` seed 2), and
+  a program writing large clipboard text back to back could freeze a
+  client's updates on a healthy link.
+- **Bounds.** The effect slot holds one frame outside `OUTBOUND_BUDGET`, so
+  `retained_bound` gains one frame and its length prefix.
+
+Coverage:
+
+- The world's acceptance cases (`effect_acceptance.rs`) cover a 64 MiB
+  write at `CLIPBOARD_PAYLOAD_LIMIT` that completes in about 8 s with a
+  hidden viewer's write delivered after it and no further wake; an effect's
+  first frame ahead of queued update frames; a write whose client trickles
+  mid-frame, dropped at the delivery deadline with its reservation released
+  at once, another client's write admitted, and the trickling client's
+  framing valid afterwards; a stalled recipient that does not hold up
+  another; a burst of five writes in one step; a revoke and re-grant while
+  an effect is in flight; an effect pending at a disconnect; a text client
+  never selected; an effect admitted before its viewer is announced; and
+  the two starvation rules. Each of the ordering, announcement, yield, and
+  alternation tests failed with its rule switched off.
+- A real-PTY test (`effect_tests.rs`) sends OSC 52 through `cat` from an
+  embedded viewer, a desktop client, and a text client on one terminal and
+  checks that exactly one eligible desktop receives each write. Core's
+  tests cover shares between two clients and the share floor.
+- Every fault scenario now subscribes with host effects. Terminals write
+  tokened clipboard text, large writes on faulty links, and faulty clients
+  toggle the clipboard permission. Each run checks that an effect reaches
+  at most one client, the one whose viewer the terminal chose, in order
+  per viewer; that on a healthy link every effect arrives; and that no
+  terminal holds a reservation at the end.
+  `mise run faults:ipc -- 300` ran 300 seeds per scenario and the swarm:
+  of about 92,900 writes admitted, 39,800 arrived, every one of the 26,600
+  on healthy links among them; 5,500 missed their deadlines, 4,600 were
+  discarded by clients that had changed the permission meanwhile, and the
+  rest went with viewers and connections the faults ended. Its first run
+  found both starvation rules above.
+
+Measurements, release medians on an Apple M3 Max (`mise run bench:ipc`),
+each cell the range over three runs of the base (slice 3b's commit) and of
+this slice. None of the measured paths sends an effect; they show that the
+effect lane costs the update and input paths nothing measurable. One base
+run's keystroke echo, 97 us, came from a noisy run; the other two were 71
+and 77 us.
+
+| Measurement | Base | Slice 4 |
+| --- | --- | --- |
+| `RenameTab` round trip | 38.3 to 38.6 us | 38.0 to 39.1 us |
+| Commit to the client's projection | 15.4 to 16.9 us | 16.7 to 17.0 us |
+| Keystroke echo through a PTY over IPC | 71 to 97 us | 71 to 73 us |
+| Echo output, in-process viewer to remote client | 20.7 to 20.8 us | 20.7 to 20.9 us |
+| 100,000-line flood until a viewer shows it, over IPC | 151 to 157 ms | 149 to 153 ms |
 
 ### Slice 5: Unix socket transport and authentication
 

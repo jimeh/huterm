@@ -595,8 +595,9 @@ Nothing in the desktop calls either until #45.
   `RuntimeError` onto wire codes. A new core error needs an arm there; the
   contract tests map in-process errors through it too.
 - A connection retains at most `OUTBOUND_BUDGET` plus one hierarchy message
-  plus one result or hierarchy message plus one status or frame of encoded
-  bytes (`ServerConfig::retained_bound`). A producer admits a result or
+  plus one result or hierarchy message plus one status or frame, plus the
+  host effect's one frame with the writer, of encoded bytes
+  (`ServerConfig::retained_bound`). A producer admits a result or
   hierarchy message only while retained bytes are under the budget, and
   encodes it once into the buffer the writer shares; at the budget the
   connection stops reading. Updates, statuses, input acknowledgements, and
@@ -621,6 +622,22 @@ Nothing in the desktop calls either until #45.
   socket takes at once, and the reader and writer threads wait with `poll`.
   Do not use `MSG_DONTWAIT` on a blocking socket instead; macOS blocks on
   it.
+- Host effects travel outside the lanes, one at a time on
+  `HOST_EFFECT_STREAM` (`connection/effects.rs`, the effect slot in
+  `connection/outbound.rs`), with at most one frame at the writer. An
+  effect's first frame goes ahead of every lane's, its text streams from
+  core's `PendingHostEffect` after `host_effect_head`, and the slot drops
+  the effect, and its reservations, at its last cut or its deadline. Three
+  rules came from failures: an effect waits until its viewer's
+  subscription result is written, or the client meets a viewer it does not
+  know and drops the effect; while lanes have work, a streaming effect's
+  later frames lead only every other batch; and between effects every lane
+  with work cuts a frame. Without the last two, effect frames hold back a
+  started message until the client's stream idle deadline closes the
+  connection. The client numbers permission changes,
+  and core stamps admitted effects with that number
+  (`HostEffectRecipient::set_permission`), so a revoke and re-grant never
+  revive an effect already sent.
 - To add a request kind, give `Request` and `RequestKind` a variant, the
   next tag in `RequestKind::number`, an entry in `RequestKind::ALL`, a
   `retry_class` (the default arm is `Mutation`, which a client never

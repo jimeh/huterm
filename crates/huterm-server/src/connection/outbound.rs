@@ -21,11 +21,11 @@
 //! written.
 //!
 //! Host effects travel apart from the lanes, on the stream the server keeps
-//! for them, one effect at a time. The effect's next frame goes ahead of
-//! every lane's in each batch, and at most one of its frames is with the
-//! writer at once: a slot of its own, outside the budget, so a busy
-//! connection delays an effect's first frame by at most the frame already
-//! in the writer. The text streams from the effect itself, which the queue
+//! for them, one effect at a time, with at most one of its frames with the
+//! writer at once: a slot of its own, outside the budget. An effect's
+//! first frame goes ahead of every lane's, so a busy connection delays it
+//! by at most the frame already in the writer; its later frames lead every
+//! other batch while lanes have work, and every batch otherwise. The text streams from the effect itself, which the queue
 //! drops, releasing its reservations, once its last frame is cut or the
 //! effect is aborted. Between effects, the slot yields: the next effect
 //! starts only once every lane that had something to send when the last
@@ -497,6 +497,9 @@ pub(crate) struct Outbound {
     /// Lanes that had something to send when the last effect ended, and
     /// have not cut a frame since; the next effect waits for them.
     effect_owed: Vec<Lane>,
+    /// The last batch opened with one of a streaming effect's later frames,
+    /// so the next opens with the lanes'.
+    effect_led: bool,
 }
 
 impl Outbound {
@@ -525,6 +528,7 @@ impl Outbound {
             effect_abort: None,
             effect_handed: 0,
             effect_owed: Vec::new(),
+            effect_led: false,
         }
     }
 
@@ -814,11 +818,19 @@ impl Outbound {
             });
         }
         let mut first = true;
-        // The effect's next frame goes ahead of every lane's.
-        if self.effect_handed == 0
-            && let Some(chunk) = self.cut_effect(room.max(HEADER_BYTES + 1))
+        // An effect's first frame and its abort go ahead of every lane's.
+        // Its later frames lead every other batch while lanes have work,
+        // and follow the lanes' frames in between, so a streaming effect
+        // never holds back a lane's started message for long.
+        let lead = self.effect_handed == 0
+            && (self.effect_starting()
+                || !self.effect_led
+                || !self.lanes_have_work());
+        self.effect_led = false;
+        if lead && let Some(chunk) = self.cut_effect(room.max(HEADER_BYTES + 1))
         {
             first = false;
+            self.effect_led = true;
             transmit.push(chunk);
         }
         let mut idle = 0;
@@ -847,8 +859,30 @@ impl Outbound {
                 break;
             }
         }
+        if !lead
+            && self.effect_handed == 0
+            && room.saturating_sub(transmit.len()) > HEADER_BYTES
+            && let Some(chunk) = self.cut_effect(room - transmit.len())
+        {
+            transmit.push(chunk);
+        }
         self.dedupe_ring();
         (!transmit.is_empty()).then_some(transmit)
+    }
+
+    /// Whether the effect slot's next frame starts an effect or abandons
+    /// one, which always goes ahead of the lanes.
+    fn effect_starting(&self) -> bool {
+        self.effect_abort.is_some()
+            || self.effect.as_ref().is_some_and(|effect| effect.cut == 0)
+    }
+
+    /// Whether any lane has something to send.
+    fn lanes_have_work(&self) -> bool {
+        [&self.control, &self.large, &self.hierarchy]
+            .into_iter()
+            .chain(self.viewers.values())
+            .any(LaneQueue::has_work)
     }
 
     /// Cuts the effect slot's next frame within `space`: an abandoned
@@ -1217,6 +1251,7 @@ impl Outbound {
         self.effect_abort = None;
         self.effect_handed = 0;
         self.effect_owed.clear();
+        self.effect_led = false;
     }
 }
 

@@ -9,14 +9,17 @@ use huterm_core::{
     HostEffectViewerOptions, TerminalViewer, ViewerOptions,
 };
 use huterm_protocol::{
-    HostEffect, SessionId, TerminalId, TerminalInput, ViewerCapabilities,
+    HostEffect, HostEffectKind, SessionId, TerminalId, TerminalInput,
+    ViewerCapabilities,
 };
-use huterm_wire::effect::{EffectKinds, EffectPayload};
+use huterm_wire::effect::{
+    EffectKinds, EffectPayload, INITIAL_EFFECT_GENERATION,
+};
 use huterm_wire::handshake::ClientKind;
 
 use crate::ServerConfig;
 use crate::test_support::command;
-use crate::viewer_tests::{Remote, served, writable};
+use crate::viewer_tests::{Remote, block_on, served, writable};
 
 /// An OSC 52 write of `base64` to the system clipboard, then a newline, so
 /// `cat` writes it back to the terminal.
@@ -111,6 +114,23 @@ fn an_osc_52_write_reaches_exactly_one_eligible_desktop_across_embedded_and_remo
         embedded.host_effects().unwrap().try_next().is_none(),
         "the embedded viewer got a write meant for another"
     );
+    // Once the desktop client revokes the clipboard, the next write it
+    // types goes to the embedded viewer, the eligible one active last.
+    let generation = block_on(desktop.handle.set_host_effect_permission(
+        desktop_viewer,
+        HostEffectKind::Clipboard,
+        false,
+    ))
+    .unwrap();
+    assert_eq!(generation, INITIAL_EFFECT_GENERATION + 1);
+    assert!(!block_on(desktop.handle.host_effect_current(
+        desktop_viewer,
+        HostEffectKind::Clipboard,
+        INITIAL_EFFECT_GENERATION,
+    )));
+    desktop.type_text(desktop_viewer, &osc52("ZGVza3RvcA=="));
+    assert_eq!(embedded_write(&embedded), "desktop");
+
     while let Ok(event) = text.events.try_recv() {
         assert!(
             !matches!(event, ClientEvent::Viewer(ViewerEvent::HostEffect(_))),
