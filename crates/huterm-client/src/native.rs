@@ -29,11 +29,15 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use async_channel::{Receiver, Sender, TrySendError};
-use huterm_protocol::HierarchyState;
+use huterm_protocol::{
+    AttachmentId, HierarchyState, ScrollCommand, TerminalId, TerminalInput,
+    TerminalSnapshot, TerminalStatus, ViewerId,
+};
 use huterm_wire::error::{ErrorCode, WireError};
 use huterm_wire::hierarchy::HierarchySnapshot;
 use huterm_wire::request::Request;
 use huterm_wire::response::Success;
+use huterm_wire::viewer::SubscribeOptions;
 
 use crate::config::ClientConfig;
 use crate::outbound::{FRAME_HEADER_LEN, Transmit};
@@ -59,6 +63,19 @@ type Reply<T> = Sender<T>;
 
 enum Command {
     Request(Request, Reply<Result<Success, WireError>>),
+    Subscribe(
+        AttachmentId,
+        TerminalId,
+        Box<SubscribeOptions>,
+        Reply<Result<Success, WireError>>,
+    ),
+    Input(ViewerId, TerminalInput, Option<u64>),
+    Focus(ViewerId, bool),
+    Visible(ViewerId, bool),
+    Scroll(ViewerId, ScrollCommand, Reply<Result<Success, WireError>>),
+    View(ViewerId, Reply<Option<TerminalSnapshot>>),
+    Status(ViewerId, Reply<Option<TerminalStatus>>),
+    FinalView(TerminalId, Reply<Option<TerminalSnapshot>>),
     Wait(u64, Reply<Resolution>),
     Hierarchy(Reply<Option<HierarchySnapshot>>),
     Events(Reply<Receiver<ClientEvent>>),
@@ -222,6 +239,105 @@ impl ClientHandle {
                 "the client shut down",
             ))
         })
+    }
+
+    /// Subscribes a viewer of `terminal` in `attachment`, resolving with
+    /// the subscription's result. The viewer starts visible; its updates,
+    /// status, and end arrive through [`Self::events`].
+    ///
+    /// # Errors
+    /// Returns the subscription's failure.
+    pub async fn subscribe_terminal(
+        &self,
+        attachment: AttachmentId,
+        terminal: TerminalId,
+        options: SubscribeOptions,
+    ) -> Result<Success, WireError> {
+        let (reply, result) = async_channel::bounded(1);
+        self.command(Command::Subscribe(
+            attachment,
+            terminal,
+            Box::new(options),
+            reply,
+        ));
+        result.recv().await.unwrap_or_else(|_| {
+            Err(WireError::new(
+                ErrorCode::Disconnected,
+                "the client shut down",
+            ))
+        })
+    }
+
+    /// Sends `input` from `viewer` without waiting, stamped now with the
+    /// geometry revision its coordinates were computed against. Its
+    /// acknowledgement arrives through [`Self::events`].
+    pub fn send_input(
+        &self,
+        viewer: ViewerId,
+        input: TerminalInput,
+        geometry: Option<u64>,
+    ) {
+        self.command(Command::Input(viewer, input, geometry));
+    }
+
+    /// Reports whether `viewer`'s view holds focus, in order with its
+    /// input.
+    pub fn send_focus(&self, viewer: ViewerId, focused: bool) {
+        self.command(Command::Focus(viewer, focused));
+    }
+
+    /// Shows or hides `viewer`; a hidden viewer receives status but no
+    /// rows.
+    pub fn set_visible(&self, viewer: ViewerId, visible: bool) {
+        self.command(Command::Visible(viewer, visible));
+    }
+
+    /// Scrolls `viewer`'s shared viewport, resolving once the update that
+    /// shows the scroll has applied.
+    ///
+    /// # Errors
+    /// Returns the scroll's failure.
+    pub async fn scroll(
+        &self,
+        viewer: ViewerId,
+        command: ScrollCommand,
+    ) -> Result<Success, WireError> {
+        let (reply, result) = async_channel::bounded(1);
+        self.command(Command::Scroll(viewer, command, reply));
+        result.recv().await.unwrap_or_else(|_| {
+            Err(WireError::new(
+                ErrorCode::Disconnected,
+                "the client shut down",
+            ))
+        })
+    }
+
+    /// The view `viewer` shows, once an update applied.
+    pub async fn view(&self, viewer: ViewerId) -> Option<TerminalSnapshot> {
+        let (reply, view) = async_channel::bounded(1);
+        self.command(Command::View(viewer, reply));
+        view.recv().await.ok().flatten()
+    }
+
+    /// The status `viewer` last received.
+    pub async fn viewer_status(
+        &self,
+        viewer: ViewerId,
+    ) -> Option<TerminalStatus> {
+        let (reply, status) = async_channel::bounded(1);
+        self.command(Command::Status(viewer, reply));
+        status.recv().await.ok().flatten()
+    }
+
+    /// The final view of a terminal that stopped while this incarnation's
+    /// viewer showed it.
+    pub async fn final_view(
+        &self,
+        terminal: TerminalId,
+    ) -> Option<TerminalSnapshot> {
+        let (reply, view) = async_channel::bounded(1);
+        self.command(Command::FinalView(terminal, reply));
+        view.recv().await.ok().flatten()
     }
 
     /// Resolves once the projection reaches hierarchy sequence `seq`, or
@@ -573,6 +689,36 @@ impl Driver {
                 let wait = self.session.wait_for(seq, now);
                 self.waits.insert(wait, reply);
             }
+            Command::Subscribe(attachment, terminal, options, reply) => {
+                let call = self
+                    .session
+                    .subscribe_terminal(attachment, terminal, *options, now);
+                self.replies.insert(call, reply);
+            }
+            Command::Input(viewer, input, geometry) => {
+                let _ = self.session.send_input(viewer, input, geometry);
+            }
+            Command::Focus(viewer, focused) => {
+                self.session.send_focus(viewer, focused);
+            }
+            Command::Visible(viewer, visible) => {
+                self.session.set_visible(viewer, visible);
+            }
+            Command::Scroll(viewer, command, reply) => {
+                let call = self.session.scroll(viewer, command, now);
+                self.replies.insert(call, reply);
+            }
+            Command::View(viewer, reply) => {
+                let _ = reply.try_send(self.session.view(viewer));
+            }
+            Command::Status(viewer, reply) => {
+                let _ =
+                    reply.try_send(self.session.viewer_status(viewer).cloned());
+            }
+            Command::FinalView(terminal, reply) => {
+                let _ =
+                    reply.try_send(self.session.final_view(terminal).cloned());
+            }
             Command::Hierarchy(reply) => {
                 let snapshot = self
                     .session
@@ -662,7 +808,9 @@ impl Driver {
                     }
                     self.last_close = reason.clone();
                 }
-                ClientEvent::Hierarchy(_) | ClientEvent::Lagged => {}
+                ClientEvent::Hierarchy(_)
+                | ClientEvent::Viewer(_)
+                | ClientEvent::Lagged => {}
             }
             self.forward(event);
         }

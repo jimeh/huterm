@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use huterm_core::Mux;
 use huterm_protocol::{
     CellSize, DigestProfile, GridSize, ScrollbackLimit, SessionId, TabId,
-    ViewerId,
 };
 use huterm_server::runtime::execute;
 use huterm_server::test_feed::TestSource;
@@ -650,16 +649,46 @@ fn the_same_incarnation_at_another_minor_keeps_ids_and_waiters_and_takes_the_new
 #[test]
 fn requests_in_flight_at_disconnect_follow_their_retry_class() {
     let server = fresh_server(ServerConfig::default());
+    let (session, terminal) = {
+        let mut mux = server.lock();
+        let session = mux.create_session(None).unwrap();
+        let workspace = mux.create_workspace(session, None).unwrap();
+        let opened = mux.open_tab(workspace, &quiet_command()).unwrap();
+        (session.get(), opened.tab.terminals()[0].get())
+    };
     let mut pair = Pair::new(&server, ClientSession::new(config()));
-    let Response::Session(session) = pair
-        .call(Request::CreateSession { name: None })
+    let runtime = pair.runtime();
+    let session = SessionId::in_runtime(runtime, session);
+    let Response::Attachment(attachment) = pair
+        .call(Request::AttachSession { session })
         .unwrap()
         .response
     else {
-        panic!("a created session");
+        panic!("an attachment");
     };
-    let runtime = pair.runtime();
-    let viewer = ViewerId::in_runtime(runtime, 1);
+    let subscribe = pair.session.subscribe_terminal(
+        attachment,
+        huterm_protocol::TerminalId::in_runtime(runtime, terminal),
+        huterm_wire::viewer::SubscribeOptions {
+            capabilities: huterm_protocol::ViewerCapabilities {
+                host_effects: false,
+                ..huterm_protocol::ViewerCapabilities::ALL
+            },
+            focused: false,
+            geometry: None,
+            presentation: None,
+            spawned: false,
+        },
+        pair.now,
+    );
+    pair.pump();
+    let Some(Ok(Success {
+        response: Response::Viewer { viewer, .. },
+        ..
+    })) = pair.outcome(subscribe)
+    else {
+        panic!("a viewer: {:?}", pair.outcome(subscribe));
+    };
     let rename = pair.session.request(
         Request::RenameSession {
             session,
@@ -688,9 +717,11 @@ fn requests_in_flight_at_disconnect_follow_their_retry_class() {
         },
         pair.now,
     );
-    // The server receives all four and runs none before the break.
+    // All four are sent, and no result arrives before the break. The
+    // server takes a viewer's requests as they arrive, so they may already
+    // have run there.
     pair.send();
-    assert_eq!(pair.connection.in_flight(), 4);
+    assert_eq!(pair.session.in_flight(), 4);
 
     pair.session.disconnected(pair.now);
     pair.drain();
