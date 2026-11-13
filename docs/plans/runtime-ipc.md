@@ -1692,6 +1692,81 @@ within the contract, or a narrow correction to its text.
   every row kept, then encodes each full row and its style entries one row
   at a time and sums the lengths, so the whole message never exists.
 
+#### Wire performance pass
+
+A follow-up to slice 2 settled the update format's costs while minor
+version 0 is unreleased, before slices 3a and 3b build on it. None of these
+changes a settled decision. `mise run bench:wire` measures the codec on
+synthetic plain, styled, shell-like sparse, and CJK wide-character screens
+at 80x24, 200x60, and 400x120, and `ci:benchmarks` gates it. The changes
+replace the slice 2 text above where they differ:
+
+- **The view digest hashes words.** `view_digest` feeds a canonical
+  sequence of 64-bit words through `MurmurHash64A`'s word step and
+  finalizer instead of feeding bytes through FNV-1a. A cell takes two words
+  in the common case: its colors and low style flags, then its text length
+  with up to 6 text bytes. Longer text adds zero-padded words, and flag bits
+  above 14 add a word that the length word marks. Counts precede what they
+  count, so distinct views give distinct sequences. Every step is a
+  bijection of the state for a fixed word and of the word for a fixed
+  state, so a change to any single word always changes the digest, which
+  covers the decodable damage `state-corruption` injects. The digest still
+  covers exactly the negotiated minor version's fields, builds its words
+  arithmetically so every byte order agrees, and needs no dependency.
+  `vectors::SAMPLE_VIEW_DIGEST` changed with it.
+- **Runs have four forms.** A run opens with one varint holding its style
+  index and two form bits. A *texts* run keeps slice 2's length-prefixed
+  text per cell. A *packed* run holds cells that each have no text or one
+  scalar other than U+0000, as one UTF-8 string with U+0000 standing for no
+  text, so no text stays distinct from a written space. A *fill* run is at
+  least 8 identical packed cells, as a count and one packed cell. A *wide*
+  run alternates wide characters and their spacers: it carries only the
+  characters, and each spacer has no text, the same colors, and the spacer
+  flag in place of the wide flag. Ghostty writes spacers that way, and a
+  spacer that differs travels in an ordinary run. Encoders pick the form
+  from the run's cells, and decoders accept any form for any run whose
+  cells fit it. Decoders keep every slice 2 check and add their own: a
+  packed string's byte length and scalar count against the row's remaining
+  cells, a fill's count and its single scalar, and a wide run's style.
+  Packed, fill, and wide cells decode to inline cell text, so decoded memory
+  stays bounded by the grid.
+- **Kept rows travel as ranges.** A row operation is a range of consecutive
+  baseline rows (start and count) or a full row, so a scroll costs one
+  operation for every kept row. Decoders bound the expanded row count at
+  every operation.
+- **Caps.** The run header's two form bits raise its worst-case varint by
+  at most one byte, and `update_record_cap` uses it. Every new form costs at
+  most four bytes per cell, so the worst case remains a texts run per cell
+  at `MAX_CELL_TEXT_BYTES`, and the worst-case tests still hold.
+- **In-memory shape.** A `FullRow` holds its cells' texts in one vector,
+  and each `Run` holds a style, a wide flag, and a cell count, so neither
+  side allocates per run. The encoder looks up a style only when it differs
+  from the previous cell's, through a hand-written hasher, and
+  `Writer::record` reserves room for the length prefix instead of splicing
+  the record body.
+
+Medians on an Apple M3 Max at 400x120, interleaving five runs of the base
+and of this change. Server time is building and encoding an update; client
+time is decoding and applying it, digest check included.
+
+| Screen | Update | Bytes before | Bytes after | Server before | Server after | Client before | Client after |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| plain | complete | 97,242 | 49,242 | 1.80 ms | 0.66 ms | 1.10 ms | 0.38 ms |
+| styled | complete | 108,958 | 60,958 | 2.39 ms | 0.76 ms | 1.34 ms | 0.48 ms |
+| sparse | complete | 60,942 | 13,391 | 1.79 ms | 0.66 ms | 1.08 ms | 0.39 ms |
+| wide | complete | 217,007 | 73,242 | 2.91 ms | 0.84 ms | 2.12 ms | 0.54 ms |
+| plain | one row | 1,082 | 450 | 15 us | 6.5 us | 4.2 us | 2.2 us |
+| sparse | one row | 704 | 74 | 14 us | 6.2 us | 4.2 us | 2.4 us |
+| wide | one row | 2,085 | 650 | 24 us | 7.6 us | 15 us | 3.0 us |
+
+The view digest fell from about 0.75 ms to about 0.19 ms on a plain screen.
+A window-edge resize drag at 400x120, one complete snapshot per geometry
+change, now costs about 1.0 ms of combined server and client work for plain
+text and 1.4 ms for wide text, against 2.9 ms and 5.0 ms before. Slice 3b
+still owns encoding straight from the snapshot without a `TerminalUpdate`
+value or a whole-message buffer, and the end-to-end benchmark through a
+remote viewer.
+
 ### Slice 3a: server and client, requests and hierarchy
 
 - New `huterm-server` connection handler and `huterm-client` session over

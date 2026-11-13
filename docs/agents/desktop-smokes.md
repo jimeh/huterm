@@ -136,9 +136,9 @@ not read it:
   measurements behind them sit in
   `crates/huterm-core/src/engine/compression_benchmark.rs`.
 - `mise run bench:wire` measures `huterm-wire`'s terminal update and status
-  codec on synthetic snapshots: plain, styled, and sparse text at 80x24,
-  200x60, and 400x120, as complete snapshots and as deltas of one row, a
-  one-line scroll, and every row. It reports the server's build and encode,
+  codec on synthetic snapshots: plain, styled, sparse, and wide (CJK) text
+  at 80x24, 200x60, and 400x120, as complete snapshots and as deltas of one
+  row, a one-line scroll, and every row. It reports the server's build and encode,
   the client's decode and apply, the view digest, and bytes per cell, and
   gates the medians and bytes of complete snapshots and one-row deltas at
   400x120. It needs no Ghostty and runs in a second or two. `ci:benchmarks`
