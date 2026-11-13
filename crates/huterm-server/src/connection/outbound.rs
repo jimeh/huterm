@@ -22,19 +22,19 @@
 //!
 //! Host effects travel apart from the lanes, on the stream the server keeps
 //! for them, one effect at a time, with at most one of its frames with the
-//! writer at once: a slot of its own, outside the budget. An effect's first
-//! frame goes ahead of every lane's, so a busy connection delays it by at
-//! most what the writer already holds: one batch, which the native adapter
-//! keeps to 256 KiB, a few milliseconds at the transport profile's minimum
-//! throughput. Its later frames lead every other batch while lanes have
-//! work, and every batch otherwise. The text streams from the effect
-//! itself, which the queue drops, releasing its reservations, once its last
-//! frame is cut or the effect is aborted. Between effects, the slot yields:
-//! the next effect starts only once every lane that held a partly sent
-//! message when the last one ended has cut a frame, at most one per
-//! ordinary stream, so effects back to back never leave a started message
-//! waiting; one effect holds the link at most until its completion
-//! deadline.
+//! writer at once: a slot of its own, outside the budget. The text streams
+//! from the effect itself, which the queue drops, releasing its
+//! reservations, once its last frame is cut or the effect is aborted.
+//!
+//! While lanes have work, effect frames and lane frames take turns leading
+//! batches: a batch the effect slot led is followed by one the lanes lead,
+//! whose leftover room the effect's next frame may take. So a busy
+//! connection delays an effect's first frame by at most what the writer
+//! already holds and one more batch (the native adapter keeps a batch to
+//! 256 KiB, a few tens of milliseconds at the transport profile's minimum
+//! throughput), every lane keeps reaching the front of a batch in turn
+//! however many effects follow each other, and with no other traffic an
+//! effect has the whole link.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::IoSlice;
@@ -497,11 +497,8 @@ pub(crate) struct Outbound {
     effect_abort: Option<u32>,
     /// The bytes of the effect frame with the writer, outside the budget.
     effect_handed: usize,
-    /// Lanes that held a partly sent message when the last effect ended,
-    /// and have not cut a frame since; the next effect waits for them.
-    effect_owed: Vec<Lane>,
-    /// The last batch opened with one of a streaming effect's later frames,
-    /// so the next opens with the lanes'.
+    /// The last batch opened with an effect frame, so the next opens with
+    /// the lanes' while they have work.
     effect_led: bool,
 }
 
@@ -530,7 +527,6 @@ impl Outbound {
             effect: None,
             effect_abort: None,
             effect_handed: 0,
-            effect_owed: Vec::new(),
             effect_led: false,
         }
     }
@@ -562,12 +558,7 @@ impl Outbound {
             Some(effect) => EffectProgress::Sending {
                 first_written: effect.first_written,
             },
-            None if self.effect_abort.is_some()
-                || self.effect_handed > 0
-                || self.effect_owed.iter().any(|lane| {
-                    self.queue(*lane).is_some_and(LaneQueue::has_work)
-                }) =>
-            {
+            None if self.effect_abort.is_some() || self.effect_handed > 0 => {
                 EffectProgress::Draining
             }
             None => EffectProgress::Idle,
@@ -597,21 +588,6 @@ impl Outbound {
             stream,
             first_written: false,
         });
-    }
-
-    /// Ends the effect's turn: every lane holding a partly sent message
-    /// cuts a frame before the next effect starts. Only started messages
-    /// count, which hold at most the ordinary streams, so the wait stays a
-    /// few frames even with hundreds of viewers.
-    fn yield_effect_turn(&mut self) {
-        self.effect_owed = [Lane::Control, Lane::Large, Lane::Hierarchy]
-            .into_iter()
-            .chain(self.viewers.keys().copied().map(Lane::Viewer))
-            .filter(|lane| {
-                self.queue(*lane)
-                    .is_some_and(|queue| queue.current.is_some())
-            })
-            .collect();
     }
 
     /// Abandons the effect being sent, dropping it and its reservations at
@@ -826,14 +802,10 @@ impl Outbound {
             });
         }
         let mut first = true;
-        // An effect's first frame and its abort go ahead of every lane's.
-        // Its later frames lead every other batch while lanes have work,
-        // and follow the lanes' frames in between, so a streaming effect
-        // never holds back a lane's started message for long.
+        // Effect frames and lane frames take turns leading batches while
+        // the lanes have work.
         let lead = self.effect_handed == 0
-            && (self.effect_starting()
-                || !self.effect_led
-                || !self.lanes_have_work());
+            && (!self.effect_led || !self.lanes_have_work());
         self.effect_led = false;
         if lead && let Some(chunk) = self.cut_effect(room.max(HEADER_BYTES + 1))
         {
@@ -855,7 +827,6 @@ impl Outbound {
                     first = false;
                     transmit.push(chunk);
                     self.ring.push_back(lane);
-                    self.effect_owed.retain(|owed| *owed != lane);
                 }
                 Turn::Wait => {
                     idle += 1;
@@ -878,13 +849,6 @@ impl Outbound {
         (!transmit.is_empty()).then_some(transmit)
     }
 
-    /// Whether the effect slot's next frame starts an effect or abandons
-    /// one, which always goes ahead of the lanes.
-    fn effect_starting(&self) -> bool {
-        self.effect_abort.is_some()
-            || self.effect.as_ref().is_some_and(|effect| effect.cut == 0)
-    }
-
     /// Whether any lane has something to send.
     fn lanes_have_work(&self) -> bool {
         [&self.control, &self.large, &self.hierarchy]
@@ -902,7 +866,6 @@ impl Outbound {
             let (header, header_len) =
                 frame_header(stream, body, FrameEnd::Abort);
             self.streams.release(stream);
-            self.yield_effect_turn();
             return Some(self.hand_effect(
                 Chunk {
                     header,
@@ -938,7 +901,6 @@ impl Outbound {
             // The rest is copied into frames; the effect's reservations go.
             effect.source = None;
             self.streams.release(stream);
-            self.yield_effect_turn();
         }
         let (header, header_len) =
             frame_header(stream, empty + payload_len, frame_end(last));
@@ -1258,7 +1220,6 @@ impl Outbound {
         self.effect = None;
         self.effect_abort = None;
         self.effect_handed = 0;
-        self.effect_owed.clear();
         self.effect_led = false;
     }
 }

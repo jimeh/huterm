@@ -730,3 +730,75 @@ fn small_effects_back_to_back_let_a_started_update_finish() {
         "no write went out while the update was sent"
     );
 }
+
+#[test]
+fn an_unstarted_message_larger_than_the_room_beside_an_effect_still_goes_out() {
+    let mut world = world(2, small());
+    let peer = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want_effects(peer, 0, true);
+    world.settle(SETTLE);
+    // Batches so small that a subscription's result never fits beside an
+    // effect's frame, with writes arriving faster than they go out.
+    world.peers[peer].batch = Some(48);
+    world.peers[peer].write_rate = 48;
+    let terminal = world.terminals[0].clone();
+    let mut n = 0;
+    let mut write = |world: &mut World| {
+        for _ in 0..2 {
+            n += 1;
+            let _ = terminal.clipboard(&format!("w{n}"));
+        }
+        world.step();
+    };
+    for _ in 0..100 {
+        write(&mut world);
+    }
+    world.want(peer, 1, true);
+    let mut steps = 0;
+    while world.viewer(peer, 1).is_none() {
+        steps += 1;
+        assert!(steps < 5_000, "the subscription never answered");
+        write(&mut world);
+    }
+    assert!(world.effects(peer).len() > 100, "the writes kept flowing");
+}
+
+#[test]
+fn an_effect_does_not_wait_behind_many_busy_viewers() {
+    let size = GridSize {
+        columns: 200,
+        rows: 40,
+    };
+    let terminals = 24;
+    let mut world = world(terminals, size);
+    let peer = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    for index in 0..terminals {
+        world.want_effects(peer, index, true);
+    }
+    world.settle(SETTLE);
+    // About one update a batch, so every viewer's update queues behind
+    // the batch being written.
+    world.peers[peer].batch = Some(16 << 10);
+    world.peers[peer].write_rate = 16 << 10;
+    for index in 0..terminals {
+        for row in 0..40 {
+            world.terminals[index].write_line(&varied(row * 13 + index));
+        }
+    }
+    world.step();
+    assert!(world.terminals[0].clipboard("prompt"));
+    let start = world.now;
+    let arrived = until_effects(&mut world, peer, 1, 1_000);
+    // The writer's batch and at most one lane-led batch go first.
+    assert!(
+        arrived - start <= 4,
+        "the write took {} ms",
+        arrived - start
+    );
+    world.settle(SETTLE);
+    for index in 0..terminals {
+        assert!(world.shows_current(peer, index));
+    }
+}

@@ -2497,8 +2497,9 @@ Acceptance:
 
 None of these changes a settled decision. Two acceptance items are
 deferred, response correlation and its timeout fallback, because no effect
-kind needs a response; two rules were added to "Effect frames go first"
-after the fault harness found the starvation they prevent.
+kind needs a response; and "Effect frames go first" became effect frames
+and lane frames taking turns, after the fault harness and review found the
+starvation that strict priority causes.
 
 The wire inventory:
 
@@ -2583,35 +2584,36 @@ The effect lane:
   still waited in the queue reached the client first, which dropped it for
   a viewer it did not know. The lane offers a viewer's effects only once
   that result was written whole.
-- **A streaming effect alternates with the lanes.** An effect's first frame
-  and its abort still go ahead of every lane's. While lanes have work, its
-  later frames lead only every other batch and otherwise take the room the
-  lanes leave, so a started message keeps receiving frames. With every
-  frame first, a large write kept another stream's started message from
-  the link, and a client that resumed reading after a long pause met that
-  stream past its idle deadline and closed the connection
-  (`stalled-readers` seed 28). With no other traffic the effect still has
-  the whole link, so the 64 MiB acceptance case is unchanged; under
-  contention an effect has about half the link and may miss its deadline,
-  which drops it, rather than idling another stream.
-- **Effects yield to each other.** After an effect's last frame or abort is
-  cut, every lane holding a partly sent message cuts a frame before the
-  next effect starts. Without it, effects back to back over a reader that
-  took a byte at a time kept stream 0 idle past its deadline
-  (`stalled-readers` seed 2), and small effects back to back keep a started
-  update from finishing, because alternation applies only to an effect's
-  later frames. Only started messages count, at most one per ordinary
-  stream: review found that waiting for every lane with work, up to 256
-  viewers, could spend the next effect's delivery deadline on a link near
-  the minimum throughput, now that the effect's deadline runs while it
-  waits at the head of the lane.
+- **Effects and lanes take turns leading batches.** While lanes have work,
+  a batch the effect slot led is followed by one the lanes lead, in ring
+  order, and the effect's next frame takes whatever room that batch leaves;
+  with no other traffic the effect leads every batch. This replaces
+  "effect frames go first", which starved ordinary traffic in two ways the
+  fault harness found. A large write kept a started message from the link
+  until a client that resumed after a pause met that stream past its idle
+  deadline (`stalled-readers` seed 28), and small effects back to back over
+  a reader that took a byte at a time did the same to stream 0 (seed 2).
+  Two narrower fixes did not hold up in review. Alternating only an
+  effect's later frames, with a yield between effects owed to every lane
+  with work, could spend the next effect's delivery deadline on a slow link
+  with hundreds of busy viewers; owing only lanes with a started message
+  still let unrelated lanes run first, 257 batches in a probe, and let a
+  large unstarted message wait for as long as small effects kept coming.
+  Taking turns needs no yield, so an effect never waits on other lanes
+  beyond one batch, and every lane keeps reaching the front of a batch.
+  The cost: an effect's first frame may wait for one lane-led batch besides
+  the one in the writer, and under contention an effect has about half the
+  link and may miss its completion deadline, which drops it, rather than
+  idling another stream. The 64 MiB acceptance case has no other traffic
+  and is unchanged.
 - **Bounds.** The effect slot holds one frame outside `OUTBOUND_BUDGET`, so
   `retained_bound` gains one frame and its length prefix.
 - **What "the frame already in the writer" means.** The native adapter
   hands its writer a batch of up to 256 KiB, which it writes whole, so an
-  effect's first frame waits for at most that batch, a few milliseconds at
-  the profile's minimum throughput. That stays within the plan's bound,
-  which already allowed a 1 MiB frame ahead of the effect.
+  effect's first frame waits for at most that batch and, while lanes have
+  work, one lane-led batch: 512 KiB, about 62 ms at the profile's minimum
+  throughput, against a 2 s delivery deadline. The plan's text allowed a
+  1 MiB frame ahead of the effect.
 - **The native client queues effects apart from its events.** Its event
   channel drops events while full and asks the caller to re-read state,
   which cannot recover an effect. `ClientHandle::next_effect` takes effects
@@ -2637,10 +2639,14 @@ Coverage:
   effect queued behind a trickled effect frame, which expires on its own
   deadline; a stale permission generation and a change for a viewer without
   host effects, which end the connection, and a change for an ended
-  viewer, which is dropped; and the two starvation rules, one for small
-  effects back to back and one for a streaming effect. Each of the
-  ordering, announcement, yield, and alternation tests failed with its rule
-  switched off, as did the queued-effect deadline test without its fix.
+  viewer, which is dropped; started updates finishing under small effects
+  back to back and under a streaming effect, updates flowing under large
+  effects back to back, and a large unstarted message going out under
+  small effects; and an effect's first frame within a few batches behind
+  24 busy viewers. With effects always leading, the four fairness tests
+  fail; with the lanes always leading, the two latency tests fail. The
+  announcement test failed without its rule, as did the queued-effect
+  deadline test without its fix.
 - A real-PTY test (`effect_tests.rs`) sends OSC 52 through `cat` from an
   embedded viewer, a desktop client, and a text client on one terminal and
   checks that exactly one eligible desktop receives each write. Core's
@@ -2653,27 +2659,27 @@ Coverage:
   per viewer; that on a healthy link every effect arrives; and that no
   terminal holds a reservation at the end.
   `mise run faults:ipc -- 300` ran 300 seeds per scenario and the swarm:
-  of about 95,600 writes admitted, 39,800 arrived, every one of the 26,600
-  on healthy links among them; 8,900 were dropped at their deadlines,
-  4,400 were discarded by clients that had changed the permission
+  of about 96,000 writes admitted, 39,800 arrived, every one of the 26,600
+  on healthy links among them; 9,000 were dropped at their deadlines,
+  4,500 were discarded by clients that had changed the permission
   meanwhile, and the rest went with viewers and connections the faults
   ended. Its first run
   found both starvation rules above.
 
 Measurements, release medians on an Apple M3 Max (`mise run bench:ipc`),
-each cell the range over three runs of the base (slice 3b's commit) and of
-this slice. None of the measured paths sends an effect; they show that the
-effect lane costs the update and input paths nothing measurable. One base
-run's keystroke echo, 97 us, came from a noisy run; the other two were 71
-and 77 us.
+each cell the range over three runs of the base (slice 3b's commit) and
+five of this slice. None of the measured paths sends an effect; they show
+that the effect lane costs the update and input paths nothing measurable.
+One base run's keystroke echo, 97 us, came from a noisy run; the other two
+were 71 and 77 us.
 
 | Measurement | Base | Slice 4 |
 | --- | --- | --- |
 | `RenameTab` round trip | 38.3 to 38.6 us | 38.0 to 39.1 us |
 | Commit to the client's projection | 15.4 to 16.9 us | 16.7 to 17.0 us |
-| Keystroke echo through a PTY over IPC | 71 to 97 us | 71 to 73 us |
-| Echo output, in-process viewer to remote client | 20.7 to 20.8 us | 20.7 to 20.9 us |
-| 100,000-line flood until a viewer shows it, over IPC | 151 to 157 ms | 149 to 153 ms |
+| Keystroke echo through a PTY over IPC | 71 to 97 us | 70 to 73 us |
+| Echo output, in-process viewer to remote client | 20.7 to 20.8 us | 20.7 to 21.0 us |
+| 100,000-line flood until a viewer shows it, over IPC | 151 to 157 ms | 149 to 156 ms |
 
 ### Slice 5: Unix socket transport and authentication
 

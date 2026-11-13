@@ -622,21 +622,21 @@ Nothing in the desktop calls either until #45.
   socket takes at once, and the reader and writer threads wait with `poll`.
   Do not use `MSG_DONTWAIT` on a blocking socket instead; macOS blocks on
   it.
-- Host effects travel outside the lanes, one at a time on `HOST_EFFECT_STREAM`
-  (`connection/effects.rs`, the effect slot in `connection/outbound.rs`), with
-  at most one frame at the writer. An effect's first frame goes ahead of every
-  lane's, its text streams from core's `PendingHostEffect` after
-  `host_effect_head`, and the slot drops the effect, and its reservations, at
-  its last cut or its deadline. Three rules came from failures: an effect
-  waits until its viewer's subscription result is written, or the client meets
-  a viewer it does not know and drops the effect; while lanes have work, a
-  streaming effect's later frames lead only every other batch; and between
-  effects every lane holding a partly sent message cuts a frame. Without the
-  last two, effect frames hold back a started message until the client's
-  stream idle deadline closes the connection. The next effect leaves core's
-  queue for the head of the lane, with its deadline running, while an earlier
-  effect's last frame still drains; otherwise a trickling client holds it, and
-  the terminal's budget, with no bound. The native client hands effects out
+- Host effects travel outside the lanes, one at a time on
+  `HOST_EFFECT_STREAM` (`connection/effects.rs`, the effect slot in
+  `connection/outbound.rs`), with at most one frame at the writer. The text
+  streams from core's `PendingHostEffect` after `host_effect_head`, and the
+  slot drops the effect, and its reservations, at its last cut or its
+  deadline. While lanes have work, effect frames and lane frames take turns
+  leading batches; giving effects strict priority, or a yield between them,
+  starved ordinary traffic until the client's stream idle deadline closed
+  the connection, or spent the next effect's deadline, and both failed in
+  the fault harness or review. An effect waits until its viewer's
+  subscription result is written, or the client meets a viewer it does not
+  know and drops the effect. The next effect leaves core's queue for the
+  head of the lane, with its deadline running, while an earlier effect's
+  last frame still drains; otherwise a trickling client holds it, and the
+  terminal's budget, with no bound. The native client hands effects out
   through `ClientHandle::next_effect`, never its lossy event channel. The
   client numbers permission changes, and core stamps admitted effects with
   that number (`HostEffectRecipient::set_permission`), so a revoke and
