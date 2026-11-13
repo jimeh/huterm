@@ -3249,6 +3249,8 @@ fn open_window_with_profile(
                 #[cfg(test)]
                 decorations_override: None,
                 #[cfg(test)]
+                notch_override: None,
+                #[cfg(test)]
                 session_shell_fails: false,
                 #[cfg(test)]
                 test_platform: None,
@@ -4804,6 +4806,12 @@ struct WorkspaceView {
     /// as on Linux, so the title row Huterm draws can be tested on macOS.
     #[cfg(test)]
     decorations_override: Option<gpui::Decorations>,
+    /// The safe area and notch shelves a covering fullscreen display
+    /// reports, which `observe_fullscreen` takes while chrome is hidden: a
+    /// test window has no native adapter to read them from.
+    #[cfg(test)]
+    notch_override:
+        Option<(gpui::Edges<Pixels>, Option<crate::fullscreen::NotchShelves>)>,
     /// Makes `session_shell` fail, as when no shell command can be built.
     #[cfg(test)]
     session_shell_fails: bool,
@@ -7506,9 +7514,19 @@ impl WorkspaceView {
         } else {
             (layout.area.origin.x, layout.area.size.width)
         };
+        // While a shelf bar is hidden the row also covers the point kept
+        // for its border line, which nothing else paints.
+        let shelf_line = if self.bar_drawn() {
+            px(0.0)
+        } else {
+            layout.shelf_line
+        };
         let bounds = Bounds::new(
             point(left, content.origin.y),
-            size(width, titlebar + self.fullscreen_insets.top.max(px(0.0))),
+            size(
+                width,
+                titlebar + self.fullscreen_insets.top.max(px(0.0)) + shelf_line,
+            ),
         );
         // On the left the sidebar button and switcher follow the traffic
         // lights or leading window buttons.
@@ -11873,6 +11891,19 @@ impl WorkspaceView {
         self.advance_fullscreen(window, cx)
     }
 
+    /// Takes `notch_override` in place of the native adapter's readings
+    /// while chrome is hidden.
+    #[cfg(test)]
+    fn apply_notch_override(&mut self) {
+        if let Some((insets, shelves)) = self
+            .notch_override
+            .filter(|_| self.fullscreen.chrome_hidden)
+        {
+            self.fullscreen_insets = insets;
+            self.notch_shelves = shelves;
+        }
+    }
+
     // Commands must reconcile queued native changes before choosing a target.
     // Observation cannot dispatch effects for the preceding desired state.
     fn observe_fullscreen(
@@ -11951,6 +11982,8 @@ impl WorkspaceView {
                 .filter(|_| self.fullscreen.chrome_hidden)
                 .and_then(crate::native_fullscreen::Adapter::notch_shelves);
         }
+        #[cfg(test)]
+        self.apply_notch_override();
         self.publish_restorable_bounds(cx);
         if previous
             != (
@@ -13584,6 +13617,28 @@ fn select_notch_shelf(
     (shelf.size.height >= tab_bar_height(tabs)).then_some(shelf)
 }
 
+/// The bar's bounds on `shelf` for a bar of `position` and `bar_height`.
+/// A shelf too short for the bar is not used; the bar then takes its normal
+/// place below the safe area at full height. On the shelf the bar keeps its
+/// height at the shelf's bottom, so its spacing to the terminal matches a
+/// windowed top bar.
+fn shelf_bar(
+    shelf: Option<Bounds<Pixels>>,
+    position: TabPosition,
+    bar_height: Pixels,
+) -> Option<Bounds<Pixels>> {
+    shelf
+        .filter(|shelf| {
+            position == TabPosition::Top && shelf.size.height >= bar_height
+        })
+        .map(|shelf| {
+            Bounds::new(
+                point(shelf.origin.x, shelf.bottom() - bar_height),
+                size(shelf.size.width, bar_height),
+            )
+        })
+}
+
 /// The strip's bounds inside the tab bar. Horizontal Pill bars start with a
 /// leading margin so the first pill's visible edge matches the vertical
 /// inset; every other placement and style fills the bar.
@@ -13763,6 +13818,12 @@ pub(super) struct ChromeLayout {
     /// Where the docked sidebar's content starts below its top, past its
     /// corner strip and the safe area.
     pub(super) workspace_inset: Pixels,
+    /// Where the docked sidebar's own corner row starts below its top:
+    /// under the safe area, or level with a notch shelf's bar.
+    pub(super) workspace_row: Pixels,
+    /// The point a notch shelf keeps clear between the safe area and the
+    /// terminal for the bar's border line; zero without a shelf bar.
+    pub(super) shelf_line: Pixels,
     /// The tab bar's slot for the sidebar button and workspace switcher,
     /// relative to the tab bar's origin, so it moves with a revealing bar.
     corner: Option<Bounds<Pixels>>,
@@ -14102,6 +14163,8 @@ impl ChromeLayout {
         };
         let mut band = None;
         let mut band_inset = px(0.0);
+        let mut band_row = px(0.0);
+        let mut notch_shelf = notch_shelf;
         if let WorkspaceChrome::Panel { edge, width } = workspace {
             let available =
                 (viewport.width - safe.left - safe.right).max(px(0.0));
@@ -14127,12 +14190,22 @@ impl ChromeLayout {
                 rest_safe.right = px(0.0);
                 corners.trailing = false;
             }
-            let strip = if titlebar > px(0.0) {
-                titlebar
-            } else {
-                workspace_chrome::CORNER_ROW
-            };
-            band_inset = (strip + safe.top).min(height);
+            (band_row, band_inset) = Self::panel_strip(
+                titlebar,
+                safe.top,
+                height,
+                shelf_bar(notch_shelf, position, bar_height),
+            );
+            // The sidebar covers its part of the shelf, so the bar starts
+            // or ends where the sidebar does.
+            notch_shelf = notch_shelf.map(|shelf| {
+                let left = shelf.left().max(area.left());
+                let right = shelf.right().min(area.right()).max(left);
+                Bounds::new(
+                    point(left, shelf.origin.y),
+                    size(right - left, shelf.size.height),
+                )
+            });
         }
         let mut layout = Self::partition(
             area,
@@ -14157,7 +14230,35 @@ impl ChromeLayout {
             band.map(|band| Bounds::new(band.origin + origin, band.size));
         layout.workspace_chrome = workspace;
         layout.workspace_inset = band_inset;
+        layout.workspace_row = band_row;
         layout
+    }
+
+    /// Where a docked sidebar's corner row starts and where its content
+    /// starts below it, within its `height`. A shelf bar's row is the
+    /// corner row too, as a title row is, so the sidebar button sits level
+    /// with the tabs and the content starts under the safe area. Otherwise
+    /// the strip is the title row's height, or a row of its own under the
+    /// safe area without a title row, so the button always has a home
+    /// clear of the notch.
+    fn panel_strip(
+        titlebar: Pixels,
+        safe_top: Pixels,
+        height: Pixels,
+        shelf_bar: Option<Bounds<Pixels>>,
+    ) -> (Pixels, Pixels) {
+        if let Some(bar) = shelf_bar.filter(|_| titlebar <= px(0.0)) {
+            return (
+                bar.origin.y.max(px(0.0)).min(height),
+                bar.bottom().max(safe_top).min(height),
+            );
+        }
+        let strip = if titlebar > px(0.0) {
+            titlebar
+        } else {
+            workspace_chrome::CORNER_ROW
+        };
+        (safe_top.min(height), (strip + safe_top).min(height))
     }
 
     /// Partitions `area`, in content coordinates, into title row, tab bar,
@@ -14195,6 +14296,7 @@ impl ChromeLayout {
         let mut strip_inset = px(0.0);
         let mut strip_trailing = px(0.0);
         let mut outside_terminal = false;
+        let mut shelf_line = px(0.0);
         if position == TabPosition::Titlebar {
             // The merged row is the title strip itself: the full width
             // above the terminal, at the strip's height. Its tabs start
@@ -14241,22 +14343,14 @@ impl ChromeLayout {
             tabs.origin.y = px(0.0);
             tabs.size.height =
                 (viewport.height - safe_area.bottom.max(px(0.0))).max(px(0.0));
-        } else if let Some(shelf) = notch_shelf.filter(|shelf| {
-            // A shelf too short for the bar is not used; the bar then takes
-            // its normal place below the safe area at full height.
-            position == TabPosition::Top && shelf.size.height >= bar_height
-        }) {
-            // The bar keeps its height at the bottom of the shelf, so its
-            // spacing to the terminal matches a windowed top bar. The
-            // terminal keeps the area under the safe area except one point
-            // for the border line, so that line never covers a cell.
-            tabs = Bounds::new(
-                point(shelf.origin.x, shelf.bottom() - bar_height),
-                size(shelf.size.width, bar_height),
-            );
+        } else if let Some(bar) = shelf_bar(notch_shelf, position, bar_height) {
+            // The terminal keeps the area under the safe area except one
+            // point for the border line, so that line never covers a cell.
+            tabs = bar;
             let line = px(1.0).min(available.height);
             terminal.origin.y += line;
             terminal.size.height -= line;
+            shelf_line = line;
             outside_terminal = true;
         } else {
             tabs.size.height = bar_height.min(available.height);
@@ -14333,6 +14427,8 @@ impl ChromeLayout {
             workspace: None,
             workspace_chrome: WorkspaceChrome::NONE,
             workspace_inset: px(0.0),
+            workspace_row: px(0.0),
+            shelf_line,
             corner,
         }
     }

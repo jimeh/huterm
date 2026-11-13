@@ -1803,3 +1803,86 @@ fn the_sidebar_button_follows_the_measured_traffic_lights(
         }
     }
 }
+
+#[gpui::test]
+fn custom_fullscreen_beside_a_notch_keeps_the_sidebar_and_bar_apart(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let (window, tab) = harness.workspace_window();
+    // A 1800 by 1169 point display reports a 38-point safe area above the
+    // terminal and a 790-point shelf on each side of the camera housing,
+    // as a notched built-in display does while custom fullscreen covers it.
+    VisualTestContext::from_window(window, &harness.cx)
+        .simulate_resize(size(px(1800.0), px(1169.0)));
+    harness.update_view(window, |view, window, cx| {
+        let width = window.viewport_size().width;
+        let shelf = px(790.0);
+        view.notch_override = Some((
+            gpui::Edges {
+                top: px(38.0),
+                ..gpui::Edges::default()
+            },
+            Some(crate::fullscreen::NotchShelves {
+                left: Bounds::new(
+                    point(px(0.0), px(0.0)),
+                    size(shelf, px(38.0)),
+                ),
+                right: Bounds::new(
+                    point(width - shelf, px(0.0)),
+                    size(shelf, px(38.0)),
+                ),
+            }),
+        ));
+        if !view.workspace_visible {
+            view.toggle_sidebar(window, cx);
+        }
+        window.toggle_fullscreen();
+        view.refresh_fullscreen(window, cx);
+        cx.notify();
+    });
+    harness.wait_for("fullscreen to lay out beside the notch", |cx| {
+        let layout = chrome(cx, window);
+        layout.shelf_line > px(0.0)
+            && layout.workspace.is_some()
+            && mapped(cx, window, tab) == Some(layout.terminal)
+    });
+    harness.cx.run_until_parked();
+    // One tab hides the bar. The row above the terminal still paints down
+    // to it, so no unpainted line shows the desktop through the window.
+    let row = VisualTestContext::from_window(window, &harness.cx)
+        .debug_bounds("terminal-title-row")
+        .expect("the safe area's row");
+    harness.update_view(window, |view, window, _| {
+        assert!(!view.bar_drawn());
+        let layout = view.chrome_layout(window);
+        assert_eq!(row.bottom(), layout.terminal.top());
+        // The sidebar button sits in the shelf's row, level with where the
+        // bar's tabs go, rather than across the notch's edge.
+        let button = view.sidebar_button_bounds.get().unwrap();
+        assert!(button.bottom() <= px(38.0), "{button:?}");
+        assert_eq!(button.center().y, layout.tabs.center().y);
+    });
+    // A second tab shows the bar, whose first tab starts after the sidebar
+    // instead of under it.
+    harness.open_tab(ECHO);
+    harness.wait_for("the bar to show", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                root.downcast::<WorkspaceView>()
+                    .is_ok_and(|view| view.read(cx).bar_drawn())
+            })
+            .unwrap_or(false)
+    });
+    harness.cx.run_until_parked();
+    harness.update_view(window, |view, window, _| {
+        let layout = view.chrome_layout(window);
+        let band = layout.workspace.unwrap();
+        let strip = view.tab_strip(window);
+        assert!(strip.bounds.left() >= band.right(), "{strip:?} {band:?}");
+        let first = strip.bounds.origin.x + strip.start(0) - strip.offset;
+        assert!(first >= band.right(), "{first:?} {band:?}");
+        let button = view.sidebar_button_bounds.get().unwrap();
+        assert_eq!(button.center().y, layout.tabs.center().y);
+    });
+}

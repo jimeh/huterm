@@ -773,6 +773,28 @@ done
           if (tabX !== shelf[0] || tabWidth !== shelf[2]) throw new Error(`${side} shelf bar spans ${tabX},${tabWidth} instead of the shelf ${shelf[0]},${shelf[2]}`);
           if (tabY + tabHeight !== shelf[1] + shelf[3]) throw new Error(`${side} shelf bar bottom ${tabY + tabHeight} is not the shelf bottom ${shelf[1] + shelf[3]}`);
           if (Number(shelved["w0.terminal"]!.split(",")[1]) !== safeTop + 1) throw new Error(`${side} shelf terminal top ${shelved["w0.terminal"]} is not one point under the safe area ${safeTop}`);
+          // A sidebar docked on the left covers its part of the left shelf,
+          // so that bar starts at the sidebar; the right shelf keeps its
+          // bar. Its button sits in the shelf's row, level with the bar.
+          await accepted("0 toggle_sidebar");
+          let docked: State = {};
+          await waitFor(async () => {
+            docked = await state();
+            if (docked["w0.sidebar_band"] === "none" || docked["w0.sidebar_button"] === "none") return false;
+            // The button's bounds come from its last paint, which follows
+            // the layout, and before docking it already sits at the band's
+            // left edge; poll until it is in the sidebar, level with the bar.
+            const [x, , width] = parseRect(docked["w0.sidebar_band"]!);
+            const [, barY, , barHeight] = parseRect(docked["w0.bar_bounds"]!);
+            const [buttonX, buttonY, buttonWidth, buttonHeight] = parseRect(docked["w0.sidebar_button"]!);
+            return buttonX >= x && buttonX + buttonWidth <= x + width && buttonY * 2 + buttonHeight === barY * 2 + barHeight;
+          }, `${side} shelf sidebar to dock with its button level with the bar`);
+          const [bandX, , bandWidth] = parseRect(docked["w0.sidebar_band"]!);
+          const [barX, , barWidth] = parseRect(docked["w0.bar_bounds"]!);
+          const expectedX = side === "left" ? bandX + bandWidth : shelf[0];
+          if (barX !== expectedX || barX + barWidth !== shelf[0] + shelf[2]) throw new Error(`${side} shelf bar beside the sidebar spans ${barX},${barWidth}; expected to start at ${expectedX} and end at ${shelf[0] + shelf[2]}`);
+          await accepted("0 toggle_sidebar");
+          await waitFor(async () => (await state())["w0.sidebar_band"] === "none", `${side} shelf sidebar to hide`);
           await accepted("0 toggle_non_native_fullscreen");
           await stable("Windowed");
         }

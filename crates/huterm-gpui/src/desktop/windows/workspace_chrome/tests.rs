@@ -572,6 +572,72 @@ fn a_docked_sidebar_owns_its_title_row_corner() {
 }
 
 #[test]
+fn a_docked_sidebar_takes_its_part_of_a_notch_shelf() {
+    // A 1800 by 1169 point display with a 38-point camera housing between
+    // two 790-point shelves, covered by custom fullscreen.
+    let window = size(px(1800.0), px(1169.0));
+    let safe_area = gpui::Edges {
+        top: px(38.0),
+        ..gpui::Edges::default()
+    };
+    let left_shelf =
+        Bounds::new(point(px(0.0), px(0.0)), size(px(790.0), px(38.0)));
+    let right_shelf =
+        Bounds::new(point(px(1010.0), px(0.0)), size(px(790.0), px(38.0)));
+    let shelf_inputs = |edge, shelf| LayoutInputs {
+        safe_area,
+        notch_shelf: Some(shelf),
+        bar_height: px(34.0),
+        ..layout_inputs(window, px(0.0), TabPosition::Top, docked(edge))
+    };
+    // The bar on the sidebar's side starts or ends where the sidebar does.
+    let left = ChromeLayout::build_with(shelf_inputs(Edge::Left, left_shelf));
+    assert_eq!(
+        left.tabs,
+        Bounds::new(point(PANEL_WIDTH, px(4.0)), size(px(610.0), px(34.0)))
+    );
+    let right =
+        ChromeLayout::build_with(shelf_inputs(Edge::Right, right_shelf));
+    assert_eq!(right.tabs.left(), px(1010.0));
+    assert_eq!(right.tabs.right(), px(1800.0) - PANEL_WIDTH);
+    // On the other side of the notch the shelf is the sidebar's no more.
+    let across =
+        ChromeLayout::build_with(shelf_inputs(Edge::Left, right_shelf));
+    assert_eq!(across.tabs.left(), px(1010.0));
+    assert_eq!(across.tabs.size.width, px(790.0));
+    for layout in [left, right, across] {
+        let band = layout.workspace.unwrap();
+        assert!(!overlap(band, layout.tabs), "{layout:?}");
+        // The sidebar's corner row is the shelf bar's, so its button sits
+        // level with the tabs, and its content starts under the safe area.
+        assert_eq!(layout.workspace_row, layout.tabs.top());
+        assert_eq!(layout.workspace_inset, px(38.0));
+        assert_eq!(layout.shelf_line, px(1.0));
+        assert_eq!(layout.terminal.top(), px(39.0));
+    }
+    // Without a shelf for the bar the sidebar's own row starts under the
+    // safe area instead of straddling the notch's edge.
+    for (position, shelf) in [
+        (TabPosition::Top, None),
+        (TabPosition::Left, Some(left_shelf)),
+        (TabPosition::Bottom, Some(left_shelf)),
+    ] {
+        let layout = ChromeLayout::build_with(LayoutInputs {
+            safe_area,
+            notch_shelf: shelf,
+            ..layout_inputs(window, px(0.0), position, docked(Edge::Left))
+        });
+        assert_eq!(layout.workspace_row, px(38.0), "{position:?}");
+        assert_eq!(
+            layout.workspace_inset,
+            px(38.0) + CORNER_ROW,
+            "{position:?}"
+        );
+        assert_eq!(layout.shelf_line, px(0.0), "{position:?}");
+    }
+}
+
+#[test]
 fn the_corner_slot_leads_a_bar_or_takes_a_row_above_a_column() {
     let window = size(px(1000.0), px(700.0));
     let lead = px(120.0);
