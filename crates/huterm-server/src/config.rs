@@ -76,19 +76,24 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
-    /// The most encoded bytes one connection at negotiated caps `caps` ever
-    /// retains: the outbound budget, one result or hierarchy message a
-    /// producer admitted just below it, and the one replacement snapshot a
-    /// connection may have in flight, which it admits whatever the queue
-    /// holds.
+    /// The most encoded bytes one connection at negotiated caps `caps`
+    /// and frames of at most `max_frame` bytes ever retains: the outbound
+    /// budget, one result or hierarchy message a producer admitted just
+    /// below it, the one replacement snapshot a connection may have in
+    /// flight, which it admits whatever the queue holds, and the one status
+    /// or frame the queue starts over the budget so it keeps moving.
     #[must_use]
-    pub fn retained_bound(&self, caps: MessageCaps) -> usize {
+    pub fn retained_bound(&self, caps: MessageCaps, max_frame: u32) -> usize {
         let cap = |kind| caps.cap(kind).unwrap_or(0);
         let hierarchy = cap(MessageKind::HierarchySnapshot)
             .max(cap(MessageKind::HierarchyResync))
             .max(cap(MessageKind::HierarchyEvent));
+        let frame = usize::try_from(max_frame).unwrap_or(usize::MAX);
         self.outbound_budget
             + hierarchy
             + cap(MessageKind::Result).max(hierarchy)
+            + cap(MessageKind::ViewerStatus)
+                .max(cap(MessageKind::InputAck))
+                .max(frame)
     }
 }

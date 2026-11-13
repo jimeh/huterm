@@ -210,6 +210,10 @@ pub struct Connection {
     viewers: BTreeMap<ViewerId, Viewer>,
     /// Recently ended viewers and why, oldest first.
     ended: VecDeque<(ViewerId, Ended)>,
+    /// Ended viewers whose lanes close once the results still waiting for
+    /// them are on the lane: each one's encoded end notice, if it has
+    /// one, and whether the lane still sends views not yet started.
+    lane_ends: BTreeMap<ViewerId, (Option<Vec<u8>>, bool)>,
     /// Subscriptions in flight, which count toward the viewer limit.
     subscribing: usize,
     /// Viewer jobs handed out and not completed. Disconnect cleanup waits
@@ -286,6 +290,7 @@ impl Connection {
             clock: now,
             viewers: BTreeMap::new(),
             ended: VecDeque::new(),
+            lane_ends: BTreeMap::new(),
             subscribing: 0,
             viewer_works: 0,
             deferred_detach: Vec::new(),
@@ -506,7 +511,7 @@ impl Connection {
         let caps = self
             .negotiated
             .map_or(MessageCaps::for_minor(0), |negotiated| negotiated.caps);
-        self.config.retained_bound(caps)
+        self.config.retained_bound(caps, self.offer.max_frame)
     }
 
     /// The hierarchy feed being drained, with its generation, so an adapter
@@ -904,6 +909,9 @@ impl Connection {
             }
             if let Some(viewer) = opens {
                 self.open_viewer(viewer);
+            }
+            if let Lane::Viewer(viewer) = lane {
+                self.end_lane_if_answered(viewer);
             }
         }
     }
@@ -1406,6 +1414,7 @@ impl Connection {
         self.queued.clear();
         self.requests.clear();
         self.results.clear();
+        self.lane_ends.clear();
         self.hierarchy.clear();
         self.tickets.clear();
         self.history.clear();

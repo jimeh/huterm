@@ -356,6 +356,8 @@ pub(crate) struct World {
     /// Hold handed-out work and run it after random delays, in a random
     /// order.
     pub(crate) hold_work: bool,
+    /// Keep handed-out work in each peer's `works` without running it.
+    pub(crate) freeze_work: bool,
     size: GridSize,
     limits: ModelLimits,
 }
@@ -416,6 +418,7 @@ impl World {
             terminals,
             peers: Vec::new(),
             hold_work: false,
+            freeze_work: false,
             size,
             limits,
         }
@@ -633,7 +636,9 @@ impl World {
                 }
             }
             let mut ready = Vec::new();
-            if hold {
+            if self.freeze_work {
+                // Nothing runs until a test thaws it.
+            } else if hold {
                 let mut kept = Vec::new();
                 for work in peer.works.drain(..) {
                     if self.rng.chance(300) {

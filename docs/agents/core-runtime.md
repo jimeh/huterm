@@ -595,16 +595,18 @@ Nothing in the desktop calls either until #45.
   `RuntimeError` onto wire codes. A new core error needs an arm there; the
   contract tests map in-process errors through it too.
 - A connection retains at most `OUTBOUND_BUDGET` plus one hierarchy message
-  plus one result or hierarchy message of encoded bytes
-  (`ServerConfig::retained_bound`). A producer admits a result or
+  plus one result or hierarchy message plus one status or frame of encoded
+  bytes (`ServerConfig::retained_bound`). A producer admits a result or
   hierarchy message only while retained bytes are under the budget, and
   encodes it once into the buffer the writer shares; at the budget the
   connection stops reading. Updates, statuses, input acknowledgements, and
   selection text encode only when their message starts, and an update and
   selection text one frame at a time from the snapshot or the text
   (`UpdateEncoder::plan`, `PlannedUpdate::frames`, `text_result_parts`);
-  they cut frames only under the budget. Never re-encode a message per
-  frame, copy an encoded message's payload, or build a whole update.
+  over the budget a started one cuts a frame only while the writer holds
+  none, and a new one starts only when nothing else can drain. Never
+  re-encode a message per frame, copy an encoded message's payload, or build
+  a whole update.
 - A viewer's pump has one snapshot in flight and is the only producer of
   its updates; its first update and a resync's are complete and spend no
   credit, and a status or acknowledgement replaces its unsent one ahead of

@@ -178,19 +178,26 @@ impl LaneQueue {
         self.current.is_some() || !self.queue.is_empty()
     }
 
-    /// Whether the lane's next frame waits: a message encoded as it goes
-    /// starts only under the budget; and a frame other than a batch's
-    /// `first` waits for the next batch unless it fits `space` whole.
-    fn waits(&self, first: bool, space: usize, limit: u32, over: bool) -> bool {
-        // Over the budget while bytes drain, no message encoded as it goes
-        // starts; one already started holds a stream, so it finishes, which
-        // frees the stream for messages admitted earlier. The writer takes
-        // one batch at a time, so what it produces meanwhile stays within a
-        // batch.
-        if over
-            && self.current.is_none()
-            && !matches!(self.queue.front(), Some(Item::Encoded(..)))
-        {
+    /// Whether the lane's next frame waits: over the budget, a message
+    /// encoded as it goes starts only when nothing else drains, and one
+    /// already started cuts a frame only while the writer holds none; and a
+    /// frame other than a batch's `first` waits for the next batch unless
+    /// it fits `space` whole.
+    fn waits(&self, first: bool, space: usize, limit: u32, over: Over) -> bool {
+        // A started message holds a stream that messages admitted earlier
+        // may need, so it keeps going over the budget, a frame at a time.
+        let late = self.current.is_none()
+            && !matches!(self.queue.front(), Some(Item::Encoded(..)));
+        let streaming = self
+            .current
+            .as_ref()
+            .is_some_and(|current| !current.admitted);
+        let wait = match over {
+            Over::Under | Over::Stuck => false,
+            Over::Writing => streaming || late,
+            Over::Started => late,
+        };
+        if wait {
             return true;
         }
         if first {
@@ -208,6 +215,22 @@ impl LaneQueue {
         let max = usize::try_from(limit).unwrap_or(usize::MAX);
         remaining.min(max) + HEADER_BYTES > space
     }
+}
+
+/// Where the queue stands against its budget, which decides what may cut
+/// a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Over {
+    Under,
+    /// Over, with frames at the writer: only messages whose bytes already
+    /// count whole cut frames until it writes them.
+    Writing,
+    /// Over, with nothing at the writer and a message started: started
+    /// messages cut a frame.
+    Started,
+    /// Over, with nothing at the writer and nothing started: everything
+    /// retained waits behind messages encoded as they go, so one starts.
+    Stuck,
 }
 
 /// A frame handed to the writer and not yet fully written.
@@ -719,17 +742,20 @@ impl Outbound {
         Ok(Ok(current))
     }
 
-    /// Whether retained bytes will drain without another message starting:
-    /// frames are with the writer, or a started message still has frames
-    /// to cut. When neither holds, everything retained waits behind
-    /// messages encoded as they go, so one of those must start even over
-    /// the budget.
-    fn draining(&self) -> bool {
-        !self.handed.is_empty()
-            || [&self.control, &self.large, &self.hierarchy]
-                .into_iter()
-                .chain(self.viewers.values())
-                .any(|queue| queue.current.is_some())
+    fn over(&self) -> Over {
+        if self.retained < self.budget {
+            Over::Under
+        } else if !self.handed.is_empty() {
+            Over::Writing
+        } else if [&self.control, &self.large, &self.hierarchy]
+            .into_iter()
+            .chain(self.viewers.values())
+            .any(|queue| queue.current.is_some())
+        {
+            Over::Started
+        } else {
+            Over::Stuck
+        }
     }
 
     /// Cuts `lane`'s next frame within `space`, or, unless it is the
@@ -738,7 +764,7 @@ impl Outbound {
     fn cut(&mut self, lane: Lane, space: usize, first: bool) -> Turn {
         let limit = self.limit;
         let encoding = self.encoding;
-        let over = self.retained >= self.budget && self.draining();
+        let over = self.over();
         let Self {
             control,
             large,
@@ -1002,5 +1028,36 @@ mod tests {
         }
         assert_eq!(delivered, 2 + 10 + 2 * budget);
         assert_eq!(outbound.retained(), 0);
+    }
+
+    #[test]
+    fn a_started_streamed_message_over_the_budget_cuts_a_frame_per_write() {
+        let budget = 100;
+        let limit = 64 << 10;
+        let mut outbound = Outbound::new(b"hi".to_vec(), limit, budget);
+        let runtime = RuntimeId::new(1);
+        outbound.set_encoding(IdScope::new(runtime), MessageCaps::for_minor(0));
+        outbound.push(
+            Lane::Large,
+            Item::Text {
+                head: Vec::new(),
+                text: "t".repeat(1 << 20),
+                tail: Vec::new(),
+            },
+        );
+        let mut delivered = 0;
+        let mut most = 0;
+        while let Some(batch) = outbound.take(usize::MAX) {
+            most = most.max(outbound.retained());
+            delivered +=
+                payloads(&batch).iter().map(|p| p.len()).sum::<usize>();
+            outbound.written(batch.len());
+        }
+        assert_eq!(delivered, 2 + (1 << 20));
+        let frame = usize::try_from(limit).unwrap();
+        assert!(
+            most <= budget + frame,
+            "{most} retained, over {budget} plus a frame"
+        );
     }
 }

@@ -2232,8 +2232,8 @@ The wire inventory:
   limit, and a link lookup must fit a `Result`, so its cap is about 1.2 MiB
   and a result may span frames; slice 3a's rule that every result fits one
   frame at the smallest `max_frame` no longer holds, though a close
-  assessment still does. The retained bound is unchanged, because the
-  hierarchy cap is larger still. A link's destination is at most
+  assessment still does. The retained bound did not grow for it, because
+  the hierarchy cap is larger still. A link's destination is at most
   `MAX_LINK_DESTINATION_BYTES` (32 KiB), its cells at most `MAX_LINK_CELLS`
   (16,384), and their texts together at most `MAX_LINK_TEXT_BYTES` (32 KiB),
   core's scan limits; a link past them travels as `LinkLookup::ScanLimit`.
@@ -2306,12 +2306,14 @@ The server:
   rest; a viewer the client closed drops only views not yet started. A
   viewer that ends while its subscription's result still waits for room ends
   once that result is on its lane, so the notice never overtakes it, and the
-  final status its end consumed goes out first. A snapshot that fails leaves
-  core's viewer notified, so the pump keeps owing it rather than waiting for
-  a wake core will not send. A connection remembers its last
-  `MAX_ENDED_VIEWERS` (256) ended viewers, so a request naming one answers
-  `Stopped` or `Revoked` rather than `StaleTarget`; the client keeps the
-  same record and answers such a request locally.
+  final status its end consumed goes out first. Results answered on its lane
+  before the end and still waiting for room go out on the lane, after their
+  updates and before the notice. A snapshot that fails leaves core's viewer
+  notified, so the pump keeps owing it rather than waiting for a wake core
+  will not send. A connection remembers its last `MAX_ENDED_VIEWERS` (256)
+  ended viewers, so a request naming one answers `Stopped` or `Revoked`
+  rather than `StaleTarget`; the client keeps the same record and answers
+  such a request locally.
 - **Disconnect.** The connection drops its viewers, then detaches its
   attachments once no viewer job still holds a viewer, so a job a fault
   harness holds cannot make the detach revoke a viewer it would otherwise
@@ -2320,20 +2322,21 @@ The server:
   The outbound queue's lanes are dynamic, one per viewer. An update or
   selection text counts its frames from their cut until they are written; a
   status or acknowledgement counts whole from its start, when it is encoded.
-  Over the budget, while frames are with the writer or a started message
-  still has frames to cut, no such message starts, so a connection's encoded
-  output stays within `OUTBOUND_BUDGET` plus the messages already started,
-  however many viewers it has. One already started still finishes, because
-  it holds a stream that messages admitted earlier may need; stopping it
-  there could hold every stream while encoded messages sat over the budget.
-  When nothing drains, one starts even over the budget, because everything
-  retained then waits behind such messages; a status ahead of an encoded
-  notice on one lane held a connection that way. A large result counts as in
-  flight until its text is written, not only until it is answered, so a
-  connection holds one selection's text at a time. The writer-stall deadline
-  is armed while anything waits to be written, queued but not yet encoded
-  included; it used to count only retained bytes, so a full socket with
-  nothing but late-encoded items queued never armed it.
+  Over the budget, no such message starts while frames are with the writer
+  or a started message still has frames to cut, and a started update or text
+  cuts a frame only while the writer holds none. One already started still
+  finishes, because it holds a stream that messages admitted earlier may
+  need; stopping it could hold every stream while encoded messages sat over
+  the budget. When nothing drains, one starts even over the budget, because
+  everything retained then waits behind such messages; a status ahead of an
+  encoded notice on one lane held a connection that way. So the retained
+  bound gains one status or frame, the most such a start or a frame cut over
+  the budget adds: 28,774,013 bytes by default rather than 27,623,642. A
+  large result counts as in flight until its text is written, not only until
+  it is answered, so a connection holds one selection's text at a time. The
+  writer-stall deadline is armed while anything waits to be written, queued
+  but not yet encoded included; it used to count only retained bytes, so a
+  full socket with nothing but late-encoded items queued never armed it.
 - **Native I/O.** The socket is non-blocking. While the writer is idle, the
   driver writes a batch itself and hands the writer only what the socket
   did not take; the reader and writer wait with `poll` where a blocking
@@ -2405,19 +2408,21 @@ Fault injection:
   all caught.
 - The world's acceptance cases found one server bug: the stall deadline
   never armed while a full socket left only late-encoded items queued.
-  Review found more, each now covered by a test that failed before its
-  fix: an ended viewer's lane discarded its notice and queued results;
-  selection texts escaped the one-large-result limit; staged focus reports
-  had no bound; oversized input ended the connection; a closed viewer
-  stayed registered on the client; a cancel missed requests in a viewer's
-  queue; a failed snapshot froze its viewer; streamed messages could hold
-  every stream while encoded ones sat over the budget; and encoded messages
-  over the budget queued behind unstarted streamed ones held the connection
-  for good, which a test for a lost final status found.
-  The long runs found only the harness's own bugs: unordered maps and a
-  process-wide counter that kept seeds from replaying, model viewers whose
-  identities collided across terminals, and a tamper that dropped a
-  message's first frames when removed mid-stream.
+  Review found more, each now covered by a test that failed before its fix:
+  an ended viewer's lane discarded its notice and queued results; selection
+  texts escaped the one-large-result limit; staged focus reports had no
+  bound; oversized input ended the connection; a closed viewer stayed
+  registered on the client; a cancel missed requests in a viewer's queue; a
+  failed snapshot froze its viewer; streamed messages could hold every
+  stream while encoded ones sat over the budget; and encoded messages over
+  the budget queued behind unstarted streamed ones held the connection for
+  good, which a test for a lost final status found. The second round found
+  that lost status, a result waiting for room that a viewer's end sent ahead
+  of its update, and a started message that cut every frame over the budget
+  in one unbounded batch. The long runs found only the harness's own bugs:
+  unordered maps and a process-wide counter that kept seeds from replaying,
+  model viewers whose identities collided across terminals, and a tamper
+  that dropped a message's first frames when removed mid-stream.
 
 Measurements, release medians on an Apple M3 Max (`mise run bench:ipc`),
 each cell the range over two to four runs. "Base" is slice 3a's commit on

@@ -507,22 +507,31 @@ impl Connection {
                         self.outbound.push(lane, Item::Update(planned));
                     }
                 }
-                self.push_notice(
-                    lane,
-                    &huterm_wire::message::Message::ViewerStopped(
-                        huterm_wire::viewer::ViewerStopped { viewer: id },
-                    ),
-                );
             }
-            Ended::Revoked => self.push_notice(
-                lane,
-                &huterm_wire::message::Message::ViewerRevoked(
-                    huterm_wire::viewer::ViewerRevoked { viewer: id },
-                ),
-            ),
-            Ended::Closed => {}
+            Ended::Revoked | Ended::Closed => {}
         }
-        self.outbound.close_viewer(id, ended != Ended::Closed);
+        let notice = match ended {
+            Ended::Stopped => {
+                Some(huterm_wire::message::Message::ViewerStopped(
+                    huterm_wire::viewer::ViewerStopped { viewer: id },
+                ))
+            }
+            Ended::Revoked => {
+                Some(huterm_wire::message::Message::ViewerRevoked(
+                    huterm_wire::viewer::ViewerRevoked { viewer: id },
+                ))
+            }
+            Ended::Closed => None,
+        };
+        let notice = match notice.map(|notice| self.encode_notice(&notice)) {
+            Some(Ok(bytes)) => Some(bytes),
+            Some(Err(())) => return,
+            None => None,
+        };
+        // Results answered on the lane before the end, still waiting for
+        // room, go out on it ahead of the notice.
+        self.lane_ends.insert(id, (notice, ended != Ended::Closed));
+        self.end_lane_if_answered(id);
         let error = ended.error();
         for staged in viewer.staged.drain(..) {
             if let Some(request) = staged.request {
@@ -539,22 +548,38 @@ impl Connection {
         self.update_retry();
     }
 
-    fn push_notice(
+    /// Encodes an end notice, or ends the connection if it cannot.
+    fn encode_notice(
         &mut self,
-        lane: Lane,
         message: &huterm_wire::message::Message,
-    ) {
+    ) -> Result<Vec<u8>, ()> {
         let Some(negotiated) = self.negotiated else {
-            return;
+            return Err(());
         };
-        match huterm_wire::message::encode_message(
+        huterm_wire::message::encode_message(
             message,
             self.scope,
             negotiated.caps,
-        ) {
-            Ok(bytes) => self.outbound.push_encoded(lane, bytes, None),
-            Err(error) => self.shut(CloseReason::Fault(error.to_string())),
+        )
+        .map_err(|error| self.shut(CloseReason::Fault(error.to_string())))
+    }
+
+    /// Closes an ended viewer's lane, after its notice, once no result
+    /// still waits to go out on it.
+    pub(super) fn end_lane_if_answered(&mut self, id: ViewerId) {
+        let lane = Lane::Viewer(id);
+        if !self.lane_ends.contains_key(&id)
+            || self.results.iter().any(|queued| queued.lane == lane)
+        {
+            return;
         }
+        let Some((notice, views)) = self.lane_ends.remove(&id) else {
+            return;
+        };
+        if let Some(bytes) = notice {
+            self.outbound.push_encoded(lane, bytes, None);
+        }
+        self.outbound.close_viewer(id, views);
     }
 
     pub(super) fn ended_viewer(&self, id: ViewerId) -> Option<Ended> {

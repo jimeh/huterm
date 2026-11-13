@@ -620,16 +620,13 @@ fn a_viewer_that_stops_before_its_subscription_is_answered_reports_the_exit() {
     world.settle(SETTLE);
     // The server reads the subscription while under the budget; its work
     // completes only once the writer is stuck.
-    world.hold_work = true;
+    world.freeze_work = true;
     world.want(peer, 1, true);
-    for _ in 0..10 {
-        if !world.peers[peer].works.is_empty() {
-            break;
-        }
+    for _ in 0..5 {
         world.step();
     }
     let held = std::mem::take(&mut world.peers[peer].works);
-    world.hold_work = false;
+    world.freeze_work = false;
     assert_eq!(held.len(), 1, "the subscription's work is held");
     world.peers[peer].stalled_until = u64::MAX;
     for row in 0..24 {
@@ -664,6 +661,99 @@ fn a_viewer_that_stops_before_its_subscription_is_answered_reports_the_exit() {
         exited.is_some_and(|exited| Some(exited) < stopped),
         "the exit arrived before the stop"
     );
+}
+
+#[test]
+fn a_revoked_viewers_waiting_result_follows_its_update_and_precedes_the_notice()
+{
+    // With a budget of one byte, a writer batch the stalled client does
+    // not read keeps the scroll's result waiting for room.
+    let mut world = World::new(
+        1,
+        ServerConfig {
+            outbound_budget: 1,
+            ..ServerConfig::default()
+        },
+        2,
+        grid(80, 24),
+        ModelLimits::default(),
+    );
+    let peer = world.add_peer(LinkProfile {
+        latency: 0,
+        jitter: 0,
+        chunk: usize::MAX,
+        buffer: 64,
+    });
+    world.peers[peer].batch = Some(256);
+    world.settle(SETTLE);
+    world.want(peer, 0, true);
+    world.want(peer, 1, true);
+    world.settle(SETTLE);
+    for line in 0..30 {
+        world.terminals[0].write_line(&format!("history {line}"));
+    }
+    world.settle(SETTLE);
+    let viewer = world.viewer(peer, 0).unwrap();
+    // The server reads the scroll under the budget; its snapshot completes
+    // only once the other viewer's update holds the writer.
+    world.freeze_work = true;
+    let now = world.time();
+    let scroll = world.peers[peer].session.scroll(
+        viewer,
+        huterm_protocol::ScrollCommand::Relative(2),
+        now,
+    );
+    for _ in 0..5 {
+        world.step();
+    }
+    let held = std::mem::take(&mut world.peers[peer].works);
+    world.freeze_work = false;
+    assert_eq!(held.len(), 1, "the scroll's snapshot is held");
+    world.peers[peer].stalled_until = u64::MAX;
+    for row in 0..24 {
+        world.terminals[1].set_row(row, &format!("{row:0>80}"));
+    }
+    for _ in 0..5 {
+        world.step();
+    }
+    world.peers[peer].works = held;
+    world.step();
+    world.terminals[0].revoke(viewer_in_model(&world, 0));
+    world.step();
+    world.peers[peer].stalled_until = 0;
+    world.settle(SETTLE);
+    let log = &world.peers[peer].log;
+    let position = |wanted: &dyn Fn(&huterm_client::ClientEvent) -> bool| {
+        log.iter().rposition(wanted)
+    };
+    let updated = position(&|event| {
+        matches!(
+            event,
+            huterm_client::ClientEvent::Viewer(ViewerEvent::Updated {
+                viewer: updated,
+                ..
+            }) if *updated == viewer
+        )
+    });
+    let answered = position(&|event| {
+        matches!(
+            event,
+            huterm_client::ClientEvent::Result { call, outcome: Ok(_) }
+                if *call == scroll
+        )
+    });
+    let revoked = position(&|event| {
+        matches!(
+            event,
+            huterm_client::ClientEvent::Viewer(ViewerEvent::Revoked {
+                viewer: revoked,
+                ..
+            }) if *revoked == viewer
+        )
+    });
+    assert!(answered.is_some(), "the scroll succeeded");
+    assert!(updated < answered, "its update came first");
+    assert!(answered < revoked, "the revocation came last");
 }
 
 #[test]
