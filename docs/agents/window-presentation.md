@@ -66,12 +66,15 @@ Custom fullscreen on a notched display also reads `auxiliaryTopLeftArea` and
 `auxiliaryTopRightArea` as notch shelves, and a top bar with `[tabs] notch`
 sits on one (`shelf_bar`). The shelf comes in window coordinates, so
 `ChromeLayout::build_with` trims it to the area beside a docked sidebar, or
-the first tabs draw under the sidebar. With a shelf bar the sidebar's own
-corner row (`workspace_row`) is the bar's row, as a title row is, and without
-one it starts under the safe area, never across the notch's edge. The
-terminal starts one point under the safe area for the bar's border line
-(`shelf_line`) even while the bar is hidden, so the title row then covers
-that point; nothing else paints it, and the desktop shows through.
+the first tabs draw under the sidebar. When the sidebar leaves less of the
+shelf than one tab at `[tabs] min_width` and the new-tab control
+(`shelf_min_width`), the bar goes back under the safe area. With a shelf bar
+the sidebar's own corner row (`workspace_row`) is the bar's row, as a title
+row is, and without one it starts under the safe area, never across the
+notch's edge. The terminal starts one point under the safe area for the
+bar's border line (`shelf_line`) even while the bar is hidden. The title row
+then covers that point, because nothing else paints it and the desktop
+would show through.
 Native Spaces report no safe area and no shelves. Window tests inject both
 through `WorkspaceView::notch_override`.
 

@@ -11891,16 +11891,17 @@ impl WorkspaceView {
         self.advance_fullscreen(window, cx)
     }
 
-    /// Takes `notch_override` in place of the native adapter's readings
-    /// while chrome is hidden.
+    /// Takes `notch_override` in place of the native adapter's readings:
+    /// its values while chrome is hidden, none otherwise.
     #[cfg(test)]
     fn apply_notch_override(&mut self) {
-        if let Some((insets, shelves)) = self
-            .notch_override
-            .filter(|_| self.fullscreen.chrome_hidden)
-        {
-            self.fullscreen_insets = insets;
-            self.notch_shelves = shelves;
+        if let Some(readings) = self.notch_override {
+            (self.fullscreen_insets, self.notch_shelves) =
+                if self.fullscreen.chrome_hidden {
+                    readings
+                } else {
+                    (gpui::Edges::default(), None)
+                };
         }
     }
 
@@ -13617,6 +13618,12 @@ fn select_notch_shelf(
     (shelf.size.height >= tab_bar_height(tabs)).then_some(shelf)
 }
 
+/// The narrowest shelf a top bar takes beside a docked sidebar: room for
+/// one tab at its minimum width and the new-tab control.
+fn shelf_min_width(tabs: TabsConfig) -> Pixels {
+    px(tabs.min_width) + CONTROL_SLOT
+}
+
 /// The bar's bounds on `shelf` for a bar of `position` and `bar_height`.
 /// A shelf too short for the bar is not used; the bar then takes its normal
 /// place below the safe area at full height. On the shelf the bar keeps its
@@ -13850,6 +13857,9 @@ pub(super) struct LayoutInputs {
     pub(super) sidebar_width: Pixels,
     pub(super) safe_area: gpui::Edges<Pixels>,
     pub(super) notch_shelf: Option<Bounds<Pixels>>,
+    /// The narrowest part of the shelf the bar takes beside a docked
+    /// sidebar; see [`shelf_min_width`].
+    pub(super) shelf_min_width: Pixels,
     pub(super) frame: WindowFrame,
     pub(super) workspace: WorkspaceChrome,
     /// The tab bar's share for the corner controls, when it holds them.
@@ -14088,6 +14098,7 @@ impl ChromeLayout {
             sidebar_width,
             safe_area,
             notch_shelf,
+            shelf_min_width: shelf_min_width(tabs),
             frame,
             workspace,
             corner,
@@ -14117,6 +14128,7 @@ impl ChromeLayout {
             sidebar_width,
             safe_area,
             notch_shelf,
+            shelf_min_width: shelf_min_width(TabsConfig::default()),
             frame,
             workspace: WorkspaceChrome::NONE,
             corner: None,
@@ -14136,6 +14148,7 @@ impl ChromeLayout {
             sidebar_width,
             safe_area,
             notch_shelf,
+            shelf_min_width,
             frame,
             workspace,
             corner,
@@ -14190,22 +14203,25 @@ impl ChromeLayout {
                 rest_safe.right = px(0.0);
                 corners.trailing = false;
             }
+            // The sidebar covers its part of the shelf, so the bar starts
+            // or ends where the sidebar does. A remainder too narrow for
+            // the bar leaves it under the safe area.
+            notch_shelf = notch_shelf.and_then(|shelf| {
+                let left = shelf.left().max(area.left());
+                let right = shelf.right().min(area.right());
+                (right - left >= shelf_min_width).then(|| {
+                    Bounds::new(
+                        point(left, shelf.origin.y),
+                        size(right - left, shelf.size.height),
+                    )
+                })
+            });
             (band_row, band_inset) = Self::panel_strip(
                 titlebar,
                 safe.top,
                 height,
                 shelf_bar(notch_shelf, position, bar_height),
             );
-            // The sidebar covers its part of the shelf, so the bar starts
-            // or ends where the sidebar does.
-            notch_shelf = notch_shelf.map(|shelf| {
-                let left = shelf.left().max(area.left());
-                let right = shelf.right().min(area.right()).max(left);
-                Bounds::new(
-                    point(left, shelf.origin.y),
-                    size(right - left, shelf.size.height),
-                )
-            });
         }
         let mut layout = Self::partition(
             area,

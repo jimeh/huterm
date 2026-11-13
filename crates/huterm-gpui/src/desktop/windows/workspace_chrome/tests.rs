@@ -1,10 +1,10 @@
 use gpui::{Bounds, point, size};
-use huterm_config::{SidebarPosition, TabPosition};
+use huterm_config::{SidebarPosition, TabPosition, TabsConfig};
 
 use super::super::button_layout::ButtonLayout;
 use super::super::{
     ChromeLayout, CornerSlot, LayoutInputs, TITLE_ROW_LEAD,
-    TRAFFIC_LIGHT_INSET, WindowFrame, content_inside,
+    TRAFFIC_LIGHT_INSET, WindowFrame, content_inside, shelf_min_width,
 };
 use super::*;
 
@@ -357,6 +357,7 @@ fn layout_inputs(
         sidebar_width: px(180.0),
         safe_area: gpui::Edges::default(),
         notch_shelf: None,
+        shelf_min_width: shelf_min_width(TabsConfig::default()),
         frame: WindowFrame::default(),
         workspace,
         corner: None,
@@ -417,6 +418,9 @@ fn a_hidden_sidebar_without_a_corner_slot_reproduces_the_layout_before_it() {
                                         sidebar_width: px(220.0),
                                         safe_area,
                                         notch_shelf,
+                                        shelf_min_width: shelf_min_width(
+                                            TabsConfig::default(),
+                                        ),
                                         frame,
                                         workspace,
                                         corner: None,
@@ -634,6 +638,41 @@ fn a_docked_sidebar_takes_its_part_of_a_notch_shelf() {
             "{position:?}"
         );
         assert_eq!(layout.shelf_line, px(0.0), "{position:?}");
+    }
+    // A sidebar that leaves less of its shelf than one tab and the new-tab
+    // control needs puts the bar back under the safe area.
+    let least = shelf_min_width(TabsConfig::default());
+    for edge in EDGES {
+        for rest in [least, least - px(1.0), px(0.0), px(-40.0)] {
+            let width = PANEL_WIDTH + rest;
+            let x = match edge {
+                Edge::Left => px(0.0),
+                Edge::Right => px(1800.0) - width,
+            };
+            let shelf = Bounds::new(point(x, px(0.0)), size(width, px(38.0)));
+            let layout = ChromeLayout::build_with(shelf_inputs(edge, shelf));
+            let band = layout.workspace.unwrap();
+            assert!(!overlap(band, layout.tabs), "{edge:?} {rest:?}");
+            if rest >= least {
+                assert_eq!(layout.tabs.size.width, least, "{edge:?}");
+                assert_eq!(layout.tabs.top(), px(4.0), "{edge:?}");
+                assert_eq!(layout.shelf_line, px(1.0), "{edge:?}");
+            } else {
+                assert_eq!(layout.tabs.top(), px(38.0), "{edge:?} {rest:?}");
+                assert_eq!(
+                    layout.tabs.size.width,
+                    px(1800.0) - PANEL_WIDTH,
+                    "{edge:?} {rest:?}"
+                );
+                assert_eq!(layout.workspace_row, px(38.0), "{edge:?} {rest:?}");
+                assert_eq!(layout.shelf_line, px(0.0), "{edge:?} {rest:?}");
+                assert_eq!(
+                    layout.terminal.top(),
+                    px(38.0 + 34.0),
+                    "{edge:?} {rest:?}"
+                );
+            }
+        }
     }
 }
 
