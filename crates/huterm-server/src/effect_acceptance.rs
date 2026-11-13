@@ -676,3 +676,57 @@ fn a_bad_permission_change_ends_the_connection_and_one_for_an_ended_viewer_is_dr
     world.settle(SETTLE);
     assert_eq!(texts(&world, ended), ["still"]);
 }
+
+#[test]
+fn small_effects_back_to_back_let_a_started_update_finish() {
+    let size = GridSize {
+        columns: 200,
+        rows: 40,
+    };
+    let mut world = world(1, size);
+    let peer = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want_effects(peer, 0, true);
+    world.settle(SETTLE);
+    // Batches of 512 bytes, one a millisecond: a small effect's frame
+    // leads each, and an update's next frame no longer fits beside it.
+    world.peers[peer].batch = Some(512);
+    world.peers[peer].write_rate = 512;
+    let terminal = world.terminals[0].clone();
+    let updated = |world: &World| {
+        world
+            .viewer_events(peer, 0)
+            .iter()
+            .filter(|event| {
+                matches!(event, huterm_client::ViewerEvent::Updated { .. })
+            })
+            .count()
+    };
+    // Small writes arrive one a millisecond, and keep the effect lane
+    // busy before the screen changes and all the while after.
+    let mut n = 0;
+    let mut write = |world: &mut World| {
+        n += 1;
+        let _ = terminal.clipboard(&format!("small {n}"));
+        world.step();
+    };
+    for _ in 0..100 {
+        write(&mut world);
+    }
+    let effects_before = world.effects(peer).len();
+    assert!(effects_before > 0, "the writes are flowing");
+    let before = updated(&world);
+    for row in 0..40 {
+        terminal.write_line(&varied(row * 13));
+    }
+    let mut steps = 0;
+    while updated(&world) == before {
+        steps += 1;
+        assert!(steps < 5_000, "the update never applied");
+        write(&mut world);
+    }
+    assert!(
+        world.effects(peer).len() > effects_before,
+        "no write went out while the update was sent"
+    );
+}

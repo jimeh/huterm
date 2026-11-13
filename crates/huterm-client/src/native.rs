@@ -440,8 +440,8 @@ impl ClientHandle {
     /// A receiver of everything the session reports besides results,
     /// waiter resolutions, and host effects: hierarchy changes, viewer
     /// events, and connection state, from now on. Host effects come from
-    /// [`Self::next_effect`]. Drain it, as core's subscription; dropping it stops the
-    /// forwarding, and a later call replaces it.
+    /// [`Self::next_effect`]. Drain it, as core's subscription; dropping it
+    /// stops the forwarding, and a later call replaces it.
     ///
     /// It holds at most [`EVENT_CHANNEL_CAPACITY`] events. The client never
     /// waits for the consumer: while the channel is full it drops events,

@@ -91,6 +91,13 @@ impl Effects {
         let mut backlog = self.lock();
         let delivery = backlog.queue.pop_front()?;
         backlog.bytes -= payload_bytes(&delivery);
+        let more = !backlog.queue.is_empty();
+        drop(backlog);
+        // The wake holds one signal for any number of pushes, so a caller
+        // that leaves effects behind passes it on to the next waiting one.
+        if more {
+            let _ = self.wake.try_send(());
+        }
         Some(delivery)
     }
 
@@ -172,12 +179,46 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_caller_wakes_for_an_effect_and_ends_after_close() {
+    fn waiting_callers_each_get_an_effect_and_end_after_close() {
+        use std::pin::pin;
+
+        use futures_lite::future::{block_on, poll_once};
+
         let effects = Effects::new();
-        effects.push(write("first".into()));
+        let mut first = pin!(effects.next());
+        let mut second = pin!(effects.next());
+        // Both wait on an empty queue before two effects arrive at once.
+        assert!(block_on(poll_once(first.as_mut())).is_none());
+        assert!(block_on(poll_once(second.as_mut())).is_none());
+        effects.push(write("one".into()));
+        effects.push(write("two".into()));
+        let one = block_on(first).unwrap();
+        // The second caller is ready without another push.
+        let two = block_on(poll_once(second.as_mut()))
+            .expect("the second caller was left waiting")
+            .unwrap();
+        let mut got = vec![one, two];
+        got.sort_by_key(|delivery| match &delivery.payload {
+            EffectPayload::ClipboardWrite { text, .. } => text.clone(),
+            EffectPayload::Notification { body, .. } => body.clone(),
+        });
+        assert_eq!(texts_of(got), ["one", "two"]);
+
+        let mut waiting = pin!(effects.next());
+        assert!(block_on(poll_once(waiting.as_mut())).is_none());
         effects.close();
-        let first = futures_lite::future::block_on(effects.next());
-        assert!(first.is_some());
-        assert!(futures_lite::future::block_on(effects.next()).is_none());
+        assert!(block_on(waiting).is_none());
+    }
+
+    fn texts_of(deliveries: Vec<EffectDelivery>) -> Vec<String> {
+        deliveries
+            .into_iter()
+            .map(|delivery| match delivery.payload {
+                EffectPayload::ClipboardWrite { text, .. } => text,
+                payload @ EffectPayload::Notification { .. } => {
+                    panic!("a clipboard write, not {payload:?}")
+                }
+            })
+            .collect()
     }
 }

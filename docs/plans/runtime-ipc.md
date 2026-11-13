@@ -2595,11 +2595,16 @@ The effect lane:
   contention an effect has about half the link and may miss its deadline,
   which drops it, rather than idling another stream.
 - **Effects yield to each other.** After an effect's last frame or abort is
-  cut, every lane with work cuts a frame before the next effect starts.
-  Without it, effects back to back over a reader that took a byte at a
-  time kept stream 0 idle past its deadline (`stalled-readers` seed 2), and
-  a program writing large clipboard text back to back could freeze a
-  client's updates on a healthy link.
+  cut, every lane holding a partly sent message cuts a frame before the
+  next effect starts. Without it, effects back to back over a reader that
+  took a byte at a time kept stream 0 idle past its deadline
+  (`stalled-readers` seed 2), and small effects back to back keep a started
+  update from finishing, because alternation applies only to an effect's
+  later frames. Only started messages count, at most one per ordinary
+  stream: review found that waiting for every lane with work, up to 256
+  viewers, could spend the next effect's delivery deadline on a link near
+  the minimum throughput, now that the effect's deadline runs while it
+  waits at the head of the lane.
 - **Bounds.** The effect slot holds one frame outside `OUTBOUND_BUDGET`, so
   `retained_bound` gains one frame and its length prefix.
 - **What "the frame already in the writer" means.** The native adapter
@@ -2613,7 +2618,9 @@ The effect lane:
   from a queue of their own, bounded at 32 effects and 128 MiB as one
   desktop's budget is; a caller that falls further behind loses the oldest
   effects, so its clipboard still ends with the last write, and
-  `effects_dropped` counts them.
+  `effects_dropped` counts them. Its wake holds one signal for any number
+  of pushes, so a caller that leaves effects behind passes the signal on,
+  or a second waiting caller would miss an effect (found in review).
 
 Coverage:
 
@@ -2630,7 +2637,8 @@ Coverage:
   effect queued behind a trickled effect frame, which expires on its own
   deadline; a stale permission generation and a change for a viewer without
   host effects, which end the connection, and a change for an ended
-  viewer, which is dropped; and the two starvation rules. Each of the
+  viewer, which is dropped; and the two starvation rules, one for small
+  effects back to back and one for a streaming effect. Each of the
   ordering, announcement, yield, and alternation tests failed with its rule
   switched off, as did the queued-effect deadline test without its fix.
 - A real-PTY test (`effect_tests.rs`) sends OSC 52 through `cat` from an
@@ -2645,8 +2653,8 @@ Coverage:
   per viewer; that on a healthy link every effect arrives; and that no
   terminal holds a reservation at the end.
   `mise run faults:ipc -- 300` ran 300 seeds per scenario and the swarm:
-  of about 96,100 writes admitted, 39,800 arrived, every one of the 26,600
-  on healthy links among them; 9,000 were dropped at their deadlines,
+  of about 95,600 writes admitted, 39,800 arrived, every one of the 26,600
+  on healthy links among them; 8,900 were dropped at their deadlines,
   4,400 were discarded by clients that had changed the permission
   meanwhile, and the rest went with viewers and connections the faults
   ended. Its first run

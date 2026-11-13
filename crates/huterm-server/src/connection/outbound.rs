@@ -30,10 +30,11 @@
 //! work, and every batch otherwise. The text streams from the effect
 //! itself, which the queue drops, releasing its reservations, once its last
 //! frame is cut or the effect is aborted. Between effects, the slot yields:
-//! the next effect starts only once every lane that had something to send
-//! when the last one ended has cut a frame, so effects back to back never
-//! starve updates or leave an ordinary stream idle; one effect holds the
-//! link at most until its completion deadline.
+//! the next effect starts only once every lane that held a partly sent
+//! message when the last one ended has cut a frame, at most one per
+//! ordinary stream, so effects back to back never leave a started message
+//! waiting; one effect holds the link at most until its completion
+//! deadline.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::IoSlice;
@@ -496,8 +497,8 @@ pub(crate) struct Outbound {
     effect_abort: Option<u32>,
     /// The bytes of the effect frame with the writer, outside the budget.
     effect_handed: usize,
-    /// Lanes that had something to send when the last effect ended, and
-    /// have not cut a frame since; the next effect waits for them.
+    /// Lanes that held a partly sent message when the last effect ended,
+    /// and have not cut a frame since; the next effect waits for them.
     effect_owed: Vec<Lane>,
     /// The last batch opened with one of a streaming effect's later frames,
     /// so the next opens with the lanes'.
@@ -598,13 +599,18 @@ impl Outbound {
         });
     }
 
-    /// Ends the effect's turn: every lane with something to send cuts a
-    /// frame before the next effect starts.
+    /// Ends the effect's turn: every lane holding a partly sent message
+    /// cuts a frame before the next effect starts. Only started messages
+    /// count, which hold at most the ordinary streams, so the wait stays a
+    /// few frames even with hundreds of viewers.
     fn yield_effect_turn(&mut self) {
         self.effect_owed = [Lane::Control, Lane::Large, Lane::Hierarchy]
             .into_iter()
             .chain(self.viewers.keys().copied().map(Lane::Viewer))
-            .filter(|lane| self.queue(*lane).is_some_and(LaneQueue::has_work))
+            .filter(|lane| {
+                self.queue(*lane)
+                    .is_some_and(|queue| queue.current.is_some())
+            })
             .collect();
     }
 
