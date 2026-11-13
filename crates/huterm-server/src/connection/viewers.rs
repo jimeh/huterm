@@ -561,14 +561,7 @@ impl Connection {
                 return;
             }
             Request::Snapshot { scroll, point, .. } => {
-                if let Some(viewer) = self.viewers.get_mut(&viewer_id) {
-                    viewer.requests.push_back(SnapshotRequest {
-                        id,
-                        scroll,
-                        point,
-                    });
-                }
-                self.pump_viewer(viewer_id);
+                self.queue_snapshot(id, viewer_id, scroll, point);
                 return;
             }
             Request::Selection {
@@ -632,6 +625,34 @@ impl Connection {
                 request: Some(id),
             },
         );
+    }
+
+    /// Queues a client's snapshot request behind the viewer's snapshot in
+    /// flight, so its update follows every earlier one.
+    fn queue_snapshot(
+        &mut self,
+        id: RequestId,
+        viewer: ViewerId,
+        scroll: Option<(ScrollCommand, u64)>,
+        point: Option<MousePosition>,
+    ) {
+        // Clients number scrolls from 1; core takes 0 as a scroll already
+        // superseded, which would never move the viewport.
+        if scroll.is_some_and(|(_, number)| number == 0) {
+            self.answer(
+                id,
+                Err(WireError::new(
+                    ErrorCode::InvalidArgument,
+                    "scroll numbers start at 1",
+                )),
+            );
+            return;
+        }
+        if let Some(live) = self.viewers.get_mut(&viewer) {
+            live.requests
+                .push_back(SnapshotRequest { id, scroll, point });
+        }
+        self.pump_viewer(viewer);
     }
 
     fn viewer_job(&mut self, id: ViewerId, task: Task, op: ViewerOp) {

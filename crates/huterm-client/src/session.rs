@@ -39,7 +39,7 @@ use huterm_protocol::{
 };
 
 pub use self::viewers::ViewerEvent;
-use self::viewers::{Carried, ClientViewer, Subscribing};
+use self::viewers::{Carried, ClientViewer, EndedViewers, Subscribing};
 use huterm_wire::caps::{Direction, MessageCaps, MessageKind};
 use huterm_wire::codec::{EncodeError, IdScope, Reader, Writer};
 use huterm_wire::error::{ErrorCode, WireError};
@@ -318,6 +318,8 @@ pub struct ClientSession {
     subscribing: HashMap<CallId, Subscribing>,
     /// Status baselines and final views kept for the current incarnation.
     carried: Carried,
+    /// Viewers that ended on the current connection.
+    ended: EndedViewers,
 }
 
 impl ClientSession {
@@ -362,6 +364,7 @@ impl ClientSession {
             viewers: BTreeMap::new(),
             subscribing: HashMap::new(),
             carried: Carried::default(),
+            ended: EndedViewers::default(),
         }
     }
 
@@ -526,13 +529,8 @@ impl ClientSession {
             // In order with the viewer's input and focus.
             self.queue.retain(|queued| *queued != call);
             if !self.queue_on_viewer(viewer, call) {
-                self.finish(
-                    call,
-                    Err(WireError::new(
-                        ErrorCode::StaleTarget,
-                        "no such viewer",
-                    )),
-                );
+                let error = self.unknown_viewer(viewer);
+                self.finish(call, Err(error));
             }
             self.flush_queue();
             self.refresh_progress(now);

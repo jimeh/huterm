@@ -139,6 +139,36 @@ pub(super) struct Subscribing {
     visible: bool,
 }
 
+/// The most ended viewers a session remembers on one connection, so a
+/// request naming one answers why it ended instead of `StaleTarget`.
+const MAX_ENDED_VIEWERS: usize = 256;
+
+/// Viewers that ended on the current connection, oldest first, with why.
+#[derive(Debug, Default)]
+pub(super) struct EndedViewers(VecDeque<(ViewerId, ErrorCode)>);
+
+impl EndedViewers {
+    fn insert(&mut self, viewer: ViewerId, code: ErrorCode) {
+        if self.0.len() >= MAX_ENDED_VIEWERS {
+            self.0.pop_front();
+        }
+        self.0.push_back((viewer, code));
+    }
+
+    /// Why `viewer` ended, if it did on this connection.
+    pub(super) fn code(&self, viewer: ViewerId) -> Option<ErrorCode> {
+        self.0
+            .iter()
+            .rev()
+            .find(|(ended, _)| *ended == viewer)
+            .map(|(_, code)| *code)
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// What the session keeps per incarnation.
 #[derive(Debug, Default)]
 pub(super) struct Carried {
@@ -216,10 +246,7 @@ impl ClientSession {
         geometry: Option<u64>,
     ) -> Result<u64, WireError> {
         let Some(entry) = self.viewers.get_mut(&viewer) else {
-            return Err(WireError::new(
-                ErrorCode::StaleTarget,
-                "no such viewer",
-            ));
+            return Err(self.unknown_viewer(viewer));
         };
         entry.next_input += 1;
         let seq = entry.next_input;
@@ -438,6 +465,20 @@ impl ClientSession {
         }
     }
 
+    /// The error a call naming `viewer`, which the session does not hold,
+    /// answers: why it ended on this connection, or `StaleTarget`.
+    pub(super) fn unknown_viewer(&self, viewer: ViewerId) -> WireError {
+        match self.ended.code(viewer) {
+            Some(ErrorCode::Stopped) => {
+                WireError::new(ErrorCode::Stopped, "the terminal stopped")
+            }
+            Some(ErrorCode::Revoked) => {
+                WireError::new(ErrorCode::Revoked, "the viewer was revoked")
+            }
+            _ => WireError::new(ErrorCode::StaleTarget, "no such viewer"),
+        }
+    }
+
     /// Queues a call that names `viewer` behind the viewer's waiting
     /// messages, or reports that it names no live viewer.
     pub(super) fn queue_on_viewer(
@@ -595,6 +636,7 @@ impl ClientSession {
                     .baselines
                     .insert(entry.terminal, entry.baseline);
                 self.end_pending(entry.pending, ErrorCode::Stopped);
+                self.ended.insert(stopped.viewer, ErrorCode::Stopped);
                 self.events.push_back(ClientEvent::Viewer(
                     ViewerEvent::Stopped {
                         viewer: stopped.viewer,
@@ -610,6 +652,7 @@ impl ClientSession {
                     .baselines
                     .insert(entry.terminal, entry.baseline);
                 self.end_pending(entry.pending, ErrorCode::Revoked);
+                self.ended.insert(revoked.viewer, ErrorCode::Revoked);
                 self.events.push_back(ClientEvent::Viewer(
                     ViewerEvent::Revoked {
                         viewer: revoked.viewer,
@@ -688,6 +731,7 @@ impl ClientSession {
             }
             Err(ViewError::ContractFault) => {
                 self.viewers.remove(&viewer);
+                self.ended.insert(viewer, ErrorCode::StaleTarget);
                 self.events.push_back(ClientEvent::Viewer(
                     ViewerEvent::Fault { viewer },
                 ));
@@ -706,6 +750,7 @@ impl ClientSession {
     /// Keeps every live viewer's status baseline for a reconnect to the
     /// same incarnation, as the connection ends.
     pub(super) fn carry_viewers(&mut self) {
+        self.ended.clear();
         for (_, entry) in std::mem::take(&mut self.viewers) {
             self.carried
                 .baselines

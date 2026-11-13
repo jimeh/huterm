@@ -128,18 +128,26 @@ pub struct SubscribeOptions {
     pub spawned: bool,
 }
 
-/// What one input counts against its viewer's input budget: its text's
-/// bytes, a paste's included, and at least one byte. Client and server count
-/// the same way, so the client's unacknowledged input and the server's
-/// staged input agree.
+/// What a key or mouse report counts against its viewer's input window,
+/// about what one occupies in memory, so a flood of them cannot stage far
+/// more memory than the window suggests.
+pub const INPUT_EVENT_COST: usize = 32;
+
+/// What one input counts against its viewer's input window: its text's
+/// bytes, a paste's included, a character chord's text and layout text, or
+/// [`INPUT_EVENT_COST`] for a key or mouse report, and at least one byte.
+/// Client and server count the same way on every target, so the client's
+/// unacknowledged input and the server's staged input agree.
 #[must_use]
 pub fn input_cost(input: &TerminalInput) -> usize {
     let bytes = match input {
         TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
-        TerminalInput::Character { text, key, .. } => {
-            text.len() + key.as_ref().map_or(0, |key| key.text.len())
+        TerminalInput::Character { text, meta, key } => {
+            text.len()
+                + usize::from(*meta && !text.is_empty())
+                + key.as_ref().map_or(0, |key| key.text.len())
         }
-        _ => 0,
+        _ => INPUT_EVENT_COST,
     };
     bytes.max(1)
 }
