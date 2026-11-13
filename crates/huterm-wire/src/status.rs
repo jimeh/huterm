@@ -110,13 +110,20 @@ fn write_time(w: &mut Writer, time: SystemTime) -> Result<(), EncodeError> {
             after.subsec_nanos(),
         ),
         Err(before) => {
+            // Subtract from zero, or from minus one past a fraction, so the
+            // earliest time a decoder accepts, `i64::MIN` seconds, encodes
+            // too.
             let before = before.duration();
-            let seconds =
-                i64::try_from(before.as_secs()).map_err(|_| out_of_range())?;
-            match before.subsec_nanos() {
-                0 => (-seconds, 0),
-                nanos => (-seconds - 1, NANOS_PER_SECOND - nanos),
-            }
+            let (start, nanos) = match before.subsec_nanos() {
+                0 => (0_i64, 0),
+                nanos => (-1, NANOS_PER_SECOND - nanos),
+            };
+            (
+                start
+                    .checked_sub_unsigned(before.as_secs())
+                    .ok_or_else(out_of_range)?,
+                nanos,
+            )
         }
     };
     w.i64(seconds);
@@ -216,8 +223,12 @@ fn read_command(r: &mut Reader<'_>) -> Result<CommandRecord, DecodeError> {
     })
 }
 
-fn write_percent(w: &mut Writer, percent: u8) {
+fn write_percent(w: &mut Writer, percent: u8) -> Result<(), EncodeError> {
+    if percent > 100 {
+        return Err(EncodeError::Invalid("progress percentage"));
+    }
     w.fixed(&[percent]);
+    Ok(())
 }
 
 fn read_percent(r: &mut Reader<'_>) -> Result<u8, DecodeError> {
@@ -228,30 +239,27 @@ fn read_percent(r: &mut Reader<'_>) -> Result<u8, DecodeError> {
     Ok(percent)
 }
 
-fn write_progress(w: &mut Writer, progress: Option<TerminalProgress>) {
+fn write_progress(
+    w: &mut Writer,
+    progress: Option<TerminalProgress>,
+) -> Result<(), EncodeError> {
     match progress {
         None => w.tag(0),
         Some(TerminalProgress::Determinate(percent)) => {
             w.tag(1);
-            write_percent(w, percent);
+            write_percent(w, percent)?;
         }
         Some(TerminalProgress::Indeterminate) => w.tag(2),
         Some(TerminalProgress::Paused(percent)) => {
             w.tag(3);
-            // An option tag never fails to encode.
-            let _ = w.option(percent, |w, percent| {
-                write_percent(w, percent);
-                Ok(())
-            });
+            w.option(percent, write_percent)?;
         }
         Some(TerminalProgress::Error(percent)) => {
             w.tag(4);
-            let _ = w.option(percent, |w, percent| {
-                write_percent(w, percent);
-                Ok(())
-            });
+            w.option(percent, write_percent)?;
         }
     }
+    Ok(())
 }
 
 fn read_progress(
@@ -274,16 +282,34 @@ fn read_progress(
     })
 }
 
+/// Whether `sequences` strictly increase, as the protocol's failure and
+/// command record lookups assume.
+fn increasing(sequences: impl Iterator<Item = u64>) -> bool {
+    let mut previous = None;
+    sequences.into_iter().all(|sequence| {
+        let ordered = previous.is_none_or(|previous| previous < sequence);
+        previous = Some(sequence);
+        ordered
+    })
+}
+
 /// Encodes a terminal status's record.
 ///
 /// # Errors
 /// Refuses a text past [`MAX_STATUS_TEXT_BYTES`], more failures or command
 /// records than their logs hold, or a time beyond `i64` seconds, with
-/// [`EncodeError::LimitExceeded`].
+/// [`EncodeError::LimitExceeded`]; and failures or command records out of
+/// sequence order, or a percentage over 100, with [`EncodeError::Invalid`],
+/// as a decoder would reject them.
 pub fn encode_status(
     w: &mut Writer,
     status: &TerminalStatus,
 ) -> Result<(), EncodeError> {
+    if !increasing(status.failures.iter().map(|failure| failure.sequence))
+        || !increasing(status.commands.iter().map(|record| record.sequence))
+    {
+        return Err(EncodeError::Invalid("status sequence order"));
+    }
     let TerminalStatus {
         revision,
         title,
@@ -333,8 +359,7 @@ pub fn encode_status(
             "command records",
             write_command,
         )?;
-        write_progress(w, *progress);
-        Ok(())
+        write_progress(w, *progress)
     })
 }
 
@@ -377,13 +402,8 @@ pub fn decode_status(
         })?;
         let commands: Vec<CommandRecord> =
             r.seq(COMMAND_RECORD_CAPACITY, "command records", read_command)?;
-        let increasing = |sequences: &[u64]| {
-            sequences.windows(2).all(|pair| pair[0] < pair[1])
-        };
-        if !increasing(&failures.iter().map(|f| f.sequence).collect::<Vec<_>>())
-            || !increasing(
-                &commands.iter().map(|c| c.sequence).collect::<Vec<_>>(),
-            )
+        if !increasing(failures.iter().map(|failure| failure.sequence))
+            || !increasing(commands.iter().map(|record| record.sequence))
         {
             return Err(DecodeError::Invalid("status sequence order"));
         }

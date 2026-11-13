@@ -27,8 +27,9 @@ fn directory() -> TerminalDirectory {
 
 /// Every text at its limit, every log full, every number at its widest.
 fn worst_status() -> TerminalStatus {
-    let far = SystemTime::UNIX_EPOCH
-        - Duration::new(i64::MAX as u64 / 2, 999_999_999);
+    // The earliest time a decoder accepts, whose seconds take the widest
+    // zigzag varint.
+    let far = SystemTime::UNIX_EPOCH - Duration::from_secs(1 << 63);
     TerminalStatus {
         revision: u64::MAX,
         title: longest(),
@@ -96,26 +97,70 @@ fn status_bytes(status: &TerminalStatus) -> Vec<u8> {
     w.into_bytes()
 }
 
+/// A status's record bytes with `edit` applied to them, so a decoder sees
+/// what the encoder refuses to write.
+fn edited_bytes(
+    status: &TerminalStatus,
+    edit: impl FnOnce(&mut Vec<u8>),
+) -> Vec<u8> {
+    let mut bytes = status_bytes(status);
+    edit(&mut bytes);
+    bytes
+}
+
+/// The position of the only occurrence of `needle` in `bytes`.
+fn find(bytes: &[u8], needle: &[u8]) -> usize {
+    let mut found = bytes
+        .windows(needle.len())
+        .enumerate()
+        .filter(|(_, window)| *window == needle)
+        .map(|(index, _)| index);
+    let index = found.next().expect("the needle occurs");
+    assert_eq!(found.next(), None, "the needle occurs once");
+    index
+}
+
 #[test]
 fn out_of_order_logs_and_out_of_range_values_are_rejected() {
+    // The encoder refuses each locally.
     let mut unordered = vectors::sample_status();
     unordered.failures.reverse();
-    assert_eq!(
-        decode_status(&mut Reader::new(&status_bytes(&unordered))),
-        Err(DecodeError::Invalid("status sequence order"))
-    );
+    let refused = |status: &TerminalStatus, what| {
+        assert_eq!(
+            encode_status(&mut Writer::new(), status),
+            Err(EncodeError::Invalid(what))
+        );
+    };
+    refused(&unordered, "status sequence order");
     let mut repeated = vectors::sample_status();
     let mut commands = repeated.commands.to_vec();
     commands[1].sequence = commands[0].sequence;
     repeated.commands = Arc::from(commands);
-    assert_eq!(
-        decode_status(&mut Reader::new(&status_bytes(&repeated))),
-        Err(DecodeError::Invalid("status sequence order"))
-    );
+    refused(&repeated, "status sequence order");
     let mut progress = vectors::sample_status();
     progress.progress = Some(TerminalProgress::Determinate(101));
+    refused(&progress, "progress percentage");
+    progress.progress = Some(TerminalProgress::Paused(Some(101)));
+    refused(&progress, "progress percentage");
+
+    // The decoder rejects each in bytes. The sample's failures are numbered
+    // 1 ("read") and 3 ("write"), and its progress is paused at 40.
+    let sample = vectors::sample_status();
+    let swapped = edited_bytes(&sample, |bytes| {
+        let second = find(bytes, b"\x03\x05write");
+        bytes[second] = 1;
+    });
     assert_eq!(
-        decode_status(&mut Reader::new(&status_bytes(&progress))),
+        decode_status(&mut Reader::new(&swapped)),
+        Err(DecodeError::Invalid("status sequence order"))
+    );
+    let over = edited_bytes(&sample, |bytes| {
+        let last = bytes.len() - 1;
+        assert_eq!(bytes[last], 40);
+        bytes[last] = 101;
+    });
+    assert_eq!(
+        decode_status(&mut Reader::new(&over)),
         Err(DecodeError::Invalid("progress percentage"))
     );
     // A nanosecond count of a whole second or more.
@@ -135,6 +180,10 @@ fn times_before_and_after_the_epoch_round_trip() {
         SystemTime::UNIX_EPOCH + Duration::new(5, 1),
         SystemTime::UNIX_EPOCH - Duration::new(5, 0),
         SystemTime::UNIX_EPOCH - Duration::new(5, 1),
+        // The earliest: `i64::MIN` seconds, which negating a converted
+        // `i64` cannot produce.
+        SystemTime::UNIX_EPOCH - Duration::from_secs(1 << 63),
+        SystemTime::UNIX_EPOCH - Duration::new((1 << 63) - 1, 1),
     ] {
         let mut w = Writer::new();
         write_time(&mut w, time).unwrap();

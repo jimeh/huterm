@@ -1615,11 +1615,12 @@ within the contract, or a narrow correction to its text.
   extraction helper's cut directly; the wire tests encode rows at the limit.
 - **The grid opens an update's record.** A receiver needs the grid to know
   an update's cap, so `columns` and `rows` are the record's first fields.
-  The reassembler reads them with the kind and length before it buffers
-  more, and the decoder checks the whole message against
-  `MessageCaps::update_cap` for that grid. The kind's own cap is the largest
-  any grid allows, about 1.1 GiB at `MAX_GRID_CELLS`, which only a worst case
-  near the cell cap approaches.
+  The reassembler reads them with the kind and length from the bytes so far
+  and the arriving frame's first bytes, and checks the cap before it buffers
+  that frame, for every kind; it used to append the frame first. The decoder
+  checks the whole message against `MessageCaps::update_cap` for that grid.
+  The kind's own cap is the largest any grid allows, about 1.1 GiB at
+  `MAX_GRID_CELLS`, which only a worst case near the cell cap approaches.
 - **One clamp for every grid.** `GridSize::clamped` applies
   `MAX_GRID_CELLS` as well as its one-cell minimum, shrinking both
   dimensions by one factor so the aspect stays. Geometry reports, initial
@@ -1651,7 +1652,17 @@ within the contract, or a narrow correction to its text.
   duplicated or late complete snapshot never rolls the view back. A delta
   applies only when it names exactly the last applied update. A delta whose
   digest differs is still installed, as the best view the client has, while
-  the client waits for the snapshot that answers its one `ResyncViewer`.
+  the client waits for the snapshot that answers its one `ResyncViewer`. A
+  complete snapshot without a digest is a protocol violation, so a client can
+  always tell a contract fault, and the client computes a digest only for an
+  update that carries one.
+- **Encoders refuse what decoders reject.** `encode_update` and
+  `encode_status` repeat the decoders' structural checks: sequence numbers,
+  `Keep` indices, empty runs, style indices, the complete snapshot's digest,
+  log order, and progress percentages. A sender then refuses a malformed
+  value locally instead of ending the connection. Times encode down to the
+  earliest a decoder accepts, `i64::MIN` seconds, so every decoded status
+  re-encodes.
 - **Viewer messages.** Slice 2 adds the kinds `TerminalUpdate` 8,
   `ViewerStatus` 9, `Input` 10, `InputAck` 11, `Credit` 12, and
   `ResyncViewer` 13. `Paste` gains the `InputStamp` that `Input` carries,

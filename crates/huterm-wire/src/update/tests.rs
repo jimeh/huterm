@@ -404,15 +404,45 @@ fn uniform_update(columns: u16, text: &str) -> TerminalUpdate {
     encoder().next(&Arc::new(snapshot), false).unwrap()
 }
 
+/// An update's message bytes, written without the encoder's checks.
 fn update_bytes(update: &TerminalUpdate) -> Vec<u8> {
     let mut w = Writer::new();
     w.u64(MessageKind::TerminalUpdate.number());
-    encode_update(&mut w, vectors::scope(), update, STYLE_FLAGS).unwrap();
+    write_update(&mut w, vectors::scope(), update).unwrap();
     w.into_bytes()
 }
 
 fn decode(bytes: &[u8]) -> Result<Message, DecodeError> {
     decode_message(bytes, Direction::ServerToClient, vectors::context(0))
+}
+
+/// The decoder rejects `update` as `decoded`, and the encoder refuses it
+/// locally as `encoded`, so a sender never sends what its peer rejects.
+fn rejected(
+    update: &TerminalUpdate,
+    decoded: &'static str,
+    encoded: &'static str,
+) {
+    assert_eq!(
+        decode(&update_bytes(update)),
+        Err(DecodeError::Invalid(decoded))
+    );
+    assert_eq!(
+        encode_update(
+            &mut Writer::new(),
+            vectors::scope(),
+            update,
+            STYLE_FLAGS
+        ),
+        Err(EncodeError::Invalid(encoded))
+    );
+}
+
+fn first_row(update: &mut TerminalUpdate) -> &mut FullRow {
+    match &mut update.rows[0] {
+        RowOp::Full(row) => row,
+        RowOp::Keep(_) => unreachable!("a complete snapshot's rows are full"),
+    }
 }
 
 #[test]
@@ -421,52 +451,101 @@ fn malformed_rows_and_references_are_rejected() {
     // A kept row in a complete snapshot, or past the grid in a delta.
     let mut keep = complete.clone();
     keep.rows[0] = RowOp::Keep(0);
-    assert_eq!(
-        decode(&update_bytes(&keep)),
-        Err(DecodeError::Invalid("keep index"))
-    );
+    rejected(&keep, "keep index", "keep index");
     keep.seq = 2;
     keep.baseline = Some(1);
     keep.rows[0] = RowOp::Keep(1);
-    assert_eq!(
-        decode(&update_bytes(&keep)),
-        Err(DecodeError::Invalid("keep index"))
-    );
+    rejected(&keep, "keep index", "keep index");
     // A style index past the table.
     let mut style = complete.clone();
-    let RowOp::Full(row) = &mut style.rows[0] else {
-        unreachable!("a complete snapshot's rows are full");
-    };
-    row.runs[0].style = 1;
-    assert_eq!(
-        decode(&update_bytes(&style)),
-        Err(DecodeError::Invalid("style index"))
-    );
+    first_row(&mut style).runs[0].style = 1;
+    rejected(&style, "style index", "run");
     // Runs that do not fill the row: the header claims four columns.
     let mut short = update_bytes(&complete);
     assert_eq!(short[2], 3, "the record opens with the column count");
     short[2] = 4;
     assert_eq!(decode(&short), Err(DecodeError::Invalid("row width")));
     // An empty run, which would let a peer send endless runs.
-    let mut empty = complete;
-    let RowOp::Full(row) = &mut empty.rows[0] else {
-        unreachable!("a complete snapshot's rows are full");
-    };
-    row.runs.insert(
+    let mut empty = complete.clone();
+    first_row(&mut empty).runs.insert(
         0,
         Run {
             style: 0,
             texts: Vec::new(),
         },
     );
-    let mut w = Writer::new();
-    w.u64(MessageKind::TerminalUpdate.number());
-    // The encoder checks only the row's total width.
-    encode_update(&mut w, vectors::scope(), &empty, STYLE_FLAGS).unwrap();
-    assert_eq!(
-        decode(&w.into_bytes()),
-        Err(DecodeError::Invalid("empty run"))
+    rejected(&empty, "empty run", "run");
+    // A complete snapshot always carries its digest, so a client can always
+    // tell a contract fault.
+    let mut digestless = complete;
+    digestless.digest = None;
+    rejected(
+        &digestless,
+        "complete snapshot digest",
+        "complete snapshot digest",
     );
+    assert_eq!(
+        ViewerView::<Arc<TerminalRow>>::new(0).apply(&digestless),
+        Err(ViewError::Invalid("complete snapshot digest"))
+    );
+}
+
+#[test]
+fn a_delta_that_changes_the_grid_is_rejected() {
+    let snapshot = screen(&["a", "b"], 2);
+    let mut server = encoder();
+    let mut client: ViewerView = ViewerView::new(0);
+    applied(&mut client, &server.next(&snapshot, false).unwrap());
+    let mut delta = wire(&server.next(&snapshot, true).unwrap());
+    // A wider grid with the same row count, which only a complete snapshot
+    // may introduce.
+    delta.metadata.size.columns = 3;
+    delta.rows = vec![RowOp::Keep(0), RowOp::Keep(1)];
+    assert_eq!(
+        client.apply(&delta),
+        Err(ViewError::Invalid("delta grid size"))
+    );
+}
+
+/// Counts the cells digests read, to show when a client computes one.
+#[derive(Clone)]
+struct Counted(Arc<TerminalRow>);
+
+thread_local! {
+    static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl UpdateRow for Counted {
+    fn row(&self) -> &TerminalRow {
+        &self.0
+    }
+
+    fn flags(&self, column: usize, minor: u16) -> u64 {
+        READS.set(READS.get() + 1);
+        self.0.flags(column, minor)
+    }
+}
+
+impl ViewRow for Counted {
+    fn build(row: &FullRow, styles: &[StyleEntry]) -> Self {
+        Self(Arc::new(build_row(row, styles)))
+    }
+}
+
+#[test]
+fn a_client_computes_a_digest_only_for_an_update_that_carries_one() {
+    let snapshot = screen(&["ab", "cd"], 2);
+    let mut server = encoder();
+    let mut client: ViewerView<Counted> = ViewerView::new(0);
+    client
+        .apply(&wire(&server.next(&snapshot, false).unwrap()))
+        .unwrap();
+    assert_eq!(READS.get(), 4, "the complete snapshot's digest");
+    let moved = publish(&snapshot, |next| next.history_size += 1);
+    let delta = wire(&server.next(&moved, true).unwrap());
+    assert_eq!(delta.digest, None);
+    client.apply(&delta).unwrap();
+    assert_eq!(READS.get(), 4, "a delta without a digest reads no cell");
 }
 
 /// An update message whose header declares `columns` by `rows` and whose
@@ -521,21 +600,41 @@ fn a_grid_past_the_cell_cap_or_bytes_past_the_grids_cap_are_rejected() {
     let at_cap = padded_update(&update, padding - 1);
     assert!(at_cap.len() <= cap);
     assert_eq!(decode(&over), Err(DecodeError::TooLong { field: "update" }));
-    let mut receiver =
-        Reassembler::new(CAPS, Direction::ServerToClient, usize::MAX);
-    assert_eq!(
-        receiver.accept(
+    // The reassembler refuses the whole first frame before buffering any of
+    // it, and likewise when the header arrives split across frames.
+    for split in [over.len(), 3] {
+        let mut receiver =
+            Reassembler::new(CAPS, Direction::ServerToClient, usize::MAX);
+        let mut frames = [&over[..split], &over[split..]].into_iter();
+        let first = frames.next().unwrap();
+        let mut result = receiver.accept(
             crate::frame::Frame {
                 stream: 0,
                 end: FrameEnd::More,
-                payload: over[..8].to_vec(),
+                payload: first.to_vec(),
             },
-            Duration::ZERO
-        ),
-        Err(StreamError::OverCap {
-            kind: MessageKind::TerminalUpdate
-        })
-    );
+            Duration::ZERO,
+        );
+        if split < over.len() {
+            assert_eq!(result, Ok(None));
+            assert_eq!(receiver.buffered(), split);
+            result = receiver.accept(
+                crate::frame::Frame {
+                    stream: 0,
+                    end: FrameEnd::More,
+                    payload: frames.next().unwrap().to_vec(),
+                },
+                Duration::ZERO,
+            );
+        }
+        assert_eq!(
+            result,
+            Err(StreamError::OverCap {
+                kind: MessageKind::TerminalUpdate
+            })
+        );
+        assert!(receiver.buffered() <= 3, "{split}");
+    }
     // One byte less fits, and the decoder skips the padding.
     assert!(decode(&at_cap).is_ok());
 }

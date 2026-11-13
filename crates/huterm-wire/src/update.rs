@@ -792,6 +792,9 @@ impl<R: ViewRow> ViewerView<R> {
             return Ok(disposal(UpdateOutcome::Stale));
         }
         let baseline = match update.baseline {
+            None if update.digest.is_none() => {
+                return Err(ViewError::Invalid("complete snapshot digest"));
+            }
             None => None,
             Some(_) if self.awaiting_resync => {
                 return Ok(disposal(UpdateOutcome::Stale));
@@ -819,10 +822,13 @@ impl<R: ViewRow> ViewerView<R> {
                 RowOp::Full(row) => R::build(row, &update.styles),
             });
         }
-        let digest = view_digest(&update.metadata, &rows, self.minor);
+        // The digest is computed only where the update carries one, so
+        // steady state pays nothing for it.
+        let matches = update.digest.is_none_or(|expected| {
+            expected == view_digest(&update.metadata, &rows, self.minor)
+        });
         self.view = Some((update.metadata, rows));
         self.applied = update.seq;
-        let matches = update.digest.is_none_or(|expected| expected == digest);
         if update.baseline.is_none() {
             if !matches {
                 return Err(ViewError::ContractFault);
@@ -995,6 +1001,58 @@ pub fn encode_update(
     flags: u64,
 ) -> Result<(), EncodeError> {
     let TerminalUpdate {
+        seq,
+        baseline,
+        digest,
+        metadata,
+        styles,
+        rows,
+        ..
+    } = update;
+    let size = metadata.size;
+    if size.columns == 0 || size.rows == 0 || size.cells() > MAX_GRID_CELLS {
+        return Err(EncodeError::LimitExceeded { field: "grid size" });
+    }
+    if rows.len() != usize::from(size.rows) {
+        return Err(EncodeError::Invalid("row count"));
+    }
+    if styles.iter().any(|style| style.flags & !flags != 0) {
+        return Err(EncodeError::Unsupported);
+    }
+    // The decoder's structural checks, so a sender refuses locally what its
+    // peer would treat as a protocol violation.
+    if *seq == 0 || baseline.is_some_and(|baseline| baseline >= *seq) {
+        return Err(EncodeError::Invalid("update sequence"));
+    }
+    if baseline.is_none() && digest.is_none() {
+        return Err(EncodeError::Invalid("complete snapshot digest"));
+    }
+    for op in rows {
+        match op {
+            RowOp::Keep(index) if baseline.is_none() || *index >= size.rows => {
+                return Err(EncodeError::Invalid("keep index"));
+            }
+            RowOp::Full(row)
+                if row.runs.iter().any(|run| {
+                    run.texts.is_empty() || run.style as usize >= styles.len()
+                }) =>
+            {
+                return Err(EncodeError::Invalid("run"));
+            }
+            _ => {}
+        }
+    }
+    write_update(w, scope, update)
+}
+
+/// Writes an update's record without the structural checks, so tests can
+/// build the malformed records a decoder must reject.
+fn write_update(
+    w: &mut Writer,
+    scope: IdScope,
+    update: &TerminalUpdate,
+) -> Result<(), EncodeError> {
+    let TerminalUpdate {
         viewer,
         seq,
         baseline,
@@ -1016,15 +1074,6 @@ pub fn encode_update(
         cursor_color,
         default_background,
     } = metadata;
-    if size.columns == 0 || size.rows == 0 || size.cells() > MAX_GRID_CELLS {
-        return Err(EncodeError::LimitExceeded { field: "grid size" });
-    }
-    if rows.len() != usize::from(size.rows) {
-        return Err(EncodeError::Invalid("row count"));
-    }
-    if styles.iter().any(|style| style.flags & !flags != 0) {
-        return Err(EncodeError::Unsupported);
-    }
     w.record(|w| {
         w.u16(size.columns);
         w.u16(size.rows);
@@ -1167,6 +1216,9 @@ pub fn decode_update(
         let credited = r.bool()?;
         let digest =
             r.option("update digest", |r| Ok(u64::from_le_bytes(r.fixed()?)))?;
+        if baseline.is_none() && digest.is_none() {
+            return Err(DecodeError::Invalid("complete snapshot digest"));
+        }
         let generation = r.u64()?;
         let revision = r.u64()?;
         let geometry_revision = r.u64()?;

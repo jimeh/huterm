@@ -502,10 +502,13 @@ dependency rule.
   fails to compile until its wire form is decided. `HierarchyEvent` is
   `non_exhaustive`, so a new variant compiles but encodes as `Unsupported`:
   give it the next tag, an encoding, a decoder arm, and a golden vector.
+  `TerminalInput` and `TerminalKey` are `non_exhaustive` too; a new key also
+  needs an entry at the end of `viewer.rs`'s `KEYS`.
 - Decoders check every length and count against a field maximum before they
   allocate, count hierarchy items, refuse layouts past `MAX_LAYOUT_DEPTH`
   before recursing, and build values through the protocol's validating
-  constructors.
+  constructors. The update and status encoders repeat their decoders'
+  structural checks, so a sender refuses locally what its peer would reject.
 - A minor version only appends record fields, adds variants and message
   kinds, and adds codes. Senders always write appended fields and older
   decoders skip them, so an appended field must be safe to ignore and must

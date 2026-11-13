@@ -195,6 +195,17 @@ impl Reassembler {
         // A frame read while the clock is paused counts from the pause, so
         // resuming does not credit the paused span twice.
         inbound.last_frame = self.paused.unwrap_or(now);
+        if inbound.declared.is_none() {
+            // Read the header from what arrived so far and this frame's
+            // first bytes, so the cap is checked before the frame is
+            // buffered. An undeclared message holds fewer bytes than a
+            // header.
+            let mut header = inbound.bytes.clone();
+            header.extend_from_slice(
+                &frame.payload[..frame.payload.len().min(MAX_HEADER_BYTES)],
+            );
+            inbound.declared = declared(&header, self.caps, self.from)?;
+        }
         if let Some((_, total)) = inbound.declared
             && inbound.bytes.len() + frame.payload.len() > total
         {
@@ -204,14 +215,6 @@ impl Reassembler {
         let mut payload = frame.payload;
         inbound.bytes.append(&mut payload);
         self.buffered += received;
-        if inbound.declared.is_none() {
-            inbound.declared = declared(&inbound.bytes, self.caps, self.from)?;
-            if let Some((_, total)) = inbound.declared
-                && inbound.bytes.len() > total
-            {
-                return Err(StreamError::LengthMismatch(frame.stream));
-            }
-        }
         if frame.end == FrameEnd::More {
             return Ok(None);
         }
