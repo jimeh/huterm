@@ -3,7 +3,7 @@
 //! clock, so each case runs the same way every time.
 
 use huterm_client::ViewerEvent;
-use huterm_protocol::GridSize;
+use huterm_protocol::{GridSize, ViewerId};
 
 use crate::ServerConfig;
 use crate::model::ModelLimits;
@@ -402,14 +402,14 @@ fn a_refused_scroll_leaves_the_clients_numbers_in_core_unchanged() {
     let viewer = world.viewer(peer, 0).unwrap();
     let now = world.time();
     world.terminals[0]
-        .refuse_snapshots(Some(huterm_core::RuntimeError::NotPermitted));
+        .refuse_scrolls(Some(huterm_core::RuntimeError::NotPermitted));
     let refused = world.peers[peer].session.scroll(
         viewer,
         huterm_protocol::ScrollCommand::Relative(5),
         now,
     );
     world.settle(SETTLE);
-    world.terminals[0].refuse_snapshots(None);
+    world.terminals[0].refuse_scrolls(None);
     let applied = world.peers[peer].session.scroll(
         viewer,
         huterm_protocol::ScrollCommand::Relative(3),
@@ -520,4 +520,220 @@ fn a_scroll_during_a_multi_frame_update_arrives_after_it_and_both_apply() {
     )));
     assert_eq!(world.terminals[0].snapshot().viewport.bottom_offset, 10);
     assert!(world.shows_current(peer, 0));
+}
+
+/// The outcome `peer`'s log holds for `call`, if any.
+fn outcome_of(
+    world: &World,
+    peer: usize,
+    call: huterm_client::CallId,
+) -> Option<Result<huterm_wire::response::Success, huterm_wire::error::WireError>>
+{
+    world.peers[peer].log.iter().find_map(|event| match event {
+        huterm_client::ClientEvent::Result { call: c, outcome }
+            if *c == call =>
+        {
+            Some(outcome.clone())
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn a_live_viewer_hears_its_terminal_stop_after_everything_queued_before_it() {
+    let mut world = world(1);
+    // A narrow link keeps the viewer's lane holding a scroll's update and
+    // result when the terminal stops.
+    let peer = world.add_peer(LinkProfile {
+        latency: 2,
+        jitter: 0,
+        chunk: usize::MAX,
+        buffer: 16,
+    });
+    world.settle(SETTLE);
+    world.want(peer, 0, true);
+    world.settle(SETTLE);
+    for line in 0..20 {
+        world.terminals[0].write_line(&format!("before the stop {line}"));
+    }
+    world.settle(SETTLE);
+    let viewer = world.viewer(peer, 0).unwrap();
+    let now = world.time();
+    let scroll = world.peers[peer].session.scroll(
+        viewer,
+        huterm_protocol::ScrollCommand::Relative(2),
+        now,
+    );
+    world.step();
+    world.step();
+    let final_view = world.terminals[0].snapshot();
+    world.terminals[0].stop();
+    world.settle(SETTLE);
+    assert!(
+        outcome_of(&world, peer, scroll).is_some(),
+        "the scroll queued before the stop got its result"
+    );
+    assert!(
+        world.viewer_events(peer, 0).iter().any(|event| matches!(
+            event,
+            ViewerEvent::Stopped { viewer: stopped, .. } if *stopped == viewer
+        )),
+        "the client heard the stop"
+    );
+    let terminal = world.client_terminal(peer, 0);
+    let mut kept = world.peers[peer]
+        .session
+        .final_view(terminal)
+        .cloned()
+        .expect("a final view");
+    kept.terminal_id = final_view.terminal_id;
+    assert_eq!(kept, *final_view);
+    assert_eq!(
+        world.peers[peer].session.viewer_ids(),
+        Vec::<ViewerId>::new()
+    );
+}
+
+#[test]
+fn a_live_viewer_hears_its_revocation_and_a_new_one_takes_over() {
+    let mut world = world(1);
+    let peer = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want(peer, 0, true);
+    world.settle(SETTLE);
+    let viewer = world.viewer(peer, 0).unwrap();
+    world.terminals[0].revoke(viewer_in_model(&world, 0));
+    world.settle(SETTLE);
+    assert!(world.viewer_events(peer, 0).iter().any(|event| matches!(
+        event,
+        ViewerEvent::Revoked { viewer: revoked, .. } if *revoked == viewer
+    )));
+    // The world subscribes again, and the new viewer follows output.
+    let replacement = world.viewer(peer, 0).expect("a new viewer");
+    assert_ne!(replacement, viewer);
+    world.terminals[0].write_line("after the revocation");
+    world.settle(SETTLE);
+    assert!(world.shows_current(peer, 0));
+}
+
+#[test]
+fn a_refused_scroll_does_not_stop_the_viewers_later_updates() {
+    let mut world = world(1);
+    let peer = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want(peer, 0, false);
+    world.settle(SETTLE);
+    // Output the hidden viewer has not built leaves it notified.
+    world.terminals[0].write_line("pending while hidden");
+    world.settle(SETTLE);
+    world.terminals[0]
+        .refuse_scrolls(Some(huterm_core::RuntimeError::NotPermitted));
+    let viewer = world.viewer(peer, 0).unwrap();
+    let now = world.time();
+    let refused = world.peers[peer].session.scroll(
+        viewer,
+        huterm_protocol::ScrollCommand::Relative(1),
+        now,
+    );
+    world.settle(SETTLE);
+    assert!(outcome_of(&world, peer, refused).unwrap().is_err());
+    world.terminals[0].refuse_scrolls(None);
+    world.peers[peer].wanted[0].visible = true;
+    world.settle(SETTLE);
+    for line in 0..5 {
+        world.terminals[0].write_line(&format!("after {line}"));
+    }
+    world.settle(SETTLE);
+    assert!(world.shows_current(peer, 0));
+}
+
+#[test]
+fn one_large_result_at_a_time_holds_its_text_until_it_is_written() {
+    let mut world = world(1);
+    let peer = world.add_peer(LinkProfile {
+        latency: 1,
+        jitter: 0,
+        chunk: 4096,
+        buffer: 4096,
+    });
+    world.settle(SETTLE);
+    world.want(peer, 0, true);
+    world.settle(SETTLE);
+    world.terminals[0].set_selection("s".repeat(1 << 20));
+    let viewer = world.viewer(peer, 0).unwrap();
+    let generation = world.terminals[0].snapshot().generation;
+    let select = |world: &mut World| {
+        let now = world.time();
+        world.peers[peer].session.request(
+            huterm_wire::request::Request::Selection {
+                viewer,
+                generation,
+                range: huterm_protocol::BufferRange::ordered(
+                    huterm_protocol::BufferPoint {
+                        rows_from_live_bottom: 1,
+                        column: 0,
+                    },
+                    huterm_protocol::BufferPoint {
+                        rows_from_live_bottom: 0,
+                        column: 3,
+                    },
+                ),
+            },
+            now,
+        )
+    };
+    let first = select(&mut world);
+    // The first text is still on its way when the second asks.
+    for _ in 0..20 {
+        world.step();
+    }
+    let second = select(&mut world);
+    world.settle(SETTLE);
+    let Some(Ok(huterm_wire::response::Success {
+        response: huterm_wire::response::Response::Text { text: Some(text) },
+        ..
+    })) = outcome_of(&world, peer, first)
+    else {
+        panic!("the first selection's text");
+    };
+    assert_eq!(text.len(), 1 << 20);
+    assert_eq!(
+        outcome_of(&world, peer, second).unwrap().unwrap_err().code,
+        huterm_wire::error::ErrorCode::Busy
+    );
+    let third = select(&mut world);
+    world.settle(SETTLE);
+    assert!(outcome_of(&world, peer, third).unwrap().is_ok());
+}
+
+#[test]
+fn staged_focus_reports_collapse_while_core_is_busy() {
+    let mut world = World::new(
+        1,
+        ServerConfig::default(),
+        1,
+        grid(20, 6),
+        ModelLimits {
+            queue: 1,
+            ..ModelLimits::default()
+        },
+    );
+    let peer = world.add_peer(LinkProfile::INSTANT);
+    world.settle(SETTLE);
+    world.want(peer, 0, true);
+    world.settle(SETTLE);
+    let viewer = world.viewer(peer, 0).unwrap();
+    // One input fills core's queue; every report after it is staged.
+    world.type_text(peer, 0, "fills the queue").unwrap();
+    for index in 0..10_000 {
+        world.peers[peer].session.send_focus(viewer, index % 2 == 0);
+    }
+    world.settle(SETTLE);
+    for _ in 0..4 {
+        world.terminals[0].drain(usize::MAX);
+        world.settle(SETTLE);
+    }
+    let reports = world.terminals[0].focus_reports();
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(!reports[0].1, "the last report wins");
 }

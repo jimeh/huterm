@@ -926,6 +926,38 @@ impl World {
         self.session = session;
     }
 
+    /// Revokes `peer`'s viewer of terminal `index` in its terminal, as a
+    /// detach elsewhere would; the peer subscribes again once it hears.
+    pub(crate) fn revoke(&mut self, peer: usize, index: usize) -> bool {
+        let Some(viewer) = self.viewer(peer, index) else {
+            return false;
+        };
+        let terminal = &self.terminals[index];
+        terminal.revoke(ViewerId::in_runtime(
+            terminal.id().runtime(),
+            viewer.get(),
+        ));
+        true
+    }
+
+    /// Closes `peer`'s viewer of terminal `index` from the client, which
+    /// subscribes a new one later.
+    pub(crate) fn close_viewer(&mut self, peer: usize, index: usize) -> bool {
+        let Some(viewer) = self.viewer(peer, index) else {
+            return false;
+        };
+        let now = self.time();
+        let id = self.terminals[index].id().get();
+        let peer = &mut self.peers[peer];
+        peer.session.request(Request::CloseViewer { viewer }, now);
+        for wanted in &mut peer.wanted {
+            if wanted.terminal.get() == id {
+                wanted.viewer = None;
+            }
+        }
+        true
+    }
+
     /// Types `text` into `peer`'s viewer of terminal `index`, returning
     /// its input sequence, or `None` without a live viewer.
     pub(crate) fn type_text(

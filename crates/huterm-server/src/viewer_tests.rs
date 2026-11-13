@@ -205,7 +205,8 @@ impl Remote {
 
     pub(crate) fn type_text(&self, viewer: ViewerId, text: &str) {
         self.handle
-            .send_input(viewer, TerminalInput::Text(text.into()), None);
+            .send_input(viewer, TerminalInput::Text(text.into()), None)
+            .unwrap();
     }
 }
 

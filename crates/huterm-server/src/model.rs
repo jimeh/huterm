@@ -23,7 +23,6 @@ use huterm_protocol::{
     TerminalLifecycle, TerminalModes, TerminalRow, TerminalSnapshot,
     TerminalStatus, ViewerId, Viewport,
 };
-use huterm_wire::viewer::input_cost;
 
 use crate::viewer::{
     Ordered, Reply, SnapshotOutcome, ViewerPort, Wake, WakeSource,
@@ -114,8 +113,12 @@ struct State {
     focus: Vec<(ViewerId, bool)>,
     scrolls: Vec<(ViewerId, u64)>,
     stopped: bool,
-    /// Snapshot requests answer this error instead, while set.
-    refuse_snapshots: Option<RuntimeError>,
+    /// Snapshot requests with a scroll answer this error instead, while
+    /// set, as core refuses a scroll from a viewer without the viewport
+    /// capability before it sends anything.
+    refuse_scrolls: Option<RuntimeError>,
+    /// The text every selection answers, when set.
+    selection: Option<String>,
 }
 
 /// A model terminal, shared by its ports and the caller that drives it.
@@ -194,7 +197,8 @@ impl ModelTerminal {
                 focus: Vec::new(),
                 scrolls: Vec::new(),
                 stopped: false,
-                refuse_snapshots: None,
+                refuse_scrolls: None,
+                selection: None,
             })),
         }
     }
@@ -371,9 +375,15 @@ impl ModelTerminal {
         }
     }
 
-    /// Makes snapshot requests answer `error` until cleared with `None`.
-    pub fn refuse_snapshots(&self, error: Option<RuntimeError>) {
-        self.lock().refuse_snapshots = error;
+    /// Makes snapshot requests with a scroll answer `error` until cleared
+    /// with `None`.
+    pub fn refuse_scrolls(&self, error: Option<RuntimeError>) {
+        self.lock().refuse_scrolls = error;
+    }
+
+    /// Makes every selection answer `text`.
+    pub fn set_selection(&self, text: String) {
+        self.lock().selection = Some(text);
     }
 
     /// Runs up to `count` queued ordered messages: input reaches the PTY
@@ -548,6 +558,19 @@ impl Drop for ModelPort {
     }
 }
 
+/// What one input reserves against a model viewer's budget: its text's
+/// bytes, or a few for a key or mouse report, as core reserves.
+fn core_cost(input: &TerminalInput) -> usize {
+    match input {
+        TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
+        TerminalInput::Character { text, key, .. } => {
+            text.len() + key.as_ref().map_or(0, |key| key.text.len())
+        }
+        _ => 8,
+    }
+    .max(1)
+}
+
 struct ModelWake(async_channel::Receiver<()>);
 
 impl WakeSource for ModelWake {
@@ -610,8 +633,10 @@ impl ViewerPort for ModelPort {
         }
         let limits = state.limits;
         let full = state.queue.len() >= limits.queue;
+        // Core counts input by its text, as `huterm-core` does, not by
+        // the wire's window cost.
         let cost = match &message {
-            Ordered::Input { input, .. } => input_cost(input),
+            Ordered::Input { input, .. } => core_cost(input),
             _ => 0,
         };
         let id = self.id;
@@ -635,7 +660,9 @@ impl ViewerPort for ModelPort {
         point: Option<MousePosition>,
     ) -> Reply<SnapshotOutcome> {
         let mut state = self.terminal.lock();
-        if let Some(error) = &state.refuse_snapshots {
+        if let Some(error) = &state.refuse_scrolls
+            && scroll.is_some()
+        {
             let error = match error {
                 RuntimeError::Stopped => RuntimeError::Stopped,
                 RuntimeError::Revoked => RuntimeError::Revoked,
@@ -687,11 +714,13 @@ impl ViewerPort for ModelPort {
     ) -> Reply<Option<String>> {
         let state = self.terminal.lock();
         let text = (generation == state.generation).then(|| {
-            format!(
-                "{}..{}",
-                range.start.rows_from_live_bottom,
-                range.end.rows_from_live_bottom
-            )
+            state.selection.clone().unwrap_or_else(|| {
+                format!(
+                    "{}..{}",
+                    range.start.rows_from_live_bottom,
+                    range.end.rows_from_live_bottom
+                )
+            })
         });
         ready(Ok(text))
     }

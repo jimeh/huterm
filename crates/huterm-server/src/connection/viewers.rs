@@ -99,6 +99,8 @@ pub(super) struct Viewer {
     opened: bool,
     /// A wake that arrived before the lane opened.
     woken: bool,
+    /// How the viewer ended before its lane opened; it ends once open.
+    ending: Option<Ended>,
     credit: u32,
     /// The terminal published something the viewer has not built.
     notified: bool,
@@ -126,6 +128,7 @@ impl Viewer {
             last: None,
             opened: false,
             woken: false,
+            ending: None,
             credit: 0,
             notified: false,
             owed: true,
@@ -291,6 +294,10 @@ impl Connection {
         // Core signals a new viewer's wake when it registers; the first
         // poll after that reads its status baseline as unchanged.
         viewer.woken = false;
+        if let Some(ended) = viewer.ending {
+            self.end_viewer(id, ended);
+            return;
+        }
         self.poll_viewer(id);
     }
 
@@ -413,11 +420,16 @@ impl Connection {
         let SnapshotOutcome { snapshot, link } = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
+                // No snapshot was built, so core still holds the viewer
+                // notified and will not wake it again: keep owing it.
+                viewer.notified = true;
                 if let Some(request) = request {
                     let error = self.viewer_error(id, &error);
                     self.answer(request, Err(error));
+                    self.pump_viewer(id);
                 }
-                self.pump_viewer(id);
+                // A pump fails only when its viewer is ending, which its
+                // wake reports; trying again now would spin until then.
                 return;
             }
         };
@@ -456,6 +468,14 @@ impl Connection {
     /// Ends a live viewer: its notice follows everything already on its
     /// lane, and its requests still waiting answer why it ended.
     pub(super) fn end_viewer(&mut self, id: ViewerId, ended: Ended) {
+        // The notice must follow the subscription's result on the lane, so
+        // a viewer whose result still waits for room ends once it is out.
+        if let Some(viewer) = self.viewers.get_mut(&id)
+            && !viewer.opened
+        {
+            viewer.ending.get_or_insert(ended);
+            return;
+        }
         let Some(mut viewer) = self.viewers.remove(&id) else {
             return;
         };
@@ -486,7 +506,7 @@ impl Connection {
             ),
             Ended::Closed => {}
         }
-        self.outbound.close_viewer(id);
+        self.outbound.close_viewer(id, ended != Ended::Closed);
         let error = ended.error();
         for staged in viewer.staged.drain(..) {
             if let Some(request) = staged.request {
@@ -709,7 +729,18 @@ impl Connection {
 
     /// A focus report, ordered with input and outside the window.
     pub(super) fn viewer_focus(&mut self, id: ViewerId, focused: bool) {
-        if !self.viewers.contains_key(&id) {
+        let Some(viewer) = self.viewers.get_mut(&id) else {
+            return;
+        };
+        // Focus is state: a report staged behind another with nothing
+        // between them replaces it, so staged focus reports never outnumber
+        // the input and requests around them.
+        if let Some(Staged {
+            message: Ordered::Focus(staged),
+            ..
+        }) = viewer.staged.back_mut()
+        {
+            *staged = focused;
             return;
         }
         self.stage(

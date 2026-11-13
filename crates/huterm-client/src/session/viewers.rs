@@ -39,10 +39,10 @@ use huterm_wire::update::{
 };
 use huterm_wire::viewer::{
     Credit, Focus, Input, InputAck, ResyncViewer, SubscribeOptions,
-    ViewerStatus, input_cost,
+    ViewerStatus, check_input, input_cost,
 };
 
-use super::{CallId, ClientEvent, ClientSession, CloseReason};
+use super::{CallId, ClientEvent, ClientSession, CloseReason, refusal};
 use crate::outbound::Transmit;
 
 /// Something that happened to a viewer.
@@ -238,13 +238,17 @@ impl ClientSession {
     /// window is full.
     ///
     /// # Errors
-    /// Returns `StaleTarget` for a viewer this session does not hold.
+    /// Refuses input past its payload limits with `LimitExceeded`, and one
+    /// with no wire form with `Unsupported`, without numbering or sending
+    /// it; returns `StaleTarget`, `Stopped`, or `Revoked` for a viewer this
+    /// session does not hold.
     pub fn send_input(
         &mut self,
         viewer: ViewerId,
         input: TerminalInput,
         geometry: Option<u64>,
     ) -> Result<u64, WireError> {
+        check_input(&input).map_err(refusal)?;
         let Some(entry) = self.viewers.get_mut(&viewer) else {
             return Err(self.unknown_viewer(viewer));
         };
@@ -443,13 +447,51 @@ impl ClientSession {
                     }));
                 }
                 Some(Outgoing::Call(call)) => {
+                    let closes = self.calls.get(&call).is_some_and(|entry| {
+                        entry.kind == huterm_wire::request::RequestKind::CloseViewer
+                    });
                     if let Err(error) = self.send(call) {
                         self.finish(call, Err(error));
+                    } else if closes {
+                        // Nothing after the close reaches the server's
+                        // viewer, so the viewer ends here.
+                        self.retire(viewer);
+                        return;
                     }
                 }
                 None => return,
             }
         }
+    }
+
+    /// Ends `viewer` on the client after its `CloseViewer` went out: its
+    /// baseline is kept, later calls naming it fail, and updates still on
+    /// their way are ignored.
+    fn retire(&mut self, viewer: ViewerId) {
+        let Some(entry) = self.viewers.remove(&viewer) else {
+            return;
+        };
+        self.carried
+            .baselines
+            .insert(entry.terminal, entry.baseline);
+        self.end_pending(entry.pending, ErrorCode::StaleTarget);
+        self.ended.insert(viewer, ErrorCode::StaleTarget);
+    }
+
+    /// Takes `call` out of the viewer queue that holds it, if one does, so
+    /// a cancel can answer it before it is sent.
+    pub(super) fn unqueue(&mut self, call: CallId) -> bool {
+        for entry in self.viewers.values_mut() {
+            if let Some(index) = entry
+                .pending
+                .iter()
+                .position(|outgoing| matches!(outgoing, Outgoing::Call(queued) if *queued == call))
+            {
+                entry.pending.remove(index);
+                return true;
+            }
+        }
+        false
     }
 
     /// Sends every viewer's waiting messages that may go now.

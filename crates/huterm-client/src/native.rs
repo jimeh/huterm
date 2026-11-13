@@ -274,13 +274,20 @@ impl ClientHandle {
     /// Sends `input` from `viewer` without waiting, stamped now with the
     /// geometry revision its coordinates were computed against. Its
     /// acknowledgement arrives through [`Self::events`].
+    ///
+    /// # Errors
+    /// Refuses input past its payload limits with `LimitExceeded`, and one
+    /// with no wire form with `Unsupported`, before sending anything.
     pub fn send_input(
         &self,
         viewer: ViewerId,
         input: TerminalInput,
         geometry: Option<u64>,
-    ) {
+    ) -> Result<(), WireError> {
+        huterm_wire::viewer::check_input(&input)
+            .map_err(crate::session::refusal)?;
         self.command(Command::Input(viewer, input, geometry));
+        Ok(())
     }
 
     /// Reports whether `viewer`'s view holds focus, in order with its

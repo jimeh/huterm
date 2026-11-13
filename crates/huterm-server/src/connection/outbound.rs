@@ -110,9 +110,13 @@ struct Current {
     stream: u32,
     cut: usize,
     then_limit: Option<u32>,
-    /// Whether the bytes were counted when the message was admitted, so
-    /// they are released when its last frame is written.
+    /// Whether the message's bytes count whole until its last frame is
+    /// written, rather than frame by frame from each cut.
     admitted: bool,
+    /// Whether those whole bytes are already counted: from admission for
+    /// an encoded message, or not yet for a status or acknowledgement
+    /// encoded as it starts.
+    counted: bool,
 }
 
 impl Current {
@@ -175,15 +179,17 @@ impl LaneQueue {
     }
 
     /// Whether the lane's next frame waits: a message encoded as it goes
-    /// produces frames only under the budget, so retained bytes pass it by
-    /// at most one frame; and a frame other than a batch's `first` waits
-    /// for the next batch unless it fits `space` whole.
+    /// starts only under the budget; and a frame other than a batch's
+    /// `first` waits for the next batch unless it fits `space` whole.
     fn waits(&self, first: bool, space: usize, limit: u32, over: bool) -> bool {
-        let streamed = match &self.current {
-            Some(current) => !current.admitted,
-            None => !matches!(self.queue.front(), Some(Item::Encoded(..))),
-        };
-        if streamed && over {
+        // Over the budget, no message encoded as it goes starts; one already
+        // started holds a stream, so it finishes, which frees the stream
+        // for messages admitted earlier. The writer takes one batch at a
+        // time, so what it produces meanwhile stays within a batch.
+        if over
+            && self.current.is_none()
+            && !matches!(self.queue.front(), Some(Item::Encoded(..)))
+        {
             return true;
         }
         if first {
@@ -442,20 +448,30 @@ impl Outbound {
         self.viewers.entry(viewer).or_default();
     }
 
-    /// Stops a viewer's lane: its queued items are dropped, an unfinished
-    /// message still finishes, and the lane goes away once empty.
-    pub(crate) fn close_viewer(&mut self, viewer: ViewerId) {
+    /// Stops a viewer's lane: it takes no new items, what it holds still
+    /// goes out unless `views` is false, which drops updates, statuses, and
+    /// acknowledgements not yet started, and the lane goes away once
+    /// drained.
+    pub(crate) fn close_viewer(&mut self, viewer: ViewerId, views: bool) {
         let Some(queue) = self.viewers.get_mut(&viewer) else {
             return;
         };
-        let dropped: usize = queue.queue.iter().map(Item::admitted).sum();
-        queue.queue.clear();
-        queue.retained -= dropped;
-        self.retained -= dropped;
         queue.closing = true;
-        if queue.current.is_none() {
+        // A viewer the client closed has no use for views not yet started;
+        // everything else queued, its end notice and results included,
+        // still goes out. Unstarted views hold no admitted bytes.
+        if !views {
+            queue.queue.retain(|item| matches!(item, Item::Encoded(..)));
+        }
+        if !queue.has_work() && queue.retained == 0 {
             self.viewers.remove(&viewer);
         }
+    }
+
+    /// Whether a large result is queued or not yet fully written, so
+    /// another may not start.
+    pub(crate) fn large_busy(&self) -> bool {
+        self.large.has_work() || self.large.retained > 0
     }
 
     /// Admits `item` to the end of `lane`. A closed viewer's lane drops it.
@@ -635,6 +651,7 @@ impl Outbound {
                 cut: 0,
                 then_limit,
                 admitted: true,
+                counted: true,
             },
             Item::Update(planned) => {
                 let (scope, _) = encoding()?;
@@ -646,6 +663,7 @@ impl Outbound {
                     cut: 0,
                     then_limit: None,
                     admitted: false,
+                    counted: true,
                 }
             }
             Item::Status(viewer, status) => {
@@ -667,7 +685,8 @@ impl Outbound {
                     stream,
                     cut: 0,
                     then_limit: None,
-                    admitted: false,
+                    admitted: true,
+                    counted: false,
                 }
             }
             Item::Ack(viewer, seq) => {
@@ -682,7 +701,8 @@ impl Outbound {
                     stream,
                     cut: 0,
                     then_limit: None,
-                    admitted: false,
+                    admitted: true,
+                    counted: false,
                 }
             }
             Item::Text { head, text, tail } => Current {
@@ -692,6 +712,7 @@ impl Outbound {
                 cut: 0,
                 then_limit: None,
                 admitted: false,
+                counted: true,
             },
         };
         Ok(Ok(current))
@@ -731,7 +752,14 @@ impl Outbound {
                 return Turn::Empty;
             };
             match Self::start(streams, encoding, item) {
-                Ok(Ok(current)) => queue.current = Some(current),
+                Ok(Ok(mut current)) => {
+                    if !current.counted {
+                        current.counted = true;
+                        queue.retained += current.len;
+                        self.retained += current.len;
+                    }
+                    queue.current = Some(current);
+                }
                 Ok(Err(item)) => {
                     queue.queue.push_front(item);
                     return Turn::Wait;
@@ -845,6 +873,8 @@ impl Outbound {
 
 #[cfg(test)]
 mod tests {
+    use huterm_protocol::RuntimeId;
+
     use super::*;
 
     /// Frames the writer would send, as each frame's message bytes.
@@ -866,5 +896,64 @@ mod tests {
         outbound.written(batch.len());
         let batch = outbound.take(room).unwrap();
         assert_eq!(payloads(&batch), [&second[..]]);
+    }
+
+    #[test]
+    fn streamed_messages_holding_every_stream_finish_while_encoded_ones_pass_the_budget()
+     {
+        let budget = 100;
+        let mut outbound = Outbound::new(Vec::new(), 1 << 16, budget);
+        let runtime = RuntimeId::new(1);
+        outbound.set_encoding(IdScope::new(runtime), MessageCaps::for_minor(0));
+        let viewers = [
+            ViewerId::in_runtime(runtime, 1),
+            ViewerId::in_runtime(runtime, 2),
+        ];
+        let lanes = [
+            Lane::Large,
+            Lane::Viewer(viewers[0]),
+            Lane::Viewer(viewers[1]),
+        ];
+        for viewer in viewers {
+            outbound.open_viewer(viewer);
+        }
+        for lane in lanes {
+            outbound.push(
+                lane,
+                Item::Text {
+                    head: Vec::new(),
+                    text: "t".repeat(1000),
+                    tail: Vec::new(),
+                },
+            );
+        }
+        let mut delivered = 0;
+        let mut drain = |outbound: &mut Outbound, room| {
+            let Some(batch) = outbound.take(room) else {
+                return false;
+            };
+            delivered +=
+                payloads(&batch).iter().map(|p| p.len()).sum::<usize>();
+            outbound.written(batch.len());
+            true
+        };
+        // Each text's first frame takes one of the three ordinary streams.
+        while !(outbound.large.current.is_some()
+            && viewers
+                .iter()
+                .all(|viewer| outbound.viewers[viewer].current.is_some()))
+        {
+            assert!(drain(&mut outbound, HEADER_BYTES + 20));
+        }
+        assert!(outbound.streams.open(0).is_err(), "every stream is held");
+        // An encoded result past the budget waits for a stream.
+        outbound.push_encoded(Lane::Control, vec![7; 2 * budget], None);
+        let mut turns = 0;
+        while drain(&mut outbound, 64) {
+            turns += 1;
+            assert!(turns < 10_000, "the queue stopped moving");
+        }
+        assert_eq!(delivered, 3 * 1000 + 2 * budget);
+        assert_eq!(outbound.retained(), 0);
     }
 }

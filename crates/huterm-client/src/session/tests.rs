@@ -1340,3 +1340,102 @@ fn a_drop_past_an_outstanding_resync_sends_one_more_once_that_resync_resolves()
     );
     shut_down(&server);
 }
+
+#[test]
+fn input_past_its_limit_is_refused_locally_and_the_connection_stays() {
+    let (server, session, terminal) = session_with_tab();
+    let mut pair = Pair::new(&server, ClientSession::new(config()));
+    let viewer = subscribe(&mut pair, session, terminal);
+    let past = huterm_protocol::TerminalInput::Paste(
+        "p".repeat(huterm_wire::caps::PASTE_PAYLOAD_LIMIT + 1),
+    );
+    assert_eq!(
+        pair.session
+            .send_input(viewer, past, None)
+            .unwrap_err()
+            .code,
+        ErrorCode::LimitExceeded
+    );
+    pair.pump();
+    assert!(pair.session.is_connected());
+    // The refusal numbered nothing.
+    let seq = pair
+        .session
+        .send_input(
+            viewer,
+            huterm_protocol::TerminalInput::Text("ok".into()),
+            None,
+        )
+        .unwrap();
+    assert_eq!(seq, 1);
+    shut_down(&server);
+}
+
+#[test]
+fn closing_a_viewer_retires_it_on_the_client() {
+    let (server, session, terminal) = session_with_tab();
+    let mut pair = Pair::new(&server, ClientSession::new(config()));
+    let viewer = subscribe(&mut pair, session, terminal);
+    let close = pair
+        .session
+        .request(Request::CloseViewer { viewer }, pair.now);
+    pair.pump();
+    assert!(pair.outcome(close).unwrap().is_ok());
+    assert_eq!(pair.session.viewer_ids(), Vec::<ViewerId>::new());
+    assert_eq!(
+        pair.session
+            .send_input(
+                viewer,
+                huterm_protocol::TerminalInput::Text("late".into()),
+                None,
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleTarget
+    );
+    shut_down(&server);
+}
+
+#[test]
+fn cancelling_a_request_waiting_behind_a_viewers_input_answers_cancelled() {
+    let (server, session, terminal) = session_with_tab();
+    let mut pair = Pair::new(&server, ClientSession::new(config()));
+    let viewer = subscribe(&mut pair, session, terminal);
+    // A paste fills the window, and nothing acknowledges it while the
+    // pair is not pumped, so the reset waits behind it.
+    pair.session
+        .send_input(
+            viewer,
+            huterm_protocol::TerminalInput::Paste(
+                "p".repeat(huterm_wire::caps::VIEWER_INPUT_BUDGET),
+            ),
+            None,
+        )
+        .unwrap();
+    pair.session
+        .send_input(
+            viewer,
+            huterm_protocol::TerminalInput::Text("after".into()),
+            None,
+        )
+        .unwrap();
+    let reset = pair.session.request(Request::Reset { viewer }, pair.now);
+    pair.session.cancel(reset, pair.now);
+    pair.drain();
+    assert_eq!(
+        pair.outcome(reset).unwrap().unwrap_err().code,
+        ErrorCode::Cancelled
+    );
+    // The cancelled reset never goes out.
+    let sent = pair.pump();
+    assert!(!client_messages(&sent, pair.runtime()).iter().any(
+        |message| matches!(
+            message,
+            Message::Request(RequestMessage {
+                request: Request::Reset { .. },
+                ..
+            })
+        )
+    ));
+    shut_down(&server);
+}

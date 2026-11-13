@@ -525,6 +525,15 @@ impl Connection {
         self.requests.len()
     }
 
+    /// Whether a large result is in flight: its request unanswered, or its
+    /// text waiting for room or not yet written. Only one may be, so the
+    /// texts a connection holds stay bounded.
+    fn large_pending(&self) -> bool {
+        self.large.is_some()
+            || self.results.iter().any(|queued| queued.lane == Lane::Large)
+            || self.outbound.large_busy()
+    }
+
     fn at_budget(&self) -> bool {
         self.outbound.retained() >= self.config.outbound_budget
     }
@@ -721,7 +730,7 @@ impl Connection {
         }
         let large = message.request.kind().large_result();
         if self.requests.len() >= self.config.max_in_flight_requests as usize
-            || (large && self.large.is_some())
+            || (large && self.large_pending())
         {
             self.answer_now(
                 id,

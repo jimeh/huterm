@@ -134,10 +134,12 @@ pub struct SubscribeOptions {
 pub const INPUT_EVENT_COST: usize = 32;
 
 /// What one input counts against its viewer's input window: its text's
-/// bytes, a paste's included, a character chord's text and layout text, or
-/// [`INPUT_EVENT_COST`] for a key or mouse report, and at least one byte.
-/// Client and server count the same way on every target, so the client's
-/// unacknowledged input and the server's staged input agree.
+/// bytes, a paste's included, or a character chord's text and layout text,
+/// and at least [`INPUT_EVENT_COST`], which is what a key or mouse report
+/// counts. The floor keeps a flood of tiny inputs from staging far more
+/// memory than the window suggests. Client and server count the same way
+/// on every target, so the client's unacknowledged input and the server's
+/// staged input agree.
 #[must_use]
 pub fn input_cost(input: &TerminalInput) -> usize {
     let bytes = match input {
@@ -149,7 +151,46 @@ pub fn input_cost(input: &TerminalInput) -> usize {
         }
         _ => INPUT_EVENT_COST,
     };
-    bytes.max(1)
+    bytes.max(INPUT_EVENT_COST)
+}
+
+/// Refuses input past its payload limits before it is numbered or sent:
+/// text and a paste past [`INPUT_TEXT_PAYLOAD_LIMIT`], or a character
+/// chord's texts past [`MAX_CHARACTER_TEXT_BYTES`], with
+/// [`EncodeError::LimitExceeded`], and an input with no wire form with
+/// [`EncodeError::Unsupported`].
+///
+/// # Errors
+/// As above.
+pub fn check_input(input: &TerminalInput) -> Result<(), EncodeError> {
+    let long = |field| Err(EncodeError::LimitExceeded { field });
+    match input {
+        TerminalInput::Text(text) if text.len() > INPUT_TEXT_PAYLOAD_LIMIT => {
+            long("input text")
+        }
+        TerminalInput::Paste(text)
+            if text.len() > crate::caps::PASTE_PAYLOAD_LIMIT =>
+        {
+            long("paste")
+        }
+        TerminalInput::Character { text, key, .. }
+            if text.len() > MAX_CHARACTER_TEXT_BYTES
+                || key.as_ref().is_some_and(|key| {
+                    key.text.len() > MAX_CHARACTER_TEXT_BYTES
+                }) =>
+        {
+            long("character text")
+        }
+        TerminalInput::Key { key, .. } if !KEYS.contains(key) => {
+            Err(EncodeError::Unsupported)
+        }
+        TerminalInput::Text(_)
+        | TerminalInput::Paste(_)
+        | TerminalInput::Character { .. }
+        | TerminalInput::Key { .. }
+        | TerminalInput::Mouse(_) => Ok(()),
+        _ => Err(EncodeError::Unsupported),
+    }
 }
 
 /// Encodes a focus report's record.

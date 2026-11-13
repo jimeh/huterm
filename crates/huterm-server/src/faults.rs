@@ -47,6 +47,10 @@ pub(crate) struct Scenario {
     /// Chance per thousand that a stall outlasts the writer stall
     /// deadline.
     long_stall: u64,
+    /// Chance per thousand, per viewer and millisecond, that the terminal
+    /// revokes it or the client closes it; both discard what it had
+    /// queued, so only faulty scenarios end viewers.
+    end: u64,
     damage: u64,
     hold_work: bool,
     /// Every input must arrive: no cut, stall past the deadline, or
@@ -80,6 +84,7 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         cut: 0,
         stall: 0,
         long_stall: 10,
+        end: 0,
         damage: 0,
         hold_work: true,
         healthy: true,
@@ -100,6 +105,7 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             },
             cut: 2,
             stall: 2,
+            end: 3,
             healthy: false,
             ..base
         },
@@ -108,6 +114,7 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             link: REMOTE,
             cut: 1,
             stall: 1,
+            end: 3,
             healthy: false,
             duration: 8_000,
             ..base
@@ -163,6 +170,7 @@ pub(crate) fn swarm(seed: u64) -> Scenario {
         cut,
         stall,
         long_stall: 10,
+        end: u64::from(cut != 0 || stall != 0 || damage != 0),
         damage,
         hold_work: pick(&[0, 1]) == 1,
         healthy: cut == 0 && stall == 0 && damage == 0,
@@ -185,6 +193,8 @@ pub(crate) struct Report {
     pub(crate) stall_disconnects: usize,
     pub(crate) damaged: u64,
     pub(crate) resyncs: u64,
+    pub(crate) revoked: usize,
+    pub(crate) closed: usize,
 }
 
 /// The token peer `peer` types into terminal `terminal` as its `n`th input.
@@ -303,6 +313,15 @@ pub(crate) fn run(scenario: &Scenario, seed: u64) -> Result<Report, String> {
                         }
                     }
                     _ => {}
+                }
+                if world.rng.chance(scenario.end) {
+                    if world.rng.chance(500) {
+                        if world.revoke(peer, terminal) {
+                            report.revoked += 1;
+                        }
+                    } else if world.close_viewer(peer, terminal) {
+                        report.closed += 1;
+                    }
                 }
             }
             // Faults.
@@ -537,6 +556,14 @@ mod tests {
                     scenario.name
                 );
             }
+            if scenario.end > 0 {
+                assert!(
+                    reports.iter().any(|report| report.revoked > 0)
+                        && reports.iter().any(|report| report.closed > 0),
+                    "{} ended no viewer",
+                    scenario.name
+                );
+            }
             if scenario.long_stall >= 100 {
                 assert!(
                     reports.iter().any(|report| report.stall_disconnects > 0),
@@ -599,11 +626,13 @@ mod tests {
         for scenario in scenarios() {
             let reports = check(&scenario, 0..seeds);
             println!(
-                "faults scenario={} seeds={seeds} cuts={} stalls={} stall_disconnects={} damaged={} resyncs={} inputs={}",
+                "faults scenario={} seeds={seeds} cuts={} stalls={} stall_disconnects={} revoked={} closed={} damaged={} resyncs={} inputs={}",
                 scenario.name,
                 reports.iter().map(|r| r.cuts).sum::<usize>(),
                 reports.iter().map(|r| r.stalls).sum::<usize>(),
                 reports.iter().map(|r| r.stall_disconnects).sum::<usize>(),
+                reports.iter().map(|r| r.revoked).sum::<usize>(),
+                reports.iter().map(|r| r.closed).sum::<usize>(),
                 reports.iter().map(|r| r.damaged).sum::<u64>(),
                 reports.iter().map(|r| r.resyncs).sum::<u64>(),
                 reports.iter().map(|r| r.inputs_written).sum::<usize>(),

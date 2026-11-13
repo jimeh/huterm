@@ -576,6 +576,14 @@ impl ClientSession {
                     "cancelled before it was sent",
                 )),
             );
+        } else if self.unqueue(call) {
+            self.finish(
+                call,
+                Err(WireError::new(
+                    ErrorCode::Cancelled,
+                    "cancelled before it was sent",
+                )),
+            );
         }
         self.refresh_progress(now);
     }
@@ -1359,7 +1367,7 @@ fn encode_request_message(
 }
 
 /// The local refusal for a request that does not encode.
-fn refusal(error: EncodeError) -> WireError {
+pub(crate) fn refusal(error: EncodeError) -> WireError {
     let code = match error {
         EncodeError::LimitExceeded { .. } => ErrorCode::LimitExceeded,
         EncodeError::StaleTarget => ErrorCode::StaleTarget,

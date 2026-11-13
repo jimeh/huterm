@@ -306,7 +306,7 @@ fn keystroke_over_ipc() -> Samples {
     let mut before = Some(generation(&remote.view_until(viewer, |_| true)));
     let samples = measure_viewer(|index| {
         let started = Instant::now();
-        remote.handle.send_input(viewer, key(index), None);
+        remote.handle.send_input(viewer, key(index), None).unwrap();
         let (arrived, now) = echoed(&remote, viewer, before);
         before = now;
         arrived - started
