@@ -1680,3 +1680,75 @@ fn pane_operations_reject_stale_and_foreign_targets_without_changes() {
     ));
     mux.shutdown().unwrap();
 }
+
+#[test]
+fn a_stopped_terminal_s_final_status_stays_readable_to_its_attachment() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let opened = mux
+        .open_test_tab(workspace, &command("printf READY; read value"))
+        .unwrap();
+    wait_for_text(&opened.client, "READY");
+    let terminal = opened.tab.first_pane().terminal_id;
+    let attachment = mux.attach_session(session).unwrap();
+    opened
+        .client
+        .control
+        .send_control(crate::terminal::RuntimeControl::WorkerFailed(
+            "test read failure".into(),
+        ))
+        .unwrap();
+    crate::test_support::wait_until("the runtime's stop", || {
+        if opened.client.control.registry().is_closed() {
+            Ok(())
+        } else {
+            Err("running")
+        }
+    });
+
+    assert!(matches!(
+        mux.subscribe_terminal(
+            attachment,
+            terminal,
+            ViewerOptions::new(ViewerCapabilities::ALL),
+        ),
+        Err(MuxError::Runtime(RuntimeError::Stopped))
+    ));
+    let status = mux.terminal_status(attachment, terminal).unwrap();
+    assert!(
+        status
+            .failures
+            .iter()
+            .any(|failure| failure.message == "test read failure"),
+        "{:?}",
+        status.failures
+    );
+
+    let other_session = mux.create_session(None).unwrap();
+    let outsider = mux.attach_session(other_session).unwrap();
+    let foreign = {
+        let mut foreign_mux = Mux::default();
+        let foreign_session = foreign_mux.create_session(None).unwrap();
+        foreign_mux.attach_session(foreign_session).unwrap()
+    };
+    // Refusals match a subscription's.
+    let refusals = |attachment| {
+        let status = mux.terminal_status(attachment, terminal).unwrap_err();
+        let subscription = mux
+            .subscribe_terminal(
+                attachment,
+                terminal,
+                ViewerOptions::new(ViewerCapabilities::ALL),
+            )
+            .unwrap_err();
+        (format!("{status:?}"), format!("{subscription:?}"))
+    };
+    let (status, subscription) = refusals(outsider);
+    assert!(status.starts_with("TerminalNotInAttachment"), "{status}");
+    assert_eq!(status, subscription);
+    let (status, subscription) = refusals(foreign);
+    assert!(status.starts_with("ForeignRuntime"), "{status}");
+    assert_eq!(status, subscription);
+    mux.shutdown().unwrap();
+}

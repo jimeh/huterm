@@ -1849,3 +1849,101 @@ fn program_progress_is_status_and_its_notification_reaches_one_recipient() {
     );
     runtime.shutdown().unwrap();
 }
+
+/// Discards everything it reads in raw mode, so a large paste drains
+/// without the line discipline's limits.
+const SINK_SCRIPT: &str = "stty raw -echo; printf READY; exec cat >/dev/null";
+
+/// A paste that fills a whole input budget.
+fn full_paste() -> TerminalInput {
+    TerminalInput::Text("p".repeat(crate::terminal::INPUT_BYTE_CAPACITY))
+}
+
+#[test]
+fn a_viewer_with_its_own_input_budget_spares_other_viewers_keystrokes() {
+    let runtime = spawn(250, SINK_SCRIPT);
+    let paster = runtime
+        .subscribe(ViewerOptions {
+            input_budget: Some(crate::terminal::INPUT_BYTE_CAPACITY),
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let resume = pause(&runtime);
+    paster.send_input(full_paste()).unwrap();
+    assert!(matches!(
+        paster.send_input(TerminalInput::Text("x".into())),
+        Err(RuntimeError::Busy)
+    ));
+    typist
+        .send_input(TerminalInput::Text("x".into()))
+        .expect("another viewer's paste must not refuse this keystroke");
+    let budget = paster.slot();
+    let budget = budget.input_budget().unwrap();
+    assert_eq!(budget.queued(), crate::terminal::INPUT_BYTE_CAPACITY);
+    assert_eq!(runtime.client().queued_input_bytes(), 1);
+    resume.send(()).unwrap();
+    wait_until("drained budgets", || {
+        budget.queued() == 0 && runtime.client().queued_input_bytes() == 0
+    });
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn viewers_without_their_own_budget_share_the_terminal_s() {
+    let runtime = spawn(251, SINK_SCRIPT);
+    let paster = viewer(&runtime);
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let resume = pause(&runtime);
+    paster.send_input(full_paste()).unwrap();
+    assert!(matches!(
+        typist.send_input(TerminalInput::Text("x".into())),
+        Err(RuntimeError::Busy)
+    ));
+    resume.send(()).unwrap();
+    wait_until("drained budget", || {
+        runtime.client().queued_input_bytes() == 0
+    });
+    typist.send_input(TerminalInput::Text("x".into())).unwrap();
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn typing_stamped_before_a_client_numbered_scroll_leaves_it_in_place() {
+    let runtime = spawn(
+        252,
+        "stty -echo; i=0; while [ $i -lt 40 ]; do printf 'row %s\\n' $i; i=$((i+1)); done; printf READY; read l; read l",
+    );
+    let viewer = viewer(&runtime);
+    wait_for_text(&viewer, "READY");
+    // The client's scroll 1 never reached core, as one the server refused.
+    let scrolled = viewer
+        .request_snapshot_numbered(Some((ScrollCommand::Relative(10), 2)), None)
+        .unwrap()
+        .recv_blocking()
+        .unwrap()
+        .snapshot;
+    assert_eq!(scrolled.viewport.bottom_offset, 10);
+    assert_eq!(viewer.stamp(None).scrolls, 2);
+    let stamped = |scrolls| huterm_protocol::InputStamp {
+        scrolls,
+        geometry: None,
+    };
+    viewer
+        .offer_input(TerminalInput::Text("x".into()), stamped(1))
+        .unwrap();
+    drained(&runtime);
+    assert_eq!(
+        viewer.read_snapshot().unwrap().viewport.bottom_offset,
+        10,
+        "typing from before scroll 2 must not undo it"
+    );
+    viewer
+        .offer_input(TerminalInput::Text("y".into()), stamped(2))
+        .unwrap();
+    drained(&runtime);
+    assert_eq!(viewer.read_snapshot().unwrap().viewport.bottom_offset, 0);
+    runtime.shutdown().unwrap();
+}

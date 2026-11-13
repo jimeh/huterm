@@ -242,6 +242,19 @@ change; the backlog consumed the notification. `RuntimeMessage::permitted` is
 the one dequeue check for ordered requests, and `handle_client_message` settles
 each once. Scroll numbers live on the viewer's slot, not its arbitration entry:
 scrolls are controls that can precede or outlive the entry.
+`request_snapshot_numbered` takes a remote client's own scroll number, so a
+scroll the server refused never makes the client's stamps run ahead.
+
+Input reserves its bytes until `handle_client_message` dequeues it, and that
+releases them before the permission check, so discarded input frees them too.
+A viewer with `ViewerOptions::input_budget` reserves against its own budget on
+its slot, so one connection's paste cannot refuse another's keystrokes; viewers
+without one share the terminal's `INPUT_BYTE_CAPACITY`. Attachment
+invalidation (detach, retarget, session close) revokes only live viewers: a
+dropped one finalizes after its queued requests run, so a client that drops its
+viewer before it detaches keeps the input that viewer already sent. The
+desktop's assessed window close commits the detach before it drops its views,
+so it still discards input queued at that moment.
 
 A terminal's scrollback limit is terminal state, not presentation.
 `TerminalViewer::set_scrollback` is an ordered buffer edit, so it needs the
@@ -611,8 +624,9 @@ Nothing in the desktop calls either until #45.
 ## Attachments, close consent, and exit
 
 Session AttachmentId is distinct from a terminal viewer (`ViewerId`); one
-attachment holds a viewer per displayed terminal, and detach, retarget, session
-close, and cross-session moves revoke its viewers. Detach
+attachment holds a viewer per displayed terminal. Detach, retarget, and session
+close revoke its live viewers, and cross-session moves revoke every viewer of
+the moved terminal, dropped ones included. Detach
 and retarget preserve zero-view sessions; an assessed last-window close deletes
 its session. `CloseRequest::EmptiedWindow` closes a window whose last view went
 away without stopping a terminal, resolved under the Mux lock in this order: an

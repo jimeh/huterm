@@ -39,8 +39,48 @@ const READ_BATCH_BYTES: usize = 16 * 1024;
 /// fewer slots would leave too little buffer to cover a snapshot build.
 const OUTPUT_CAPACITY: usize = 64;
 const WRITER_CAPACITY: usize = 64;
-const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
+pub(crate) const INPUT_BYTE_CAPACITY: usize = 1024 * 1024;
 const SNAPSHOT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Input bytes queued against one budget: reserved when a viewer offers
+/// input and released when the runtime dequeues it, whether it runs or is
+/// discarded.
+#[derive(Debug)]
+pub(crate) struct InputBudget {
+    capacity: usize,
+    queued: AtomicUsize,
+}
+
+impl InputBudget {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            queued: AtomicUsize::new(0),
+        }
+    }
+
+    /// Reserves `bytes`, or returns false when they do not fit.
+    fn reserve(&self, bytes: usize) -> bool {
+        bytes <= self.capacity
+            && self
+                .queued
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                    queued
+                        .checked_add(bytes)
+                        .filter(|total| *total <= self.capacity)
+                })
+                .is_ok()
+    }
+
+    fn release(&self, bytes: usize) {
+        self.queued.fetch_sub(bytes, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.queued.load(Ordering::Acquire)
+    }
+}
 
 /// Crate-private handle for one terminal runtime: viewers send through it,
 /// and close assessment and teardown use its control requests. Clients
@@ -53,7 +93,8 @@ pub(crate) struct RuntimeClient {
     output: crate::wake::SyncSender<Vec<u8>>,
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
-    queued_input_bytes: Arc<AtomicUsize>,
+    /// The budget shared by viewers without their own.
+    input_budget: Arc<InputBudget>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     host_effect_sink: HostEffectSink,
     registry: Arc<Registry>,
@@ -73,8 +114,8 @@ impl RuntimeClient {
         Arc::clone(&self.registry)
     }
 
-    /// Sends a viewer's input, reserving its bytes against the shared input
-    /// budget until the runtime dequeues it.
+    /// Sends a viewer's input, reserving its bytes against the viewer's own
+    /// budget, or the terminal's shared one, until the runtime dequeues it.
     pub(crate) fn offer_input(
         &self,
         slot: Arc<Slot>,
@@ -82,15 +123,10 @@ impl RuntimeClient {
         stamp: InputStamp,
     ) -> Result<(), RefusedInput> {
         let reserved_bytes = input_bytes(&input).max(1);
-        if reserved_bytes > INPUT_BYTE_CAPACITY
-            || self
-                .queued_input_bytes
-                .try_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
-                    queued
-                        .checked_add(reserved_bytes)
-                        .filter(|total| *total <= INPUT_BYTE_CAPACITY)
-                })
-                .is_err()
+        if !slot
+            .input_budget()
+            .unwrap_or(&self.input_budget)
+            .reserve(reserved_bytes)
         {
             return Err(RefusedInput {
                 error: RuntimeError::Busy,
@@ -112,11 +148,12 @@ impl RuntimeClient {
                     (RuntimeError::Stopped, message)
                 }
             };
-        self.queued_input_bytes
-            .fetch_sub(reserved_bytes, Ordering::AcqRel);
-        let RuntimeMessage::Input { input, .. } = message else {
+        let RuntimeMessage::Input { slot, input, .. } = message else {
             unreachable!("the refused message is the input just sent");
         };
+        slot.input_budget()
+            .unwrap_or(&self.input_budget)
+            .release(reserved_bytes);
         Err(RefusedInput { error, input })
     }
 
@@ -189,9 +226,10 @@ impl RuntimeClient {
         self.host_effect_sink.clone()
     }
 
+    /// Bytes queued against the terminal's shared input budget.
     #[cfg(test)]
     pub(crate) fn queued_input_bytes(&self) -> usize {
-        self.queued_input_bytes.load(Ordering::Acquire)
+        self.input_budget.queued()
     }
 
     /// Requests orderly terminal shutdown.
@@ -453,14 +491,14 @@ impl TerminalRuntime {
         let client_output = output_sender.clone();
         let control_sender = crate::wake::Sender::new(control_sender, wake);
         let closing = Arc::new(AtomicBool::new(false));
-        let queued_input_bytes = Arc::new(AtomicUsize::new(0));
+        let input_budget = Arc::new(InputBudget::new(INPUT_BYTE_CAPACITY));
         let host_effect_sink = HostEffectSink::new(terminal_id);
         let runtime_host_effect_sink = host_effect_sink.clone();
         let runtime_registry = Arc::clone(&registry);
 
         let runtime_controls = control_sender.clone();
         let runtime_closing = Arc::clone(&closing);
-        let runtime_input_bytes = Arc::clone(&queued_input_bytes);
+        let runtime_input_budget = Arc::clone(&input_budget);
         let shutdown_groups = Arc::new(Mutex::new(Vec::new()));
         let runtime_groups = Arc::clone(&shutdown_groups);
         let join = thread::Builder::new()
@@ -498,7 +536,7 @@ impl TerminalRuntime {
                         runtime_controls,
                         &runtime_registry,
                         runtime_closing,
-                        runtime_input_bytes,
+                        runtime_input_budget,
                         runtime_groups,
                         &startup_sender,
                     )
@@ -525,7 +563,7 @@ impl TerminalRuntime {
             output: client_output,
             controls: control_sender,
             closing,
-            queued_input_bytes,
+            input_budget,
             shutdown_groups,
             host_effect_sink,
             registry,
@@ -1359,7 +1397,7 @@ fn run_terminal(
     control_sender: crate::wake::Sender<RuntimeControl>,
     registry: &Registry,
     closing: Arc<AtomicBool>,
-    queued_input_bytes: Arc<AtomicUsize>,
+    input_budget: Arc<InputBudget>,
     shutdown_groups: Arc<Mutex<Vec<i32>>>,
     startup: &SyncSender<Result<(), RuntimeError>>,
 ) -> Result<(), RuntimeError> {
@@ -1830,7 +1868,7 @@ fn run_terminal(
                     &mut owner,
                     &mut arbiter,
                     &mut probes,
-                    &queued_input_bytes,
+                    &input_budget,
                     message,
                 ),
             };
@@ -1931,12 +1969,16 @@ fn handle_client_message(
     owner: &mut Owner<'_>,
     arbiter: &mut Arbiter,
     probes: &mut ProbeSchedule,
-    queued_input_bytes: &AtomicUsize,
+    input_budget: &InputBudget,
     message: RuntimeMessage,
 ) -> bool {
     let slot = Arc::clone(message.slot());
+    // Released here, before the permission check, so discarded input frees
+    // its reservation too.
     if let RuntimeMessage::Input { reserved_bytes, .. } = &message {
-        queued_input_bytes.fetch_sub(*reserved_bytes, Ordering::AcqRel);
+        slot.input_budget()
+            .unwrap_or(input_budget)
+            .release(*reserved_bytes);
     }
     // A report's effects apply together with any finalization its settling
     // causes, so a dropped viewer's last focus change and its focus loss

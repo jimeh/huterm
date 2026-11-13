@@ -29,8 +29,9 @@ use crate::host_effects::{
     DesktopHostEffectClient, HostEffectRecipient, HostEffectRecipientOptions,
 };
 use crate::terminal::{
-    BufferEdit, RefusedInput, RuntimeClient, RuntimeControl, RuntimeError,
-    RuntimeMessage, SelectUnitsRequest, SelectionRequest, SnapshotRequest,
+    BufferEdit, InputBudget, RefusedInput, RuntimeClient, RuntimeControl,
+    RuntimeError, RuntimeMessage, SelectUnitsRequest, SelectionRequest,
+    SnapshotRequest,
 };
 
 /// Live viewers one terminal admits.
@@ -67,6 +68,12 @@ pub struct ViewerOptions {
     /// Set only by the client that created the terminal: the viewer then
     /// treats an exit before its first poll as an exit transition.
     pub spawned: bool,
+    /// Bytes of input this viewer may have queued at once, reserved
+    /// against its own budget so its paste cannot refuse other viewers'
+    /// keystrokes. `None` shares the terminal's budget with every other
+    /// viewer without one. Input larger than the budget is always refused
+    /// with [`RuntimeError::Busy`].
+    pub input_budget: Option<usize>,
 }
 
 impl ViewerOptions {
@@ -80,6 +87,7 @@ impl ViewerOptions {
             geometry: None,
             presentation: None,
             spawned: false,
+            input_budget: None,
         }
     }
 }
@@ -111,6 +119,8 @@ pub(crate) struct Slot {
     dropped: AtomicBool,
     /// Ordered messages sent but not yet processed or refused.
     queued: AtomicUsize,
+    /// The viewer's own input budget; `None` uses the terminal's.
+    input_budget: Option<InputBudget>,
     /// The viewer's activity ordinal, shared with its host-effect recipient.
     pub(crate) activity: Arc<AtomicU64>,
     /// The number of this viewer's latest scroll the owner thread applied.
@@ -132,6 +142,10 @@ impl Slot {
 
     pub(crate) fn is_dropped(&self) -> bool {
         self.dropped.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn input_budget(&self) -> Option<&InputBudget> {
+        self.input_budget.as_ref()
     }
 
     /// Counts a message before it is sent; pair with [`Self::settled`].
@@ -268,6 +282,7 @@ impl Registry {
         initial: Initial,
         wake: async_channel::Sender<()>,
         activity: Arc<AtomicU64>,
+        input_budget: Option<usize>,
     ) -> Result<Arc<Slot>, RegisterError> {
         let mut state = self.state();
         if state.closed {
@@ -292,6 +307,7 @@ impl Registry {
             revoked: AtomicBool::new(false),
             dropped: AtomicBool::new(false),
             queued: AtomicUsize::new(0),
+            input_budget: input_budget.map(InputBudget::new),
             activity,
             applied_scroll: AtomicU64::new(0),
             live_through: AtomicU64::new(0),
@@ -313,8 +329,15 @@ impl Registry {
         initial: Initial,
     ) -> Result<(Arc<Slot>, async_channel::Receiver<()>), RegisterError> {
         let (wake, signal) = async_channel::bounded(1);
-        self.register(attachment, capabilities, initial, wake, Arc::default())
-            .map(|slot| (slot, signal))
+        self.register(
+            attachment,
+            capabilities,
+            initial,
+            wake,
+            Arc::default(),
+            None,
+        )
+        .map(|slot| (slot, signal))
     }
 
     /// Asks the owner thread to reconcile its viewer table.
@@ -367,8 +390,14 @@ impl Registry {
         }
     }
 
+    /// Revokes the attachment's live viewers. A dropped one is left to
+    /// finalize after its queued requests run, as any dropped viewer does:
+    /// it can send nothing more, and revoking it would only discard input
+    /// it sent while its attachment held the terminal.
     pub(crate) fn revoke_attachment(&self, attachment: AttachmentId) {
-        self.revoke_where(|slot| slot.attachment == Some(attachment));
+        self.revoke_where(|slot| {
+            slot.attachment == Some(attachment) && !slot.is_dropped()
+        });
     }
 
     pub(crate) fn revoke_all(&self) {
@@ -586,6 +615,7 @@ impl TerminalViewer {
                 },
                 wake_sender,
                 activity,
+                options.input_budget,
             )
             .map_err(|error| match error {
                 RegisterError::Closed => RuntimeError::Stopped,
@@ -878,6 +908,37 @@ impl TerminalViewer {
         let scroll = scroll.map(|command| {
             (command, self.scrolls.fetch_add(1, Ordering::AcqRel) + 1)
         });
+        self.send_snapshot(scroll, point)
+    }
+
+    /// Like [`Self::request_snapshot_with_link`], but the scroll carries the
+    /// number its caller assigned, as a remote client numbers its own
+    /// scrolls and stamps its typing with them ([`InputStamp::scrolls`]).
+    /// Numbers start at 1 and increase; a scroll numbered 0 counts as
+    /// superseded and never moves the viewport. The handle's own count rises
+    /// to at least `number`, so [`Self::stamp`] stays consistent with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the viewer may not scroll, was revoked, or the
+    /// terminal stopped.
+    pub fn request_snapshot_numbered(
+        &self,
+        scroll: Option<(ScrollCommand, u64)>,
+        point: Option<MousePosition>,
+    ) -> Result<SnapshotRequest, RuntimeError> {
+        self.check(scroll.is_none() || self.slot.capabilities.viewport)?;
+        if let Some((_, number)) = scroll {
+            self.scrolls.fetch_max(number, Ordering::AcqRel);
+        }
+        self.send_snapshot(scroll, point)
+    }
+
+    fn send_snapshot(
+        &self,
+        scroll: Option<(ScrollCommand, u64)>,
+        point: Option<MousePosition>,
+    ) -> Result<SnapshotRequest, RuntimeError> {
         let (reply, receiver) = async_channel::bounded(1);
         self.client.send_control(RuntimeControl::Snapshot {
             slot: Arc::clone(&self.slot),
@@ -1021,6 +1082,13 @@ impl TerminalViewer {
         update
     }
 }
+
+// The IPC server shares one viewer between its driver thread and its
+// blocking workers.
+const _: () = {
+    const fn shared<T: Send + Sync>() {}
+    shared::<TerminalViewer>();
+};
 
 impl Drop for TerminalViewer {
     fn drop(&mut self) {
