@@ -4,6 +4,10 @@
 //! same operation in process for context. Run it through
 //! `mise run bench:ipc`.
 //!
+//! The viewer benchmark measures a keystroke's echo through a real PTY over
+//! IPC and in process, what IPC adds to output on its way to a client, and
+//! a 100,000-line flood until a viewer shows its end.
+//!
 //! It reports medians and 99th percentiles and gates nothing: no CI
 //! runner has measured it yet.
 
@@ -221,4 +225,272 @@ fn ipc_benchmark() {
     event_latency(&pair).report("rename_event_to_projection");
     pair.shutdown();
     in_process().report("rename_in_process");
+}
+
+/// Samples of each viewer latency, after as many again to warm up: each
+/// one is a keystroke through a real PTY.
+const VIEWER_SAMPLES: usize = 2_000;
+
+/// Runs `step` [`VIEWER_SAMPLES`] times to warm up, then times as many.
+fn measure_viewer(mut step: impl FnMut(usize) -> Duration) -> Samples {
+    for index in 0..VIEWER_SAMPLES {
+        step(index);
+    }
+    Samples::new(
+        (0..VIEWER_SAMPLES)
+            .map(|index| step(VIEWER_SAMPLES + index).as_nanos())
+            .collect(),
+    )
+}
+
+/// A terminal that echoes each byte as it arrives, with no line buffering.
+fn echo() -> huterm_protocol::TerminalCommand {
+    crate::test_support::command("stty raw -echo; exec cat")
+}
+
+/// A viewer's snapshot as the desktop reads it: the reply awaited, not
+/// `read_snapshot`'s polling, which parks a millisecond at a time.
+fn snapshot(
+    viewer: &huterm_core::TerminalViewer,
+) -> std::sync::Arc<huterm_protocol::TerminalSnapshot> {
+    block_on(viewer.request_snapshot().unwrap().recv())
+        .unwrap()
+        .snapshot
+}
+
+/// What changes when an echo lands: the content generation. The cursor
+/// alone would miss an echo at the last column, which defers its wrap.
+fn generation(view: &huterm_protocol::TerminalSnapshot) -> u64 {
+    view.generation
+}
+
+fn key(index: usize) -> huterm_protocol::TerminalInput {
+    let letter = char::from(b'a' + u8::try_from(index % 26).unwrap_or(0));
+    huterm_protocol::TerminalInput::Text(letter.to_string())
+}
+
+/// Waits for the next update of `viewer` whose content generation moved
+/// from `before`, returning when that update's event arrived.
+fn echoed(
+    remote: &crate::viewer_tests::Remote,
+    viewer: huterm_protocol::ViewerId,
+    before: Option<u64>,
+) -> (Instant, Option<u64>) {
+    loop {
+        let event = block_on(remote.events.recv()).unwrap();
+        let arrived = Instant::now();
+        if let ClientEvent::Viewer(huterm_client::ViewerEvent::Updated {
+            viewer: updated,
+            ..
+        }) = event
+            && updated == viewer
+        {
+            let now = block_on(remote.handle.view(viewer))
+                .map(|view| generation(&view));
+            if now != before {
+                return (arrived, now);
+            }
+        }
+    }
+}
+
+/// A keystroke from the client's send until the update that shows its
+/// echo arrives at the client: input to the PTY, the echo's output, and
+/// its update back.
+fn keystroke_over_ipc() -> Samples {
+    let (server, session, terminal) =
+        crate::viewer_tests::served(ServerConfig::default(), &echo());
+    let remote =
+        crate::viewer_tests::Remote::connect(&server, session, terminal);
+    let viewer = remote.subscribe(crate::viewer_tests::writable());
+    let mut before = Some(generation(&remote.view_until(viewer, |_| true)));
+    let samples = measure_viewer(|index| {
+        let started = Instant::now();
+        remote.handle.send_input(viewer, key(index), None);
+        let (arrived, now) = echoed(&remote, viewer, before);
+        before = now;
+        arrived - started
+    });
+    let _ = server.lock().shutdown();
+    remote.shutdown();
+    samples
+}
+
+/// The same keystroke in process: a viewer's input until the snapshot that
+/// shows its echo, as the desktop reads it.
+fn keystroke_in_process() -> Samples {
+    let (server, session, terminal) =
+        crate::viewer_tests::served(ServerConfig::default(), &echo());
+    let viewer = {
+        let mut mux = server.lock();
+        let runtime = mux.runtime_id();
+        let attachment = mux
+            .attach_session(huterm_protocol::SessionId::in_runtime(
+                runtime, session,
+            ))
+            .unwrap();
+        mux.subscribe_terminal(
+            attachment,
+            huterm_protocol::TerminalId::in_runtime(runtime, terminal),
+            crate::convert::viewer_options(crate::viewer_tests::writable()),
+        )
+        .unwrap()
+    };
+    let mut before = Some(generation(&snapshot(&viewer)));
+    let samples = measure_viewer(|index| {
+        let started = Instant::now();
+        viewer.send_input(key(index)).unwrap();
+        loop {
+            block_on(viewer.wait()).unwrap();
+            if viewer.poll().invalidated.is_none() {
+                continue;
+            }
+            let now = Some(generation(&snapshot(&viewer)));
+            if now != before {
+                before = now;
+                return started.elapsed();
+            }
+        }
+    });
+    drop(viewer);
+    let _ = server.lock().shutdown();
+    samples
+}
+
+/// An echo's output from the moment an in-process viewer of the same
+/// terminal sees it until the remote client's update that shows it
+/// arrives: what IPC adds to output.
+fn output_to_client() -> Samples {
+    let (server, session, terminal) =
+        crate::viewer_tests::served(ServerConfig::default(), &echo());
+    let remote =
+        crate::viewer_tests::Remote::connect(&server, session, terminal);
+    let remote_viewer = remote.subscribe(crate::viewer_tests::writable());
+    let local = {
+        let mut mux = server.lock();
+        let runtime = mux.runtime_id();
+        let attachment = mux
+            .attach_session(huterm_protocol::SessionId::in_runtime(
+                runtime, session,
+            ))
+            .unwrap();
+        mux.subscribe_terminal(
+            attachment,
+            huterm_protocol::TerminalId::in_runtime(runtime, terminal),
+            crate::convert::viewer_options(crate::viewer_tests::writable()),
+        )
+        .unwrap()
+    };
+    let mut before =
+        Some(generation(&remote.view_until(remote_viewer, |_| true)));
+    let samples = measure_viewer(|index| {
+        local.send_input(key(index)).unwrap();
+        let seen = loop {
+            block_on(local.wait()).unwrap();
+            if local.poll().invalidated.is_none() {
+                continue;
+            }
+            if Some(generation(&snapshot(&local))) != before {
+                break Instant::now();
+            }
+        };
+        let (arrived, now) = echoed(&remote, remote_viewer, before);
+        before = now;
+        arrived.saturating_duration_since(seen)
+    });
+    drop(local);
+    let _ = server.lock().shutdown();
+    remote.shutdown();
+    samples
+}
+
+/// Runs of the output throughput measurement.
+const THROUGHPUT_RUNS: usize = 5;
+
+/// A terminal that prints 100,000 numbered lines once it reads a line,
+/// then the marker `DONE`.
+fn flood() -> huterm_protocol::TerminalCommand {
+    crate::test_support::command(
+        "head -n 1 >/dev/null; seq 1 100000; printf 'DONE\\n'; exec cat",
+    )
+}
+
+fn done(view: &huterm_protocol::TerminalSnapshot) -> bool {
+    crate::viewer_tests::screen_text(view)
+        .iter()
+        .any(|line| line == "DONE")
+}
+
+/// From the line that starts a 100,000-line flood until a viewer shows its
+/// end, over IPC and in process.
+fn throughput() -> (Samples, Samples) {
+    let mut ipc = Vec::new();
+    let mut local = Vec::new();
+    for _ in 0..THROUGHPUT_RUNS {
+        let (server, session, terminal) =
+            crate::viewer_tests::served(ServerConfig::default(), &flood());
+        let remote =
+            crate::viewer_tests::Remote::connect(&server, session, terminal);
+        let viewer = remote.subscribe(crate::viewer_tests::writable());
+        remote.view_until(viewer, |_| true);
+        let started = Instant::now();
+        remote.type_text(viewer, "go\r");
+        loop {
+            if let ClientEvent::Viewer(huterm_client::ViewerEvent::Updated {
+                ..
+            }) = block_on(remote.events.recv()).unwrap()
+                && block_on(remote.handle.view(viewer))
+                    .is_some_and(|view| done(&view))
+            {
+                ipc.push(started.elapsed().as_nanos());
+                break;
+            }
+        }
+        let _ = server.lock().shutdown();
+        remote.shutdown();
+
+        let (server, session, terminal) =
+            crate::viewer_tests::served(ServerConfig::default(), &flood());
+        let viewer = {
+            let mut mux = server.lock();
+            let runtime = mux.runtime_id();
+            let attachment = mux
+                .attach_session(huterm_protocol::SessionId::in_runtime(
+                    runtime, session,
+                ))
+                .unwrap();
+            mux.subscribe_terminal(
+                attachment,
+                huterm_protocol::TerminalId::in_runtime(runtime, terminal),
+                crate::convert::viewer_options(crate::viewer_tests::writable()),
+            )
+            .unwrap()
+        };
+        let _ = snapshot(&viewer);
+        let started = Instant::now();
+        viewer
+            .send_input(huterm_protocol::TerminalInput::Text("go\r".into()))
+            .unwrap();
+        loop {
+            block_on(viewer.wait()).unwrap();
+            if viewer.poll().invalidated.is_some() && done(&snapshot(&viewer)) {
+                local.push(started.elapsed().as_nanos());
+                break;
+            }
+        }
+        drop(viewer);
+        let _ = server.lock().shutdown();
+    }
+    (Samples::new(ipc), Samples::new(local))
+}
+
+#[test]
+#[ignore = "release benchmark; run through mise run bench:ipc"]
+fn ipc_viewer_benchmark() {
+    keystroke_over_ipc().report("keystroke_echo_over_ipc");
+    keystroke_in_process().report("keystroke_echo_in_process");
+    output_to_client().report("output_to_client_over_ipc");
+    let (ipc, local) = throughput();
+    ipc.report("flood_100k_lines_over_ipc");
+    local.report("flood_100k_lines_in_process");
 }

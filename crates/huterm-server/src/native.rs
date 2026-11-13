@@ -10,7 +10,11 @@
 //! `async-executor` `LocalExecutor`: it waits on one event channel that the
 //! reader, the writer, worker completions, and the hierarchy feed's
 //! forwarding task feed, or on an `async-io` timer for the connection's next
-//! deadline. Jobs run on `blocking`'s worker pool, never on these threads,
+//! deadline. The socket is non-blocking: while the writer is idle, the
+//! driver first writes a batch itself and hands the writer only what the
+//! socket did not take, so a reply the socket accepts at once skips a
+//! thread, and the reader and writer wait with `poll` where a blocking
+//! socket would block. Jobs run on `blocking`'s worker pool, never on these threads,
 //! and the server never holds the `Mux` lock while it waits on the socket.
 //!
 //! When the connection ends, the driver shuts the socket down so blocked
@@ -141,13 +145,17 @@ pub fn serve(
     server: Arc<Server>,
     stream: UnixStream,
 ) -> io::Result<ConnectionHandle> {
+    // Every clone shares the setting: the driver writes without blocking,
+    // and the reader and writer wait with `poll`.
+    stream.set_nonblocking(true)?;
     let reader = stream.try_clone()?;
     let writer = stream.try_clone()?;
     let (events, inbox) = async_channel::unbounded();
     // One permit at a time keeps at most one read buffer in flight.
     let (permits, permit) = async_channel::bounded(1);
-    // The writer holds one batch; the connection keeps everything else.
-    let (batches, batch) = async_channel::bounded(1);
+    // The writer holds one batch, and how much of it the driver already
+    // wrote; the connection keeps everything else.
+    let (batches, batch) = async_channel::bounded::<(Transmit, usize)>(1);
     let stats = Arc::new(Stats::default());
     let mut threads = Vec::with_capacity(3);
     threads.push(
@@ -202,6 +210,13 @@ fn read(mut stream: UnixStream, permit: &Receiver<()>, events: &Sender<Event>) {
         let read = loop {
             match stream.read(&mut buffer) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if let Err(error) =
+                        ready(&stream, nix::poll::PollFlags::POLLIN)
+                    {
+                        break Err(error);
+                    }
+                }
                 read => break read,
             }
         };
@@ -216,13 +231,50 @@ fn read(mut stream: UnixStream, permit: &Receiver<()>, events: &Sender<Event>) {
     }
 }
 
+/// Waits until `stream` is ready for `events`, as a blocking call on it
+/// would; the socket is non-blocking so the driver never blocks on it.
+fn ready(stream: &UnixStream, events: nix::poll::PollFlags) -> io::Result<()> {
+    use std::os::fd::AsFd;
+
+    use nix::errno::Errno;
+    use nix::poll::{PollFd, PollTimeout, poll};
+    loop {
+        let mut fds = [PollFd::new(stream.as_fd(), events)];
+        match poll(&mut fds, PollTimeout::NONE) {
+            Ok(_) => return Ok(()),
+            Err(Errno::EINTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Writes as much of `transmit` after its first `written` bytes as the
+/// socket takes without blocking, returning the bytes written, or `None`
+/// once the socket failed.
+fn send_now(
+    mut stream: &UnixStream,
+    transmit: &Transmit,
+    mut written: usize,
+) -> Option<usize> {
+    let start = written;
+    while written < transmit.len() {
+        match stream.write_vectored(&transmit.io_slices(written)) {
+            Ok(0) => return None,
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(_) => return None,
+        }
+    }
+    Some(written - start)
+}
+
 fn write(
     mut stream: UnixStream,
-    batch: &Receiver<Transmit>,
+    batch: &Receiver<(Transmit, usize)>,
     events: &Sender<Event>,
 ) {
-    while let Ok(transmit) = batch.recv_blocking() {
-        let mut written = 0;
+    while let Ok((transmit, mut written)) = batch.recv_blocking() {
         while written < transmit.len() {
             match stream.write_vectored(&transmit.io_slices(written)) {
                 Ok(0) => {
@@ -236,6 +288,12 @@ fn write(
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if ready(&stream, nix::poll::PollFlags::POLLOUT).is_err() {
+                        let _ = events.send_blocking(Event::WriteFailed);
+                        return;
+                    }
+                }
                 Err(_) => {
                     let _ = events.send_blocking(Event::WriteFailed);
                     return;
@@ -254,7 +312,7 @@ struct Driver {
     events: Sender<Event>,
     inbox: Receiver<Event>,
     permits: Option<Sender<()>>,
-    batches: Option<Sender<Transmit>>,
+    batches: Option<Sender<(Transmit, usize)>>,
     stats: Arc<Stats>,
 }
 
@@ -277,19 +335,7 @@ impl Driver {
             while let Some(work) = connection.poll_work() {
                 self.spawn(executor, work);
             }
-            while let Some((viewer, wake)) = connection.poll_watch() {
-                let queued = Arc::new(AtomicBool::new(false));
-                let task = executor.spawn(watch(
-                    viewer,
-                    wake,
-                    Arc::clone(&queued),
-                    self.events.clone(),
-                ));
-                watches.insert(viewer, (task, queued));
-            }
-            while let Some(viewer) = connection.poll_unwatch() {
-                watches.remove(&viewer);
-            }
+            self.watch_viewers(executor, &mut connection, &mut watches);
             match connection.hierarchy_feed() {
                 Some((generation, _))
                     if feed.as_ref().is_some_and(|(g, _)| *g == generation) => {
@@ -301,13 +347,7 @@ impl Driver {
                 }
                 None => feed = None,
             }
-            if writer_idle
-                && let Some(batches) = &self.batches
-                && let Some(transmit) =
-                    connection.poll_transmit(WRITE_BATCH_BYTES)
-            {
-                writer_idle = batches.try_send(transmit).is_err();
-            }
+            self.transmit(&mut connection, &mut writer_idle, now());
             if !reading
                 && connection.wants_input()
                 && let Some(permits) = &self.permits
@@ -360,6 +400,55 @@ impl Driver {
                     watches.remove(&viewer);
                     connection.viewer_ended(viewer, now());
                 }
+            }
+        }
+    }
+
+    /// Starts forwarding new viewers' wakes and stops forwarding ended
+    /// ones'.
+    fn watch_viewers(
+        &self,
+        executor: &LocalExecutor<'_>,
+        connection: &mut Connection,
+        watches: &mut HashMap<ViewerId, (Task<()>, Arc<AtomicBool>)>,
+    ) {
+        while let Some((viewer, wake)) = connection.poll_watch() {
+            let queued = Arc::new(AtomicBool::new(false));
+            let task = executor.spawn(watch(
+                viewer,
+                wake,
+                Arc::clone(&queued),
+                self.events.clone(),
+            ));
+            watches.insert(viewer, (task, queued));
+        }
+        while let Some(viewer) = connection.poll_unwatch() {
+            watches.remove(&viewer);
+        }
+    }
+
+    /// Writes what the connection has to send while the writer is idle:
+    /// at once when the socket takes it, else by handing the rest to the
+    /// writer thread.
+    fn transmit(
+        &self,
+        connection: &mut Connection,
+        writer_idle: &mut bool,
+        now: std::time::Duration,
+    ) {
+        while *writer_idle
+            && let Some(batches) = &self.batches
+            && let Some(transmit) = connection.poll_transmit(WRITE_BATCH_BYTES)
+        {
+            let Some(written) = send_now(&self.stream, &transmit, 0) else {
+                let _ = self.events.try_send(Event::WriteFailed);
+                return;
+            };
+            if written > 0 {
+                connection.transmitted(written, now);
+            }
+            if written < transmit.len() {
+                *writer_idle = batches.try_send((transmit, written)).is_err();
             }
         }
     }
