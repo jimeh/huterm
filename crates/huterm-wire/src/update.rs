@@ -773,12 +773,25 @@ impl RowBuilder {
     }
 
     fn full<R: UpdateRow>(&mut self, row: &R) -> Result<FullRow, EncodeError> {
+        let runs = self.runs(row)?;
         let TerminalRow {
             cells,
             wrapped,
             wrap_continuation,
             prompt,
         } = row.row();
+        Ok(FullRow {
+            wrapped: *wrapped,
+            wrap_continuation: *wrap_continuation,
+            prompt: *prompt,
+            runs,
+            texts: cells.iter().map(|cell| cell.text.clone()).collect(),
+        })
+    }
+
+    /// The runs of `row`'s cells, adding their styles to the table.
+    fn runs<R: UpdateRow>(&mut self, row: &R) -> Result<Vec<Run>, EncodeError> {
+        let TerminalRow { cells, .. } = row.row();
         if cells.len() != self.columns {
             return Err(EncodeError::Invalid("row width"));
         }
@@ -821,13 +834,7 @@ impl RowBuilder {
         if let Some((start, style, kind)) = open {
             push_runs(&mut runs, style, kind, &cells[start..]);
         }
-        Ok(FullRow {
-            wrapped: *wrapped,
-            wrap_continuation: *wrap_continuation,
-            prompt: *prompt,
-            runs,
-            texts: cells.iter().map(|cell| cell.text.clone()).collect(),
-        })
+        Ok(runs)
     }
 }
 
@@ -941,6 +948,388 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
         self.baseline = Some(current.clone());
         Ok(update)
     }
+}
+
+/// An update the encoder numbered and fixed against its baseline, but has
+/// not encoded: it holds only the snapshots it builds on, which core
+/// already shares, until [`Self::frames`] starts its message.
+#[derive(Debug)]
+pub struct PlannedUpdate<S = Arc<TerminalSnapshot>> {
+    viewer: ViewerId,
+    minor: u16,
+    seq: u64,
+    baseline: Option<(u64, S)>,
+    current: S,
+    credited: bool,
+    digest: bool,
+}
+
+impl<S> PlannedUpdate<S> {
+    /// The update's number.
+    #[must_use]
+    pub fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Whether the update spends a credit.
+    #[must_use]
+    pub fn credited(&self) -> bool {
+        self.credited
+    }
+
+    /// Whether the update is a complete snapshot.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.baseline.is_none()
+    }
+
+    /// The snapshot the update shows.
+    #[must_use]
+    pub fn current(&self) -> &S {
+        &self.current
+    }
+}
+
+impl<S: UpdateSource + Clone> UpdateEncoder<S> {
+    /// Numbers the next update from `current` and makes it the baseline of
+    /// the update after it, as [`Self::next`] does, but defers building and
+    /// encoding it to [`PlannedUpdate::frames`].
+    ///
+    /// # Errors
+    /// Refuses a snapshot whose grid is empty or past [`MAX_GRID_CELLS`],
+    /// or whose row count does not match its grid; nothing advances.
+    pub fn plan(
+        &mut self,
+        current: &S,
+        credited: bool,
+    ) -> Result<PlannedUpdate<S>, EncodeError> {
+        let metadata = current.metadata();
+        let size = metadata.size;
+        if size.columns == 0 || size.rows == 0 || size.cells() > MAX_GRID_CELLS
+        {
+            return Err(EncodeError::LimitExceeded { field: "grid size" });
+        }
+        if current.rows().len() != usize::from(size.rows) {
+            return Err(EncodeError::Invalid("row count"));
+        }
+        let baseline = self.baseline.take().filter(|baseline| {
+            let previous = baseline.metadata();
+            previous.geometry_revision == metadata.geometry_revision
+                && previous.size == size
+        });
+        let digest =
+            baseline.is_none() || self.deltas + 1 == UPDATE_DIGEST_INTERVAL;
+        self.deltas = if digest { 0 } else { self.deltas + 1 };
+        let planned = PlannedUpdate {
+            viewer: self.viewer,
+            minor: self.minor,
+            seq: self.seq + 1,
+            baseline: baseline.map(|baseline| (self.seq, baseline)),
+            current: current.clone(),
+            credited,
+            digest,
+        };
+        self.seq += 1;
+        self.baseline = Some(current.clone());
+        Ok(planned)
+    }
+}
+
+/// One row operation of a streamed update.
+#[derive(Debug)]
+enum FrameOp {
+    /// `count` baseline rows from `start`.
+    Keep { start: u16, count: u16 },
+    /// The current snapshot's row `row` in full, as the runs in
+    /// `runs`, taking `len` bytes with its tag.
+    Full {
+        row: usize,
+        runs: std::ops::Range<usize>,
+        len: usize,
+    },
+}
+
+impl FrameOp {
+    fn len(&self) -> usize {
+        match self {
+            Self::Keep { start, count } => {
+                1 + varint_len(u64::from(*start))
+                    + varint_len(u64::from(*count))
+            }
+            Self::Full { len, .. } => *len,
+        }
+    }
+}
+
+/// An update's message, encoded one frame at a time straight from its
+/// snapshot: the header and style table first, then each row operation as
+/// the frames reach it. No [`TerminalUpdate`] value and no whole-message
+/// buffer exist; between frames it holds at most the rest of one row.
+#[derive(Debug)]
+pub struct UpdateFrames<S = Arc<TerminalSnapshot>> {
+    current: S,
+    columns: usize,
+    head: Vec<u8>,
+    ops: Vec<FrameOp>,
+    runs: Vec<Run>,
+    len: usize,
+    emitted: usize,
+    op: usize,
+    pending: Vec<u8>,
+    pending_at: usize,
+}
+
+impl<S: UpdateSource> PlannedUpdate<S> {
+    /// Builds the update's rows and style table and sizes its message, the
+    /// kind varint included, without encoding a row.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass that builds runs, digest, header, and sizes"
+    )]
+    ///
+    /// # Errors
+    /// Refuses a row whose width does not match the grid, a cell text past
+    /// [`MAX_CELL_TEXT_BYTES`], an identity of another scope, and a message
+    /// past the cap its grid allows.
+    pub fn frames(
+        self,
+        scope: IdScope,
+    ) -> Result<UpdateFrames<S>, EncodeError> {
+        let Self {
+            viewer,
+            minor,
+            seq,
+            baseline,
+            current,
+            credited,
+            digest,
+        } = self;
+        let metadata = current.metadata();
+        let size = metadata.size;
+        let columns = usize::from(size.columns);
+        let keep: KeyMap<usize, u16> = baseline
+            .as_ref()
+            .map(|(_, baseline)| {
+                let mut keep = KeyMap::default();
+                for (index, row) in baseline.rows().iter().enumerate() {
+                    keep.entry(row.identity())
+                        .or_insert(u16::try_from(index).unwrap_or(u16::MAX));
+                }
+                keep
+            })
+            .unwrap_or_default();
+        let mut builder = RowBuilder {
+            minor,
+            columns,
+            styles: Vec::new(),
+            index: HashMap::default(),
+            last: None,
+        };
+        let mut ops: Vec<FrameOp> = Vec::new();
+        let mut runs: Vec<Run> = Vec::new();
+        for (index, row) in current.rows().iter().enumerate() {
+            if let Some(kept) = keep.get(&row.identity()) {
+                match ops.last_mut() {
+                    Some(FrameOp::Keep { start, count })
+                        if u32::from(*start) + u32::from(*count)
+                            == u32::from(*kept) =>
+                    {
+                        *count += 1;
+                    }
+                    _ => ops.push(FrameOp::Keep {
+                        start: *kept,
+                        count: 1,
+                    }),
+                }
+                continue;
+            }
+            let first = runs.len();
+            runs.extend(builder.runs(row)?);
+            let len = full_row_len(row.row(), &runs[first..]);
+            ops.push(FrameOp::Full {
+                row: index,
+                runs: first..runs.len(),
+                len,
+            });
+        }
+        let digest =
+            digest.then(|| view_digest(&metadata, current.rows(), minor));
+        let mut header = Writer::new();
+        write_header(
+            &mut header,
+            scope,
+            Header {
+                viewer,
+                seq,
+                baseline: baseline.as_ref().map(|(seq, _)| *seq),
+                credited,
+                digest,
+                metadata: &metadata,
+            },
+        )?;
+        header.seq(
+            builder.styles.iter(),
+            size.cells(),
+            "style table",
+            write_style,
+        )?;
+        header.usize(ops.len());
+        let header = header.into_bytes();
+        let body = header.len() + ops.iter().map(FrameOp::len).sum::<usize>();
+        let kind = crate::caps::MessageKind::TerminalUpdate.number();
+        let mut head = Writer::new();
+        head.u64(kind);
+        head.usize(body);
+        let mut head = head.into_bytes();
+        head.extend_from_slice(&header);
+        let len = head.len() + body - header.len();
+        let cap = crate::caps::MessageCaps::for_minor(minor)
+            .update_cap(size)
+            .ok_or(EncodeError::LimitExceeded { field: "grid size" })?;
+        if len > cap {
+            return Err(EncodeError::LimitExceeded { field: "message" });
+        }
+        Ok(UpdateFrames {
+            current,
+            columns,
+            head,
+            ops,
+            runs,
+            len,
+            emitted: 0,
+            op: 0,
+            pending: Vec::new(),
+            pending_at: 0,
+        })
+    }
+}
+
+/// The bytes a full row operation takes: its tag, its record's length
+/// prefix, and its record.
+fn full_row_len(row: &TerminalRow, runs: &[Run]) -> usize {
+    let mut rest = row.cells.as_slice();
+    let mut body = 3 + varint_len(runs.len() as u64);
+    for run in runs {
+        let (cells, after) = rest.split_at(run.cells.min(rest.len()));
+        rest = after;
+        body += run_len(*run, cells);
+    }
+    1 + varint_len(body as u64) + body
+}
+
+impl<S: UpdateSource> UpdateFrames<S> {
+    /// The message's whole length, its kind varint included.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the message is empty; never true for a valid update.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Bytes not yet produced.
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.len - self.emitted
+    }
+
+    /// Appends up to `max` of the message's next bytes to `out`, returning
+    /// how many it appended.
+    ///
+    /// # Errors
+    /// Returns [`EncodeError::Invalid`] when a row encodes to another
+    /// length than its sizing pass computed, which would corrupt the
+    /// stream; the message must then be abandoned.
+    pub fn fill(
+        &mut self,
+        out: &mut Vec<u8>,
+        max: usize,
+    ) -> Result<usize, EncodeError> {
+        let mut appended = 0;
+        while appended < max {
+            if self.emitted < self.head.len() {
+                let take = (self.head.len() - self.emitted).min(max - appended);
+                out.extend_from_slice(
+                    &self.head[self.emitted..self.emitted + take],
+                );
+                self.emitted += take;
+                appended += take;
+                continue;
+            }
+            if self.pending_at < self.pending.len() {
+                let take =
+                    (self.pending.len() - self.pending_at).min(max - appended);
+                out.extend_from_slice(
+                    &self.pending[self.pending_at..self.pending_at + take],
+                );
+                self.pending_at += take;
+                self.emitted += take;
+                appended += take;
+                continue;
+            }
+            let Some(op) = self.ops.get(self.op) else {
+                break;
+            };
+            self.op += 1;
+            let mut w = Writer::reusing(std::mem::take(&mut self.pending));
+            match op {
+                FrameOp::Keep { start, count } => {
+                    w.tag(0);
+                    w.u16(*start);
+                    w.u16(*count);
+                }
+                FrameOp::Full { row, runs, len: _ } => {
+                    let row = self.current.rows()[*row].row();
+                    w.tag(1);
+                    write_cell_row(
+                        &mut w,
+                        row,
+                        &self.runs[runs.clone()],
+                        self.columns,
+                    )?;
+                }
+            }
+            if w.len() != op.len() {
+                return Err(EncodeError::Invalid("update row length"));
+            }
+            self.pending = w.into_bytes();
+            self.pending_at = 0;
+        }
+        if self.emitted == self.len && self.op < self.ops.len() {
+            return Err(EncodeError::Invalid("update length"));
+        }
+        Ok(appended)
+    }
+}
+
+/// Writes a snapshot row's record from its cells and the runs the row
+/// builder found for it, as [`encode_row`] writes a full row.
+fn write_cell_row(
+    w: &mut Writer,
+    row: &TerminalRow,
+    runs: &[Run],
+    columns: usize,
+) -> Result<(), EncodeError> {
+    let TerminalRow {
+        cells,
+        wrapped,
+        wrap_continuation,
+        prompt,
+    } = row;
+    w.record(|w| {
+        w.bool(*wrapped);
+        w.bool(*wrap_continuation);
+        w.tag(u64::from(prompt_tag(*prompt)));
+        let mut rest = cells.as_slice();
+        w.seq(runs.iter(), columns, "runs", |w, run| {
+            let (cells, after) = rest.split_at(run.cells.min(rest.len()));
+            rest = after;
+            write_run(w, *run, cells, columns)
+        })
+    })
 }
 
 /// What a client does after disposing of an update.
@@ -1318,6 +1707,54 @@ fn write_update(
         styles,
         rows,
     } = update;
+    let size = metadata.size;
+    w.record(|w| {
+        write_header(
+            w,
+            scope,
+            Header {
+                viewer: *viewer,
+                seq: *seq,
+                baseline: *baseline,
+                credited: *credited,
+                digest: *digest,
+                metadata,
+            },
+        )?;
+        w.seq(styles.iter(), size.cells(), "style table", write_style)?;
+        let ops = wire_ops(rows);
+        w.seq(ops.iter(), usize::from(size.rows), "rows", |w, op| {
+            write_op(w, op, usize::from(size.columns))
+        })
+    })
+}
+
+/// An update's fields before its style table.
+#[derive(Clone, Copy)]
+struct Header<'a> {
+    viewer: ViewerId,
+    seq: u64,
+    baseline: Option<u64>,
+    credited: bool,
+    digest: Option<u64>,
+    metadata: &'a ViewMetadata,
+}
+
+/// Writes an update's fields before its style table: the grid first, so a
+/// receiver derives the cap from a prefix.
+fn write_header(
+    w: &mut Writer,
+    scope: IdScope,
+    header: Header<'_>,
+) -> Result<(), EncodeError> {
+    let Header {
+        viewer,
+        seq,
+        baseline,
+        credited,
+        digest,
+        metadata,
+    } = header;
     let ViewMetadata {
         generation,
         revision,
@@ -1330,47 +1767,40 @@ fn write_update(
         cursor_color,
         default_background,
     } = metadata;
-    w.record(|w| {
-        w.u16(size.columns);
-        w.u16(size.rows);
-        w.id(scope, *viewer)?;
-        w.u64(*seq);
-        w.option(*baseline, |w, baseline| {
-            w.u64(baseline);
+    w.u16(size.columns);
+    w.u16(size.rows);
+    w.id(scope, viewer)?;
+    w.u64(seq);
+    w.option(baseline, |w, baseline| {
+        w.u64(baseline);
+        Ok(())
+    })?;
+    w.bool(credited);
+    w.option(digest, |w, digest| {
+        w.fixed(&digest.to_le_bytes());
+        Ok(())
+    })?;
+    w.u64(*generation);
+    w.u64(*revision);
+    w.u64(*geometry_revision);
+    w.option(*cursor, |w, Cursor { row, column, shape }| {
+        w.record(|w| {
+            w.u16(row);
+            w.u16(column);
+            w.tag(u64::from(shape_tag(shape)));
             Ok(())
-        })?;
-        w.bool(*credited);
-        w.option(*digest, |w, digest| {
-            w.fixed(&digest.to_le_bytes());
-            Ok(())
-        })?;
-        w.u64(*generation);
-        w.u64(*revision);
-        w.u64(*geometry_revision);
-        w.option(*cursor, |w, Cursor { row, column, shape }| {
-            w.record(|w| {
-                w.u16(row);
-                w.u16(column);
-                w.tag(u64::from(shape_tag(shape)));
-                Ok(())
-            })
-        })?;
-        write_modes(w, *modes)?;
-        w.usize(viewport.bottom_offset);
-        w.usize(*history_size);
-        w.option(*cursor_color, |w, rgb| {
-            write_rgb(w, rgb);
-            Ok(())
-        })?;
-        w.option(*default_background, |w, rgb| {
-            write_rgb(w, rgb);
-            Ok(())
-        })?;
-        w.seq(styles.iter(), size.cells(), "style table", write_style)?;
-        let ops = wire_ops(rows);
-        w.seq(ops.iter(), usize::from(size.rows), "rows", |w, op| {
-            write_op(w, op, usize::from(size.columns))
         })
+    })?;
+    write_modes(w, *modes)?;
+    w.usize(viewport.bottom_offset);
+    w.usize(*history_size);
+    w.option(*cursor_color, |w, rgb| {
+        write_rgb(w, rgb);
+        Ok(())
+    })?;
+    w.option(*default_background, |w, rgb| {
+        write_rgb(w, rgb);
+        Ok(())
     })
 }
 
@@ -1463,74 +1893,133 @@ fn encode_row(
     })
 }
 
+/// Something that holds one cell's text: the text itself in a full row, or
+/// the cell in a snapshot row the streaming encoder reads directly.
+trait TextOf {
+    fn text_of(&self) -> &CellText;
+}
+
+impl TextOf for CellText {
+    fn text_of(&self) -> &CellText {
+        self
+    }
+}
+
+impl TextOf for Cell {
+    fn text_of(&self) -> &CellText {
+        &self.text
+    }
+}
+
+/// A run's form and, when it is a fill, its one text: the choice
+/// [`write_run`] makes and [`run_len`] sizes.
+fn run_form<T: TextOf>(run: Run, texts: &[T]) -> (u64, Option<usize>) {
+    if run.wide {
+        return (FORM_WIDE, packed_len(texts.iter().step_by(2)));
+    }
+    if let [first, rest @ ..] = texts
+        && texts.len() >= FILL_CELLS
+        && packs(first.text_of())
+        && rest.iter().all(|text| text.text_of() == first.text_of())
+    {
+        return (FORM_FILL, packed_len([first]));
+    }
+    match packed_len(texts.iter()) {
+        Some(len) => (FORM_PACKED, Some(len)),
+        None => (FORM_TEXTS, None),
+    }
+}
+
 /// Writes a run behind a header of its style index and form: a wide run
 /// as its characters, packed; at least [`FILL_CELLS`] identical cells that
 /// pack as a count and one packed cell; other cells that all pack as one
 /// packed string; and any other run as one length-prefixed text per cell.
-fn write_run(
+fn write_run<T: TextOf>(
     w: &mut Writer,
     run: Run,
-    texts: &[CellText],
+    texts: &[T],
     columns: usize,
 ) -> Result<(), EncodeError> {
     let header = u64::from(run.style) << 2;
-    if run.wide {
-        w.u64(header | FORM_WIDE);
-        let characters = texts.iter().step_by(2);
-        return if write_packed(w, characters.len(), characters)? {
-            Ok(())
-        } else {
-            Err(EncodeError::Invalid("run"))
-        };
+    match run_form(run, texts) {
+        (FORM_WIDE, Some(_)) => {
+            w.u64(header | FORM_WIDE);
+            let characters = texts.iter().step_by(2);
+            write_packed(w, characters.len(), characters)
+        }
+        (FORM_WIDE, None) => Err(EncodeError::Invalid("run")),
+        (FORM_FILL, _) => {
+            w.u64(header | FORM_FILL);
+            w.usize(texts.len());
+            write_packed(w, 1, &texts[..1])
+        }
+        (FORM_PACKED, _) => {
+            w.u64(header | FORM_PACKED);
+            write_packed(w, texts.len(), texts)
+        }
+        _ => {
+            w.u64(header | FORM_TEXTS);
+            w.seq(texts.iter(), columns, "run", |w, text| {
+                w.str(text.text_of(), MAX_CELL_TEXT_BYTES, "cell text")
+            })
+        }
     }
-    if let [first, rest @ ..] = texts
-        && texts.len() >= FILL_CELLS
-        && packs(first)
-        && rest.iter().all(|text| text == first)
-    {
-        w.u64(header | FORM_FILL);
-        w.usize(texts.len());
-        write_packed(w, 1, [first])?;
-        return Ok(());
+}
+
+/// The bytes [`write_run`] writes for `run`.
+fn run_len<T: TextOf>(run: Run, texts: &[T]) -> usize {
+    let header = varint_len(u64::from(run.style) << 2 | 3);
+    match run_form(run, texts) {
+        (FORM_FILL, Some(packed)) => {
+            header
+                + varint_len(texts.len() as u64)
+                + varint_len(packed as u64)
+                + packed
+        }
+        (_, Some(packed)) => header + varint_len(packed as u64) + packed,
+        _ => {
+            header
+                + varint_len(texts.len() as u64)
+                + texts
+                    .iter()
+                    .map(|text| {
+                        let len = text.text_of().len();
+                        varint_len(len as u64) + len
+                    })
+                    .sum::<usize>()
+        }
     }
-    let start = w.len();
-    w.u64(header | FORM_PACKED);
-    if write_packed(w, texts.len(), texts)? {
-        return Ok(());
-    }
-    w.truncate(start);
-    w.u64(header | FORM_TEXTS);
-    w.seq(texts.iter(), columns, "run", |w, text| {
-        w.str(text, MAX_CELL_TEXT_BYTES, "cell text")
+}
+
+/// The byte length of `texts` as one packed string, or `None` when one of
+/// them does not pack.
+fn packed_len<'a, T: TextOf + 'a>(
+    texts: impl IntoIterator<Item = &'a T>,
+) -> Option<usize> {
+    texts.into_iter().try_fold(0, |len, text| {
+        let text = text.text_of();
+        packs(text).then(|| len + text.len().max(1))
     })
 }
 
-/// Writes `count` texts as one length-prefixed UTF-8 string, one scalar per
-/// cell and U+0000 for no text. Returns `false`, with the bytes written so
-/// far left for the caller to discard, at a text that does not pack.
-fn write_packed<'a>(
+/// Writes `count` texts, each of which packs, as one length-prefixed UTF-8
+/// string, one scalar per cell and U+0000 for no text.
+fn write_packed<'a, T: TextOf + 'a>(
     w: &mut Writer,
     count: usize,
-    texts: impl IntoIterator<Item = &'a CellText>,
-) -> Result<bool, EncodeError> {
-    let mut packed = true;
+    texts: impl IntoIterator<Item = &'a T>,
+) -> Result<(), EncodeError> {
     // A cell takes at least a byte, so the length rarely needs more room
     // than the cell count does.
     w.length_prefixed(varint_len(count as u64), |w| {
         for text in texts {
-            match text.as_bytes() {
+            match text.text_of().as_bytes() {
                 [] => w.fixed(&[0]),
-                ascii @ [1..=0x7f] => w.fixed(ascii),
-                bytes if packs(text) => w.fixed(bytes),
-                _ => {
-                    packed = false;
-                    break;
-                }
+                bytes => w.fixed(bytes),
             }
         }
         Ok(())
-    })?;
-    Ok(packed)
+    })
 }
 
 /// Reads a packed string of at most `cells` scalars, passing each cell's

@@ -29,12 +29,17 @@
 //! sends with its own `RequestId` from 1, so a query sent again on the next
 //! connection keeps its call and gets a new request number.
 
+mod viewers;
+
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Duration;
 
 use huterm_protocol::{
-    HierarchyState, RuntimeId, ServerIncarnation, StreamId, Touched,
+    HierarchyState, RuntimeId, ServerIncarnation, StreamId, Touched, ViewerId,
 };
+
+pub use self::viewers::ViewerEvent;
+use self::viewers::{Carried, ClientViewer, EndedViewers, Subscribing};
 use huterm_wire::caps::{Direction, MessageCaps, MessageKind};
 use huterm_wire::codec::{EncodeError, IdScope, Reader, Writer};
 use huterm_wire::error::{ErrorCode, WireError};
@@ -191,6 +196,8 @@ pub enum ClientEvent {
         /// How.
         resolution: Resolution,
     },
+    /// Something happened to a viewer.
+    Viewer(ViewerEvent),
     /// The native client's event channel filled, so it dropped the events
     /// after the last one it delivered: re-read the projection, and the
     /// connection state if it matters, as after core's subscription lag.
@@ -215,6 +222,9 @@ pub struct SessionStats {
     /// Checkpoints dropped at [`MAX_PENDING_CHECKPOINTS`], each left to a
     /// snapshot that covers it.
     pub checkpoints_dropped: u64,
+    /// `ResyncViewer` messages the session sent after a delta did not
+    /// apply or its digest differed.
+    pub viewer_resyncs: u64,
 }
 
 #[derive(Debug)]
@@ -304,6 +314,12 @@ pub struct ClientSession {
     connection: Option<Connection>,
     connected: Option<Connected>,
     events: VecDeque<ClientEvent>,
+    viewers: BTreeMap<ViewerId, ClientViewer>,
+    subscribing: HashMap<CallId, Subscribing>,
+    /// Status baselines and final views kept for the current incarnation.
+    carried: Carried,
+    /// Viewers that ended on the current connection.
+    ended: EndedViewers,
 }
 
 impl ClientSession {
@@ -345,6 +361,10 @@ impl ClientSession {
             connection: None,
             connected: None,
             events: VecDeque::new(),
+            viewers: BTreeMap::new(),
+            subscribing: HashMap::new(),
+            carried: Carried::default(),
+            ended: EndedViewers::default(),
         }
     }
 
@@ -503,7 +523,19 @@ impl ClientSession {
     /// mutation or viewer request issued without a connection fails
     /// `Disconnected`.
     pub fn request(&mut self, request: Request, now: Duration) -> CallId {
+        let viewer = request.viewer();
         let call = self.issue(request, false);
+        if let Some(viewer) = viewer {
+            // In order with the viewer's input and focus.
+            self.queue.retain(|queued| *queued != call);
+            if !self.queue_on_viewer(viewer, call) {
+                let error = self.unknown_viewer(viewer);
+                self.finish(call, Err(error));
+            }
+            self.flush_queue();
+            self.refresh_progress(now);
+            return call;
+        }
         if self.connection.is_none()
             && self.calls[&call].kind.retry_class() != RetryClass::Query
         {
@@ -537,6 +569,14 @@ impl ClientSession {
             self.queue.iter().position(|queued| *queued == call)
         {
             self.queue.remove(index);
+            self.finish(
+                call,
+                Err(WireError::new(
+                    ErrorCode::Cancelled,
+                    "cancelled before it was sent",
+                )),
+            );
+        } else if self.unqueue(call) {
             self.finish(
                 call,
                 Err(WireError::new(
@@ -728,6 +768,31 @@ impl ClientSession {
             MessageKind::HierarchyEvent => {
                 self.event(&assembled.bytes, context);
             }
+            MessageKind::LargeResult => {
+                match decode_message(
+                    &assembled.bytes,
+                    Direction::ServerToClient,
+                    context,
+                ) {
+                    Ok(Message::LargeResult(result)) => self.result(result),
+                    Ok(_) => self.violation("a result that does not decode"),
+                    Err(error) => self.violation(&error.to_string()),
+                }
+            }
+            MessageKind::TerminalUpdate
+            | MessageKind::ViewerStatus
+            | MessageKind::InputAck
+            | MessageKind::ViewerStopped
+            | MessageKind::ViewerRevoked => {
+                match decode_message(
+                    &assembled.bytes,
+                    Direction::ServerToClient,
+                    context,
+                ) {
+                    Ok(message) => self.viewer_message(message),
+                    Err(error) => self.violation(&error.to_string()),
+                }
+            }
             kind => self.violation(&format!("unexpected {kind:?}")),
         }
     }
@@ -830,6 +895,8 @@ impl ClientSession {
     fn change_stream(&mut self, stream: StreamId) {
         self.stream = Some(stream);
         self.projection = None;
+        // A new incarnation's terminals are new: no baseline carries over.
+        self.carried = Carried::default();
         self.checkpoints.clear();
         self.uncovered = None;
         let events = &mut self.events;
@@ -885,7 +952,14 @@ impl ClientSession {
                 self.held.push(Held { seq, call, success });
                 self.release_held();
             }
-            outcome => self.finish(call, outcome),
+            Ok(success) if kind == RequestKind::SubscribeTerminal => {
+                self.finish(call, Ok(success.clone()));
+                self.subscribed(call, &success);
+            }
+            outcome => {
+                self.subscribing.remove(&call);
+                self.finish(call, outcome);
+            }
         }
     }
 
@@ -1089,9 +1163,14 @@ impl ClientSession {
         self.events.push_back(ClientEvent::Result { call, outcome });
     }
 
-    /// Sends queued requests while the advertised in-flight limit has
-    /// room.
+    /// Sends queued requests, then viewers' waiting messages, while the
+    /// advertised in-flight limit has room.
     fn flush_queue(&mut self) {
+        self.flush_requests();
+        self.flush_viewers();
+    }
+
+    fn flush_requests(&mut self) {
         loop {
             let Some(connection) = self.connection.as_ref() else {
                 return;
@@ -1191,6 +1270,7 @@ impl ClientSession {
         }
         self.connected = None;
         self.resyncing = false;
+        self.carry_viewers();
         self.checkpoints.clear();
         self.uncovered = None;
         self.held.clear();
@@ -1287,7 +1367,7 @@ fn encode_request_message(
 }
 
 /// The local refusal for a request that does not encode.
-fn refusal(error: EncodeError) -> WireError {
+pub(crate) fn refusal(error: EncodeError) -> WireError {
     let code = match error {
         EncodeError::LimitExceeded { .. } => ErrorCode::LimitExceeded,
         EncodeError::StaleTarget => ErrorCode::StaleTarget,

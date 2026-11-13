@@ -49,6 +49,9 @@ pub const CLIPBOARD_PAYLOAD_LIMIT: usize = 64 << 20;
 /// viewer's whole input budget, as for a paste.
 pub const INPUT_TEXT_PAYLOAD_LIMIT: usize = VIEWER_INPUT_BUDGET;
 
+/// The longest selection text one `LargeResult` carries.
+pub const SELECTION_PAYLOAD_LIMIT: usize = 64 << 20;
+
 /// The longest text of one character chord, and of its layout text. A chord
 /// produces a few characters; a sender refuses a longer one locally.
 pub const MAX_CHARACTER_TEXT_BYTES: usize = 256;
@@ -119,11 +122,21 @@ pub enum MessageKind {
     Result,
     /// A client's request to abandon a request that has not started.
     Cancel,
+    /// A viewer's focus report, ordered with its input.
+    Focus,
+    /// The server's notice that a viewer's terminal stopped, after its
+    /// final status and complete final update.
+    ViewerStopped,
+    /// The server's notice that a viewer's authority was withdrawn.
+    ViewerRevoked,
+    /// The result of a request whose result may exceed the `Result` cap,
+    /// such as selection text, on the large-result lane.
+    LargeResult,
 }
 
 impl MessageKind {
     /// Every kind, in number order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 21] = [
         Self::Hello,
         Self::Welcome,
         Self::Reject,
@@ -141,6 +154,10 @@ impl MessageKind {
         Self::Request,
         Self::Result,
         Self::Cancel,
+        Self::Focus,
+        Self::ViewerStopped,
+        Self::ViewerRevoked,
+        Self::LargeResult,
     ];
 
     /// The kind's stable number.
@@ -164,6 +181,10 @@ impl MessageKind {
             Self::Request => 14,
             Self::Result => 15,
             Self::Cancel => 16,
+            Self::Focus => 17,
+            Self::ViewerStopped => 18,
+            Self::ViewerRevoked => 19,
+            Self::LargeResult => 20,
         }
     }
 
@@ -183,7 +204,8 @@ impl MessageKind {
             | Self::Credit
             | Self::ResyncViewer
             | Self::Request
-            | Self::Cancel => Direction::ClientToServer,
+            | Self::Cancel
+            | Self::Focus => Direction::ClientToServer,
             Self::Welcome
             | Self::Reject
             | Self::HierarchySnapshot
@@ -193,7 +215,10 @@ impl MessageKind {
             | Self::TerminalUpdate
             | Self::ViewerStatus
             | Self::InputAck
-            | Self::Result => Direction::ServerToClient,
+            | Self::Result
+            | Self::ViewerStopped
+            | Self::ViewerRevoked
+            | Self::LargeResult => Direction::ServerToClient,
         }
     }
 
@@ -254,10 +279,16 @@ impl MessageCaps {
             MessageKind::Input => message_cap(kind, input_record_cap()),
             MessageKind::Request => message_cap(kind, request_record_cap()),
             MessageKind::Result => message_cap(kind, result_record_cap()),
+            MessageKind::LargeResult => {
+                message_cap(kind, large_result_record_cap())
+            }
             MessageKind::InputAck
             | MessageKind::Credit
             | MessageKind::ResyncViewer
-            | MessageKind::Cancel => SMALL_MESSAGE_CAP,
+            | MessageKind::Cancel
+            | MessageKind::Focus
+            | MessageKind::ViewerStopped
+            | MessageKind::ViewerRevoked => SMALL_MESSAGE_CAP,
         })
     }
 
@@ -619,14 +650,44 @@ const fn assessment_bytes() -> usize {
 const COMMITTED_BYTES: usize =
     1 + 1 + MAX_VARINT_BYTES + 1 + 8 + APPENDED_HEADROOM;
 
-/// A result record: the request identity and outcome tag, then a success
-/// at its largest response, a close assessment, or an error at its
-/// longest message.
-const fn result_record_cap() -> usize {
-    let success = record_prefix(1 << 16)
+/// A link lookup at its limits: a destination, a source tag, and every
+/// cell with its position, its text's length prefix, and the cells' shared
+/// text limit.
+const fn link_bytes() -> usize {
+    use crate::viewer::{
+        MAX_LINK_CELLS, MAX_LINK_DESTINATION_BYTES, MAX_LINK_TEXT_BYTES,
+    };
+    let cell = 2 * varint_len(u32::MAX as u64)
+        + varint_len(MAX_CELL_TEXT_BYTES as u64);
+    1 + 1
+        + record_prefix(
+            MAX_LINK_DESTINATION_BYTES + MAX_LINK_CELLS * (cell + 1),
+        )
+        + string(MAX_LINK_DESTINATION_BYTES)
         + 1
-        + record_prefix(1 << 16)
-        + assessment_bytes()
+        + varint_len(MAX_LINK_CELLS as u64)
+        + MAX_LINK_CELLS * cell
+        + MAX_LINK_TEXT_BYTES
+        + APPENDED_HEADROOM
+}
+
+/// The largest response a `Result` carries: a close assessment, a viewer
+/// with its terminal's status, or a snapshot's link.
+const fn response_bytes() -> usize {
+    let assessment = assessment_bytes();
+    let viewer = MAX_VARINT_BYTES + status_record_cap();
+    let link = link_bytes();
+    max(max(assessment, viewer), link)
+}
+
+/// A result record: the request identity and outcome tag, then a success
+/// at its largest response, or an error at its longest message.
+const fn result_record_cap() -> usize {
+    let response = response_bytes();
+    let success = record_prefix(response + (1 << 16))
+        + 1
+        + record_prefix(response)
+        + response
         + APPENDED_HEADROOM
         + COMMITTED_BYTES
         + APPENDED_HEADROOM;
@@ -636,6 +697,23 @@ const fn result_record_cap() -> usize {
         + string(MAX_ERROR_MESSAGE_BYTES)
         + APPENDED_HEADROOM;
     APPENDED_HEADROOM + MAX_VARINT_BYTES + 1 + max(success, error)
+}
+
+/// A large result record: a result whose success is selection text at
+/// [`SELECTION_PAYLOAD_LIMIT`].
+const fn large_result_record_cap() -> usize {
+    let text = 1 + string(SELECTION_PAYLOAD_LIMIT);
+    let success = record_prefix(text + (1 << 16))
+        + 1
+        + record_prefix(text)
+        + text
+        + APPENDED_HEADROOM
+        + COMMITTED_BYTES
+        + APPENDED_HEADROOM;
+    max(
+        result_record_cap(),
+        APPENDED_HEADROOM + MAX_VARINT_BYTES + 1 + success,
+    )
 }
 
 /// The most bytes of unfinished client messages a server holds: every

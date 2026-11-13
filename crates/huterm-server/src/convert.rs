@@ -128,3 +128,57 @@ pub(crate) fn opposite(
         core::RestoreDirection::Redo => core::RestoreDirection::Undo,
     }
 }
+
+/// Core viewer options for a remote viewer: what the client asked for, with
+/// the viewer's own input budget so one connection's paste cannot refuse
+/// another's keystrokes. Host effects arrive with slice 4.
+pub(crate) fn viewer_options(
+    options: huterm_wire::viewer::SubscribeOptions,
+) -> huterm_core::ViewerOptions {
+    let huterm_wire::viewer::SubscribeOptions {
+        capabilities,
+        focused,
+        geometry,
+        presentation,
+        spawned,
+    } = options;
+    huterm_core::ViewerOptions {
+        capabilities: huterm_protocol::ViewerCapabilities {
+            host_effects: false,
+            ..capabilities
+        },
+        host_effects: None,
+        focused,
+        geometry,
+        presentation: presentation.map(|presentation| *presentation),
+        spawned,
+        input_budget: Some(huterm_wire::caps::VIEWER_INPUT_BUDGET),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use huterm_protocol::ViewerCapabilities;
+    use huterm_wire::viewer::SubscribeOptions;
+
+    use super::*;
+
+    #[test]
+    fn a_remote_viewer_gets_an_input_budget_of_its_own_and_no_host_effects() {
+        let options = viewer_options(SubscribeOptions {
+            capabilities: ViewerCapabilities::ALL,
+            focused: true,
+            geometry: None,
+            presentation: None,
+            spawned: false,
+        });
+        // One connection's paste then cannot refuse another connection's
+        // keystrokes; core's viewer tests cover the budget itself.
+        assert_eq!(
+            options.input_budget,
+            Some(huterm_wire::caps::VIEWER_INPUT_BUDGET)
+        );
+        assert!(!options.capabilities.host_effects);
+        assert!(options.host_effects.is_none());
+    }
+}

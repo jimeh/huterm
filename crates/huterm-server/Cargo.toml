@@ -18,6 +18,7 @@ test-support = []
 
 [dependencies]
 async-channel.workspace = true
+futures-lite.workspace = true
 huterm-core.workspace = true
 huterm-protocol.workspace = true
 huterm-wire.workspace = true
@@ -26,7 +27,9 @@ huterm-wire.workspace = true
 async-executor.workspace = true
 async-io.workspace = true
 blocking.workspace = true
-futures-lite.workspace = true
+# The socket is non-blocking, so the driver writes what the socket takes at
+# once and the reader and writer threads wait with `poll`.
+nix.workspace = true
 
 [dev-dependencies]
 # The contract tests and the IPC benchmark drive the server through the

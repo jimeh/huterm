@@ -243,6 +243,11 @@ run = "bash scripts/fuzz-wire.sh"
 description = "Run the runtime IPC design simulation over many seeds per scenario"
 run = "cargo run --quiet --locked --release -p huterm-ipc-sim --"
 
+[tasks."faults:ipc"]
+depends = ["ghostty:prepare"]
+description = "Run seeded fault injection over the real IPC server and client (optional SEEDS, or SCENARIO SEED to replay)"
+run = "bash scripts/faults-ipc.sh"
+
 [tasks.check]
 description = "Run fast deterministic local checks"
 depends = ["format:check", "lint", "lint:test-order", "lint:docs", "lint:agents", "flakes:check", "architecture", "check:wasm", "check:scripts", "schema:check", "ui-icons:check", "ghostty:bindings:check"]
@@ -678,19 +683,20 @@ esac
 
 [tasks."bench:ipc"]
 depends = ["ghostty:prepare"]
-description = "Measure runtime IPC request round trips and hierarchy event latency over a Unix socket pair"
+description = "Measure runtime IPC round trips, hierarchy event latency, and remote viewer keystroke, output, and flood latency over a Unix socket pair"
 run = '''
 set -eu
-output=$(bash scripts/build-exec.sh cargo test --release --locked -p huterm-server --lib benchmark::ipc_benchmark \
-  -- --ignored --nocapture --exact 2>&1) || {
+# One benchmark at a time, so neither disturbs the other's timings.
+output=$(bash scripts/build-exec.sh cargo test --release --locked -p huterm-server --lib benchmark::ipc \
+  -- --ignored --nocapture --test-threads=1 2>&1) || {
   printf '%s\n' "$output"
   exit 1
 }
 printf '%s\n' "$output"
 # A renamed or moved benchmark would otherwise run no test and pass.
 case "$output" in
-  *"test result: ok. 1 passed"*) ;;
-  *) echo "bench:ipc: ipc_benchmark ran no test" >&2; exit 1 ;;
+  *"test result: ok. 2 passed"*) ;;
+  *) echo "bench:ipc: ipc_benchmark and ipc_viewer_benchmark did not both run" >&2; exit 1 ;;
 esac
 '''
 

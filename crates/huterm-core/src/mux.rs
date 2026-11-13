@@ -24,7 +24,7 @@ use huterm_protocol::{
     AttachmentId, CaptureError, HierarchyEvent, LayoutError,
     MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, NodeId, PaneId, PaneInfo, PaneLayout,
     RuntimeId, SessionId, SplitDirection, SplitId, TabId, TerminalCommand,
-    TerminalId, WorkspaceId,
+    TerminalId, TerminalStatus, WorkspaceId,
 };
 use thiserror::Error;
 
@@ -1216,20 +1216,49 @@ impl Mux {
         terminal_id: TerminalId,
         options: ViewerOptions,
     ) -> Result<TerminalViewer, MuxError> {
+        Ok(self
+            .attached_terminal(attachment, terminal_id)?
+            .subscribe_for(Some(attachment), options)?)
+    }
+
+    /// The terminal's current status, under the same checks as
+    /// [`Self::subscribe_terminal`]. It stays readable after the terminal's
+    /// runtime stopped on its own, when subscribing answers
+    /// [`RuntimeError::Stopped`], so a client still learns its final exit
+    /// and failures.
+    ///
+    /// # Errors
+    /// Rejects missing attachments and terminals outside the attachment's
+    /// session.
+    pub fn terminal_status(
+        &self,
+        attachment: AttachmentId,
+        terminal_id: TerminalId,
+    ) -> Result<Arc<TerminalStatus>, MuxError> {
+        Ok(self
+            .attached_terminal(attachment, terminal_id)?
+            .registry()
+            .status())
+    }
+
+    /// The runtime of a terminal shown in the attachment's session.
+    fn attached_terminal(
+        &self,
+        attachment: AttachmentId,
+        terminal_id: TerminalId,
+    ) -> Result<&TerminalRuntime, MuxError> {
         let session = self.attachment_session(attachment)?;
         let is_member = self.workspaces.values().any(|workspace| {
             workspace.session_id == session
                 && workspace.tabs.iter().any(|tab| tab.shows(terminal_id))
         });
-        let runtime = self
-            .terminals
+        self.terminals
             .get(&terminal_id)
             .filter(|_| is_member)
             .ok_or(MuxError::TerminalNotInAttachment {
                 terminal: terminal_id,
                 attachment,
-            })?;
-        Ok(runtime.subscribe_for(Some(attachment), options)?)
+            })
     }
 
     fn invalidate_terminal_authority(&mut self, terminal_id: TerminalId) {

@@ -6,8 +6,11 @@
 //! carries the paste cap.
 
 use huterm_protocol::{
-    CharacterKey, InputStamp, Modifiers, MouseAction, MouseButton, MouseInput,
-    MousePosition, TerminalInput, TerminalKey, TerminalStatus, ViewerId,
+    BufferPoint, BufferRange, CellSize, CellText, CharacterKey, GridSize,
+    InputStamp, LinkCell, LinkLookup, LinkSource, MAX_CELL_TEXT_BYTES,
+    Modifiers, MouseAction, MouseButton, MouseInput, MousePosition,
+    ScrollCommand, SelectionUnit, TerminalInput, TerminalKey, TerminalLink,
+    TerminalPresentation, TerminalStatus, ViewerCapabilities, ViewerId,
     WheelDirection,
 };
 
@@ -64,6 +67,516 @@ pub struct Credit {
 pub struct ResyncViewer {
     /// The viewer.
     pub viewer: ViewerId,
+}
+
+/// A viewer's focus report, ordered with its input and outside its input
+/// budget.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Focus {
+    /// The viewer.
+    pub viewer: ViewerId,
+    /// Whether the viewer's view holds focus in an active window.
+    pub focused: bool,
+}
+
+/// The server's notice that a viewer's terminal stopped. It follows the
+/// viewer's final status and its complete final update on the viewer's
+/// lane, and the viewer sends nothing more.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewerStopped {
+    /// The viewer.
+    pub viewer: ViewerId,
+}
+
+/// The server's notice that a viewer's authority was withdrawn, as a
+/// detach, a retarget, a session close, or a move of its terminal does. It
+/// follows anything already queued on the viewer's lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewerRevoked {
+    /// The viewer.
+    pub viewer: ViewerId,
+}
+
+/// The most bytes of a link destination a snapshot result carries, core's
+/// link scan limit.
+pub const MAX_LINK_DESTINATION_BYTES: usize = 32 << 10;
+
+/// The most cells of one link a snapshot result carries, core's link scan
+/// limit.
+pub const MAX_LINK_CELLS: usize = 16 << 10;
+
+/// The most text bytes all cells of one link carry together, core's link
+/// scan limit. A server answers a link past it with
+/// [`LinkLookup::ScanLimit`].
+pub const MAX_LINK_TEXT_BYTES: usize = 32 << 10;
+
+/// How a client asks for a viewer: what it may do and the state it starts
+/// with, as core's viewer options carry them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscribeOptions {
+    /// The requests the viewer may make. Host effects arrive with slice 4;
+    /// a server refuses them until then.
+    pub capabilities: ViewerCapabilities,
+    /// Whether the viewer starts focused.
+    pub focused: bool,
+    /// The grid and cell size the viewer starts requesting.
+    pub geometry: Option<(GridSize, CellSize)>,
+    /// The presentation the viewer starts submitting.
+    pub presentation: Option<Box<TerminalPresentation>>,
+    /// Set only by the client that created the terminal, so an exit before
+    /// its first status counts as an exit transition.
+    pub spawned: bool,
+}
+
+/// What a key or mouse report counts against its viewer's input window,
+/// about what one occupies in memory, so a flood of them cannot stage far
+/// more memory than the window suggests.
+pub const INPUT_EVENT_COST: usize = 32;
+
+/// What one input counts against its viewer's input window: its text's
+/// bytes, a paste's included, or a character chord's text and layout text,
+/// and at least [`INPUT_EVENT_COST`], which is what a key or mouse report
+/// counts. The floor keeps a flood of tiny inputs from staging far more
+/// memory than the window suggests. Client and server count the same way
+/// on every target, so the client's unacknowledged input and the server's
+/// staged input agree.
+#[must_use]
+pub fn input_cost(input: &TerminalInput) -> usize {
+    let bytes = match input {
+        TerminalInput::Text(text) | TerminalInput::Paste(text) => text.len(),
+        TerminalInput::Character { text, meta, key } => {
+            text.len()
+                + usize::from(*meta && !text.is_empty())
+                + key.as_ref().map_or(0, |key| key.text.len())
+        }
+        _ => INPUT_EVENT_COST,
+    };
+    bytes.max(INPUT_EVENT_COST)
+}
+
+/// Refuses input past its payload limits before it is numbered or sent:
+/// text and a paste past [`INPUT_TEXT_PAYLOAD_LIMIT`], or a character
+/// chord's texts past [`MAX_CHARACTER_TEXT_BYTES`], with
+/// [`EncodeError::LimitExceeded`], and an input with no wire form with
+/// [`EncodeError::Unsupported`].
+///
+/// # Errors
+/// As above.
+pub fn check_input(input: &TerminalInput) -> Result<(), EncodeError> {
+    let long = |field| Err(EncodeError::LimitExceeded { field });
+    match input {
+        TerminalInput::Text(text) if text.len() > INPUT_TEXT_PAYLOAD_LIMIT => {
+            long("input text")
+        }
+        TerminalInput::Paste(text)
+            if text.len() > crate::caps::PASTE_PAYLOAD_LIMIT =>
+        {
+            long("paste")
+        }
+        TerminalInput::Character { text, key, .. }
+            if text.len() > MAX_CHARACTER_TEXT_BYTES
+                || key.as_ref().is_some_and(|key| {
+                    key.text.len() > MAX_CHARACTER_TEXT_BYTES
+                }) =>
+        {
+            long("character text")
+        }
+        TerminalInput::Key { key, .. } if !KEYS.contains(key) => {
+            Err(EncodeError::Unsupported)
+        }
+        TerminalInput::Text(_)
+        | TerminalInput::Paste(_)
+        | TerminalInput::Character { .. }
+        | TerminalInput::Key { .. }
+        | TerminalInput::Mouse(_) => Ok(()),
+        _ => Err(EncodeError::Unsupported),
+    }
+}
+
+/// Encodes a focus report's record.
+///
+/// # Errors
+/// Returns the identity's encode error.
+pub fn encode_focus(
+    w: &mut Writer,
+    scope: IdScope,
+    focus: Focus,
+) -> Result<(), EncodeError> {
+    let Focus { viewer, focused } = focus;
+    w.record(|w| {
+        w.id(scope, viewer)?;
+        w.bool(focused);
+        Ok(())
+    })
+}
+
+/// Decodes a focus report's record.
+///
+/// # Errors
+/// Returns the first decode failure.
+pub fn decode_focus(
+    r: &mut Reader<'_>,
+    scope: IdScope,
+) -> Result<Focus, DecodeError> {
+    r.record(|r| {
+        Ok(Focus {
+            viewer: r.id(scope)?,
+            focused: r.bool()?,
+        })
+    })
+}
+
+/// Encodes the record of a message that names only a viewer:
+/// [`ResyncViewer`], [`ViewerStopped`], or [`ViewerRevoked`].
+///
+/// # Errors
+/// Returns the identity's encode error.
+pub fn encode_viewer_only(
+    w: &mut Writer,
+    scope: IdScope,
+    viewer: ViewerId,
+) -> Result<(), EncodeError> {
+    w.record(|w| w.id(scope, viewer))
+}
+
+/// Decodes the record of a message that names only a viewer.
+///
+/// # Errors
+/// Returns the first decode failure.
+pub fn decode_viewer_only(
+    r: &mut Reader<'_>,
+    scope: IdScope,
+) -> Result<ViewerId, DecodeError> {
+    r.record(|r| r.id(scope))
+}
+
+/// Writes a scroll command.
+pub(crate) fn write_scroll(w: &mut Writer, scroll: ScrollCommand) {
+    match scroll {
+        ScrollCommand::Relative(rows) => {
+            w.tag(0);
+            w.i64(rows);
+        }
+        ScrollCommand::Absolute(offset) => {
+            w.tag(1);
+            w.usize(offset);
+        }
+        ScrollCommand::Live => w.tag(2),
+    }
+}
+
+/// Reads a scroll command.
+pub(crate) fn read_scroll(
+    r: &mut Reader<'_>,
+) -> Result<ScrollCommand, DecodeError> {
+    Ok(match r.tag()? {
+        0 => ScrollCommand::Relative(r.i64()?),
+        1 => ScrollCommand::Absolute(r.usize()?),
+        2 => ScrollCommand::Live,
+        tag => {
+            return Err(DecodeError::UnknownTag {
+                field: "scroll command",
+                tag,
+            });
+        }
+    })
+}
+
+/// Writes a cell position as its column and row.
+pub(crate) fn write_position(w: &mut Writer, position: MousePosition) {
+    let MousePosition { column, row } = position;
+    w.u32(column);
+    w.u32(row);
+}
+
+/// Reads a cell position.
+pub(crate) fn read_position(
+    r: &mut Reader<'_>,
+) -> Result<MousePosition, DecodeError> {
+    Ok(MousePosition {
+        column: r.u32()?,
+        row: r.u32()?,
+    })
+}
+
+/// Writes a buffer point's record.
+pub(crate) fn write_point(
+    w: &mut Writer,
+    point: BufferPoint,
+) -> Result<(), EncodeError> {
+    let BufferPoint {
+        rows_from_live_bottom,
+        column,
+    } = point;
+    w.record(|w| {
+        w.usize(rows_from_live_bottom);
+        w.u16(column);
+        Ok(())
+    })
+}
+
+/// Reads a buffer point's record.
+pub(crate) fn read_point(
+    r: &mut Reader<'_>,
+) -> Result<BufferPoint, DecodeError> {
+    r.record(|r| {
+        Ok(BufferPoint {
+            rows_from_live_bottom: r.usize()?,
+            column: r.u16()?,
+        })
+    })
+}
+
+/// Writes a buffer range's record, its endpoints in reading order.
+pub(crate) fn write_range(
+    w: &mut Writer,
+    range: BufferRange,
+) -> Result<(), EncodeError> {
+    let BufferRange { start, end } = range;
+    w.record(|w| {
+        write_point(w, start)?;
+        write_point(w, end)
+    })
+}
+
+/// Reads a buffer range's record, ordering its endpoints as core's
+/// constructor does.
+pub(crate) fn read_range(
+    r: &mut Reader<'_>,
+) -> Result<BufferRange, DecodeError> {
+    r.record(|r| {
+        let start = read_point(r)?;
+        let end = read_point(r)?;
+        let range = BufferRange::ordered(start, end);
+        if range.start != start {
+            return Err(DecodeError::Invalid("buffer range order"));
+        }
+        Ok(range)
+    })
+}
+
+/// Writes a selection unit's tag.
+pub(crate) fn write_unit(w: &mut Writer, unit: SelectionUnit) {
+    w.tag(match unit {
+        SelectionUnit::Word => 0,
+        SelectionUnit::Line => 1,
+    });
+}
+
+/// Reads a selection unit's tag.
+pub(crate) fn read_unit(
+    r: &mut Reader<'_>,
+) -> Result<SelectionUnit, DecodeError> {
+    Ok(match r.tag()? {
+        0 => SelectionUnit::Word,
+        1 => SelectionUnit::Line,
+        tag => {
+            return Err(DecodeError::UnknownTag {
+                field: "selection unit",
+                tag,
+            });
+        }
+    })
+}
+
+const CAPABILITY_FLAGS: u64 = 0b1111;
+
+/// Writes viewer capabilities as a bit set.
+pub(crate) fn write_capabilities(
+    w: &mut Writer,
+    capabilities: ViewerCapabilities,
+) {
+    let ViewerCapabilities {
+        input,
+        viewport,
+        size,
+        host_effects,
+    } = capabilities;
+    w.u64(
+        u64::from(input)
+            | u64::from(viewport) << 1
+            | u64::from(size) << 2
+            | u64::from(host_effects) << 3,
+    );
+}
+
+/// Reads viewer capabilities.
+pub(crate) fn read_capabilities(
+    r: &mut Reader<'_>,
+) -> Result<ViewerCapabilities, DecodeError> {
+    let flags = r.u64()?;
+    if flags & !CAPABILITY_FLAGS != 0 {
+        return Err(DecodeError::Invalid("viewer capabilities"));
+    }
+    Ok(ViewerCapabilities {
+        input: flags & 1 != 0,
+        viewport: flags & 2 != 0,
+        size: flags & 4 != 0,
+        host_effects: flags & 8 != 0,
+    })
+}
+
+/// Encodes subscription options' record.
+///
+/// # Errors
+/// Never fails today; the signature matches the other field encoders.
+pub(crate) fn encode_subscribe_options(
+    w: &mut Writer,
+    options: &SubscribeOptions,
+) -> Result<(), EncodeError> {
+    let SubscribeOptions {
+        capabilities,
+        focused,
+        geometry,
+        presentation,
+        spawned,
+    } = options;
+    w.record(|w| {
+        write_capabilities(w, *capabilities);
+        w.bool(*focused);
+        w.option(*geometry, |w, (grid, cell)| {
+            crate::launch::encode_grid(w, grid);
+            crate::launch::encode_cell_size(w, cell);
+            Ok(())
+        })?;
+        w.option(presentation.as_deref(), crate::launch::encode_presentation)?;
+        w.bool(*spawned);
+        Ok(())
+    })
+}
+
+/// Decodes subscription options' record.
+///
+/// # Errors
+/// Returns the first decode failure.
+pub(crate) fn decode_subscribe_options(
+    r: &mut Reader<'_>,
+) -> Result<SubscribeOptions, DecodeError> {
+    r.record(|r| {
+        Ok(SubscribeOptions {
+            capabilities: read_capabilities(r)?,
+            focused: r.bool()?,
+            geometry: r.option("geometry", |r| {
+                Ok((
+                    crate::launch::decode_grid(r)?,
+                    crate::launch::decode_cell_size(r)?,
+                ))
+            })?,
+            presentation: r.option("presentation", |r| {
+                crate::launch::decode_presentation(r).map(Box::new)
+            })?,
+            spawned: r.bool()?,
+        })
+    })
+}
+
+/// Writes a link lookup's outcome. A link past the wire's link limits
+/// encodes as [`LinkLookup::ScanLimit`], as core reports a link its scan
+/// could not bound.
+pub(crate) fn write_link(
+    w: &mut Writer,
+    link: &LinkLookup,
+) -> Result<(), EncodeError> {
+    match link {
+        LinkLookup::Match(link) if link_fits(link) => {
+            let TerminalLink {
+                destination,
+                source,
+                cells,
+            } = link;
+            w.tag(0);
+            w.record(|w| {
+                w.str(
+                    destination,
+                    MAX_LINK_DESTINATION_BYTES,
+                    "link destination",
+                )?;
+                w.tag(match source {
+                    LinkSource::PlainText => 0,
+                    LinkSource::Osc8 => 1,
+                });
+                w.seq(cells.iter(), MAX_LINK_CELLS, "link cells", |w, cell| {
+                    let LinkCell { position, text } = cell;
+                    write_position(w, *position);
+                    w.str(text, MAX_CELL_TEXT_BYTES, "link cell text")
+                })
+            })
+        }
+        LinkLookup::Match(_) | LinkLookup::ScanLimit => {
+            w.tag(2);
+            Ok(())
+        }
+        LinkLookup::NoMatch => {
+            w.tag(1);
+            Ok(())
+        }
+        LinkLookup::Unavailable => {
+            w.tag(3);
+            Ok(())
+        }
+    }
+}
+
+fn link_fits(link: &TerminalLink) -> bool {
+    link.destination.len() <= MAX_LINK_DESTINATION_BYTES
+        && link.cells.len() <= MAX_LINK_CELLS
+        && link
+            .cells
+            .iter()
+            .try_fold(0_usize, |total, cell| {
+                (cell.text.len() <= MAX_CELL_TEXT_BYTES)
+                    .then(|| total + cell.text.len())
+            })
+            .is_some_and(|total| total <= MAX_LINK_TEXT_BYTES)
+}
+
+/// Reads a link lookup's outcome.
+pub(crate) fn read_link(r: &mut Reader<'_>) -> Result<LinkLookup, DecodeError> {
+    Ok(match r.tag()? {
+        0 => r.record(|r| {
+            let destination =
+                r.string(MAX_LINK_DESTINATION_BYTES, "link destination")?;
+            let source = match r.tag()? {
+                0 => LinkSource::PlainText,
+                1 => LinkSource::Osc8,
+                tag => {
+                    return Err(DecodeError::UnknownTag {
+                        field: "link source",
+                        tag,
+                    });
+                }
+            };
+            let mut text_bytes = 0_usize;
+            let cells = r.seq(MAX_LINK_CELLS, "link cells", |r| {
+                let position = read_position(r)?;
+                let text = r.str(MAX_CELL_TEXT_BYTES, "link cell text")?;
+                text_bytes += text.len();
+                if text_bytes > MAX_LINK_TEXT_BYTES {
+                    return Err(DecodeError::TooLong {
+                        field: "link cell text",
+                    });
+                }
+                Ok(LinkCell {
+                    position,
+                    text: CellText::from(text),
+                })
+            })?;
+            Ok(LinkLookup::Match(TerminalLink {
+                destination,
+                source,
+                cells,
+            }))
+        })?,
+        1 => LinkLookup::NoMatch,
+        2 => LinkLookup::ScanLimit,
+        3 => LinkLookup::Unavailable,
+        tag => {
+            return Err(DecodeError::UnknownTag {
+                field: "link lookup",
+                tag,
+            });
+        }
+    })
 }
 
 /// Encodes a viewer status's record.

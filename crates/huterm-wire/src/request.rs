@@ -9,17 +9,18 @@
 //! close, move, and restore types here are minimal mirrors a server
 //! converts.
 //!
-//! Requests that name a terminal viewer and order with its input,
-//! subscriptions, snapshots, scrolling, selection, link lookup, and
-//! presentation arrive with slice 3b.
+//! Requests that name a terminal viewer travel on that viewer's ordering
+//! lane, so they stay in order with its input; [`RequestKind::names_viewer`]
+//! says which.
 
 use std::num::NonZeroU64;
 
 use huterm_protocol::{
-    Arrangement, AttachmentId, CellSize, GridSize, MAX_LAYOUT_DEPTH,
-    MAX_NAME_BYTES, MAX_SPLIT_CHILDREN, NodeId, PaneId, PaneLayout,
-    ScrollbackLimit, SessionId, SplitAxis, SplitDirection, SplitId, TabId,
-    TerminalCommand, ViewerId, WorkspaceId,
+    Arrangement, AttachmentId, BufferPoint, BufferRange, CellSize, GridSize,
+    MAX_LAYOUT_DEPTH, MAX_NAME_BYTES, MAX_SPLIT_CHILDREN, MousePosition,
+    NodeId, PaneId, PaneLayout, ScrollCommand, ScrollbackLimit, SelectionUnit,
+    SessionId, SplitAxis, SplitDirection, SplitId, TabId, TerminalCommand,
+    TerminalId, TerminalPresentation, ViewerId, WorkspaceId,
 };
 
 use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
@@ -28,8 +29,14 @@ use crate::command::{
 };
 use crate::hierarchy::{Items, decode_layout_counted, encode_layout};
 use crate::launch::{
-    decode_cell_size, decode_command, decode_grid, decode_scrollback,
-    encode_cell_size, encode_command, encode_grid, encode_scrollback,
+    decode_cell_size, decode_command, decode_grid, decode_presentation,
+    decode_scrollback, encode_cell_size, encode_command, encode_grid,
+    encode_presentation, encode_scrollback,
+};
+use crate::viewer::{
+    SubscribeOptions, decode_subscribe_options, encode_subscribe_options,
+    read_point, read_position, read_range, read_scroll, read_unit, write_point,
+    write_position, write_range, write_scroll, write_unit,
 };
 
 /// The longest name a rename or create request carries. It is above
@@ -196,6 +203,20 @@ pub enum RequestKind {
     Reset,
     /// [`Request::ReportGeometry`].
     ReportGeometry,
+    /// [`Request::SubscribeTerminal`].
+    SubscribeTerminal,
+    /// [`Request::CloseViewer`].
+    CloseViewer,
+    /// [`Request::Snapshot`].
+    Snapshot,
+    /// [`Request::Selection`].
+    Selection,
+    /// [`Request::SelectUnits`].
+    SelectUnits,
+    /// [`Request::UpdatePresentation`].
+    UpdatePresentation,
+    /// [`Request::SetScrollbackCompression`].
+    SetScrollbackCompression,
     /// `Request::PinTab`, which exists only at the test-only minor
     /// version.
     #[cfg(any(test, feature = "test-minor"))]
@@ -252,6 +273,13 @@ impl RequestKind {
         Self::ReportGeometry,
         #[cfg(any(test, feature = "test-minor"))]
         Self::PinTab,
+        Self::SubscribeTerminal,
+        Self::CloseViewer,
+        Self::Snapshot,
+        Self::Selection,
+        Self::SelectUnits,
+        Self::UpdatePresentation,
+        Self::SetScrollbackCompression,
     ];
 
     /// The kind's stable number, the request's tag.
@@ -305,6 +333,13 @@ impl RequestKind {
             Self::ReportGeometry => 44,
             #[cfg(any(test, feature = "test-minor"))]
             Self::PinTab => 45,
+            Self::SubscribeTerminal => 46,
+            Self::CloseViewer => 47,
+            Self::Snapshot => 48,
+            Self::Selection => 49,
+            Self::SelectUnits => 50,
+            Self::UpdatePresentation => 51,
+            Self::SetScrollbackCompression => 52,
         }
     }
 
@@ -328,7 +363,13 @@ impl RequestKind {
             | Self::SelectTab
             | Self::SelectPane
             | Self::PrepareClose => RetryClass::Query,
-            Self::ReportGeometry => RetryClass::Viewer,
+            Self::ReportGeometry
+            | Self::SubscribeTerminal
+            | Self::CloseViewer
+            | Self::Snapshot
+            | Self::Selection
+            | Self::SelectUnits
+            | Self::UpdatePresentation => RetryClass::Viewer,
             _ => RetryClass::Mutation,
         }
     }
@@ -344,12 +385,32 @@ impl RequestKind {
         }
     }
 
-    /// Whether the request's result may exceed one frame. A connection
-    /// holds at most one such request in flight. No minor version 0
-    /// request has one; slice 3b's selection text is the first.
+    /// Whether the request's result may exceed the `Result` cap, so it
+    /// travels as a `LargeResult` on the large-result lane. A connection
+    /// holds at most one such request in flight. Selection text is the
+    /// only one.
     #[must_use]
     pub const fn large_result(self) -> bool {
-        false
+        matches!(self, Self::Selection)
+    }
+
+    /// Whether the request names a viewer, so it travels on that viewer's
+    /// ordering lane and stays in order with the viewer's input.
+    #[must_use]
+    pub const fn names_viewer(self) -> bool {
+        matches!(
+            self,
+            Self::SetScrollback
+                | Self::ClearHistory
+                | Self::Reset
+                | Self::ReportGeometry
+                | Self::CloseViewer
+                | Self::Snapshot
+                | Self::Selection
+                | Self::SelectUnits
+                | Self::UpdatePresentation
+                | Self::SetScrollbackCompression
+        )
     }
 }
 
@@ -823,6 +884,72 @@ pub enum Request {
         /// The cell size.
         cell: CellSize,
     },
+    /// Register a viewer of a terminal in one of the connection's
+    /// attachments. Its result carries the viewer and the terminal's
+    /// status, or, for a terminal whose runtime stopped on its own, only
+    /// the final status; the viewer's first update follows on its lane.
+    SubscribeTerminal {
+        /// The attachment the viewer belongs to.
+        attachment: AttachmentId,
+        /// The terminal.
+        terminal: TerminalId,
+        /// What the viewer may do, and its initial state.
+        options: SubscribeOptions,
+    },
+    /// Drop a viewer, as dropping an in-process viewer does: what it
+    /// already sent still runs, and nothing more arrives on its lane.
+    CloseViewer {
+        /// The viewer.
+        viewer: ViewerId,
+    },
+    /// Build a viewer's update now, credited or not, optionally after a
+    /// scroll the client numbered and with a link lookup at a cell. The
+    /// update arrives on the viewer's lane ahead of the result.
+    Snapshot {
+        /// The viewer.
+        viewer: ViewerId,
+        /// The scroll and the client's number for it, which typing stamps
+        /// carry.
+        scroll: Option<(ScrollCommand, u64)>,
+        /// A cell whose link to look up against the same snapshot.
+        point: Option<MousePosition>,
+    },
+    /// Extract text from canonical scrollback.
+    Selection {
+        /// The viewer.
+        viewer: ViewerId,
+        /// The content generation the range was computed against.
+        generation: u64,
+        /// The range.
+        range: BufferRange,
+    },
+    /// Expand a multi-click selection to whole units.
+    SelectUnits {
+        /// The viewer.
+        viewer: ViewerId,
+        /// The content generation the points were computed against.
+        generation: u64,
+        /// Where the selection started.
+        anchor: BufferPoint,
+        /// Where it ends now.
+        head: BufferPoint,
+        /// The unit.
+        unit: SelectionUnit,
+    },
+    /// Submit the presentation a viewer would apply.
+    UpdatePresentation {
+        /// The viewer.
+        viewer: ViewerId,
+        /// The presentation.
+        presentation: Box<TerminalPresentation>,
+    },
+    /// Set whether a viewer's terminal compresses idle history.
+    SetScrollbackCompression {
+        /// The viewer.
+        viewer: ViewerId,
+        /// Whether to compress.
+        enabled: bool,
+    },
     /// Pin or unpin a tab, at the test-only minor version only.
     #[cfg(any(test, feature = "test-minor"))]
     PinTab {
@@ -889,8 +1016,35 @@ impl Request {
             Self::ClearHistory { .. } => RequestKind::ClearHistory,
             Self::Reset { .. } => RequestKind::Reset,
             Self::ReportGeometry { .. } => RequestKind::ReportGeometry,
+            Self::SubscribeTerminal { .. } => RequestKind::SubscribeTerminal,
+            Self::CloseViewer { .. } => RequestKind::CloseViewer,
+            Self::Snapshot { .. } => RequestKind::Snapshot,
+            Self::Selection { .. } => RequestKind::Selection,
+            Self::SelectUnits { .. } => RequestKind::SelectUnits,
+            Self::UpdatePresentation { .. } => RequestKind::UpdatePresentation,
+            Self::SetScrollbackCompression { .. } => {
+                RequestKind::SetScrollbackCompression
+            }
             #[cfg(any(test, feature = "test-minor"))]
             Self::PinTab { .. } => RequestKind::PinTab,
+        }
+    }
+
+    /// The viewer the request names, if any.
+    #[must_use]
+    pub const fn viewer(&self) -> Option<ViewerId> {
+        match self {
+            Self::SetScrollback { viewer, .. }
+            | Self::ClearHistory { viewer }
+            | Self::Reset { viewer }
+            | Self::ReportGeometry { viewer, .. }
+            | Self::CloseViewer { viewer }
+            | Self::Snapshot { viewer, .. }
+            | Self::Selection { viewer, .. }
+            | Self::SelectUnits { viewer, .. }
+            | Self::UpdatePresentation { viewer, .. }
+            | Self::SetScrollbackCompression { viewer, .. } => Some(*viewer),
+            _ => None,
         }
     }
 }
@@ -1714,6 +1868,67 @@ fn encode_fields(
             encode_cell_size(w, *cell);
             Ok(())
         }
+        Request::SubscribeTerminal {
+            attachment,
+            terminal,
+            options,
+        } => {
+            w.id(scope, *attachment)?;
+            w.id(scope, *terminal)?;
+            encode_subscribe_options(w, options)
+        }
+        Request::CloseViewer { viewer } => w.id(scope, *viewer),
+        Request::Snapshot {
+            viewer,
+            scroll,
+            point,
+        } => {
+            w.id(scope, *viewer)?;
+            w.option(*scroll, |w, (scroll, number)| {
+                write_scroll(w, scroll);
+                w.u64(number);
+                Ok(())
+            })?;
+            w.option(*point, |w, point| {
+                write_position(w, point);
+                Ok(())
+            })
+        }
+        Request::Selection {
+            viewer,
+            generation,
+            range,
+        } => {
+            w.id(scope, *viewer)?;
+            w.u64(*generation);
+            write_range(w, *range)
+        }
+        Request::SelectUnits {
+            viewer,
+            generation,
+            anchor,
+            head,
+            unit,
+        } => {
+            w.id(scope, *viewer)?;
+            w.u64(*generation);
+            write_point(w, *anchor)?;
+            write_point(w, *head)?;
+            write_unit(w, *unit);
+            Ok(())
+        }
+        Request::UpdatePresentation {
+            viewer,
+            presentation,
+        } => {
+            w.id(scope, *viewer)?;
+            encode_presentation(w, presentation)
+        }
+        Request::SetScrollbackCompression { viewer, enabled } => {
+            w.id(scope, *viewer)?;
+            w.bool(*enabled);
+            Ok(())
+        }
         #[cfg(any(test, feature = "test-minor"))]
         Request::PinTab { tab, pinned } => {
             w.id(scope, *tab)?;
@@ -1926,6 +2141,41 @@ fn decode_fields(
             grid: decode_grid(r)?,
             cell: decode_cell_size(r)?,
         },
+        RequestKind::SubscribeTerminal => Request::SubscribeTerminal {
+            attachment: r.id(scope)?,
+            terminal: r.id(scope)?,
+            options: decode_subscribe_options(r)?,
+        },
+        RequestKind::CloseViewer => Request::CloseViewer {
+            viewer: r.id(scope)?,
+        },
+        RequestKind::Snapshot => Request::Snapshot {
+            viewer: r.id(scope)?,
+            scroll: r.option("scroll", |r| Ok((read_scroll(r)?, r.u64()?)))?,
+            point: r.option("point", read_position)?,
+        },
+        RequestKind::Selection => Request::Selection {
+            viewer: r.id(scope)?,
+            generation: r.u64()?,
+            range: read_range(r)?,
+        },
+        RequestKind::SelectUnits => Request::SelectUnits {
+            viewer: r.id(scope)?,
+            generation: r.u64()?,
+            anchor: read_point(r)?,
+            head: read_point(r)?,
+            unit: read_unit(r)?,
+        },
+        RequestKind::UpdatePresentation => Request::UpdatePresentation {
+            viewer: r.id(scope)?,
+            presentation: Box::new(decode_presentation(r)?),
+        },
+        RequestKind::SetScrollbackCompression => {
+            Request::SetScrollbackCompression {
+                viewer: r.id(scope)?,
+                enabled: r.bool()?,
+            }
+        }
         #[cfg(any(test, feature = "test-minor"))]
         RequestKind::PinTab => Request::PinTab {
             tab: r.id(scope)?,

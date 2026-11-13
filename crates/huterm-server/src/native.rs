@@ -10,7 +10,11 @@
 //! `async-executor` `LocalExecutor`: it waits on one event channel that the
 //! reader, the writer, worker completions, and the hierarchy feed's
 //! forwarding task feed, or on an `async-io` timer for the connection's next
-//! deadline. Jobs run on `blocking`'s worker pool, never on these threads,
+//! deadline. The socket is non-blocking: while the writer is idle, the
+//! driver first writes a batch itself and hands the writer only what the
+//! socket did not take, so a reply the socket accepts at once skips a
+//! thread, and the reader and writer wait with `poll` where a blocking
+//! socket would block. Jobs run on `blocking`'s worker pool, never on these threads,
 //! and the server never holds the `Mux` lock while it waits on the socket.
 //!
 //! When the connection ends, the driver shuts the socket down so blocked
@@ -18,6 +22,7 @@
 //! and its cleanup ran, and then exits; [`ConnectionHandle::join`] joins
 //! all three threads.
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -28,12 +33,14 @@ use std::time::Instant;
 
 use async_channel::{Receiver, Sender};
 use async_executor::{LocalExecutor, Task};
+use huterm_protocol::ViewerId;
 
 use crate::connection::{Connection, Transmit};
 use crate::feed::HierarchyFeed;
 use crate::runtime;
 use crate::server::Server;
-use crate::work::{Completion, Work, WorkId};
+use crate::viewer::WakeSource;
+use crate::work::{Completion, Job, Work, WorkId};
 
 /// The most bytes one read takes.
 const READ_BUFFER_BYTES: usize = 64 << 10;
@@ -50,6 +57,8 @@ enum Event {
     WriteFailed,
     Completed(WorkId, Box<Completion>),
     Hierarchy,
+    Viewer(ViewerId),
+    ViewerEnded(ViewerId),
     Close,
 }
 
@@ -136,13 +145,17 @@ pub fn serve(
     server: Arc<Server>,
     stream: UnixStream,
 ) -> io::Result<ConnectionHandle> {
+    // Every clone shares the setting: the driver writes without blocking,
+    // and the reader and writer wait with `poll`.
+    stream.set_nonblocking(true)?;
     let reader = stream.try_clone()?;
     let writer = stream.try_clone()?;
     let (events, inbox) = async_channel::unbounded();
     // One permit at a time keeps at most one read buffer in flight.
     let (permits, permit) = async_channel::bounded(1);
-    // The writer holds one batch; the connection keeps everything else.
-    let (batches, batch) = async_channel::bounded(1);
+    // The writer holds one batch, and how much of it the driver already
+    // wrote; the connection keeps everything else.
+    let (batches, batch) = async_channel::bounded::<(Transmit, usize)>(1);
     let stats = Arc::new(Stats::default());
     let mut threads = Vec::with_capacity(3);
     threads.push(
@@ -197,6 +210,13 @@ fn read(mut stream: UnixStream, permit: &Receiver<()>, events: &Sender<Event>) {
         let read = loop {
             match stream.read(&mut buffer) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if let Err(error) =
+                        ready(&stream, nix::poll::PollFlags::POLLIN)
+                    {
+                        break Err(error);
+                    }
+                }
                 read => break read,
             }
         };
@@ -211,13 +231,50 @@ fn read(mut stream: UnixStream, permit: &Receiver<()>, events: &Sender<Event>) {
     }
 }
 
+/// Waits until `stream` is ready for `events`, as a blocking call on it
+/// would; the socket is non-blocking so the driver never blocks on it.
+fn ready(stream: &UnixStream, events: nix::poll::PollFlags) -> io::Result<()> {
+    use std::os::fd::AsFd;
+
+    use nix::errno::Errno;
+    use nix::poll::{PollFd, PollTimeout, poll};
+    loop {
+        let mut fds = [PollFd::new(stream.as_fd(), events)];
+        match poll(&mut fds, PollTimeout::NONE) {
+            Ok(_) => return Ok(()),
+            Err(Errno::EINTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Writes as much of `transmit` after its first `written` bytes as the
+/// socket takes without blocking, returning the bytes written, or `None`
+/// once the socket failed.
+fn send_now(
+    mut stream: &UnixStream,
+    transmit: &Transmit,
+    mut written: usize,
+) -> Option<usize> {
+    let start = written;
+    while written < transmit.len() {
+        match stream.write_vectored(&transmit.io_slices(written)) {
+            Ok(0) => return None,
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(_) => return None,
+        }
+    }
+    Some(written - start)
+}
+
 fn write(
     mut stream: UnixStream,
-    batch: &Receiver<Transmit>,
+    batch: &Receiver<(Transmit, usize)>,
     events: &Sender<Event>,
 ) {
-    while let Ok(transmit) = batch.recv_blocking() {
-        let mut written = 0;
+    while let Ok((transmit, mut written)) = batch.recv_blocking() {
         while written < transmit.len() {
             match stream.write_vectored(&transmit.io_slices(written)) {
                 Ok(0) => {
@@ -231,6 +288,12 @@ fn write(
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if ready(&stream, nix::poll::PollFlags::POLLOUT).is_err() {
+                        let _ = events.send_blocking(Event::WriteFailed);
+                        return;
+                    }
+                }
                 Err(_) => {
                     let _ = events.send_blocking(Event::WriteFailed);
                     return;
@@ -249,7 +312,7 @@ struct Driver {
     events: Sender<Event>,
     inbox: Receiver<Event>,
     permits: Option<Sender<()>>,
-    batches: Option<Sender<Transmit>>,
+    batches: Option<Sender<(Transmit, usize)>>,
     stats: Arc<Stats>,
 }
 
@@ -266,10 +329,13 @@ impl Driver {
         let mut reading = false;
         let mut writer_idle = true;
         let mut feed: Option<(u64, Task<()>)> = None;
+        let mut watches: HashMap<ViewerId, (Task<()>, Arc<AtomicBool>)> =
+            HashMap::new();
         loop {
             while let Some(work) = connection.poll_work() {
                 self.spawn(executor, work);
             }
+            self.watch_viewers(executor, &mut connection, &mut watches);
             match connection.hierarchy_feed() {
                 Some((generation, _))
                     if feed.as_ref().is_some_and(|(g, _)| *g == generation) => {
@@ -281,13 +347,7 @@ impl Driver {
                 }
                 None => feed = None,
             }
-            if writer_idle
-                && let Some(batches) = &self.batches
-                && let Some(transmit) =
-                    connection.poll_transmit(WRITE_BATCH_BYTES)
-            {
-                writer_idle = batches.try_send(transmit).is_err();
-            }
+            self.transmit(&mut connection, &mut writer_idle, now());
             if !reading
                 && connection.wants_input()
                 && let Some(permits) = &self.permits
@@ -302,6 +362,7 @@ impl Driver {
                 self.permits = None;
                 self.batches = None;
                 feed = None;
+                watches.clear();
             }
             if connection.is_finished() {
                 return;
@@ -329,6 +390,65 @@ impl Driver {
                     connection.complete(id, *completion, now());
                 }
                 Woke::Event(Event::Hierarchy) => connection.pump(now()),
+                Woke::Event(Event::Viewer(viewer)) => {
+                    if let Some((_, queued)) = watches.get(&viewer) {
+                        queued.store(false, Ordering::Release);
+                    }
+                    connection.viewer_woke(viewer, now());
+                }
+                Woke::Event(Event::ViewerEnded(viewer)) => {
+                    watches.remove(&viewer);
+                    connection.viewer_ended(viewer, now());
+                }
+            }
+        }
+    }
+
+    /// Starts forwarding new viewers' wakes and stops forwarding ended
+    /// ones'.
+    fn watch_viewers(
+        &self,
+        executor: &LocalExecutor<'_>,
+        connection: &mut Connection,
+        watches: &mut HashMap<ViewerId, (Task<()>, Arc<AtomicBool>)>,
+    ) {
+        while let Some((viewer, wake)) = connection.poll_watch() {
+            let queued = Arc::new(AtomicBool::new(false));
+            let task = executor.spawn(watch(
+                viewer,
+                wake,
+                Arc::clone(&queued),
+                self.events.clone(),
+            ));
+            watches.insert(viewer, (task, queued));
+        }
+        while let Some(viewer) = connection.poll_unwatch() {
+            watches.remove(&viewer);
+        }
+    }
+
+    /// Writes what the connection has to send while the writer is idle:
+    /// at once when the socket takes it, else by handing the rest to the
+    /// writer thread.
+    fn transmit(
+        &self,
+        connection: &mut Connection,
+        writer_idle: &mut bool,
+        now: std::time::Duration,
+    ) {
+        while *writer_idle
+            && let Some(batches) = &self.batches
+            && let Some(transmit) = connection.poll_transmit(WRITE_BATCH_BYTES)
+        {
+            let Some(written) = send_now(&self.stream, &transmit, 0) else {
+                let _ = self.events.try_send(Event::WriteFailed);
+                return;
+            };
+            if written > 0 {
+                connection.transmitted(written, now);
+            }
+            if written < transmit.len() {
+                *writer_idle = batches.try_send((transmit, written)).is_err();
             }
         }
     }
@@ -354,11 +474,25 @@ impl Driver {
     }
 
     fn spawn(&self, executor: &LocalExecutor<'_>, work: Work) {
-        let server = Arc::clone(&self.server);
         let events = self.events.clone();
+        let Work { id, job } = work;
+        if let Job::Viewer(job) = job {
+            // A viewer job goes to its terminal at once and blocks no
+            // thread: the driver awaits its reply.
+            let reply = job.start();
+            executor
+                .spawn(async move {
+                    let completion = reply.await;
+                    let _ = events
+                        .send(Event::Completed(id, Box::new(completion)))
+                        .await;
+                })
+                .detach();
+            return;
+        }
+        let server = Arc::clone(&self.server);
         executor
             .spawn(async move {
-                let Work { id, job } = work;
                 let completion =
                     blocking::unblock(move || runtime::execute(&server, job))
                         .await;
@@ -386,6 +520,24 @@ impl Driver {
             .closed
             .store(connection.is_closed(), Ordering::Release);
     }
+}
+
+/// Forwards a viewer's wakes to the driver, at most one queued at a time,
+/// then its end.
+async fn watch(
+    viewer: ViewerId,
+    wake: Box<dyn WakeSource>,
+    queued: Arc<AtomicBool>,
+    events: Sender<Event>,
+) {
+    while wake.wait().await {
+        if !queued.swap(true, Ordering::AcqRel)
+            && events.send(Event::Viewer(viewer)).await.is_err()
+        {
+            return;
+        }
+    }
+    let _ = events.send(Event::ViewerEnded(viewer)).await;
 }
 
 async fn forward(feed: Arc<dyn HierarchyFeed>, events: Sender<Event>) {

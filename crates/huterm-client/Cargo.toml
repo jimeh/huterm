@@ -22,6 +22,9 @@ huterm-wire.workspace = true
 async-channel.workspace = true
 async-io.workspace = true
 futures-lite.workspace = true
+# The socket is non-blocking, so the driver writes what the socket takes at
+# once and the reader and writer threads wait with `poll`.
+nix.workspace = true
 
 [dev-dependencies]
 # Client tests run against the real server. Dev edges only: the

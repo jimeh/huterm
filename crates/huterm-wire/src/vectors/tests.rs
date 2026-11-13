@@ -101,7 +101,9 @@ fn result_vectors_cover_every_response_variant() {
     let responses: Vec<&Response> = vectors
         .iter()
         .filter_map(|vector| match &vector.message {
-            Message::Result(result) => result.outcome.as_ref().ok(),
+            Message::Result(result) | Message::LargeResult(result) => {
+                result.outcome.as_ref().ok()
+            }
             _ => None,
         })
         .map(|success| &success.response)
@@ -113,7 +115,7 @@ fn result_vectors_cover_every_response_variant() {
                 .map(|response| discriminant(*response))
                 .collect()
         ),
-        12
+        17
     );
     let assessments: Vec<_> = responses
         .iter()

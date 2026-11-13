@@ -71,10 +71,12 @@ fn a_close_assessment_at_its_limits_fits_one_frame_and_one_more_is_refused() {
         u32::try_from(MAX_OPEN_STREAMS).unwrap() - 1,
         MIN_MAX_FRAME,
     );
-    assert!(cap <= frame, "result cap {cap} over one frame of {frame}");
     let message = result(Response::CloseAssessment(assessment_at_limits()));
     let bytes = encode_message(&message, vectors::scope(), CAPS).unwrap();
     assert!(bytes.len() <= cap, "{} bytes over {cap}", bytes.len());
+    // An assessment still fits one frame, so a close never waits behind
+    // its own result.
+    assert!(bytes.len() <= frame, "{} bytes over {frame}", bytes.len());
     assert_eq!(
         decode_message(&bytes, Direction::ServerToClient, vectors::context(0)),
         Ok(message)
@@ -196,4 +198,122 @@ fn an_unknown_response_tag_is_a_typed_error() {
             tag: 99
         })
     );
+}
+
+fn large(response: Response) -> Message {
+    let Message::Result(result) = result(response) else {
+        unreachable!("`result` builds a result");
+    };
+    Message::LargeResult(result)
+}
+
+#[test]
+fn a_link_at_its_limits_fits_the_result_cap_and_a_longer_one_reports_a_scan_limit()
+ {
+    use huterm_protocol::{
+        CellText, LinkCell, LinkLookup, LinkSource, MAX_CELL_TEXT_BYTES,
+        MousePosition, TerminalLink,
+    };
+
+    use crate::viewer::{
+        MAX_LINK_CELLS, MAX_LINK_DESTINATION_BYTES, MAX_LINK_TEXT_BYTES,
+    };
+    let cell = |index: usize, text: &str| LinkCell {
+        position: MousePosition {
+            column: u32::MAX - u32::try_from(index).unwrap(),
+            row: u32::MAX,
+        },
+        text: CellText::from(text),
+    };
+    // Every cell at the widest position, and the shared text limit spent
+    // on the first cells at the cell text limit.
+    let full = MAX_LINK_TEXT_BYTES / MAX_CELL_TEXT_BYTES;
+    let long = "a".repeat(MAX_CELL_TEXT_BYTES);
+    let link = |cells: usize| TerminalLink {
+        destination: "d".repeat(MAX_LINK_DESTINATION_BYTES),
+        source: LinkSource::Osc8,
+        cells: (0..cells)
+            .map(|index| cell(index, if index < full { &long } else { "" }))
+            .collect(),
+    };
+    let message = result(Response::Snapshot {
+        link: Some(LinkLookup::Match(link(MAX_LINK_CELLS))),
+    });
+    let bytes = encode_message(&message, vectors::scope(), CAPS).unwrap();
+    let cap = CAPS.cap(MessageKind::Result).unwrap();
+    assert!(bytes.len() <= cap, "{} bytes over {cap}", bytes.len());
+    assert_eq!(
+        decode_message(&bytes, Direction::ServerToClient, vectors::context(0)),
+        Ok(message)
+    );
+    let past = result(Response::Snapshot {
+        link: Some(LinkLookup::Match(link(MAX_LINK_CELLS + 1))),
+    });
+    let bytes = encode_message(&past, vectors::scope(), CAPS).unwrap();
+    assert_eq!(
+        decode_message(&bytes, Direction::ServerToClient, vectors::context(0)),
+        Ok(result(Response::Snapshot {
+            link: Some(LinkLookup::ScanLimit),
+        }))
+    );
+}
+
+#[test]
+fn selection_text_at_its_limit_fits_a_large_result_and_one_byte_more_is_refused()
+ {
+    use crate::caps::SELECTION_PAYLOAD_LIMIT;
+    let text = |len| Response::Text {
+        text: Some("s".repeat(len)),
+    };
+    let message = large(text(SELECTION_PAYLOAD_LIMIT));
+    let bytes = encode_message(&message, vectors::scope(), CAPS).unwrap();
+    let cap = CAPS.cap(MessageKind::LargeResult).unwrap();
+    assert!(bytes.len() <= cap, "{} bytes over {cap}", bytes.len());
+    assert_eq!(
+        decode_message(&bytes, Direction::ServerToClient, vectors::context(0)),
+        Ok(message)
+    );
+    assert_eq!(
+        encode_message(
+            &large(text(SELECTION_PAYLOAD_LIMIT + 1)),
+            vectors::scope(),
+            CAPS
+        ),
+        Err(crate::codec::EncodeError::LimitExceeded {
+            field: "selection text"
+        })
+    );
+    // An ordinary result refuses selection text past its own cap.
+    let past = CAPS.cap(MessageKind::Result).unwrap();
+    assert!(matches!(
+        encode_message(&result(text(past)), vectors::scope(), CAPS),
+        Err(crate::codec::EncodeError::LimitExceeded { field: "message" })
+    ));
+}
+
+#[test]
+fn a_text_result_split_around_its_text_is_the_large_result_message() {
+    use crate::request::RequestId;
+    for (request, len) in
+        [(1, 0), (7, 1), (200, 127), (u64::MAX, 128), (9, 70_000)]
+    {
+        let text = "t".repeat(len);
+        let request = RequestId::new(request).unwrap();
+        let (head, tail) = text_result_parts(request, &text).unwrap();
+        let mut bytes = head;
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.extend_from_slice(&tail);
+        let message = Message::LargeResult(RequestResult {
+            request,
+            outcome: Ok(Success {
+                response: Response::Text { text: Some(text) },
+                committed: None,
+            }),
+        });
+        assert_eq!(
+            bytes,
+            encode_message(&message, vectors::scope(), CAPS).unwrap(),
+            "{len} bytes"
+        );
+    }
 }

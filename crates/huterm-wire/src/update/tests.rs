@@ -1338,3 +1338,137 @@ proptest! {
         prop_assert_eq!(runs, reference_runs(&texts));
     }
 }
+
+/// One cell of a rich row: its text kind, color, and boldness.
+fn rich_cell() -> impl Strategy<Value = (u8, u8, bool)> {
+    (0..7_u8, 0..3_u8, any::<bool>())
+}
+
+/// A row whose cells cover every run form: no text, spaces, ASCII,
+/// multi-byte scalars, graphemes that do not pack, long text, repeats that
+/// fill, and wide characters with their spacers, in a few styles.
+fn rich_row(spec: &[(u8, u8, bool)], columns: usize) -> Arc<TerminalRow> {
+    let mut cells = Vec::with_capacity(columns);
+    let mut index = 0;
+    while cells.len() < columns {
+        let (kind, color, bold) = spec[index % spec.len()];
+        index += 1;
+        let foreground = match color {
+            0 => CellColor::DefaultForeground,
+            1 => CellColor::Indexed(3),
+            _ => CellColor::Rgb(Rgb {
+                red: 1,
+                green: 2,
+                blue: 3,
+            }),
+        };
+        let style = CellStyle {
+            bold,
+            ..CellStyle::default()
+        };
+        let text = match kind {
+            0 => "",
+            1 => " ",
+            2 => "a",
+            3 => "é",
+            4 => "e\u{301}",
+            5 => "x",
+            _ => "界",
+        };
+        if kind == 6 && cells.len() + 1 < columns {
+            cells.push(cell_with(text, foreground, CellStyle { bold, ..WIDE }));
+            cells.push(cell_with("", foreground, CellStyle { bold, ..SPACER }));
+        } else if kind == 5 {
+            // A repeat long enough to fill.
+            for _ in 0..9 {
+                if cells.len() < columns {
+                    cells.push(cell_with(text, foreground, style));
+                }
+            }
+        } else if kind != 6 {
+            cells.push(cell_with(text, foreground, style));
+        }
+    }
+    Arc::new(TerminalRow {
+        cells,
+        ..TerminalRow::default()
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// A streamed update, cut into frames of any size, is byte for byte the
+    /// message `encode_message` builds from the same update, complete or
+    /// delta, and the encoder's numbering advances the same way.
+    #[test]
+    fn a_streamed_update_matches_the_encoded_message_at_any_frame_size(
+        rows in proptest::collection::vec(
+            proptest::collection::vec(rich_cell(), 1..12),
+            1..6,
+        ),
+        edits in proptest::collection::vec(
+            (any::<prop::sample::Index>(), proptest::collection::vec(rich_cell(), 1..12)),
+            0..6,
+        ),
+        frame in 1..64_usize,
+    ) {
+        let columns = 24;
+        let mut snapshot = (*screen(&vec![""; rows.len()], columns)).clone();
+        snapshot.rows = rows.iter().map(|spec| rich_row(spec, columns)).collect();
+        let mut snapshot = Arc::new(snapshot);
+        let mut values = encoder();
+        let mut streams = encoder();
+        for step in 0..=edits.len() {
+            if step > 0 {
+                let (row, spec) = &edits[step - 1];
+                snapshot = publish(&snapshot, |next| {
+                    next.generation += 1;
+                    let row = row.index(next.rows.len());
+                    next.rows[row] = rich_row(spec, columns);
+                    next.rows.rotate_left(1);
+                });
+            }
+            let credited = step % 2 == 1;
+            let expected = encode_message(
+                &Message::TerminalUpdate(values.next(&snapshot, credited).unwrap()),
+                vectors::scope(),
+                CAPS,
+            )
+            .unwrap();
+            let planned = streams.plan(&snapshot, credited).unwrap();
+            prop_assert_eq!(planned.seq(), values.seq());
+            let mut frames = planned.frames(vectors::scope()).unwrap();
+            prop_assert_eq!(frames.len(), expected.len());
+            let mut streamed = Vec::new();
+            while frames.remaining() > 0 {
+                let before = streamed.len();
+                let appended = frames.fill(&mut streamed, frame).unwrap();
+                prop_assert_eq!(appended, streamed.len() - before);
+                prop_assert!(appended > 0 && appended <= frame);
+            }
+            prop_assert_eq!(&streamed, &expected);
+        }
+    }
+}
+
+#[test]
+fn a_streamed_update_keeps_only_the_rest_of_one_row_between_frames() {
+    let snapshot = screen(&["abcdefgh"; 64], 400);
+    let mut frames = encoder()
+        .plan(&snapshot, false)
+        .unwrap()
+        .frames(vectors::scope())
+        .unwrap();
+    let mut out = Vec::new();
+    let mut held = 0;
+    while frames.remaining() > 0 {
+        out.clear();
+        frames.fill(&mut out, 100).unwrap();
+        held = held.max(frames.pending.capacity());
+    }
+    // A 400-column row of a few letters and a fill encodes in a few dozen
+    // bytes; the whole message is far larger.
+    assert!(held < 64, "held {held} bytes between frames");
+    assert!(frames.len() > 64 * 10);
+}

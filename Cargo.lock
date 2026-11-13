@@ -2637,6 +2637,7 @@ dependencies = [
  "huterm-protocol",
  "huterm-server",
  "huterm-wire",
+ "nix 0.29.0",
 ]
 
 [[package]]
@@ -2749,6 +2750,7 @@ dependencies = [
  "huterm-core",
  "huterm-protocol",
  "huterm-wire",
+ "nix 0.29.0",
 ]
 
 [[package]]

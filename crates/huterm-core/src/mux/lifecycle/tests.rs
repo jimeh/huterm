@@ -1704,3 +1704,125 @@ fn pinning_or_unpinning_turns_a_held_emptied_close_stale() {
     assert!(mux.validate_close_scope(&held).is_ok());
     mux.shutdown().unwrap();
 }
+
+/// Answers each line it reads with `GOT_<line>.`, without echo, so only
+/// input that reached the shell shows.
+const LINES: &str =
+    "stty -echo; printf READY; while read v; do printf 'GOT_%s.' \"$v\"; done";
+
+/// Holds `client`'s runtime owner, so input it is sent stays queued, until
+/// the returned sender is dropped or sent on.
+fn hold_runtime(
+    client: &crate::test_support::TestClient,
+) -> std::sync::mpsc::Sender<()> {
+    let (entered, paused) = std::sync::mpsc::channel();
+    let (resume, release) = std::sync::mpsc::channel();
+    client
+        .control
+        .send_control(crate::terminal::RuntimeControl::Pause {
+            entered,
+            release,
+        })
+        .unwrap();
+    paused.recv_timeout(Duration::from_secs(3)).unwrap();
+    resume
+}
+
+/// A full-capability viewer of `terminal` that belongs to `attachment`.
+fn attached_viewer(
+    mux: &Mux,
+    attachment: AttachmentId,
+    terminal: TerminalId,
+) -> crate::TerminalViewer {
+    mux.subscribe_terminal(
+        attachment,
+        terminal,
+        crate::ViewerOptions::new(huterm_protocol::ViewerCapabilities::ALL),
+    )
+    .unwrap()
+}
+
+#[test]
+fn detaching_keeps_input_a_dropped_viewer_sent_before_it() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let opened = mux.open_test_tab(workspace, &command(LINES)).unwrap();
+    wait_for_text(&opened.client, "READY");
+    let attachment = mux.attach_session(session).unwrap();
+    let viewer =
+        attached_viewer(&mux, attachment, opened.tab.first_pane().terminal_id);
+    let resume = hold_runtime(&opened.client);
+    viewer
+        .send_input(TerminalInput::Text("kept\n".into()))
+        .unwrap();
+    drop(viewer);
+    mux.detach_session(attachment).unwrap();
+    resume.send(()).unwrap();
+    wait_for_text(&opened.client, "GOT_kept.");
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn detaching_a_live_viewer_discards_its_queued_input() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let opened = mux.open_test_tab(workspace, &command(LINES)).unwrap();
+    wait_for_text(&opened.client, "READY");
+    let attachment = mux.attach_session(session).unwrap();
+    let viewer =
+        attached_viewer(&mux, attachment, opened.tab.first_pane().terminal_id);
+    let resume = hold_runtime(&opened.client);
+    viewer
+        .send_input(TerminalInput::Text("lost\n".into()))
+        .unwrap();
+    mux.detach_session(attachment).unwrap();
+    assert!(viewer.poll().revoked);
+    assert!(matches!(
+        viewer.send_input(TerminalInput::Text("late\n".into())),
+        Err(crate::RuntimeError::Revoked)
+    ));
+    resume.send(()).unwrap();
+    // The discarded line was queued first, so it would show before this.
+    opened
+        .client
+        .send_input(TerminalInput::Text("after\n".into()))
+        .unwrap();
+    let screen = crate::test_support::snapshot_text(&wait_for_text(
+        &opened.client,
+        "GOT_after.",
+    ));
+    assert!(!screen.contains("GOT_lost."), "{screen}");
+    mux.shutdown().unwrap();
+}
+
+#[test]
+fn closing_a_window_after_its_viewer_dropped_keeps_the_viewer_s_input() {
+    let mut mux = Mux::default();
+    let session = mux.create_session(None).unwrap();
+    let workspace = mux.create_workspace(session, None).unwrap();
+    let opened = mux.open_test_tab(workspace, &command(LINES)).unwrap();
+    wait_for_text(&opened.client, "READY");
+    let closing = mux.attach_session(session).unwrap();
+    // Another window still shows the session, so closing this one only
+    // detaches it.
+    mux.attach_session(session).unwrap();
+    let viewer =
+        attached_viewer(&mux, closing, opened.tab.first_pane().terminal_id);
+    let resume = hold_runtime(&opened.client);
+    viewer
+        .send_input(TerminalInput::Text("kept\n".into()))
+        .unwrap();
+    drop(viewer);
+    let assessment = mux
+        .prepare_close(CloseRequest::Window(closing))
+        .unwrap()
+        .check_jobs();
+    assert_eq!(assessment.effect(), &CloseEffect::Detach(closing));
+    mux.commit_close(&assessment, &assessment.recheck(), false)
+        .unwrap();
+    resume.send(()).unwrap();
+    wait_for_text(&opened.client, "GOT_kept.");
+    mux.shutdown().unwrap();
+}

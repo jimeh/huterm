@@ -1,15 +1,21 @@
 //! Results: the success half, [`Response`], and the sequence a structural
 //! request committed at.
 //!
-//! Every minor version 0 result fits one frame at the smallest `max_frame`,
-//! including a close assessment, whose job summary is bounded by
+//! A close assessment's job summary is bounded by
 //! [`MAX_CLOSE_SUMMARY_TERMINALS`] and [`MAX_CLOSE_SUMMARY_PROCESSES`] with
-//! counts of what it left out.
+//! counts of what it left out. A viewer subscription's result carries the
+//! terminal's whole status, and a snapshot's result a link, so the
+//! `Result` cap covers both and a result may span frames. Selection text,
+//! the only result that can exceed that cap, travels as a `LargeResult`.
 
 use huterm_protocol::{
-    AttachmentId, CommandOutcome, PaneId, SessionId, TabId, TerminalId,
-    WorkspaceId,
+    AttachmentId, BufferRange, CommandOutcome, LinkLookup, PaneId, SessionId,
+    TabId, TerminalId, TerminalStatus, ViewerId, WorkspaceId,
 };
+
+use crate::caps::SELECTION_PAYLOAD_LIMIT;
+use crate::status::{decode_status, encode_status};
+use crate::viewer::{read_link, read_range, write_link, write_range};
 
 use crate::codec::{DecodeError, EncodeError, IdScope, Reader, Writer};
 use crate::command::{decode_outcome, encode_outcome};
@@ -211,6 +217,37 @@ pub enum Response {
         /// Whether it closed.
         closed: bool,
     },
+    /// A new viewer and its terminal's status, which the client takes as
+    /// the viewer's status baseline unless it carries one over.
+    Viewer {
+        /// The viewer.
+        viewer: ViewerId,
+        /// The terminal's status when the viewer registered.
+        status: Box<TerminalStatus>,
+    },
+    /// The terminal's runtime stopped on its own, so no viewer registered;
+    /// its final status, read under the same attachment check.
+    Stopped {
+        /// The final status.
+        status: Box<TerminalStatus>,
+    },
+    /// A snapshot request's link lookup, when it asked for one. Its update
+    /// arrived on the viewer's lane first.
+    Snapshot {
+        /// The link at the requested cell.
+        link: Option<LinkLookup>,
+    },
+    /// Selected text, or `None` when the generation moved on. Travels as a
+    /// `LargeResult`.
+    Text {
+        /// The text, at most [`SELECTION_PAYLOAD_LIMIT`] bytes.
+        text: Option<String>,
+    },
+    /// An expanded selection, or `None` when the generation moved on.
+    Range {
+        /// The range.
+        range: Option<BufferRange>,
+    },
 }
 
 /// A successful result.
@@ -370,6 +407,7 @@ fn decode_assessment(
 }
 
 /// Encodes a response: its tag, then its variant's record.
+#[expect(clippy::too_many_lines, reason = "one short arm per response kind")]
 ///
 /// # Errors
 /// Refuses an identity of another scope, or a close assessment past its
@@ -471,6 +509,35 @@ pub fn encode_response(
                 Ok(())
             })
         }
+        Response::Viewer { viewer, status } => {
+            w.tag(12);
+            w.record(|w| {
+                w.id(scope, *viewer)?;
+                encode_status(w, status)
+            })
+        }
+        Response::Stopped { status } => {
+            w.tag(13);
+            w.record(|w| encode_status(w, status))
+        }
+        Response::Snapshot { link } => {
+            w.tag(14);
+            w.record(|w| w.option(link.as_ref(), write_link))
+        }
+        Response::Text { text } => {
+            w.tag(15);
+            w.record(|w| {
+                w.optional_str(
+                    text.as_deref(),
+                    SELECTION_PAYLOAD_LIMIT,
+                    "selection text",
+                )
+            })
+        }
+        Response::Range { range } => {
+            w.tag(16);
+            w.record(|w| w.option(*range, write_range))
+        }
     }
 }
 
@@ -516,6 +583,25 @@ pub fn decode_response(
                 digest: u64::from_le_bytes(r.fixed()?),
             },
             11 => Response::EmptiedWorkspace { closed: r.bool()? },
+            12 => Response::Viewer {
+                viewer: r.id(scope)?,
+                status: Box::new(decode_status(r)?),
+            },
+            13 => Response::Stopped {
+                status: Box::new(decode_status(r)?),
+            },
+            14 => Response::Snapshot {
+                link: r.option("link", read_link)?,
+            },
+            15 => Response::Text {
+                text: r.optional_string(
+                    SELECTION_PAYLOAD_LIMIT,
+                    "selection text",
+                )?,
+            },
+            16 => Response::Range {
+                range: r.option("range", read_range)?,
+            },
             tag => {
                 return Err(DecodeError::UnknownTag {
                     field: "response",
@@ -556,6 +642,45 @@ pub fn encode_result(
             }
         }
     })
+}
+
+/// A selection result's message split around its text: the bytes before
+/// the text and the bytes after it, so a sender streams the text from its
+/// own buffer instead of encoding a copy. The three parts together are the
+/// `LargeResult` message [`encode_result`] would write for a success with
+/// [`Response::Text`] and no commit.
+///
+/// # Errors
+/// Refuses text past [`SELECTION_PAYLOAD_LIMIT`] with
+/// [`EncodeError::LimitExceeded`].
+pub fn text_result_parts(
+    request: RequestId,
+    text: &str,
+) -> Result<(Vec<u8>, Vec<u8>), EncodeError> {
+    use crate::caps::MessageKind;
+    use crate::codec::varint_len;
+    let len = text.len();
+    if len > SELECTION_PAYLOAD_LIMIT {
+        return Err(EncodeError::LimitExceeded {
+            field: "selection text",
+        });
+    }
+    let vlen = |value: usize| varint_len(value as u64);
+    let response = 1 + vlen(len) + len;
+    let success = 1 + vlen(response) + response + 1;
+    let result = varint_len(request.get()) + 1 + vlen(success) + success;
+    let mut head = Writer::new();
+    head.u64(MessageKind::LargeResult.number());
+    head.usize(result);
+    write_request_id(&mut head, request);
+    head.tag(0);
+    head.usize(success);
+    head.tag(15);
+    head.usize(response);
+    head.fixed(&[1]);
+    head.usize(len);
+    // No commit.
+    Ok((head.into_bytes(), vec![0]))
 }
 
 /// Decodes a result record.

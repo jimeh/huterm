@@ -35,6 +35,20 @@ pub const OUTBOUND_BUDGET: usize = 8 << 20;
 /// window keeps the record of used IDs bounded when a client skips one.
 pub const REQUEST_ID_WINDOW: u64 = 1024;
 
+/// The most viewers one connection holds, subscriptions in flight
+/// included. Past it, `SubscribeTerminal` answers `LimitExceeded`.
+pub const MAX_CONNECTION_VIEWERS: usize = 256;
+
+/// How long a viewer's staged ordered messages wait before the connection
+/// offers them to core again, the desktop's input retry interval. The
+/// deadline is armed only while something is staged.
+pub const STAGING_RETRY: std::time::Duration =
+    std::time::Duration::from_millis(16);
+
+/// The most ended viewers a connection remembers, so a request naming one
+/// answers `Revoked` or `Stopped` instead of `StaleTarget`.
+pub const MAX_ENDED_VIEWERS: usize = 256;
+
 /// Limits a server applies to each connection. The defaults are the named
 /// constants; tests lower them to reach a limit cheaply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +60,8 @@ pub struct ServerConfig {
     pub hierarchy_lane_budget: usize,
     /// See [`OUTBOUND_BUDGET`].
     pub outbound_budget: usize,
+    /// See [`MAX_CONNECTION_VIEWERS`].
+    pub max_viewers: usize,
 }
 
 impl Default for ServerConfig {
@@ -54,24 +70,30 @@ impl Default for ServerConfig {
             max_in_flight_requests: MAX_IN_FLIGHT_REQUESTS,
             hierarchy_lane_budget: HIERARCHY_LANE_BUDGET,
             outbound_budget: OUTBOUND_BUDGET,
+            max_viewers: MAX_CONNECTION_VIEWERS,
         }
     }
 }
 
 impl ServerConfig {
-    /// The most encoded bytes one connection at negotiated caps `caps` ever
-    /// retains: the outbound budget, one result or hierarchy message a
-    /// producer admitted just below it, and the one replacement snapshot a
-    /// connection may have in flight, which it admits whatever the queue
-    /// holds.
+    /// The most encoded bytes one connection at negotiated caps `caps`
+    /// and frames of at most `max_frame` bytes ever retains: the outbound
+    /// budget, one result or hierarchy message a producer admitted just
+    /// below it, the one replacement snapshot a connection may have in
+    /// flight, which it admits whatever the queue holds, and the one status
+    /// or frame the queue starts over the budget so it keeps moving.
     #[must_use]
-    pub fn retained_bound(&self, caps: MessageCaps) -> usize {
+    pub fn retained_bound(&self, caps: MessageCaps, max_frame: u32) -> usize {
         let cap = |kind| caps.cap(kind).unwrap_or(0);
         let hierarchy = cap(MessageKind::HierarchySnapshot)
             .max(cap(MessageKind::HierarchyResync))
             .max(cap(MessageKind::HierarchyEvent));
+        let frame = usize::try_from(max_frame).unwrap_or(usize::MAX);
         self.outbound_budget
             + hierarchy
             + cap(MessageKind::Result).max(hierarchy)
+            + cap(MessageKind::ViewerStatus)
+                .max(cap(MessageKind::InputAck))
+                .max(frame)
     }
 }

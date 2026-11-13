@@ -29,7 +29,7 @@ use crate::convert;
 use crate::feed::Subscribed;
 use crate::server::Server;
 use crate::work::{
-    Completion, Job, Operation, ReplaceJob, Replaced, RequestJob,
+    Completion, Job, Operation, ReplaceJob, Replaced, RequestJob, Subscription,
 };
 
 /// Runs `job` against `server`'s runtime and returns its completion.
@@ -48,7 +48,38 @@ pub fn execute(server: &Server, job: Job) -> Completion {
             }
             Completion::Cleaned
         }
+        // A viewer job blocks no thread in the native adapter, which awaits
+        // it on its executor; a caller without one blocks here.
+        Job::Viewer(job) => futures_lite::future::block_on(job.start()),
     }
+}
+
+/// Registers a viewer, reading its terminal's status under the same lock,
+/// or reads the final status of a terminal whose runtime stopped on its
+/// own.
+fn subscribe(
+    server: &Server,
+    attachment: huterm_protocol::AttachmentId,
+    terminal: huterm_protocol::TerminalId,
+    options: huterm_core::ViewerOptions,
+) -> Completion {
+    let mux = server.lock();
+    let outcome = match mux.subscribe_terminal(attachment, terminal, options) {
+        Ok(viewer) => mux
+            .terminal_status(attachment, terminal)
+            .map(|status| Subscription::Viewer {
+                port: std::sync::Arc::new(viewer),
+                status,
+            })
+            .map_err(|error| wire_error(&error)),
+        Err(MuxError::Runtime(RuntimeError::Stopped)) => mux
+            .terminal_status(attachment, terminal)
+            .map(Subscription::Stopped)
+            .map_err(|error| wire_error(&error)),
+        Err(error) => Err(wire_error(&error)),
+    };
+    drop(mux);
+    Completion::Subscribed(outcome)
 }
 
 /// The wire code for a core error. Every target that no longer resolves,
@@ -234,6 +265,11 @@ fn operation_completion(
             let outcome = attached(&mux, before, digest, result);
             Completion::Attached { outcome, ended }
         }
+        Operation::Subscribe {
+            attachment,
+            terminal,
+            options,
+        } => subscribe(server, attachment, terminal, *options),
         Operation::Restore { record, direction } => {
             let mut mux = server.lock();
             let before = mux.hierarchy_seq();

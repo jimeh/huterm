@@ -961,7 +961,7 @@ fn exited_history() {
         thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(client.status().failures, []);
-    assert_eq!(client.control.queued_input_bytes.load(Ordering::Acquire), 0);
+    assert_eq!(client.control.queued_input_bytes(), 0);
     runtime.shutdown().unwrap();
 }
 

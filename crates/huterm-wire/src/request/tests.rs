@@ -255,7 +255,16 @@ fn requests_and_their_kinds_carry_their_retry_class_and_version() {
     );
     for kind in RequestKind::ALL {
         assert_eq!(RequestKind::from_number(kind.number()), Some(*kind));
-        assert!(!kind.large_result(), "{kind:?}");
+        assert_eq!(
+            kind.large_result(),
+            *kind == RequestKind::Selection,
+            "{kind:?}"
+        );
+        // Every request that names a viewer is a viewer request or a
+        // shared setter, which is a mutation.
+        if kind.names_viewer() {
+            assert_ne!(kind.retry_class(), RetryClass::Query, "{kind:?}");
+        }
     }
     let class = |class| {
         RequestKind::ALL
@@ -276,10 +285,22 @@ fn requests_and_their_kinds_carry_their_retry_class_and_version() {
             RequestKind::PrepareClose,
         ]
     );
-    assert_eq!(class(RetryClass::Viewer), [RequestKind::ReportGeometry]);
+    assert_eq!(
+        class(RetryClass::Viewer),
+        [
+            RequestKind::ReportGeometry,
+            RequestKind::SubscribeTerminal,
+            RequestKind::CloseViewer,
+            RequestKind::Snapshot,
+            RequestKind::Selection,
+            RequestKind::SelectUnits,
+            RequestKind::UpdatePresentation,
+        ]
+    );
     // Shared setters are mutations, never retried.
     for kind in [
         RequestKind::SetScrollback,
+        RequestKind::SetScrollbackCompression,
         RequestKind::ClearHistory,
         RequestKind::Reset,
         RequestKind::RenameTab,
