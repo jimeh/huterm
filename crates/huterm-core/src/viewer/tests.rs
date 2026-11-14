@@ -2089,3 +2089,77 @@ fn snapshot_replies_place_each_viewer_s_selection_through_a_resize() {
     );
     runtime.shutdown().unwrap();
 }
+
+#[test]
+fn a_viewer_registered_while_writes_are_backed_up_keeps_its_selection() {
+    let flag = std::env::temp_dir()
+        .join(format!("huterm-viewer-track-{}", std::process::id()));
+    let _ = std::fs::remove_file(&flag);
+    // The application reads nothing until the flag exists and echoes
+    // nothing, so the generation stays put while writes back up.
+    let runtime = spawn(
+        255,
+        &format!(
+            "stty raw -echo; printf READY; while [ ! -e '{}' ]; do sleep 0.05; done; cat >/dev/null",
+            flag.display()
+        ),
+    );
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let client = runtime.client();
+    let pending = || {
+        let (reply, receiver) = mpsc::channel();
+        client
+            .send_control(RuntimeControl::PendingWrites(reply))
+            .unwrap();
+        receiver.recv_timeout(DEADLINE).unwrap()
+    };
+    let chunk = "x".repeat(4096);
+    wait_until("backed-up writes", || {
+        match typist.send_input(TerminalInput::Text(chunk.clone())) {
+            Ok(()) | Err(RuntimeError::Busy) => {}
+            Err(error) => panic!("input failed: {error}"),
+        }
+        wait_until("processed input", || client.queued_input_bytes() == 0);
+        pending() > 0
+    });
+    // The backlog defers reconciliation, so this viewer has no arbitration
+    // entry while it tracks.
+    let late = viewer(&runtime);
+    let live = late.request_snapshot().unwrap().recv_blocking().unwrap();
+    late.track_selection(Some(TrackedSelection {
+        id: 4,
+        generation: live.snapshot.generation,
+        range: top_row(5),
+    }))
+    .unwrap();
+    let reply = late.request_snapshot().unwrap().recv_blocking().unwrap();
+    assert!(pending() > 0, "writes were still backed up");
+    assert_eq!(
+        reply.selection,
+        Some(SelectionPlacement {
+            id: 4,
+            range: Some(top_row(5))
+        })
+    );
+    let by_id = late
+        .request_tracked_selection(4)
+        .unwrap()
+        .recv_blocking()
+        .unwrap();
+    assert_eq!(
+        by_id,
+        Some(SelectionText {
+            generation: reply.snapshot.generation,
+            text: "READY".into()
+        })
+    );
+    std::fs::write(&flag, b"").unwrap();
+    // Once reconciled after the backlog, finalization still frees it.
+    drop(late);
+    wait_until("the dropped viewer's selection to be freed", || {
+        tracked_selections(&runtime) == 0
+    });
+    let _ = std::fs::remove_file(&flag);
+    runtime.shutdown().unwrap();
+}

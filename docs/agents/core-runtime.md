@@ -300,9 +300,11 @@ viewer's snapshot, selection-text, and unit-expansion requests; text by
 selection id (`request_tracked_selection`) reads the references, so output
 never makes it stale. Controls are not counted toward a dropped viewer's
 queue, so the owner thread ignores a tracking control from a revoked or
-dropped viewer or one without an arbitration entry, and forgets the selection
-of every viewer arbitration finalizes (`Effects::finalized`); otherwise
-references would outlive their viewer. `build_snapshot` resolves the
+dropped viewer, and forgets the selection of every viewer arbitration
+finalizes (`Effects::finalized`); otherwise references would outlive their
+viewer. Tracking does not wait for an arbitration entry: reconciliation waits
+while writes are backed up, and finalization, which needs a revoked or
+dropped viewer, forgets the selection either way. `build_snapshot` resolves the
 requesting viewer's placement into `SnapshotReply::selection` in the same
 step. Tracking and resolution never fail the runtime: an error drops that
 viewer's selection, which reads as gone.

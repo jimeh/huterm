@@ -212,9 +212,10 @@ impl Selections {
             if !columns_changed {
                 continue;
             }
-            // Cells are read from the active screen. A selection on the
-            // other one resolves as gone anyway.
+            // Cells are read from the active screen, so an end the reflow
+            // leaves on a spacer head of the other one cannot be moved.
             if terminal.screen().ok() != Some(ends.screen) {
+                entry.ends = None;
                 continue;
             }
             let [start, end] = [&ends.start, &ends.end].map(|reference| {

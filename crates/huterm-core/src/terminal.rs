@@ -1734,20 +1734,13 @@ fn run_terminal(
                         let _ = reply.try_send(result);
                     }
                     RuntimeControl::TrackSelection { slot, selection } => {
-                        // A viewer registered since this turn's reconcile
-                        // gets its entry first.
-                        if !owner.reconcile(&mut arbiter) {
-                            closing.store(true, Ordering::Release);
-                            continue;
-                        }
                         // Controls are not counted toward a dropped
                         // viewer's queue, so only this check keeps a
-                        // selection from outliving its viewer's entry,
-                        // whose finalization forgets it.
-                        if !slot.is_revoked()
-                            && !slot.is_dropped()
-                            && arbiter.has_entry(&slot)
-                        {
+                        // selection from outliving its viewer. A viewer is
+                        // finalized only once it is revoked or dropped, and
+                        // finalization forgets its selection, whether or
+                        // not a reconcile has given it an entry yet.
+                        if !slot.is_revoked() && !slot.is_dropped() {
                             owner.engine.track_selection(slot.id, selection);
                         }
                     }

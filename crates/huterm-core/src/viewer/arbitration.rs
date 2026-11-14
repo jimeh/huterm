@@ -119,11 +119,6 @@ impl Arbiter {
         self.geometry_revision
     }
 
-    /// Whether the viewer has an entry: it is live and not yet finalized.
-    pub(crate) fn has_entry(&self, slot: &Slot) -> bool {
-        self.index(slot).is_some()
-    }
-
     fn index(&self, slot: &Slot) -> Option<usize> {
         self.entries
             .iter()
