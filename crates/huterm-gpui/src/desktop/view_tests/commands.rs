@@ -276,6 +276,11 @@ fn a_running_commands_clock_keeps_its_wake_after_each_tick(
         let (tick, scheduled) = harness.read(|view, _| {
             (view.sticky_tick, view.frame_clock.deadline_of(id))
         });
-        assert_eq!(scheduled, tick, "the frame clock holds the clock's wake");
+        // The frame clock wakes at the earliest of the view's deadlines,
+        // which must not be later than the clock's.
+        assert!(
+            scheduled.zip(tick).is_some_and(|(at, tick)| at <= tick),
+            "the frame clock holds the clock's wake: {scheduled:?} {tick:?}"
+        );
     }
 }

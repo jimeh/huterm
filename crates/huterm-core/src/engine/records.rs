@@ -290,9 +290,9 @@ impl CommandLog {
     /// can draw a newer prompt above an older one. A record is used only
     /// when its anchor sits on a primary prompt row, and of records on one
     /// row only the newest is: in-place erasure can move an older anchor
-    /// onto a newer prompt. Of the records above the viewport, only the
-    /// newest few are placed in screen space, the costliest read, and the
-    /// lowest of them owns the viewport's top row.
+    /// onto a newer prompt. The records above the viewport are placed in
+    /// screen space, and the lowest validated one owns the viewport's top
+    /// row.
     pub(super) fn layout<H>(
         &self,
         terminal: &Terminal<H>,
@@ -406,39 +406,38 @@ impl CommandLog {
     }
 }
 
-/// How many of the newest records above the viewport [`owner_start`]
-/// places. A record that cursor addressing drew below a newer one was on
-/// the screen with it, so it is among the newest few.
-const OWNER_CANDIDATES: usize = 4;
-
-/// The validated prompt row nearest above the viewport among the newest of
-/// `above`, the records above it, oldest first.
+/// The validated prompt row nearest above the viewport among `above`, the
+/// records above it. Sequence order says nothing here: cursor addressing
+/// can draw any number of newer prompts above an older one, so every record
+/// is placed in screen space, newest first on a shared row, and validated
+/// from the lowest until one passes.
 fn owner_start<H>(
     terminal: &Terminal<H>,
     view: View,
     above: &[&Entry],
 ) -> Result<Option<Start>, ghostty::Error> {
-    let mut owner: Option<Start> = None;
-    for entry in above.iter().rev().take(OWNER_CANDIDATES) {
-        let Some(row) = entry
-            .anchor
-            .as_ref()
-            .and_then(|anchor| screen_row(terminal, view, &anchor.0))
-            .filter(|&row| row < view.top)
-        else {
-            continue;
-        };
-        if owner.is_some_and(|owner| owner.row >= row)
-            || !is_prompt_start(terminal, view, row)?
-        {
-            continue;
+    let mut placed: Vec<Start> = above
+        .iter()
+        .filter_map(|entry| {
+            let anchor = entry.anchor.as_ref()?;
+            let point = terminal
+                .tracked_point(&anchor.0, PointSpace::Screen)
+                .ok()??;
+            let row = usize::try_from(point.y).ok()?;
+            (row < view.top).then_some(Start {
+                sequence: entry.record.sequence,
+                row,
+            })
+        })
+        .collect();
+    placed.sort_by_key(|start| std::cmp::Reverse((start.row, start.sequence)));
+    placed.dedup_by_key(|start| start.row);
+    for start in placed {
+        if is_prompt_start(terminal, view, start.row)? {
+            return Ok(Some(start));
         }
-        owner = Some(Start {
-            sequence: entry.record.sequence,
-            row,
-        });
     }
-    Ok(owner)
+    Ok(None)
 }
 
 /// An anchor's screen row, read in the cheapest space that holds it.

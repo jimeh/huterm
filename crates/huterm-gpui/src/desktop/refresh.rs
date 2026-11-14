@@ -124,7 +124,7 @@ impl FrameClock {
     }
 
     /// The wake the view `id` has scheduled, if any.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-support"))]
     pub(super) fn deadline_of(&self, id: gpui::EntityId) -> Option<Instant> {
         self.animations
             .borrow()

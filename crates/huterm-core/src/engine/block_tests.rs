@@ -548,3 +548,45 @@ fn a_sticky_prompt_never_holds_more_rows_than_its_grid() {
             .unwrap_or_else(|error| panic!("{rows} rows: {error}"));
     }
 }
+
+#[test]
+fn the_sticky_prompt_belongs_to_the_nearest_prompt_above_whatever_its_age() {
+    // Command 1 is drawn low on the screen, and five newer commands above
+    // it; scrolled into command 1's output, the header is command 1's.
+    let mut engine = engine(30, 30);
+    let at = |row: usize, name: &str, end: &str| {
+        format!(
+            "\x1b[{row};1H{}$ {}{name}\r\n{}{name} out\r\n{}",
+            mark("A"),
+            mark("B"),
+            mark("C"),
+            mark(end)
+        )
+    };
+    process(&mut engine, &at(21, "one", "D;1"));
+    for (row, name) in [(3, "two"), (6, "three"), (9, "four"), (12, "five")] {
+        process(&mut engine, &at(row, name, "D;0"));
+    }
+    process(&mut engine, &at(15, "six", "D;0"));
+    // Output below command 1 pushes every prompt into history.
+    process(&mut engine, "\x1b[30;1H");
+    for line in 0..45 {
+        process(&mut engine, &format!("\r\nfill {line}"));
+    }
+    let snapshot = engine.snapshot().unwrap();
+    let total = snapshot.history_size + usize::from(snapshot.size.rows);
+    // Put the row after command 1's output line at the viewport's top.
+    let one_output = 21; // the screen row below "one out" (1-based 22)
+    engine
+        .scroll(ScrollCommand::Absolute(total - 30 - one_output - 1))
+        .unwrap();
+    let snapshot = engine.snapshot().unwrap();
+    let sticky = snapshot.sticky_prompt.as_ref().expect("a sticky prompt");
+    assert_eq!(
+        sticky.sequence,
+        1,
+        "{:?} {:?}",
+        sticky_text(&snapshot),
+        sequences(&snapshot)
+    );
+}

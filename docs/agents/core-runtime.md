@@ -334,9 +334,10 @@ the block that owns the top row when its prompt is above the viewport.
 viewport space, which walks only from the viewport's top page and reports
 no value above it, and orders records by row, never by sequence: cursor
 addressing can draw a newer prompt above an older one, and a binary search
-over sequences once gave a newer command's rows to an older failure. Only
-the newest few records above the viewport are placed in screen space, the
-costliest read. A record is used only when its anchor sits on a primary
+over sequences once gave a newer command's rows to an older failure. Every
+record above the viewport is placed in screen space, the costliest read,
+because any number of newer prompts can sit above the one that owns the
+top row. A record is used only when its anchor sits on a primary
 prompt row, and of records on one row only the newest: in-place erasure
 and `scrollback = 0` move anchors onto other rows. The sticky prompt holds
 at most `min(3, grid rows)` rows, or the wire would refuse it. Every grid
