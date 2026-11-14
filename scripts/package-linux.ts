@@ -509,6 +509,22 @@ async function walkTreeEntries(root: string): Promise<TreeEntry[]> {
   return entries.sort((left, right) => left.file.localeCompare(right.file));
 }
 
+/**
+ * Whether `bytes` holds `root` as an absolute path: followed by `/` and not
+ * preceded by a path character. A bare substring test misfires when the
+ * container builds in `/workspace` and a relative source path such as
+ * `src/desktop/windows/workspace_panel.rs` is embedded.
+ */
+export function containsBuildPath(bytes: Uint8Array, root: string): boolean {
+  const buffer = Buffer.from(bytes);
+  const needle = Buffer.from(`${root.replace(/\/+$/, "")}/`);
+  for (let index = buffer.indexOf(needle); index >= 0; index = buffer.indexOf(needle, index + 1)) {
+    const before = index === 0 ? undefined : String.fromCharCode(buffer[index - 1]!);
+    if (before === undefined || !/[A-Za-z0-9._~/-]/.test(before)) return true;
+  }
+  return false;
+}
+
 /** The command line's only dynamic dependencies are the C runtime's. */
 export function validateCommandLineDynamic(dynamic: string, allowed: string[], file: string): void {
   if (/\((?:RUNPATH|RPATH)\)/.test(dynamic)) throw new Error(`${file} must not carry a runpath`);
@@ -569,7 +585,7 @@ async function verifyBundle(bundle: string, expectedVersion: string, expectedArc
     const expectedMode = (bundleExecutables as readonly string[]).includes(relative(bundle, file)) ? 0o755 : 0o644;
     if ((metadata.mode & 0o777) !== expectedMode) throw new Error(`${relative(bundle, file)} mode is not ${expectedMode.toString(8)}`);
     if (metadata.mtimeMs !== normalizedTimestamp) throw new Error(`${relative(bundle, file)} timestamp is not SOURCE_DATE_EPOCH`);
-    if (bytes.includes(Buffer.from(repoRoot))) throw new Error(`${relative(bundle, file)} contains the build path`);
+    if (containsBuildPath(bytes, repoRoot)) throw new Error(`${relative(bundle, file)} contains the build path`);
   }
   if (!/^\d+\.\d+\.\d+$/.test(expectedVersion)) throw new Error(`invalid expected version ${expectedVersion}`);
   const recordedFiles = new Set(manifest.privateLibraries.map(library => library.file));

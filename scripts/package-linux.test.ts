@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import {
   assertElfArchitecture,
   compareTrees,
+  containsBuildPath,
   highestRequiredGlibc,
   normalizeLinuxArchitecture,
   normalizeTreeMetadata,
@@ -89,6 +90,16 @@ describe("Linux package policy", () => {
       .toThrow("unclassified dynamic dependency: libssl.so.3");
     expect(() => validateDependencyPolicy(["libxcb.so.1"], ["libxcb.so.1"], ["libxcb.so.1"]))
       .toThrow("both private and host-owned");
+  });
+
+  test("finds the build root only as an absolute path", () => {
+    const bytes = (text: string) => Buffer.from(text, "latin1");
+    expect(containsBuildPath(bytes("\0/workspace/crates/huterm-core/src/lib.rs\0"), "/workspace")).toBe(true);
+    expect(containsBuildPath(bytes("/workspace/x"), "/workspace")).toBe(true);
+    expect(containsBuildPath(bytes("panic at '/workspace/src/main.rs'"), "/workspace/")).toBe(true);
+    expect(containsBuildPath(bytes("\0crates/huterm-gpui/src/desktop/windows/workspace_panel.rs\0"), "/workspace")).toBe(false);
+    expect(containsBuildPath(bytes("\0src/workspace/mod.rs\0/home/u/workspace/x\0"), "/workspace")).toBe(false);
+    expect(containsBuildPath(bytes("\0/workspaces/other\0"), "/workspace")).toBe(false);
   });
 
   test("the command line needs only C runtime libraries and no runpath", () => {
