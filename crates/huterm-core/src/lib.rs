@@ -43,7 +43,8 @@ pub use mux::{
 pub use status_feed::{StatusSubscription, TerminalStatuses};
 pub use terminal::{
     RefusedInput, RuntimeError, SelectUnitsRequest, SelectionRequest,
-    SnapshotReply, SnapshotRequest, TerminalRuntime,
+    SelectionText, SnapshotReply, SnapshotRequest, TerminalRuntime,
+    TrackedSelectionRequest,
 };
 pub use viewer::{
     HostEffectViewerOptions, TerminalViewer, ViewerOptions, ViewerUpdate,

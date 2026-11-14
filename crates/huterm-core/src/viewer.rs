@@ -19,7 +19,7 @@ use huterm_protocol::{
     InputStamp, MousePosition, RuntimeId, ScrollCommand, ScrollbackLimit,
     SelectionUnit, StatusBaseline, StatusChanges, TerminalFailure, TerminalId,
     TerminalInput, TerminalPresentation, TerminalSnapshot, TerminalStatus,
-    ViewerCapabilities, ViewerId,
+    TrackedSelection, ViewerCapabilities, ViewerId,
 };
 
 pub(crate) use arbitration::{Arbiter, Effects, Report};
@@ -31,7 +31,7 @@ use crate::host_effects::{
 use crate::terminal::{
     BufferEdit, InputBudget, RefusedInput, RuntimeClient, RuntimeControl,
     RuntimeError, RuntimeMessage, SelectUnitsRequest, SelectionRequest,
-    SnapshotRequest,
+    SnapshotRequest, TrackedSelectionRequest,
 };
 
 /// Live viewers one terminal admits.
@@ -970,6 +970,50 @@ impl TerminalViewer {
             reply,
         })?;
         Ok(SelectionRequest::new(receiver))
+    }
+
+    /// Asks the runtime to keep this viewer's settled selection on its text
+    /// through output, scrolling, and reflow, replacing any selection it
+    /// kept before; `None` forgets it. Every later snapshot reply carries
+    /// the selection's placement. It runs in order with this viewer's
+    /// snapshot, selection, and expansion requests. A selection made
+    /// against an older generation than the runtime's reads as gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the viewer was revoked or the terminal stopped.
+    pub fn track_selection(
+        &self,
+        selection: Option<TrackedSelection>,
+    ) -> Result<(), RuntimeError> {
+        self.check(true)?;
+        self.client.send_control(RuntimeControl::TrackSelection {
+            slot: Arc::clone(&self.slot),
+            selection,
+        })
+    }
+
+    /// Requests the current text of this viewer's tracked selection `id`
+    /// without blocking. Unlike [`Self::request_selection`], it reads the
+    /// selection where it lies now, so output that advanced the generation
+    /// meanwhile does not make the request stale.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the viewer was revoked or the terminal stopped.
+    pub fn request_tracked_selection(
+        &self,
+        id: u64,
+    ) -> Result<TrackedSelectionRequest, RuntimeError> {
+        self.check(true)?;
+        let (reply, receiver) = async_channel::bounded(1);
+        self.client
+            .send_control(RuntimeControl::TrackedSelectionText {
+                slot: Arc::clone(&self.slot),
+                id,
+                reply,
+            })?;
+        Ok(TrackedSelectionRequest::new(receiver))
     }
 
     /// Requests the range a multi-click selection from `anchor` to `head`

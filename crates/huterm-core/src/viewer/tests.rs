@@ -11,9 +11,10 @@ use std::time::Duration;
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, GridSize, HostEffect, Modifiers,
     MouseAction, MouseButton, MouseInput, MousePosition, ScrollCommand,
-    ScrollbackLimit, SelectionUnit, TerminalCommand, TerminalFailure,
-    TerminalId, TerminalInput, TerminalLifecycle, TerminalPresentation,
-    TerminalSnapshot, ViewerCapabilities,
+    ScrollbackLimit, SelectionPlacement, SelectionUnit, TerminalCommand,
+    TerminalFailure, TerminalId, TerminalInput, TerminalLifecycle,
+    TerminalPresentation, TerminalSnapshot, TrackedSelection,
+    ViewerCapabilities,
 };
 
 use super::{HostEffectViewerOptions, TerminalViewer, ViewerOptions};
@@ -21,7 +22,7 @@ use crate::terminal::RuntimeControl;
 use crate::test_support::wait_for_text;
 use crate::{
     DesktopHostEffectClient, HostEffectPermissions, HostEffectRecipientOptions,
-    RuntimeError, TerminalRuntime,
+    RuntimeError, SelectionText, TerminalRuntime,
 };
 
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -1945,5 +1946,220 @@ fn typing_stamped_before_a_client_numbered_scroll_leaves_it_in_place() {
         .unwrap();
     drained(&runtime);
     assert_eq!(viewer.read_snapshot().unwrap().viewport.bottom_offset, 0);
+    runtime.shutdown().unwrap();
+}
+
+/// Asks the runtime how many tracked selections hold references.
+fn tracked_selections(runtime: &TerminalRuntime) -> usize {
+    let (reply, count) = mpsc::channel();
+    runtime
+        .client()
+        .send_control(RuntimeControl::TrackedSelections(reply))
+        .unwrap();
+    count
+        .recv_timeout(DEADLINE)
+        .expect("the runtime should answer")
+}
+
+/// The first `columns` cells of the top row of a 40x8 grid.
+fn top_row(columns: u16) -> BufferRange {
+    BufferRange {
+        start: BufferPoint {
+            rows_from_live_bottom: 7,
+            column: 0,
+        },
+        end: BufferPoint {
+            rows_from_live_bottom: 7,
+            column: columns - 1,
+        },
+    }
+}
+
+#[test]
+fn tracking_from_a_dropped_or_revoked_viewer_creates_nothing() {
+    let runtime = spawn(253, "printf READY; read l");
+    let keeper = viewer(&runtime);
+    let dropped = viewer(&runtime);
+    let revoked = viewer(&runtime);
+    let live = wait_for_text(&keeper, "READY");
+    let selection = Some(TrackedSelection {
+        id: 1,
+        generation: live.generation,
+        range: top_row(5),
+    });
+    keeper.track_selection(selection).unwrap();
+    assert_eq!(tracked_selections(&runtime), 1);
+    let resume = pause(&runtime);
+    dropped.track_selection(selection).unwrap();
+    revoked.track_selection(selection).unwrap();
+    runtime
+        .registry()
+        .revoke_where(|slot| slot.id == revoked.id());
+    drop(dropped);
+    resume.send(()).unwrap();
+    assert_eq!(
+        tracked_selections(&runtime),
+        1,
+        "only the live viewer's selection holds references"
+    );
+    // Finalization frees the selection of a viewer that dropped.
+    drop(keeper);
+    wait_until("the dropped viewer's selection to be freed", || {
+        tracked_selections(&runtime) == 0
+    });
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn snapshot_replies_place_each_viewer_s_selection_through_a_resize() {
+    let runtime = spawn(254, "printf 'READY alpha beta gamma'; read l");
+    let selecting = sized_viewer(&runtime, 40, 8);
+    let other = viewer(&runtime);
+    let live = wait_for_text(&selecting, "gamma");
+    // `beta`, on the top row.
+    let beta = BufferRange {
+        start: BufferPoint {
+            column: 12,
+            ..top_row(1).start
+        },
+        end: BufferPoint {
+            column: 15,
+            ..top_row(1).end
+        },
+    };
+    selecting
+        .track_selection(Some(TrackedSelection {
+            id: 3,
+            generation: live.generation,
+            range: beta,
+        }))
+        .unwrap();
+    let reply = selecting
+        .request_snapshot()
+        .unwrap()
+        .recv_blocking()
+        .unwrap();
+    assert_eq!(
+        reply.selection,
+        Some(SelectionPlacement {
+            id: 3,
+            range: Some(beta)
+        })
+    );
+    let unselected = other.request_snapshot().unwrap().recv_blocking().unwrap();
+    assert_eq!(unselected.selection, None, "the other viewer tracks none");
+
+    selecting
+        .report_geometry(GridSize::clamped(10, 8), cell())
+        .unwrap();
+    let mut resized = None;
+    wait_until("the narrower grid", || {
+        let reply = selecting
+            .request_snapshot()
+            .unwrap()
+            .recv_blocking()
+            .unwrap();
+        let narrow = reply.snapshot.size.columns == 10;
+        resized = Some(reply);
+        narrow
+    });
+    let resized = resized.unwrap();
+    let generation = resized.snapshot.generation;
+    let placement = resized.selection.expect("the selection is tracked");
+    assert_eq!(placement.id, 3);
+    let range = placement.range.expect("the selection is kept");
+    assert_ne!(range, beta, "the wrap moved it");
+    let placed = selecting
+        .request_selection(generation, range)
+        .unwrap()
+        .recv_blocking()
+        .unwrap();
+    assert_eq!(placed.as_deref(), Some("beta"));
+    let by_id = selecting
+        .request_tracked_selection(3)
+        .unwrap()
+        .recv_blocking()
+        .unwrap();
+    assert_eq!(
+        by_id,
+        Some(SelectionText {
+            generation,
+            text: "beta".into()
+        })
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_viewer_registered_while_writes_are_backed_up_keeps_its_selection() {
+    let flag = std::env::temp_dir()
+        .join(format!("huterm-viewer-track-{}", std::process::id()));
+    let _ = std::fs::remove_file(&flag);
+    // The application reads nothing until the flag exists and echoes
+    // nothing, so the generation stays put while writes back up.
+    let runtime = spawn(
+        255,
+        &format!(
+            "stty raw -echo; printf READY; while [ ! -e '{}' ]; do sleep 0.05; done; cat >/dev/null",
+            flag.display()
+        ),
+    );
+    let typist = prober(&runtime);
+    wait_for_text(&typist, "READY");
+    let client = runtime.client();
+    let pending = || {
+        let (reply, receiver) = mpsc::channel();
+        client
+            .send_control(RuntimeControl::PendingWrites(reply))
+            .unwrap();
+        receiver.recv_timeout(DEADLINE).unwrap()
+    };
+    let chunk = "x".repeat(4096);
+    wait_until("backed-up writes", || {
+        match typist.send_input(TerminalInput::Text(chunk.clone())) {
+            Ok(()) | Err(RuntimeError::Busy) => {}
+            Err(error) => panic!("input failed: {error}"),
+        }
+        wait_until("processed input", || client.queued_input_bytes() == 0);
+        pending() > 0
+    });
+    // The backlog defers reconciliation, so this viewer has no arbitration
+    // entry while it tracks.
+    let late = viewer(&runtime);
+    let live = late.request_snapshot().unwrap().recv_blocking().unwrap();
+    late.track_selection(Some(TrackedSelection {
+        id: 4,
+        generation: live.snapshot.generation,
+        range: top_row(5),
+    }))
+    .unwrap();
+    let reply = late.request_snapshot().unwrap().recv_blocking().unwrap();
+    assert!(pending() > 0, "writes were still backed up");
+    assert_eq!(
+        reply.selection,
+        Some(SelectionPlacement {
+            id: 4,
+            range: Some(top_row(5))
+        })
+    );
+    let by_id = late
+        .request_tracked_selection(4)
+        .unwrap()
+        .recv_blocking()
+        .unwrap();
+    assert_eq!(
+        by_id,
+        Some(SelectionText {
+            generation: reply.snapshot.generation,
+            text: "READY".into()
+        })
+    );
+    std::fs::write(&flag, b"").unwrap();
+    // Once reconciled after the backlog, finalization still frees it.
+    drop(late);
+    wait_until("the dropped viewer's selection to be freed", || {
+        tracked_selections(&runtime) == 0
+    });
+    let _ = std::fs::remove_file(&flag);
     runtime.shutdown().unwrap();
 }

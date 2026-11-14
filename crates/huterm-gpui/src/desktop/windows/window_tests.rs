@@ -1564,6 +1564,54 @@ fn a_replacement_that_does_not_resize_keeps_the_selection(
     assert!(harness.cx.update(|cx| selected(cx, window, tab)));
 }
 
+/// The replacement viewer tracks the settled selection again, so output
+/// that advances the generation keeps it on its text.
+#[gpui::test]
+fn a_replacement_keeps_tracking_the_selection_through_output(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::new(cx);
+    let tab = harness.open_tab(ECHO);
+    let window = harness.attach_window();
+    harness.activate(window, tab);
+    harness.wait_text(window, tab, "READY");
+    let completed = |cx: &mut App| {
+        terminal(cx, window, tab).map_or(0, |view| {
+            view.read(cx).scroll.diagnostics().requests_completed
+        })
+    };
+    harness.wait_for("the requested grid applied and shown", |cx| {
+        terminal(cx, window, tab).is_some_and(|view| {
+            let view = view.read(cx);
+            view.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.geometry_revision > 0
+                    && snapshot.size == view.requested_grid
+            })
+        })
+    });
+    let view = harness.cx.update(|cx| terminal(cx, window, tab)).unwrap();
+    harness
+        .cx
+        .update(|cx| view.update(cx, TerminalView::select_all));
+    let before = harness.cx.update(completed);
+    harness.revoke(window);
+    harness.wait_for("the replacement's first snapshot", |cx| {
+        replaced(cx, window, tab, 1).is_some() && completed(cx) > before
+    });
+    let generation = |cx: &mut App| {
+        terminal(cx, window, tab)
+            .and_then(|view| view.read(cx).snapshot.clone())
+            .map(|snapshot| snapshot.generation)
+    };
+    let shown = harness.cx.update(generation);
+    let _typist = harness.send_line(tab, "out");
+    harness.wait_text(window, tab, "got:out");
+    harness.cx.update(|cx| {
+        assert_ne!(generation(cx), shown, "the output is a change");
+        assert!(selected(cx, window, tab), "the selection is kept");
+    });
+}
+
 /// A child that prints `READY`, then answers `out` with `OUT`, `title` by
 /// setting its title to `two`, `clip` by writing `clip` to the clipboard
 /// through OSC 52 and then printing `CLIPPED`, and `exit` by exiting.

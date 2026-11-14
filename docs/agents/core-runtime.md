@@ -292,6 +292,23 @@ presses that button again, and no report takes a gesture while tracking is off.
 After root exit, typing still moves control and returns the viewport to live,
 and replies from a resize are dropped with the input.
 
+A viewer's settled selection lives in core as two tracked references
+(`engine/selections.rs`; see
+[the engine guide](terminal-engines.md#the-huterm-ghostty-crate)).
+`TerminalViewer::track_selection` is a control, so it stays in order with that
+viewer's snapshot, selection-text, and unit-expansion requests; text by
+selection id (`request_tracked_selection`) reads the references, so output
+never makes it stale. Controls are not counted toward a dropped viewer's
+queue, so the owner thread ignores a tracking control from a revoked or
+dropped viewer, and forgets the selection of every viewer arbitration
+finalizes (`Effects::finalized`); otherwise references would outlive their
+viewer. Tracking does not wait for an arbitration entry: reconciliation waits
+while writes are backed up, and finalization, which needs a revoked or
+dropped viewer, forgets the selection either way. `build_snapshot` resolves the
+requesting viewer's placement into `SnapshotReply::selection` in the same
+step. Tracking and resolution never fail the runtime: an error drops that
+viewer's selection, which reads as gone.
+
 ## Command records
 
 `engine/records.rs` turns the OSC 133 events Ghostty reports into the records

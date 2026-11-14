@@ -128,12 +128,14 @@ fn execute(cx: &mut App, command: &str) -> anyhow::Result<()> {
                         + usize::from(snapshot.size.rows - 1 - row),
                     column,
                 };
-                view.selection = Some(Selection::cells(
-                    snapshot.generation,
-                    point(column, row),
-                    point(end_column, end_row),
-                ));
-                view.update_renderer_selection();
+                view.set_selection(
+                    Selection::cells(
+                        snapshot.generation,
+                        point(column, row),
+                        point(end_column, end_row),
+                    ),
+                    cx,
+                );
             }
             cx.notify();
             Ok(())

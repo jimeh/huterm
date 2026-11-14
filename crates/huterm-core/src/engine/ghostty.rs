@@ -20,15 +20,17 @@ use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
     CommandRecord, Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding,
     MouseTracking, Rgb, RowPrompt, ScrollCommand, ScrollbackLimit,
-    SelectionUnit, TerminalAppearance, TerminalId, TerminalModes,
-    TerminalPresentation, TerminalProgress, TerminalRow, TerminalSnapshot,
-    Viewport, appearance_for_background,
+    SelectionPlacement, SelectionUnit, TerminalAppearance, TerminalId,
+    TerminalModes, TerminalPresentation, TerminalProgress, TerminalRow,
+    TerminalSnapshot, TrackedSelection, ViewerId, Viewport,
+    appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
 use super::links::{LinkBuffer, MAX_LINK_BYTES};
 use super::records::CommandLog;
 use super::row_matcher::{RowMatcher, viewport_shift};
+use super::selections::Selections;
 use super::{DirectoryUpdate, EngineEffect, normalize_directory};
 use crate::host_effects::{
     HostEffectAdmission, HostEffectSink, TERMINAL_BYTE_LIMIT,
@@ -281,6 +283,7 @@ pub(super) struct TerminalEngine {
     grapheme: Vec<u8>,
     effects: Vec<ghostty::Effect>,
     commands: CommandLog,
+    selections: Selections,
     server_hostname: Option<String>,
     notifications: NotificationLimiter,
     #[cfg(test)]
@@ -342,6 +345,7 @@ impl TerminalEngine {
             grapheme: Vec::new(),
             effects: Vec::new(),
             commands: CommandLog::default(),
+            selections: Selections::default(),
             server_hostname: server_hostname(),
             notifications: NotificationLimiter::default(),
             #[cfg(test)]
@@ -514,12 +518,16 @@ impl TerminalEngine {
         if during > 0 {
             self.terminal.set_scrollback_bytes(Some(during))?;
         }
+        let pending =
+            self.selections
+                .prepare_resize(&self.terminal, self.size, size);
         self.terminal.resize(
             size.columns,
             size.rows,
             u32::from(cell.width),
             u32::from(cell.height),
         )?;
+        self.selections.finish_resize(&mut self.terminal, pending);
         let after = allowance(size.rows);
         if after > 0 {
             self.terminal.set_scrollback_bytes(Some(after))?;
@@ -917,6 +925,54 @@ impl TerminalEngine {
         };
         let text = self.terminal.format_plain(start, end)?;
         Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
+    }
+
+    /// Keeps `viewer`'s settled selection on its text, replacing any it
+    /// had, or forgets it for `None`.
+    pub(super) fn track_selection(
+        &mut self,
+        viewer: ViewerId,
+        selection: Option<TrackedSelection>,
+    ) {
+        self.selections.track(
+            &mut self.terminal,
+            self.generation,
+            viewer,
+            selection,
+        );
+    }
+
+    pub(super) fn forget_selection(&mut self, viewer: ViewerId) {
+        self.selections.forget(viewer);
+    }
+
+    pub(super) fn selection_placement(
+        &mut self,
+        viewer: ViewerId,
+    ) -> Option<SelectionPlacement> {
+        self.selections.placement(&self.terminal, viewer)
+    }
+
+    /// The text of `viewer`'s tracked selection `id` at the current
+    /// generation; `None` when it tracks another selection or this one is
+    /// gone.
+    pub(super) fn tracked_selection_text(
+        &mut self,
+        viewer: ViewerId,
+        id: u64,
+    ) -> Result<Option<String>, RuntimeError> {
+        let Some((start, end)) =
+            self.selections.points(&self.terminal, viewer, id)
+        else {
+            return Ok(None);
+        };
+        let text = self.terminal.format_plain(start, end)?;
+        Ok(Some(String::from_utf8_lossy(text.as_bytes()).into_owned()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn tracked_selections(&self) -> usize {
+        self.selections.tracked()
     }
 
     /// Starts a trimmed line at its logical start when only blank cells

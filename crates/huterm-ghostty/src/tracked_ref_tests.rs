@@ -159,3 +159,70 @@ fn references_are_read_only_through_their_terminal_and_outlive_it() {
     // grid_ref_tracked.h: a reference may be freed after its terminal.
     drop(mark);
 }
+
+#[test]
+fn a_reference_made_in_history_follows_its_cell_through_reflow() {
+    let mut terminal = terminal(10);
+    terminal.write(b"abcdefghijKLMNOPQRST\r\n").unwrap();
+    for line in 0..6 {
+        terminal.write(format!("f{line}\r\n").as_bytes()).unwrap();
+    }
+    // The second row of the wrapped line, now in history, at its `M`.
+    let mark = terminal.track(Point::screen(2, 1)).unwrap();
+    assert_eq!(text_at(&terminal, &mark), "MNOPQRST");
+    terminal.resize(20, 4, 9, 17).unwrap();
+    assert_eq!(text_at(&terminal, &mark), "MNOPQRST");
+    terminal.resize(7, 4, 9, 17).unwrap();
+    assert_eq!(text_at(&terminal, &mark), "MN");
+}
+
+/// A wrap that pushes a wide character to the next row leaves a spacer
+/// head where it started. A reference on the character's first half stays
+/// on that spacer head, and one on its second half follows the character.
+#[test]
+fn a_wide_character_pushed_across_a_wrap_leaves_its_first_half_behind() {
+    let mut terminal = terminal(10);
+    terminal.write("abcdefgh\u{4e2d}x".as_bytes()).unwrap();
+    let head = terminal.track(Point::active(8, 0)).unwrap();
+    let tail = terminal.track(Point::active(9, 0)).unwrap();
+    let screen = |terminal: &Terminal<()>, reference| {
+        terminal
+            .tracked_point(reference, PointSpace::Screen)
+            .unwrap()
+            .map(|point| (point.x, point.y))
+    };
+    terminal.resize(9, 4, 9, 17).unwrap();
+    assert_eq!(screen(&terminal, &head), Some((8, 0)));
+    assert_eq!(screen(&terminal, &tail), Some((1, 1)));
+    let spacer = terminal.grid_ref(Point::active(8, 0)).unwrap();
+    assert_eq!(
+        spacer.cell().unwrap().width().unwrap(),
+        crate::CellWidth::SpacerHead
+    );
+    terminal.resize(10, 4, 9, 17).unwrap();
+    assert_eq!(screen(&terminal, &head), Some((8, 0)));
+    assert_eq!(screen(&terminal, &tail), Some((9, 0)));
+}
+
+/// A reference keeps its value and position on its own screen while the
+/// other screen is active, so its holder must check the active screen.
+#[test]
+fn a_reference_keeps_its_value_while_the_other_screen_is_active() {
+    let mut terminal = terminal(10);
+    terminal.write(b"primary").unwrap();
+    let primary = terminal.track(Point::active(3, 0)).unwrap();
+    terminal.write(b"\x1b[?1049h\x1b[3;1Halternate").unwrap();
+    assert_eq!(terminal.screen().unwrap(), crate::Screen::Alternate);
+    assert!(terminal.has_value(&primary));
+    let alternate = terminal.track(Point::active(8, 2)).unwrap();
+    terminal.write(b"\x1b[?1049l").unwrap();
+    assert_eq!(terminal.screen().unwrap(), crate::Screen::Primary);
+    assert!(terminal.has_value(&alternate));
+    assert_eq!(
+        terminal
+            .tracked_point(&primary, PointSpace::Screen)
+            .unwrap()
+            .map(|point| (point.x, point.y)),
+        Some((3, 0))
+    );
+}

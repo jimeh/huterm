@@ -287,7 +287,7 @@ fn the_accessible_selection_reads_what_copy_copies(cx: &mut TestAppContext) {
         });
         let (copied, accessible) = harness.read(|view, _| {
             (
-                view.selected_text.clone().unwrap(),
+                view.selected_text.clone().unwrap().text,
                 selected(&view.a11y.model()).unwrap().2,
             )
         });

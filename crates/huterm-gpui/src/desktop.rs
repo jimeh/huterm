@@ -22,9 +22,9 @@ use huterm_core::{
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
     CommandOutcome, CommandValue, GridSize, HostEffect, HostEffectKind,
-    Modifiers, ScrollbackLimit, TabId, TerminalCommand, TerminalId,
-    TerminalInput, TerminalLifecycle, TerminalMetadata, TerminalPresentation,
-    TerminalSnapshot, ids,
+    Modifiers, ScrollbackLimit, SelectionPlacement, TabId, TerminalCommand,
+    TerminalId, TerminalInput, TerminalLifecycle, TerminalMetadata,
+    TerminalPresentation, TerminalSnapshot, TrackedSelection, ids,
 };
 
 use crate::APP_ID;
@@ -331,6 +331,14 @@ fn copy_availability(
     }
 }
 
+/// The selection's text as Copy copies it, valid only while the displayed
+/// snapshot has `generation`: output can change a settled selection's text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SelectedText {
+    generation: u64,
+    text: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct BellPresentation {
     unseen: bool,
@@ -533,7 +541,13 @@ struct TerminalView {
     /// Numbers each word or line gesture, so replies to an older one are
     /// ignored.
     unit_gestures: u64,
-    selected_text: Option<String>,
+    /// The number the runtime keeps the settled selection under, which its
+    /// placements and text replies carry. `None` while nothing is selected
+    /// or a gesture is still in progress; such a selection clears when the
+    /// content changes.
+    selection_id: Option<u64>,
+    selection_ids: u64,
+    selected_text: Option<SelectedText>,
     selecting: bool,
     scrollbars: Scrollbars,
     /// The cursor the last render set over the terminal.
@@ -925,6 +939,8 @@ impl TerminalView {
             selection: None,
             unit_gesture: None,
             unit_gestures: 0,
+            selection_id: None,
+            selection_ids: 0,
             selected_text: None,
             selecting: false,
             scrollbars: Scrollbars::vertical(TERMINAL_SCROLLBAR),
@@ -1068,7 +1084,7 @@ impl TerminalView {
                         view.links.publish(link_intent, reply.link);
                         let hover_changed = view.links.hover() != hover.as_ref();
                         let changed =
-                            view.apply_snapshot(reply.snapshot, cx) || hover_changed;
+                            view.apply_snapshot(reply.snapshot, reply.selection, cx) || hover_changed;
                         view.request_expansion(cx);
                         view.renderer
                             .borrow_mut()
@@ -1097,6 +1113,7 @@ impl TerminalView {
     fn apply_snapshot(
         &mut self,
         snapshot: Arc<TerminalSnapshot>,
+        placement: Option<SelectionPlacement>,
         cx: &mut App,
     ) -> bool {
         if cx.has_global::<SnapshotCounts>() {
@@ -1124,12 +1141,7 @@ impl TerminalView {
         }
         self.scroll
             .complete(snapshot.viewport, snapshot.history_size);
-        if self.selection.is_some_and(|selection| {
-            selection.generation != snapshot.generation
-        }) {
-            self.clear_selection();
-            changed = true;
-        }
+        changed |= self.place_selection(snapshot.generation, placement);
         if self.selecting
             && self.selection_edge_direction != 0
             && self.selection.is_some()
@@ -1153,6 +1165,46 @@ impl TerminalView {
         }
         self.snapshot = Some(snapshot);
         changed
+    }
+
+    /// Applies a snapshot reply to the selection, and reports whether it
+    /// changed. A placement for the settled selection moves or clears it. A
+    /// reply without one was built before the runtime saw the selection:
+    /// at the selection's generation its range is still exact, and at
+    /// another the runtime will find it stale, so it clears now. A
+    /// selection that has not settled clears on any content change.
+    fn place_selection(
+        &mut self,
+        generation: u64,
+        placement: Option<SelectionPlacement>,
+    ) -> bool {
+        let Some(shown) = self.selection else {
+            return false;
+        };
+        let placement = placement
+            .filter(|placement| Some(placement.id) == self.selection_id);
+        match placement {
+            Some(SelectionPlacement {
+                range: Some(range), ..
+            }) => {
+                let moved = self.selection.as_mut().is_some_and(|selection| {
+                    selection.place(generation, range)
+                });
+                if moved {
+                    self.update_renderer_selection();
+                }
+                moved
+            }
+            Some(SelectionPlacement { range: None, .. }) => {
+                self.clear_selection();
+                true
+            }
+            None if shown.generation != generation => {
+                self.clear_selection();
+                true
+            }
+            None => false,
+        }
     }
 
     /// Runs up to [`HOST_EFFECT_BATCH`] queued host effects: clipboard
@@ -1204,9 +1256,11 @@ impl TerminalView {
         let update = self.viewer.poll();
         self.revoked |= update.revoked;
         if let Some(generation) = update.invalidated {
-            if self
-                .selection
-                .is_some_and(|selection| selection.generation != generation)
+            // The next snapshot's placement decides a settled selection.
+            if self.selection_id.is_none()
+                && self
+                    .selection
+                    .is_some_and(|selection| selection.generation != generation)
             {
                 self.clear_selection();
                 changed = true;
@@ -1306,7 +1360,8 @@ impl TerminalView {
     }
 
     /// Replaces a revoked viewer in place. Selection, scroll position, and
-    /// the shown snapshot stay; the next snapshot clears the selection only
+    /// the shown snapshot stay; a settled selection is tracked again by the
+    /// new viewer, and one still in a gesture clears on the next snapshot
     /// if the content generation moved. Input the old viewer had not sent is
     /// discarded with its authority, and its in-flight replies are ignored.
     /// The runtime released the old viewer's gestures. `viewer` started
@@ -1349,6 +1404,8 @@ impl TerminalView {
         }
         self.retry_client_messages();
         self.wake_pending_work();
+        // Before the first snapshot request, so its reply can place it.
+        self.send_tracked_selection();
         self.scroll.restart();
         self.scroll.invalidate();
         self.start_snapshot_if_needed(cx);
@@ -1853,23 +1910,35 @@ impl TerminalView {
         self.clear_option_composition();
         self.command_availability(invocation.id)?;
         match invocation.id {
-            ids::COPY => match (&self.selected_text, self.selection) {
-                (Some(text), _) => {
-                    cx.write_to_clipboard(ClipboardItem::new_string(
-                        text.clone(),
-                    ));
-                }
-                // The selection's text is still being extracted: copy it
-                // when it arrives rather than dropping the request.
-                (None, Some(selection)) => {
-                    if self.expanding() {
-                        self.copy_when_expanded(selection, cx);
-                    } else if let Some(range) = selection.range() {
-                        self.extract_selection(selection, range, true, cx);
+            ids::COPY => {
+                let shown =
+                    self.snapshot.as_ref().map(|shown| shown.generation);
+                match (&self.selected_text, self.selection_id, self.selection) {
+                    (Some(cached), _, _)
+                        if Some(cached.generation) == shown =>
+                    {
+                        cx.write_to_clipboard(ClipboardItem::new_string(
+                            cached.text.clone(),
+                        ));
                     }
+                    // The runtime reads the settled selection where it lies
+                    // now, which output may have changed since the text was
+                    // cached.
+                    (_, Some(id), _) => {
+                        self.request_selection_text(id, true, cx);
+                    }
+                    // The selection's text is still being extracted: copy it
+                    // when it arrives rather than dropping the request.
+                    (_, None, Some(selection)) => {
+                        if self.expanding() {
+                            self.copy_when_expanded(selection, cx);
+                        } else if let Some(range) = selection.range() {
+                            self.extract_selection(selection, range, true, cx);
+                        }
+                    }
+                    (_, None, None) => {}
                 }
-                (None, None) => {}
-            },
+            }
             ids::SELECT_ALL => self.select_all(cx),
             ids::CLEAR_SCROLLBACK | ids::RESET_TERMINAL => {
                 let edited = if invocation.id == ids::CLEAR_SCROLLBACK {
@@ -2244,7 +2313,9 @@ impl TerminalView {
         let position = position - self.terminal_layout(window).bounds.origin;
         let point = point_for_position(position, snapshot, self.metrics);
         let unit = unit_for_clicks(event.click_count);
-        self.selection = Some(Selection::new(snapshot.generation, point, unit));
+        let generation = snapshot.generation;
+        self.forget_tracked_selection();
+        self.selection = Some(Selection::new(generation, point, unit));
         self.unit_gesture = unit.map(|_| {
             self.unit_gestures += 1;
             UnitGesture::new(self.unit_gestures)
@@ -2592,15 +2663,8 @@ impl TerminalView {
             self.settle_expansion(cx);
             return;
         }
-        let Some(selection) = self.selection else {
-            return;
-        };
-        let Some(range) = selection.range() else {
-            self.clear_selection();
-            cx.notify();
-            return;
-        };
-        self.extract_selection(selection, range, false, cx);
+        self.settle_selection(cx);
+        cx.notify();
     }
 
     /// Selects every row of history and the screen.
@@ -2624,15 +2688,124 @@ impl TerminalView {
                 column: columns - 1,
             },
         );
+        self.set_selection(selection, cx);
+    }
+
+    /// Selects `selection` as a settled selection, as a client that sets
+    /// one programmatically does.
+    fn set_selection(
+        &mut self,
+        selection: Selection,
+        cx: &mut Context<'_, Self>,
+    ) {
+        self.forget_tracked_selection();
         self.selection = Some(selection);
         self.unit_gesture = None;
         self.selected_text = None;
         self.selecting = false;
+        self.selection_edge_direction = 0;
         self.update_renderer_selection();
-        if let Some(range) = selection.range() {
-            self.extract_selection(selection, range, false, cx);
-        }
+        self.settle_selection(cx);
         cx.notify();
+    }
+
+    /// The selection has no gesture left in progress: the runtime keeps it
+    /// on its text from now on, under a new number, and its text is cached.
+    /// A selection with no range clears instead.
+    fn settle_selection(&mut self, cx: &mut Context<'_, Self>) {
+        if self.selection.and_then(Selection::range).is_none() {
+            self.clear_selection();
+            return;
+        }
+        self.selection_ids += 1;
+        let id = self.selection_ids;
+        self.selection_id = Some(id);
+        self.send_tracked_selection();
+        self.request_selection_text(id, false, cx);
+    }
+
+    /// Asks the viewer to track the settled selection. A revoked viewer's
+    /// replacement sends it again.
+    fn send_tracked_selection(&mut self) {
+        let (Some(id), Some(selection)) = (self.selection_id, self.selection)
+        else {
+            return;
+        };
+        let Some(range) = selection.range() else {
+            return;
+        };
+        let tracked = TrackedSelection {
+            id,
+            generation: selection.generation,
+            range,
+        };
+        if let Err(error) = self.viewer.track_selection(Some(tracked)) {
+            self.report_viewer_failure(&error);
+        }
+    }
+
+    /// Tells the viewer to forget the settled selection, if there is one.
+    fn forget_tracked_selection(&mut self) {
+        if self.selection_id.take().is_some() {
+            // A viewer that can no longer take it frees the selection when
+            // the runtime finalizes it.
+            let _ = self.viewer.track_selection(None);
+        }
+    }
+
+    /// Asks the runtime for the settled selection `id`'s current text and
+    /// caches it while that selection stays current. With `copy`, the text
+    /// also goes to the clipboard when it arrives.
+    fn request_selection_text(
+        &mut self,
+        id: u64,
+        copy: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let request = match self.viewer.request_tracked_selection(id) {
+            Ok(request) => request,
+            Err(error) => {
+                self.report_viewer_failure(&error);
+                return;
+            }
+        };
+        let epoch = self.viewer_epoch;
+        cx.spawn(async move |view, cx| {
+            let result = request.recv().await;
+            let _ = view.update(cx, |view, cx| {
+                let current =
+                    view.viewer_epoch == epoch && view.selection_id == Some(id);
+                match result {
+                    // A requested copy writes the text it asked for even if
+                    // the selection changed since; only caching needs it
+                    // current.
+                    Ok(Some(selected)) => {
+                        if copy {
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                selected.text.clone(),
+                            ));
+                        }
+                        if current {
+                            view.selected_text = Some(SelectedText {
+                                generation: selected.generation,
+                                text: selected.text,
+                            });
+                        }
+                    }
+                    // The runtime found the selection gone.
+                    Ok(None) if current => view.clear_selection(),
+                    Ok(None) => {}
+                    // A replaced viewer's failure says nothing about the
+                    // view's current viewer.
+                    Err(_) if view.viewer_epoch != epoch => {}
+                    Err(error) => {
+                        view.report_viewer_failure(&error);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Asks the runtime for `selection`'s text and keeps it while the
@@ -2673,10 +2846,17 @@ impl TerminalView {
                             ));
                         }
                         if current {
-                            view.selected_text = Some(text);
+                            view.selected_text = Some(SelectedText {
+                                generation: selection.generation,
+                                text,
+                            });
                         }
                     }
-                    Ok(None) if current => view.clear_selection(),
+                    // A selection that settled meanwhile is the runtime's
+                    // to place.
+                    Ok(None) if current && view.selection_id.is_none() => {
+                        view.clear_selection();
+                    }
                     Ok(_) => {}
                     // A replaced viewer's failure says nothing about the
                     // view's current viewer.
@@ -2790,14 +2970,10 @@ impl TerminalView {
             return;
         }
         self.unit_gesture = None;
-        let Some(selection) = self.selection else {
+        if self.selection.is_none() {
             return;
-        };
-        if let Some(range) = selection.range() {
-            self.extract_selection(selection, range, false, cx);
-        } else {
-            self.clear_selection();
         }
+        self.settle_selection(cx);
         cx.notify();
     }
 
@@ -2967,6 +3143,7 @@ impl TerminalView {
             .is_some()
     }
     fn clear_selection(&mut self) {
+        self.forget_tracked_selection();
         self.selection = None;
         self.unit_gesture = None;
         self.selected_text = None;
@@ -3231,6 +3408,13 @@ impl TerminalView {
         if self.exited {
             return (false, false);
         }
+        // Typing and pasting move on from the selection, as Ghostty's
+        // default does; mouse reports do not.
+        let cleared = !matches!(input, TerminalInput::Mouse(_))
+            && self.selection.is_some();
+        if cleared {
+            self.clear_selection();
+        }
         let viewer = &self.viewer;
         let stamp =
             viewer.stamp(input_geometry(&input, self.snapshot.as_deref()));
@@ -3245,7 +3429,7 @@ impl TerminalView {
             }
         };
         self.wake_pending_work();
-        result
+        (result.0, result.1 || cleared)
     }
 
     fn cancel_mouse(&mut self) {

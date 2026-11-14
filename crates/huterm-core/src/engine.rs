@@ -5,13 +5,15 @@ mod ghostty;
 mod links;
 mod records;
 mod row_matcher;
+mod selections;
 
 use crate::host_effects::HostEffectSink;
 use crate::terminal::RuntimeError;
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandRecord, GridSize, ScrollCommand,
-    ScrollbackLimit, SelectionUnit, TerminalDirectory, TerminalId,
-    TerminalModes, TerminalPresentation, TerminalProgress, TerminalSnapshot,
+    ScrollbackLimit, SelectionPlacement, SelectionUnit, TerminalDirectory,
+    TerminalId, TerminalModes, TerminalPresentation, TerminalProgress,
+    TerminalSnapshot, TrackedSelection, ViewerId,
 };
 use std::sync::Arc;
 
@@ -375,6 +377,48 @@ impl TerminalEngine {
     ) -> Result<Option<BufferRange>, RuntimeError> {
         self.inner.select_units(generation, anchor, head, unit)
     }
+
+    /// Keeps `viewer`'s settled selection on its text through output,
+    /// scrolling, and reflow, replacing any it had; `None` forgets it. A
+    /// selection made against an older generation is gone at once.
+    pub(crate) fn track_selection(
+        &mut self,
+        viewer: ViewerId,
+        selection: Option<TrackedSelection>,
+    ) {
+        self.inner.track_selection(viewer, selection);
+    }
+
+    /// Frees `viewer`'s tracked selection.
+    pub(crate) fn forget_selection(&mut self, viewer: ViewerId) {
+        self.inner.forget_selection(viewer);
+    }
+
+    /// Where `viewer`'s tracked selection lies at the current generation;
+    /// `None` when it tracks none. Reads no cells, and never fails: a
+    /// selection that cannot be resolved is gone.
+    pub(crate) fn selection_placement(
+        &mut self,
+        viewer: ViewerId,
+    ) -> Option<SelectionPlacement> {
+        self.inner.selection_placement(viewer)
+    }
+
+    /// The current text of `viewer`'s tracked selection `id`; `None` when it
+    /// tracks another selection or this one is gone.
+    pub(crate) fn tracked_selection_text(
+        &mut self,
+        viewer: ViewerId,
+        id: u64,
+    ) -> Result<Option<String>, RuntimeError> {
+        self.inner.tracked_selection_text(viewer, id)
+    }
+
+    /// Tracked selections that still hold references.
+    #[cfg(test)]
+    pub(crate) fn tracked_selections(&self) -> usize {
+        self.inner.tracked_selections()
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +444,9 @@ mod contract_tests;
 
 #[cfg(test)]
 mod selection_tests;
+
+#[cfg(test)]
+mod tracked_selection_tests;
 
 #[cfg(test)]
 mod link_contract_tests;
