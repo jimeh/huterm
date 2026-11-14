@@ -214,62 +214,65 @@ const GATED_GRID: (u16, u16) = (400, 120);
 /// measured at most 15.8 us on the server and 9.2 us on the client. An
 /// Apple M3 Max measures 0.66 ms on the server and 0.38 ms on the client for
 /// a plain complete snapshot. Raise a budget only with new CI measurements.
+/// The byte budgets grew by 8 with #38: every update's header carries the
+/// view's command blocks, one in this fixture's metadata, and the sticky
+/// prompt option.
 const BUDGETS: &[Budget] = &[
     Budget {
         fixture: "plain",
         op: "complete",
         server_us: 2_200,
         client_us: 2_800,
-        bytes: 49_242,
+        bytes: 49_250,
     },
     Budget {
         fixture: "styled",
         op: "complete",
         server_us: 2_400,
         client_us: 2_800,
-        bytes: 60_958,
+        bytes: 60_966,
     },
     Budget {
         fixture: "sparse",
         op: "complete",
         server_us: 2_200,
         client_us: 2_800,
-        bytes: 13_391,
+        bytes: 13_399,
     },
     Budget {
         fixture: "wide",
         op: "complete",
         server_us: 2_700,
         client_us: 3_400,
-        bytes: 73_242,
+        bytes: 73_250,
     },
     Budget {
         fixture: "plain",
         op: "delta-row",
         server_us: 21,
         client_us: 12,
-        bytes: 450,
+        bytes: 458,
     },
     Budget {
         fixture: "styled",
         op: "delta-row",
         server_us: 24,
         client_us: 14,
-        bytes: 623,
+        bytes: 631,
     },
     Budget {
         fixture: "sparse",
         op: "delta-row",
         server_us: 21,
         client_us: 12,
-        bytes: 73,
+        bytes: 81,
     },
     Budget {
         fixture: "wide",
         op: "delta-row",
         server_us: 24,
         client_us: 14,
-        bytes: 650,
+        bytes: 658,
     },
 ];
 
