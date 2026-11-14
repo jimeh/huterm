@@ -122,7 +122,7 @@ exit 0
 
 describe("Linux VM runner", () => {
   test("arguments select the session and preserve exec commands verbatim", () => {
-    expect(argumentsFor(["dev"])).toEqual({ mode: "dev", session: "wayland", command: ["/mnt/shared/huterm/target/debug/huterm"] });
+    expect(argumentsFor(["dev"])).toEqual({ mode: "dev", session: "wayland", command: ["/mnt/shared/huterm/target/debug/huterm-gui"] });
     expect(argumentsFor(["dev", "--session", "x11"]).session).toBe("x11");
     expect(argumentsFor(["dev", "--session=x11"]).session).toBe("x11");
     expect(argumentsFor(["exec", "--", "uname", "-a"]).command).toEqual(["uname", "-a"]);

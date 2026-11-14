@@ -35,7 +35,7 @@ export function argumentsFor(args: string[]): Options {
   switch (mode) {
     case "dev":
       if (rest.length > 0) throw new Error("vm:linux:dev takes only --session");
-      return { mode, session, command: [`${WORKSPACE}/target/debug/huterm`] };
+      return { mode, session, command: [`${WORKSPACE}/target/debug/huterm-gui`] };
     case "exec":
       if (rest.length === 0) throw new Error("vm:linux:exec requires a command");
       return { mode, session, command: rest };
@@ -121,7 +121,7 @@ function spawnTart(args: string[]): Promise<number> {
 async function stopApp(name: string): Promise<void> {
   const app = appChild;
   await stopWithFallback(
-    () => { capture(["tart", "exec", name, "pkill", "-x", "huterm"], false); },
+    () => { capture(["tart", "exec", name, "pkill", "-x", "huterm-gui"], false); },
     () => appChild !== app,
     () => app?.kill("SIGKILL"),
   );
@@ -260,7 +260,7 @@ export async function buildAndStage(root: string, stage: string): Promise<number
     mkdirSync(join(stage, "target/debug"), { recursive: true });
     mkdirSync(join(stage, "assets"), { recursive: true });
     cpSync(join(root, "assets/shell-integration"), join(stage, "assets/shell-integration"), { recursive: true });
-    for (const [from, to] of [["target/debug/huterm", "target/debug/"], ["target/terminfo", "target/"]] as const) {
+    for (const [from, to] of [["target/debug/huterm-gui", "target/debug/"], ["target/terminfo", "target/"]] as const) {
       if (capture(["docker", "cp", `${container}:/workspace/${from}`, join(stage, to)], false) === undefined) {
         console.error(`could not copy ${from} out of the Linux build container`);
         return 1;

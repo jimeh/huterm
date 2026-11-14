@@ -10,8 +10,16 @@ Run Huterm from the extracted directory:
 ./bin/huterm
 ```
 
+`bin/huterm` is Huterm's command. Without arguments it opens the desktop app,
+`bin/huterm-gui`; `bin/huterm --help` lists its commands without needing a
+display. To run it from any shell, link it into a directory on your `PATH`:
+
+```sh
+ln -s "$PWD/bin/huterm" ~/.local/bin/huterm
+```
+
 If archive permissions were lost while copying files, restore the executable
-bit with `chmod +x bin/huterm`.
+bits with `chmod +x bin/huterm bin/huterm-gui`.
 
 For per-user desktop integration, copy the metadata and icon, then change the
 desktop entry's `Exec` value to the absolute path of the extracted executable:

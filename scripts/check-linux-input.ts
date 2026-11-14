@@ -227,7 +227,7 @@ if (import.meta.main) {
   if (process.platform !== "linux") {
     console.log("Linux input smoke skipped: X11 requires Linux");
   } else {
-    const executable = resolve(Bun.argv[2] ?? "target/debug/huterm");
+    const executable = resolve(Bun.argv[2] ?? "target/debug/huterm-gui");
     run(["setxkbmap", "-layout", "us"]);
     await checkInput(executable);
     if (Bun.argv[3]) await checkKittyLinuxInput(resolve(Bun.argv[3]));

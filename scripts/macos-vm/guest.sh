@@ -15,7 +15,7 @@ case "${1:-}" in
       --include=/target/ --include=/target/debug/ --include=/target/debug/examples/ \
       --include='/target/debug/examples/*_smoke' --include='/target/debug/*-witness' \
       --include=/target/debug/hid-pointer \
-      --include=/target/debug/huterm --include=/target/terminfo/ --include='/target/terminfo/**' \
+      --include=/target/debug/huterm-gui --include=/target/terminfo/ --include='/target/terminfo/**' \
       --exclude='/target/**' \
       --include=/.native/ --include=/.native/sparkle/ --include=/.native/sparkle/distribution/ \
       --include='/.native/sparkle/distribution/**' --exclude='/.native/**' \

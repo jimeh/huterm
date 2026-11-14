@@ -570,7 +570,7 @@ async function checkTmux(
 async function main(): Promise<void> {
   assert(process.platform === "linux" || macos, "clipboard smoke requires Linux or macOS");
   const sourceExecutable = resolve(
-    Bun.argv[2] ?? (macos ? "target/debug/examples/clipboard_smoke" : "target/debug/huterm"),
+    Bun.argv[2] ?? (macos ? "target/debug/examples/clipboard_smoke" : "target/debug/huterm-gui"),
   );
   const witness = macos ? resolve(Bun.argv[3] ?? "target/debug/clipboard-witness") : undefined;
   const macosDirectory = macos ? await mkdtemp(join(tmpdir(), "huterm-pasteboard-")) : undefined;

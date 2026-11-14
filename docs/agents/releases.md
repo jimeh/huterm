@@ -135,15 +135,18 @@ assembly:
    feed, and copies the verified Sparkle framework. It signs every retained
    Sparkle and Huterm code object inside out, notarizes and staples the app, runs
    Gatekeeper, creates the SPDX SBOM and a fixture appcast with embedded release
-   notes, then uploads those payloads with their digest manifest. It renders the
-   release notes before signing, so an unparseable changelog fails first.
+   notes, then archives the app's signed `huterm` command line on its own and
+   notarizes that archive separately. It uploads those payloads with their
+   digest manifest. It renders the release notes before signing, so an
+   unparseable changelog fails first.
 3. Native Ubuntu 22.04 x86_64 and aarch64 runners independently build and verify
-   the AppImage and tarball for their architecture. These jobs receive no Apple
-   or GitHub release credentials and upload their two packages plus a digest
-   manifest as intermediate Actions artifacts.
+   the AppImage, the tarball, and the standalone command-line tarball for their
+   architecture. These jobs receive no Apple or GitHub release credentials and
+   upload their three packages plus a digest manifest as intermediate Actions
+   artifacts.
 4. The assembly job downloads exactly those three platform artifacts, validates
    their inventories and digests, adds the committed schemas, writes
-   `SHA256SUMS`, and uploads an immutable ten-file candidate.
+   `SHA256SUMS`, and uploads an immutable thirteen-file candidate.
 5. Both manual verification and publication use the same native candidate
    preparation action. It installs publication tools, verifies and repairs the
    Rust toolchain before Cargo runs, verifies the artifact ID and digest, and
@@ -176,10 +179,13 @@ The public asset set is:
 Huterm-<version>-macOS-universal.zip
 Huterm-<version>-macOS-universal.spdx.json
 appcast.xml
+Huterm-CLI-<version>-macOS-universal.zip
 Huterm-<version>-Linux-x86_64.AppImage
 Huterm-<version>-Linux-x86_64.tar.gz
+Huterm-CLI-<version>-Linux-x86_64.tar.gz
 Huterm-<version>-Linux-aarch64.AppImage
 Huterm-<version>-Linux-aarch64.tar.gz
+Huterm-CLI-<version>-Linux-aarch64.tar.gz
 huterm.schema.json
 huterm-theme.schema.json
 SHA256SUMS
@@ -318,7 +324,7 @@ The SHA input is a consistency check, not an independent source selector.
 The workflow validates the source, builds both native Linux architectures,
 builds and signs both macOS
 slices, notarizes and staples the app, validates the SPDX SBOM and a non-public
-fixture appcast, and uploads the same ten-file inventory as an Actions artifact
+fixture appcast, and uploads the same thirteen-file inventory as an Actions artifact
 retained for seven days.
 
 After assembly, a separate macOS job runs the same candidate preparation action
@@ -352,7 +358,7 @@ checked and select that release's exact `v`-prefixed tag as the workflow ref.
 Enter the exact 40-character SHA, tag, and version from that draft. The tag must
 also be allowed by the `release` environment's deployment rules. The workflow
 revalidates this source identity before rebuilding the artifacts, replaces the
-ten expected assets when they already exist, and refuses to publish if the
+thirteen expected assets when they already exist, and refuses to publish if the
 draft contains any unexpected asset.
 
 Both automatic and manual runs of `Release Please` dispatch the separate release
@@ -360,9 +366,39 @@ workflow at the newly created tag. Manual recovery uses that same exact-tag
 publication path. If dispatch fails after creating the draft, use this recovery
 procedure; rerunning Release Please may not report that release as newly created.
 
+## Standalone command line
+
+Each release also publishes `huterm` alone, for machines without the app:
+`Huterm-CLI-<version>-macOS-universal.zip` and
+`Huterm-CLI-<version>-Linux-<arch>.tar.gz`. Each holds one
+`Huterm-CLI-<version>-<platform>/` directory with `huterm` (mode 755),
+`LICENSE`, and `licenses.json` (mode 644), and nothing else.
+`scripts/cli-package.ts` stages and checks that layout for both platforms.
+
+- The standalone `huterm` is byte for byte the one in the app bundle or the
+  Linux packages. Packaging checks this, and `release:verify-candidate`
+  compares the macOS archive with the candidate app's `Contents/MacOS/huterm`.
+- Release signing signs `Contents/MacOS/huterm` before `huterm-gui`, with
+  the hardened runtime, a secure timestamp, the identifier
+  `app.huterm.dev.cli`, and no entitlements. After stapling the app, the
+  release archives that signed file and submits the archive to notarization on
+  its own. Apple cannot staple a ticket to a bare executable, so Gatekeeper
+  looks it up online on first run.
+- The Linux command line must have no runpath and need only the libraries in
+  `commandLineLibraries` in `assets/linux/package-policy.json`, so it runs on
+  a headless host. Verification runs `--version`, `--help`, and an unknown
+  option without `DISPLAY` or `WAYLAND_DISPLAY`.
+- `package:macos` and the Linux packaging tasks build and check the unsigned
+  and Linux archives in PR CI, so release runs only add signing and
+  notarization.
+- Publication appends a "Downloads" section naming the app and command-line
+  assets to the draft's notes. It replaces an earlier copy, marked by an HTML
+  comment, so a recovery run does not repeat it.
+
 ## Linux package contract
 
-Both Linux formats contain the same neutral payload: `bin/huterm`, the desktop
+Both Linux formats contain the same neutral payload: the `bin/huterm` command
+line, the `bin/huterm-gui` desktop executable, the desktop
 entry, AppStream metadata, the 512-pixel icon, package provenance, and third-party
 notices. The tarball does not contain `AppRun`, `.DirIcon`, an AppImage runtime,
 its redistribution notices, or other AppImage-only files. The AppImage adds a

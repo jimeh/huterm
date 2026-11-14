@@ -12,6 +12,7 @@ import {
   normalizeTreeMetadata,
   parseLdd,
   validateGlibcVersionInfo,
+  validateCommandLineDynamic,
   validateDependencyPolicy,
   validatePackageManifest,
   validateResolvedLibraryEntries,
@@ -54,12 +55,15 @@ describe("Linux package policy", () => {
     try {
       await mkdir(join(root, "bin"));
       await mkdir(join(root, "share"));
-      await writeFile(join(root, "bin/huterm"), "binary");
+      for (const executable of ["bin/huterm", "bin/huterm-gui"]) {
+        await writeFile(join(root, executable), "binary");
+        await chmod(join(root, executable), 0o600);
+      }
       await writeFile(join(root, "share/notice"), "notice");
-      await chmod(join(root, "bin/huterm"), 0o600);
       await chmod(join(root, "share/notice"), 0o777);
       await normalizeTreeMetadata(root, 1_700_000_000);
       expect((await stat(join(root, "bin/huterm"))).mode & 0o777).toBe(0o755);
+      expect((await stat(join(root, "bin/huterm-gui"))).mode & 0o777).toBe(0o755);
       expect((await stat(join(root, "share/notice"))).mode & 0o777).toBe(0o644);
       expect((await stat(join(root, "share"))).mode & 0o777).toBe(0o755);
       expect((await stat(root)).mtimeMs).toBe(1_700_000_000_000);
@@ -85,6 +89,14 @@ describe("Linux package policy", () => {
       .toThrow("unclassified dynamic dependency: libssl.so.3");
     expect(() => validateDependencyPolicy(["libxcb.so.1"], ["libxcb.so.1"], ["libxcb.so.1"]))
       .toThrow("both private and host-owned");
+  });
+
+  test("the command line needs only C runtime libraries and no runpath", () => {
+    const allowed = ["libc.so.6", "libgcc_s.so.1"];
+    const needed = (names: string[]) => names.map(name => ` 0x0000000000000001 (NEEDED)             Shared library: [${name}]`).join("\n");
+    expect(() => validateCommandLineDynamic(needed(["libc.so.6", "libgcc_s.so.1"]), allowed, "bin/huterm")).not.toThrow();
+    expect(() => validateCommandLineDynamic(needed(["libc.so.6", "libxcb.so.1"]), allowed, "bin/huterm")).toThrow("headless host may lack: libxcb.so.1");
+    expect(() => validateCommandLineDynamic(`${needed(["libc.so.6"])}\n 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib/huterm]`, allowed, "bin/huterm")).toThrow("must not carry a runpath");
   });
 
   test("accepts only the approved relative runpaths", () => {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/huterm-client", "crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-ipc-sim", "crates/huterm-procinfo", "crates/huterm-protocol", "crates/huterm-server", "crates/huterm-socket", "crates/huterm-state", "crates/huterm-ui", "crates/huterm-wire"]
+members = ["crates/huterm-cli", "crates/huterm-client", "crates/huterm-config", "crates/huterm-core", "crates/huterm-ghostty", "crates/huterm-ghostty/bindgen", "crates/huterm-gpui", "crates/huterm-ipc-sim", "crates/huterm-procinfo", "crates/huterm-protocol", "crates/huterm-server", "crates/huterm-socket", "crates/huterm-state", "crates/huterm-ui", "crates/huterm-wire"]
 exclude = ["third-party/vendor/accesskit_macos-0.26.3", "third-party/vendor/global-hotkey-0.9.0", "third-party/vendor/gpui-pre-0.3.11", "third-party/vendor/gpui-pre-linux-0.3.11", "third-party/vendor/gpui-pre-macos-0.3.11", "third-party/vendor/portable-pty-0.9.0"]
 resolver = "2"
 
@@ -15,8 +15,10 @@ async-channel = "=2.5.0"
 async-executor = "=1.14.1"
 async-io = "=2.6.0"
 blocking = "=1.7.0"
+clap = { version = "=4.6.7", default-features = false, features = ["derive", "error-context", "help", "std", "suggestions", "usage"] }
 gpui = { package = "gpui-pre", version = "=0.3.11", default-features = false, features = ["font-kit", "x11"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", default-features = false, features = ["font-kit", "x11"] }
+huterm-cli = { path = "crates/huterm-cli", version = "=0.34.0" } # x-release-please-version
 huterm-client = { path = "crates/huterm-client", version = "=0.34.0" } # x-release-please-version
 huterm-config = { path = "crates/huterm-config", version = "=0.34.0" } # x-release-please-version
 huterm-core = { path = "crates/huterm-core", version = "=0.34.0" } # x-release-please-version
@@ -61,6 +63,12 @@ repository.workspace = true
 rust-version.workspace = true
 version = "0.34.0"
 
+# The desktop app. The `huterm` command line comes from `huterm-cli` and opens
+# this executable when run without a subcommand.
+[[bin]]
+name = "huterm-gui"
+path = "src/main.rs"
+
 [features]
 default = []
 macos-updater = ["huterm-gpui/macos-updater"]
@@ -87,8 +95,11 @@ infoPlistPath = "assets/macos/Info.plist"
 minimumSystemVersion = "14.0"
 
 [[package.metadata.packager.binaries]]
-path = "huterm"
+path = "huterm-gui"
 main = true
+
+[[package.metadata.packager.binaries]]
+path = "huterm"
 
 [lints]
 workspace = true

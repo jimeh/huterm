@@ -98,7 +98,7 @@ capability screen:
 
 ```sh
 SHELL=/Users/jimeh/src/DOOM-fire-zig/zig-out/bin/DOOM-fire \
-  HUTERM_RENDER_STATS=1 target/release/huterm
+  HUTERM_RENDER_STATS=1 target/release/huterm-gui
 ```
 
 ## Reproduction

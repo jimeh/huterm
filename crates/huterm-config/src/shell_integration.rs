@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 /// Automatic shell integration for terminals started after this setting changes.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields)]
 pub struct ShellIntegrationConfig {
@@ -17,7 +17,8 @@ pub struct ShellIntegrationConfig {
         "x-huterm-apply" = "new_terminals",
     )))]
     pub mode: ShellIntegrationMode,
-    /// Optional capabilities. `path` appends Huterm's executable directory to PATH.
+    /// Optional capabilities. `path`, on by default, appends the directory
+    /// holding the `huterm` command to PATH.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Shell integration",
@@ -44,14 +45,23 @@ pub enum ShellIntegrationMode {
     Off,
 }
 
-/// A known opt-in shell capability.
+impl Default for ShellIntegrationConfig {
+    fn default() -> Self {
+        Self {
+            mode: ShellIntegrationMode::default(),
+            features: BTreeSet::from([ShellFeature::Path]),
+        }
+    }
+}
+
+/// A known optional shell capability.
 #[derive(
     Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize,
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ShellFeature {
-    /// Append Huterm's executable directory to PATH once.
+    /// Append the directory holding the `huterm` command to PATH once.
     Path,
 }
 
@@ -87,6 +97,14 @@ mod tests {
     fn shell_integration_defaults_and_known_features() {
         let raw: crate::RawConfig = toml::from_str("").unwrap();
         assert_eq!(raw.shell_integration, ShellIntegrationConfig::default());
+        let path = BTreeSet::from([ShellFeature::Path]);
+        assert_eq!(raw.shell_integration.features, path, "on by default");
+        let raw: crate::RawConfig =
+            toml::from_str("[shell_integration]\nmode='detect'").unwrap();
+        assert_eq!(raw.shell_integration.features, path, "an omitted list");
+        let raw: crate::RawConfig =
+            toml::from_str("[shell_integration]\nfeatures=[]").unwrap();
+        assert!(raw.shell_integration.features.is_empty(), "opted out");
         let raw: crate::RawConfig = toml::from_str(
             "[shell_integration]\nmode='off'\nfeatures=['path','path']",
         )
