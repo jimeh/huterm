@@ -3200,8 +3200,8 @@ pub struct RawTerminal {
     )))]
     pub right_click: RightClickAction,
     /// Which views decide a terminal's rows and columns when more than one
-    /// window shows it. Set Terminal Size pins one terminal whatever this
-    /// says.
+    /// window shows it; under Manual, none do. Set Terminal Size pins one
+    /// terminal whatever this says.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Size",

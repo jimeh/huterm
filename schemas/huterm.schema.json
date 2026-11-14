@@ -7156,7 +7156,7 @@
           },
           "then": {
             "additionalProperties": false,
-            "description": "Fix the terminal at `columns` by `rows`, whatever the sizing setting says; an omitted one keeps the size this view shows.",
+            "description": "Pin the terminal's size; Enter keeps the size this view shows.",
             "properties": {
               "args": {
                 "additionalProperties": false,
@@ -7177,7 +7177,7 @@
               },
               "command": {
                 "const": "set_terminal_size",
-                "description": "Fix the terminal at `columns` by `rows`, whatever the sizing setting says; an omitted one keeps the size this view shows.",
+                "description": "Pin the terminal's size; Enter keeps the size this view shows.",
                 "type": "string"
               },
               "description": {
@@ -11909,7 +11909,7 @@
             }
           ],
           "default": "latest",
-          "description": "Which views decide a terminal's rows and columns when more than one\nwindow shows it. Set Terminal Size pins one terminal whatever this\nsays.",
+          "description": "Which views decide a terminal's rows and columns when more than one\nwindow shows it; under Manual, none do. Set Terminal Size pins one\nterminal whatever this says.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Size",
           "x-huterm-label": "Size of a terminal shown in several views",

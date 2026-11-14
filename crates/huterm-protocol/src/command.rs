@@ -2165,8 +2165,7 @@ const CATALOG: &[CommandSpec] = &[
         ids::SET_TERMINAL_SIZE,
         CommandScope::Terminal,
         "Set Terminal Size",
-        "Fix the terminal at `columns` by `rows`, whatever the sizing \
-         setting says; an omitted one keeps the size this view shows.",
+        "Pin the terminal's size; Enter keeps the size this view shows.",
         TERMINAL_SIZE,
     ),
     spec(
