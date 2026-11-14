@@ -1536,8 +1536,16 @@ fn a_replacement_that_does_not_resize_keeps_the_selection(
             view.read(cx).scroll.diagnostics().requests_started
         })
     };
-    harness
-        .wait_for("no snapshot in flight", |cx| started(cx) == completed(cx));
+    // The test window takes its initial size only when it activates, so
+    // the runtime can still apply a wider grid the view has not shown. A
+    // selection made on the narrower snapshot is rightly dropped.
+    harness.wait_for("the requested grid shown, no snapshot in flight", |cx| {
+        started(cx) == completed(cx)
+            && terminal(cx, window, tab).is_some_and(|view| {
+                let view = view.read(cx);
+                view.displayed_grid() == Some(view.requested_grid)
+            })
+    });
     let view = harness.cx.update(|cx| terminal(cx, window, tab)).unwrap();
     harness
         .cx
