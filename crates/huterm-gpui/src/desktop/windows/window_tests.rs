@@ -1536,8 +1536,22 @@ fn a_replacement_that_does_not_resize_keeps_the_selection(
             view.read(cx).scroll.diagnostics().requests_started
         })
     };
-    harness
-        .wait_for("no snapshot in flight", |cx| started(cx) == completed(cx));
+    // The test window takes its initial size only when it activates, so the
+    // runtime can apply this view's resizes after a snapshot shows. Each one
+    // advances the generation, and a selection made on an older generation
+    // is cleared when its text extraction finds it stale. The spawned grid
+    // can equal the requested one, so the shown snapshot must also follow an
+    // applied geometry report.
+    harness.wait_for("the requested grid applied and shown", |cx| {
+        started(cx) == completed(cx)
+            && terminal(cx, window, tab).is_some_and(|view| {
+                let view = view.read(cx);
+                view.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.geometry_revision > 0
+                        && snapshot.size == view.requested_grid
+                })
+            })
+    });
     let view = harness.cx.update(|cx| terminal(cx, window, tab)).unwrap();
     harness
         .cx
