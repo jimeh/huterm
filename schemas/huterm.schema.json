@@ -240,6 +240,35 @@
         }
       ]
     },
+    "CommandStatusStyle": {
+      "description": "How a pane marks commands that exited with a nonzero status.",
+      "oneOf": [
+        {
+          "const": "tint",
+          "description": "A faint red background behind the failed command's rows.",
+          "type": "string",
+          "x-huterm-label": "Tint"
+        },
+        {
+          "const": "tint_marks",
+          "description": "The tint, and a mark beside every prompt: green when the command\nexited 0, red when it failed.",
+          "type": "string",
+          "x-huterm-label": "Tint and prompt marks"
+        },
+        {
+          "const": "bar",
+          "description": "A red bar in the left margin along the failed command's rows.",
+          "type": "string",
+          "x-huterm-label": "Bar in the margin"
+        },
+        {
+          "const": "off",
+          "description": "Nothing.",
+          "type": "string",
+          "x-huterm-label": "Off"
+        }
+      ]
+    },
     "Config": {
       "additionalProperties": false,
       "description": "Named quake windows. The `default` profile exists even when unset.",
@@ -11835,6 +11864,20 @@
           "x-huterm-order": 20,
           "x-huterm-section": "terminal"
         },
+        "command_status": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CommandStatusStyle"
+            }
+          ],
+          "default": "tint",
+          "description": "Mark commands that exited with a nonzero status. Needs shell\nintegration.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Shell integration",
+          "x-huterm-label": "Failed commands",
+          "x-huterm-order": 83,
+          "x-huterm-section": "terminal"
+        },
         "engine": {
           "deprecated": true,
           "description": "Deprecated compatibility setting. Both legacy values use Ghostty;\nremove this field.",
@@ -11994,6 +12037,20 @@
           "x-huterm-order": 10,
           "x-huterm-section": "scrollback",
           "x-huterm-unit": "rows"
+        },
+        "sticky_prompt": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StickyPromptStyle"
+            }
+          ],
+          "default": "status",
+          "description": "While a command's output fills a pane and its prompt has scrolled\nabove the pane, show that prompt at the top. Clicking it scrolls to\nthe prompt. Needs shell integration.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Shell integration",
+          "x-huterm-label": "Sticky prompt",
+          "x-huterm-order": 82,
+          "x-huterm-section": "terminal"
         },
         "term": {
           "allOf": [
@@ -12432,6 +12489,35 @@
         {
           "const": "off",
           "description": "No indicator.",
+          "type": "string",
+          "x-huterm-label": "Off"
+        }
+      ]
+    },
+    "StickyPromptStyle": {
+      "description": "What a pane shows at its top while a command's output fills it and the\ncommand's prompt has scrolled above it.",
+      "oneOf": [
+        {
+          "const": "status",
+          "description": "The prompt row holding the command, and how the command stands.",
+          "type": "string",
+          "x-huterm-label": "Command and status"
+        },
+        {
+          "const": "command",
+          "description": "The prompt row holding the command.",
+          "type": "string",
+          "x-huterm-label": "Command"
+        },
+        {
+          "const": "prompt",
+          "description": "Every row of the prompt, up to three.",
+          "type": "string",
+          "x-huterm-label": "Whole prompt"
+        },
+        {
+          "const": "off",
+          "description": "Nothing.",
           "type": "string",
           "x-huterm-label": "Off"
         }

@@ -103,6 +103,7 @@ const VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 
 mod about;
 mod close_dialog;
+mod command_status;
 mod composition;
 mod config_watch;
 pub(crate) mod gallery;
@@ -450,6 +451,14 @@ struct TerminalView {
     progress: Option<huterm_protocol::TerminalProgress>,
     /// Whether progress also draws a bar across the top of the pane.
     progress_bar: bool,
+    /// The shell's command records, from status, which the sticky prompt
+    /// and the failure marks read by sequence.
+    commands: Arc<[huterm_protocol::CommandRecord]>,
+    sticky_prompt: huterm_config::StickyPromptStyle,
+    command_status: huterm_config::CommandStatusStyle,
+    /// When the sticky prompt's running time next changes, while it shows
+    /// one.
+    sticky_tick: Option<Instant>,
     exited: bool,
     /// The root process's exit status, once it has exited with one.
     exit_code: Option<u32>,
@@ -919,6 +928,10 @@ impl TerminalView {
             visual_bell: config.terminal.bell.visual,
             progress: None,
             progress_bar: config.terminal.progress_bar,
+            commands: Arc::new([]),
+            sticky_prompt: config.terminal.sticky_prompt,
+            command_status: config.terminal.command_status,
+            sticky_tick: None,
             exited: false,
             exit_code: None,
             failed: false,
@@ -1230,6 +1243,14 @@ impl TerminalView {
                 self.progress = status.progress;
                 changed = true;
             }
+            // A command's end can change its marks and header with no row
+            // changing, so the view repaints for the records alone.
+            if !Arc::ptr_eq(&status.commands, &self.commands)
+                && status.commands != self.commands
+            {
+                self.commands = Arc::clone(&status.commands);
+                changed = true;
+            }
             if status.metadata_revision > self.metadata_revision {
                 if directories_moved(&self.metadata, &status.metadata) {
                     windows::directory_changed(cx);
@@ -1484,6 +1505,13 @@ impl TerminalView {
         }
         if self.progress_bar != terminal.progress_bar {
             self.progress_bar = terminal.progress_bar;
+            cx.notify();
+        }
+        if self.sticky_prompt != terminal.sticky_prompt
+            || self.command_status != terminal.command_status
+        {
+            self.sticky_prompt = terminal.sticky_prompt;
+            self.command_status = terminal.command_status;
             cx.notify();
         }
         if self.option_as_alt != terminal.macos_option_as_alt {
@@ -3437,6 +3465,9 @@ impl refresh::Animated for TerminalView {
         if let Some(at) = self.bell.flash_until {
             next = next.merge(AnimationSchedule::at(at));
         }
+        if let Some(at) = self.sticky_tick {
+            next = next.merge(AnimationSchedule::at(at));
+        }
         if !self.visible {
             next.frame = false;
         }
@@ -3450,9 +3481,14 @@ impl refresh::Animated for TerminalView {
         _: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        let sticky_ticked = self.sticky_tick.is_some_and(|at| at <= now);
+        if sticky_ticked {
+            self.sticky_tick = None;
+        }
         if self.scrollbars.advance(now)
             | self.resize_visibility.update(now)
             | self.bell.advance(now)
+            | sticky_ticked
         {
             cx.notify();
         }
@@ -3655,6 +3691,112 @@ impl TerminalView {
     /// The pill at the bottom centre of the terminal bounds while scrolled
     /// back. It consumes presses and releases so a click cannot start a
     /// selection or application mouse input, and fades with the indicator.
+    /// The sticky prompt over the pane's top rows: the prompt rows of the
+    /// command whose output fills the pane, and with the `status` style how
+    /// that command stands. Pressing it scrolls to the prompt.
+    fn render_sticky_prompt(
+        &mut self,
+        header: command_status::Header,
+        layout: TerminalLayout,
+        cx: &mut Context<'_, Self>,
+    ) -> impl IntoElement + use<> {
+        let chip = (self.sticky_prompt
+            == huterm_config::StickyPromptStyle::Status)
+            .then(|| command_status::record(&self.commands, header.sequence))
+            .flatten()
+            .and_then(|record| {
+                command_status::chip(record, std::time::SystemTime::now())
+            });
+        self.sticky_tick = chip
+            .as_ref()
+            .and_then(|chip| chip.next_tick)
+            .map(|tick| Instant::now() + tick);
+        let foreground = color(self.theme.foreground);
+        let label = command_status::label(&header, chip.as_ref());
+        let metrics = self.metrics;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a header holds at most three rows"
+        )]
+        let rows_height = metrics.cell_height * header.rows.len() as f32;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a header holds at most three rows"
+        )]
+        let input_top =
+            layout.bounds.origin.y + metrics.cell_height * header.input as f32;
+        let prepare_renderer = Rc::clone(&self.renderer);
+        let paint_renderer = Rc::clone(&self.renderer);
+        let rows = header.rows;
+        let chip_color = chip.as_ref().map(|chip| match chip.outcome {
+            Some(command_status::Outcome::Failed) => color(self.theme.ansi[1]),
+            Some(command_status::Outcome::Succeeded) => {
+                color(self.theme.ansi[2])
+            }
+            None => foreground.opacity(0.7),
+        });
+        let typography = Typography::of(cx);
+        let surface = self
+            .renderer
+            .borrow()
+            .background(self.snapshot.as_deref())
+            .blend(foreground.opacity(0.07));
+        let stop = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| {
+            cx.stop_propagation();
+        };
+        div()
+            .id("sticky-prompt")
+            .role(gpui::Role::Button)
+            .aria_label(label)
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(layout.bounds.origin.y + rows_height + px(1.0))
+            .bg(foreground.opacity(0.07))
+            .border_b_1()
+            .border_color(foreground.opacity(0.25))
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.scroll_command(cx, |scroll, _| {
+                        scroll.prompt(-1);
+                        true
+                    });
+                }),
+            )
+            .on_mouse_down(MouseButton::Right, stop)
+            .on_mouse_down(MouseButton::Middle, stop)
+            .child(
+                canvas(
+                    move |_, window, _| {
+                        prepare_renderer
+                            .borrow_mut()
+                            .prepare_sticky(&rows, window);
+                    },
+                    move |bounds, (), window, _| {
+                        paint_renderer.borrow().paint_sticky(
+                            bounds.origin + layout.bounds.origin,
+                            window,
+                        );
+                    },
+                )
+                .size_full(),
+            )
+            .when_some(chip.zip(chip_color), |header, (chip, chip_color)| {
+                header.child(sticky_chip(
+                    chip.text,
+                    chip_color,
+                    surface,
+                    (layout.bounds.origin.x + px(8.0), input_top),
+                    metrics.cell_height,
+                    typography.family,
+                ))
+            })
+    }
+
     fn render_scroll_pill(
         &self,
         pill: ScrollPill,
@@ -3925,6 +4067,31 @@ impl Render for TerminalView {
         let a11y_model = window
             .is_a11y_active()
             .then(|| self.publish_a11y(window, cx));
+        let marks = self
+            .snapshot
+            .as_deref()
+            .map(|snapshot| {
+                command_status::marks(
+                    snapshot,
+                    &self.commands,
+                    self.command_status,
+                )
+            })
+            .filter(|marks| !marks.is_empty());
+        let mark_colors = command_status::MarkColors::new(&self.theme);
+        let cell_height = self.metrics.cell_height;
+        let header = self.snapshot.as_deref().and_then(|snapshot| {
+            command_status::header(snapshot, self.sticky_prompt)
+        });
+        // The grid paints below the header, so the rows it covers never
+        // show through a translucent pane.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a header holds at most three rows"
+        )]
+        let covered = header
+            .as_ref()
+            .map_or(px(0.0), |header| cell_height * header.rows.len() as f32);
         let mut root = div()
             .id(("terminal", self.a11y_shows))
             .role(gpui::Role::Terminal)
@@ -4014,6 +4181,7 @@ impl Render for TerminalView {
                             .prepare(snapshot.as_ref(), window);
                     },
                     move |bounds, (), window, cx| {
+                        let pane = bounds;
                         let bounds = Bounds::new(
                             bounds.origin + layout.bounds.origin,
                             layout.bounds.size,
@@ -4026,8 +4194,29 @@ impl Render for TerminalView {
                         );
                         #[cfg(not(target_os = "macos"))]
                         let _ = cx;
+                        let mut visible = bounds;
+                        visible.origin.y += covered;
+                        visible.size.height =
+                            (visible.size.height - covered).max(px(0.0));
+                        if let Some(marks) = &marks {
+                            let mut below = pane;
+                            below.origin.y += layout.bounds.origin.y + covered;
+                            window.with_content_mask(
+                                Some(gpui::ContentMask { bounds: below }),
+                                |window| {
+                                    command_status::paint_marks(
+                                        marks,
+                                        pane,
+                                        bounds.origin.y,
+                                        cell_height,
+                                        mark_colors,
+                                        window,
+                                    );
+                                },
+                            );
+                        }
                         window.with_content_mask(
-                            Some(gpui::ContentMask { bounds }),
+                            Some(gpui::ContentMask { bounds: visible }),
                             |window| {
                                 paint_renderer
                                     .borrow_mut()
@@ -4057,6 +4246,11 @@ impl Render for TerminalView {
                 )
                 .size_full(),
             );
+        if let Some(header) = header {
+            root = root.child(self.render_sticky_prompt(header, layout, cx));
+        } else {
+            self.sticky_tick = None;
+        }
         if let Some(model) = a11y_model {
             // GPUI keeps one such closure per element, so the read-only
             // state goes on the node here, beside the text.
@@ -4172,6 +4366,33 @@ impl Render for TerminalView {
         }
         root
     }
+}
+
+/// The sticky prompt's status at the right of its command row, `(right,
+/// top)` from the pane's top-right corner, on the header's own surface so
+/// a long command line ends under it.
+fn sticky_chip(
+    text: String,
+    text_color: gpui::Hsla,
+    surface: gpui::Hsla,
+    (right, top): (Pixels, Pixels),
+    height: Pixels,
+    family: gpui::SharedString,
+) -> impl IntoElement {
+    div()
+        .absolute()
+        .right(right)
+        .top(top)
+        .h(height)
+        .flex()
+        .items_center()
+        .pl(px(8.0))
+        .bg(surface)
+        .font_family(family)
+        .text_size(ui(11.0))
+        .text_color(text_color)
+        .whitespace_nowrap()
+        .child(text)
 }
 
 /// Underlines a hovered link with one quad per row segment, in a single layer

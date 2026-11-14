@@ -580,6 +580,50 @@ Huterm's own directory reports use `kitty-shell-cwd://host/literal path`.
 Spaces, `#`, `?`, and `%` stay literal. Reports containing control characters
 are skipped rather than changed. Native fish and nushell may use `file://`.
 
+### Commands and their output
+
+With shell integration, every command the shell runs is a block: its prompt,
+its command line, and its output. **Previous Command** and **Next Command**
+scroll from prompt to prompt and put the prompt at the top of the pane.
+**Select Command Output** and **Select Command** select the output, or the
+whole block, of the command at the top of the pane, or of the newest command
+while the pane follows live output. [Keybindings](keybindings.md) lists their
+keys. Any shell that sends OSC 133 marks works, not only the ones Huterm
+loads integration into.
+
+```toml
+[terminal]
+sticky_prompt = "status" # status, command, prompt, or off
+command_status = "tint"  # tint, tint_marks, bar, or off
+```
+
+While a command's output fills a pane and its prompt has scrolled above the
+pane, `sticky_prompt` shows that prompt across the pane's top:
+
+- `status` shows the row with the command line, and at the right whether
+  the command is running, how long it ran, and its exit status.
+- `command` shows only the row with the command line.
+- `prompt` shows every row of the prompt, up to three.
+
+Clicking the prompt scrolls to it, as **Previous Command** does. It does not
+show on the alternate screen, in panes under six rows, or for a command whose
+record Huterm no longer keeps. Screen readers announce it as a button.
+
+`command_status` marks commands that exited with a nonzero status, including
+130 from Ctrl-C:
+
+- `tint` draws a faint red background behind the command's rows.
+- `tint_marks` adds a mark beside every prompt, green for exit status 0 and
+  red otherwise.
+- `bar` draws a red bar in the left padding along the command's rows instead
+  of the tint.
+
+A command that is still running, ended without reporting a status, or whose
+shell sent none is never marked as having succeeded. Huterm keeps the 256
+newest commands' records, so older blocks keep their prompts for navigation
+but lose their header and marks. Both settings are available in Settings
+under Terminal and apply at once.
+
 ## Panes
 
 A tab splits into panes, each with its own shell; the split, focus, resize,
