@@ -9,7 +9,9 @@ use huterm_protocol::{
 use huterm_wire::codec::Writer;
 use huterm_wire::error::Retry;
 use huterm_wire::frame::{Frame, FrameEnd};
-use huterm_wire::handshake::{ClientKind, Hello, RejectReason};
+use huterm_wire::handshake::{
+    ClientKind, HANDSHAKE_DEADLINE, Hello, RejectReason,
+};
 use huterm_wire::request::RestoreDirection as Way;
 use huterm_wire::test_minor::TEST_MINOR;
 
@@ -339,6 +341,27 @@ fn a_foreign_major_is_rejected_and_closes_once_the_reject_is_written() {
 }
 
 #[test]
+fn a_refused_connection_answers_its_hello_with_the_refusal_and_closes() {
+    let server = server(ServerConfig::default());
+    let mut connection = server.connection(T0);
+    connection.refuse(Reject {
+        reason: RejectReason::ServerBusy,
+        message: "busy".into(),
+    });
+    let mut peer = TestPeer::new(server.runtime());
+    connection.receive(&peer.opening(), T0);
+    let messages = peer.receive(&flush(&mut connection, T0));
+    assert!(
+        matches!(
+            messages.as_slice(),
+            [Message::Reject(reject)] if reject.reason == RejectReason::ServerBusy
+        ),
+        "{messages:?}"
+    );
+    assert_eq!(connection.close_reason(), Some(&CloseReason::Rejected));
+}
+
+#[test]
 fn a_foreign_preamble_or_a_message_before_hello_closes_the_connection() {
     let server = server(ServerConfig::default());
     let mut connection = server.connection(T0);
@@ -368,6 +391,20 @@ fn the_handshake_deadline_closes_a_client_that_sends_no_hello() {
     connection.tick(just_before(HANDSHAKE_DEADLINE));
     assert!(!connection.is_closed());
     connection.tick(HANDSHAKE_DEADLINE);
+    assert_eq!(
+        connection.close_reason(),
+        Some(&CloseReason::HandshakeTimeout)
+    );
+
+    // The configured deadline replaces the default.
+    let deadline = Duration::from_millis(250);
+    let shorter = crate::test_support::server(ServerConfig {
+        handshake_deadline: deadline,
+        ..ServerConfig::default()
+    });
+    let mut connection = shorter.connection(T0);
+    assert_eq!(connection.next_deadline(), Some(deadline));
+    connection.tick(deadline);
     assert_eq!(
         connection.close_reason(),
         Some(&CloseReason::HandshakeTimeout)

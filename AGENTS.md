@@ -28,7 +28,7 @@ its guide; most of its rules record a failure that already happened once.
 
 | Change area | Guide |
 | --- | --- |
-| PTY I/O, process info, runtime workers, shutdown, Mux, IDs, session capture and restore, terminal lifecycle, the IPC wire contract and fuzzing, the IPC server and client, or a new binary that hosts terminals | [Core runtime](docs/agents/core-runtime.md) |
+| PTY I/O, process info, runtime workers, shutdown, Mux, IDs, session capture and restore, terminal lifecycle, the IPC wire contract and fuzzing, the IPC server, client, and sockets, or a new binary that hosts terminals | [Core runtime](docs/agents/core-runtime.md) |
 | GPUI threading, the window model, frame scheduling, close and Quit, rendering, keymap and menus, overlays, configuration, schemas | [Desktop client](docs/agents/desktop-client.md) |
 | Keyboard and text input, mouse reporting, scrolling, selection, tab dragging, pane focus and divider drags, links, file drops | [Desktop input](docs/agents/desktop-input.md) |
 | Fullscreen, Quake windows, the title row, window decorations, native window handles | [Window presentation](docs/agents/window-presentation.md) |
@@ -69,6 +69,9 @@ when this file exceeds its line budget or a guide link breaks.
   terminal-view code.
 - `huterm-procinfo` reports operating-system process facts and depends on no
   Huterm crate (`mise run architecture` checks this).
+- `huterm-socket` owns IPC socket paths, directory checks, and peer
+  credentials for both the server and the client, and depends only on `nix`
+  (`mise run architecture` checks this).
 - `huterm-state` owns saved session state (paths, the scope lock, atomic
   writes, the JSON schema) and depends only on `huterm-protocol`, `serde`,
   `serde_json`, and `nix`; core never depends on it or on serialization

@@ -34,9 +34,11 @@ use std::time::Instant;
 use async_channel::{Receiver, Sender};
 use async_executor::{LocalExecutor, Task};
 use huterm_protocol::ViewerId;
+use huterm_wire::handshake::{Reject, RejectReason};
 
 use crate::connection::{Connection, Transmit};
 use crate::feed::HierarchyFeed;
+use crate::listener::Slot;
 use crate::runtime;
 use crate::server::Server;
 use crate::viewer::WakeSource;
@@ -64,6 +66,9 @@ enum Event {
 
 #[derive(Debug, Default)]
 struct Stats {
+    received: AtomicUsize,
+    written: AtomicUsize,
+    short_writes: AtomicUsize,
     retained: AtomicUsize,
     max_retained: AtomicUsize,
     bound: AtomicUsize,
@@ -84,6 +89,25 @@ impl ConnectionHandle {
     /// Asks the driver to end the connection.
     pub fn close(&self) {
         let _ = self.events.try_send(Event::Close);
+    }
+
+    /// The bytes the connection has read and taken in.
+    #[must_use]
+    pub fn received(&self) -> usize {
+        self.stats.received.load(Ordering::Acquire)
+    }
+
+    /// The bytes the socket has accepted from the connection.
+    #[must_use]
+    pub fn written(&self) -> usize {
+        self.stats.written.load(Ordering::Acquire)
+    }
+
+    /// How many times the socket took less than the driver offered, so
+    /// the writer thread finished the batch once the socket had room.
+    #[must_use]
+    pub fn short_writes(&self) -> usize {
+        self.stats.short_writes.load(Ordering::Acquire)
     }
 
     /// The encoded bytes the connection retains now.
@@ -137,6 +161,16 @@ impl ConnectionHandle {
     }
 }
 
+/// How a listener admitted a connection.
+#[derive(Debug, Default)]
+pub(crate) struct Admission {
+    /// Answer the client's `Hello` with `Reject { ServerBusy }`.
+    pub(crate) busy: bool,
+    /// The listener's count of this connection, which the driver holds
+    /// until it exits.
+    pub(crate) slot: Option<Slot>,
+}
+
 /// Serves `stream` as one connection of `server`.
 ///
 /// # Errors
@@ -144,6 +178,15 @@ impl ConnectionHandle {
 pub fn serve(
     server: Arc<Server>,
     stream: UnixStream,
+) -> io::Result<ConnectionHandle> {
+    serve_admitted(server, stream, Admission::default())
+}
+
+/// Serves `stream` as [`serve`] does, as `admission` says.
+pub(crate) fn serve_admitted(
+    server: Arc<Server>,
+    stream: UnixStream,
+    admission: Admission,
 ) -> io::Result<ConnectionHandle> {
     // Every clone shares the setting: the driver writes without blocking,
     // and the reader and writer wait with `poll`.
@@ -189,6 +232,7 @@ pub fn serve(
                         permits: Some(permits),
                         batches: Some(batches),
                         stats,
+                        admission,
                     };
                     let executor = LocalExecutor::new();
                     futures_lite::future::block_on(
@@ -314,6 +358,7 @@ struct Driver {
     permits: Option<Sender<()>>,
     batches: Option<Sender<(Transmit, usize)>>,
     stats: Arc<Stats>,
+    admission: Admission,
 }
 
 enum Woke {
@@ -326,6 +371,15 @@ impl Driver {
         let start = Instant::now();
         let now = || start.elapsed();
         let mut connection = self.server.connection(now());
+        if self.admission.busy {
+            connection.refuse(Reject {
+                reason: RejectReason::ServerBusy,
+                message: format!(
+                    "the server already serves {} connections",
+                    self.server.config().max_connections
+                ),
+            });
+        }
         let mut reading = false;
         let mut writer_idle = true;
         let mut feed: Option<(u64, Task<()>)> = None;
@@ -365,6 +419,9 @@ impl Driver {
                 watches.clear();
             }
             if connection.is_finished() {
+                // Every job and its cleanup ran: the listener may admit
+                // another connection in this one's place.
+                drop(self.admission.slot.take());
                 return;
             }
             let deadline = connection.next_deadline().map(|at| start + at);
@@ -373,6 +430,9 @@ impl Driver {
                 Woke::Event(Event::Read(bytes)) => {
                     reading = false;
                     connection.receive(&bytes, now());
+                    self.stats
+                        .received
+                        .fetch_add(bytes.len(), Ordering::AcqRel);
                 }
                 Woke::Event(
                     Event::ReadEnded | Event::WriteFailed | Event::Close,
@@ -384,6 +444,7 @@ impl Driver {
                 }
                 Woke::Event(Event::Written(count)) => {
                     connection.transmitted(count, now());
+                    self.stats.written.fetch_add(count, Ordering::AcqRel);
                 }
                 Woke::Event(Event::WriterIdle) => writer_idle = true,
                 Woke::Event(Event::Completed(id, completion)) => {
@@ -446,8 +507,10 @@ impl Driver {
             };
             if written > 0 {
                 connection.transmitted(written, now);
+                self.stats.written.fetch_add(written, Ordering::AcqRel);
             }
             if written < transmit.len() {
+                self.stats.short_writes.fetch_add(1, Ordering::AcqRel);
                 *writer_idle = batches.try_send((transmit, written)).is_err();
             }
         }

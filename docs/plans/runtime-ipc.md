@@ -1,7 +1,7 @@
 # Local runtime IPC
 
-Status: in progress for [issue #44][issue-44]. Slices 1, 2, 3a, 3b, and 4
-are implemented, with the revisions recorded under each; slice 5 remains.
+Status: implemented for [issue #44][issue-44]. Every slice (1, 2, 3a, 3b, 4,
+and 5) is implemented, with the revisions recorded under each.
 
 Named server mode moves the runtime out of the desktop process. This plan
 defines the contract that carries runtime requests, results, the hierarchy
@@ -178,9 +178,11 @@ huterm-wire       preamble, frames, codec, messages,       (protocol only;
       |           golden vectors
       +------------------------------+
 huterm-client                        huterm-server
-  sans-IO client session (wasm32)      listener, socket path, peer auth,
-  native Unix transport (cfg unix)     connection handler over a Mux
-      ^                                    ^
+  sans-IO client session (wasm32)      listener, connection handler
+  native Unix transport (cfg unix)     over a Mux
+      ^          \                   /     ^
+      |      huterm-socket (cfg unix): socket paths,
+      |      directory checks, peer credentials (nix only)
   GUI server mode (#45), CLI (#46),    daemon binary (#45)
   browser adapter (#134)               huterm-core
 ```
@@ -193,6 +195,8 @@ Architecture gates added to `mise run architecture`:
   `portable-pty`, or `gpui-pre`, on any target, through normal or build
   edges, so its tests may still run against the real server.
 - `huterm-server` depends on no `gpui-pre`.
+- `huterm-socket`'s normal and build dependencies are exactly `nix`, so the
+  native client pays for nothing else (added in slice 5).
 - `huterm-protocol`, `huterm-wire` with its golden vectors, and
   `huterm-client` without its native transport build for
   `wasm32-unknown-unknown`. The vectors live in a `vectors` module behind a
@@ -227,9 +231,10 @@ Two more crates hold the code that is not the contract itself:
   over a `UnixStream` with reader and writer threads and exposes async
   handles through `async-channel`, which core already uses. The CLI blocks
   on those handles; GPUI awaits them.
-- `huterm-server` holds the listener, socket path rules, peer
-  authentication, and the per-connection handler that maps messages onto
-  `Mux` and `TerminalViewer` calls.
+- `huterm-server` holds the listener and the per-connection handler that
+  maps messages onto `Mux` and `TerminalViewer` calls. Slice 5 moved socket
+  path rules and peer authentication into `huterm-socket`, which the server
+  and the client share.
 
 Rejected:
 
@@ -972,6 +977,7 @@ A disconnect never closes a terminal, workspace, or session.
 | `max_frame` | 1 MiB, at least 64 KiB | Close |
 | `HANDSHAKE_DEADLINE` | 5 s | Close |
 | `MAX_CONNECTIONS` per server | 64 | `Reject { ServerBusy }` |
+| `MAX_REFUSALS` per server | 8 connections answered `ServerBusy` at once | Closed at once |
 | `MAX_IN_FLIGHT_REQUESTS` per connection | 64, of which 1 may have a multi-frame result | `Busy`, retry safe |
 | `MAX_CONNECTION_VIEWERS` | 256 | `LimitExceeded` |
 | Viewers per terminal | 32, as today | `LimitExceeded` |
@@ -1184,7 +1190,9 @@ field. Large payloads span frames like any message.
 ### Transport and authentication
 
 Named servers listen on Unix domain sockets only. No code in this plan opens
-a network listener.
+a network listener. `huterm-socket` holds the rules both ends share, so a
+server and every client resolve and check a socket the same way; it depends
+only on `nix` (see "Revisions during slice 5").
 
 Socket path resolution, in order:
 
@@ -1199,30 +1207,40 @@ Socket path resolution, in order:
 `<name>` defaults to `default`, as the
 [workspace plan](workspaces-windows-tabs.md) specifies, and must match
 `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. The full path must fit `sun_path` (104
-bytes on macOS, 108 on Linux), or resolution fails with a clear error rather
-than truncating.
+bytes on macOS, 108 on Linux, each with its terminating NUL), or resolution
+fails with a clear error rather than truncating.
 
-The server creates the socket directory with mode `0700` and checks it with
-`lstat`: it must be a real directory, owned by the effective user, with no
-group or other permissions. The server refuses to listen otherwise, as tmux
-does. The socket itself is created with mode `0600` under a restrictive
-umask. These checks belong to `huterm-server` in this plan; stale-socket
-detection and startup races belong to [#45][issue-45].
+The socket's directory, an explicit path's parent included, must be private:
+`lstat` shows a real directory, owned by the effective user, with no group
+or other permissions. `huterm_socket::bind` creates a missing directory with
+mode `0700`, refuses to listen in one that fails the check, as tmux does,
+binds, and then sets the socket file's mode to `0600`. Stale-socket
+detection and startup races belong to [#45][issue-45]; a stopping listener
+removes its socket file only while its device, inode, and change time still
+match the file it bound.
 
-After `accept`, the server reads the peer's credentials, through
-`SO_PEERCRED` on Linux and `getpeereid` on macOS, both through the pinned
-`nix`, whose workspace entry gains the `socket` and `user` features in slice
-5. It closes any connection whose user ID differs from its own
-effective user ID, before the preamble. The client checks the directory the
-same way before connecting, so it never talks to a socket another user
-planted.
+`huterm_server::Listener` accepts on one thread. After `accept`, it reads
+the peer's credentials, through `SO_PEERCRED` on Linux and `getpeereid` on
+macOS, both through the pinned `nix` with its `socket` and `user` features,
+and closes any connection whose user ID differs from its own effective user
+ID before writing the preamble. It serves up to `MAX_CONNECTIONS`
+connections. Past that, it answers up to `MAX_REFUSALS` connections' `Hello`
+with `Reject { ServerBusy }` within the handshake deadline, and closes any
+further connection at once.
 
-The server serves each connection with a reader thread, a writer thread,
-and one executor thread for its pumps and request handling. Mux-locking and
-blocking work (spawn, close, assessment) runs on worker threads, never on a
-connection's I/O or pump threads. Slice 3a picked `async-executor` with
-`futures-lite`, `async-io`, and `blocking`, all already in `Cargo.lock` (see
-its revisions).
+A client connects through `huterm_socket::connect`, which checks the
+directory the same way before connecting, so it never talks to a socket
+another user planted, and then checks that the server runs as its own
+effective user. `huterm_client::native::Client::connect` opens a client's
+first connection, and `native::connect` opens a stream for
+`ClientHandle::reconnect`; the transport never reconnects on its own.
+
+Each connection runs a reader, a writer, and a driver thread, and the
+driver runs the connection on an `async-executor` `LocalExecutor`. The
+socket is non-blocking: the driver writes what the socket takes at once and
+hands the writer only the rest, and the reader and writer wait with `poll`
+(see slice 3b's revisions). Mux-locking and blocking work (spawn, close,
+assessment) runs on `blocking`'s workers, never on a connection's threads.
 
 ### Remote clients later
 
@@ -2696,6 +2714,108 @@ available; macOS covers the same-user path); partial reads and writes split
 at every byte of a frame decode correctly; a client that sends no `Hello` is
 closed at the deadline.
 
+#### Revisions during slice 5
+
+None of these changes a settled decision. Each is an implementation choice
+within the contract or a narrow correction to its text, which "Transport
+and authentication" now follows.
+
+- **A shared socket crate.** The server and every client must resolve and
+  check a socket the same way, but `huterm-client` cannot depend on
+  `huterm-server`, which links core, and `huterm-wire` stays sans-IO with
+  only the protocol as a dependency. The new `huterm-socket` crate holds
+  name and path resolution, the directory check, `bind`, `connect`, and peer
+  credentials. It depends only on `nix`, which `mise run architecture`
+  checks, and the server and client depend on it only on Unix, so the
+  client's `wasm32` build is unchanged. `huterm-server` keeps the listener.
+- **Explicit paths get the same directory rule.** An explicit socket path's
+  parent must be private like a resolved directory, and `bind` creates it
+  when missing. A flag such as `--socket /tmp/x` is therefore refused; #45
+  or #46 may relax the rule for explicit paths if a flag needs that, since
+  peer credentials guard both ends regardless.
+- **The socket's mode is set after binding.** `bind` sets `0600` with
+  `chmod` right after binding instead of binding under a restrictive umask.
+  The umask is process-wide, so changing it would race with other threads
+  creating files, which a daemon that hosts terminals has. Until the mode
+  is set, the private directory keeps other users out.
+- **The client checks the server's credentials too.** After connecting,
+  `huterm_socket::connect` checks that the server runs as the client's own
+  effective user, the same check the listener applies, which costs one
+  system call.
+- **Refusing a busy connection reads its `Hello`.** A listener that closed a
+  connection right after writing `Reject` would race the client's own
+  write: the client could fail writing its `Hello` and report a disconnect
+  before it reads the refusal. A busy connection therefore runs the normal
+  connection threads and answers its `Hello` with `Reject { ServerBusy }`
+  through `Connection::refuse`, within the handshake deadline. At most
+  `MAX_REFUSALS` (8) connections are refused that way at once; past that,
+  the listener closes a connection at once. A connection counts against
+  `MAX_CONNECTIONS` or `MAX_REFUSALS` until its driver has run every job and
+  its cleanup.
+- **The handshake deadline is configurable.** `ServerConfig` gains
+  `handshake_deadline` (default `HANDSHAKE_DEADLINE`) and `max_connections`
+  (default `MAX_CONNECTIONS`), so a test reaches either limit over a real
+  socket in milliseconds on the wall clock the native adapter runs on.
+- **Stopping removes its own socket.** A stopping listener closes its
+  connections, joins their threads, and removes the socket file only when
+  its device, inode, and change time still match what it bound; an inode
+  number alone comes back for the next file on ext4. Checking and removing
+  are two calls, so a successor that replaces the socket between them loses
+  its path until [#45][issue-45]'s startup lock serializes servers.
+  `Listener::from_listener` serves a socket bound elsewhere, checking peers
+  but leaving the file alone.
+- **Accepting stays responsive.** The listener checks its wake socket after
+  every 16 accepts, so a flood of connections never holds off a stop. When
+  `accept` fails for a reason other than an empty queue, such as running out
+  of descriptors, it waits 100 ms rather than spinning on a socket that
+  stays readable.
+- **Paths are normalized before the check.** A socket path is absolute and
+  holds no `..` component, and its directory is its normalized parent: with
+  a trailing `/` or a `.` component, `lstat` would follow a symbolic link to
+  the directory instead of refusing it. An `XDG_RUNTIME_DIR` with a `..`
+  component falls back to `/tmp/huterm-<uid>` like any other unusable one.
+- **Only the last component is checked.** As with tmux, the check covers
+  the socket's directory and not its ancestors. The default directories sit
+  in `/tmp`, whose sticky bit stops another user from renaming them, and in
+  the user's own runtime directory; a `HUTERM_SOCKET_DIR` or explicit path
+  under a directory another user can write is the user's choice, and peer
+  credentials still guard both ends.
+
+Tests over the real socket:
+
+- The contract scenarios, the native viewer tests, and the IPC benchmarks
+  now connect `Client::connect` to a `Listener` on a socket in a private
+  temporary directory, so every scenario crosses the bound socket and the
+  peer check. Fault injection stays on in-memory links and a virtual
+  clock, because a real socket would give up seeded replay;
+  `mise run faults:ipc` passes over its default 200 seeds per scenario.
+- Byte splits: a raw client writes the preamble, `Hello`, and a request
+  split at every byte, and waits until the server has read the first part
+  before writing the rest; the native client does the same with the
+  server's preamble and `Welcome`. A hierarchy snapshot larger than the
+  socket's buffers arrives whole, read in 61-byte chunks only after the
+  socket took less than the server offered (`ConnectionHandle::short_writes`)
+  and the writer thread held the rest.
+- The second-user test (`a_second_user_is_closed_before_the_preamble`) is
+  ignored in the normal suite, because it needs root to start a peer as
+  another user. It runs as root in the Linux Docker image, as the core
+  runtime guide describes, and passes. The normal suite covers the same
+  close with a listener that expects another user ID.
+
+Release medians on an Apple M3 Max (`mise run bench:ipc`), each cell the
+range over three runs. The bound socket costs nothing measurable over the
+socket pair slice 3b measured, as expected for the same kind of stream.
+
+| Measurement | Socket pair | Bound socket |
+| --- | --- | --- |
+| `RenameTab` round trip | 38.2 us | 37.4 to 38.2 us |
+| Commit to the client's projection | 15.8 to 16.7 us | 15.6 to 16.9 us |
+| Keystroke echo through a PTY over IPC | 70.5 us | 70.7 to 80.3 us |
+| The same keystroke echo in process | 35.6 to 36.1 us | 35.8 to 36.4 us |
+| Echo output, in-process viewer to remote client | 18.1 to 21.0 us | 20.0 to 20.9 us |
+| 100,000-line flood until a viewer shows it, over IPC | 152 to 157 ms | 155 to 157 ms |
+| The same flood in process | 147 to 149 ms | 148 to 149 ms |
+
 ### What follows
 
 - [#45][issue-45] adds the daemon binary and its lifecycle on
@@ -2729,7 +2849,7 @@ closed at the deadline.
 | PTY parsing and other viewers continue when a client stalls | Slice 3b stalled-client test that asserts another viewer's updates and PTY output progress |
 | `wasm32-unknown-unknown` | CI check of `huterm-protocol`, `huterm-wire` with its vectors, and the sans-IO `huterm-client`; the vectors decode in native tests |
 | Architecture boundaries | New `mise run architecture` rules, each shown to fail once against a deliberate violation |
-| Peer authentication and socket permissions | Slice 5 tests, including a second-user test in Docker |
+| Peer authentication and socket permissions | Slice 5 tests, including a second-user test in Docker, and the contract scenarios over a bound socket |
 | The design's invariants hold under faults, version skew, and remote-like links | `huterm-ipc-sim`: every scenario over 12 seeds in the normal suite, the design-switch tests, and `mise run sim:ipc -- 2000` before changing the design |
 | The real server and client hold those invariants under faults | Slice 3b fault injection: every scenario over 3 seeds in the normal suite, and `mise run faults:ipc` over many |
 

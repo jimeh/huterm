@@ -1,9 +1,8 @@
-//! Remote viewers over the native adapters on a `UnixStream` pair, against
+//! Remote viewers over the native adapters on a bound socket, against
 //! real terminals: subscriptions, updates, input, scrolling, status, and
 //! each viewer's end.
 
 use std::future::Future;
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,8 +20,7 @@ use huterm_wire::request::Request;
 use huterm_wire::response::{Response, Success};
 use huterm_wire::viewer::SubscribeOptions;
 
-use crate::native::{ConnectionHandle, serve};
-use crate::test_support::{command, server};
+use crate::test_support::{SocketServer, command, server};
 use crate::{Server, ServerConfig};
 
 /// How long one step may take before a test gives up.
@@ -98,7 +96,8 @@ pub(crate) struct Remote {
     pub(crate) client: Client,
     pub(crate) handle: ClientHandle,
     pub(crate) events: Receiver<ClientEvent>,
-    pub(crate) connection: ConnectionHandle,
+    /// The listener this client alone connects to.
+    pub(crate) listening: SocketServer,
     pub(crate) attachment: AttachmentId,
     pub(crate) terminal: TerminalId,
 }
@@ -119,11 +118,10 @@ impl Remote {
         terminal: u64,
         kind: ClientKind,
     ) -> Self {
-        let (stream, accepted) = UnixStream::pair().unwrap();
-        let connection = serve(Arc::clone(server), accepted).unwrap();
-        let client = Client::spawn(
+        let listening = SocketServer::start(Arc::clone(server));
+        let client = Client::connect(
             ClientConfig::local(kind, "viewer-tests", "test"),
-            stream,
+            listening.socket(),
         )
         .unwrap();
         let handle = client.handle();
@@ -143,7 +141,7 @@ impl Remote {
             client,
             handle,
             events,
-            connection,
+            listening,
             attachment,
             terminal: TerminalId::in_runtime(runtime, terminal),
         }
@@ -209,8 +207,8 @@ impl Remote {
         self.client
             .shutdown()
             .expect("the client's threads exit cleanly");
-        self.connection
-            .join()
+        self.listening
+            .shutdown()
             .expect("the connection's threads exit cleanly");
     }
 

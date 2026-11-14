@@ -149,7 +149,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, client, server, and IPC simulation boundaries"
+description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, client, socket, server, and IPC simulation boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -207,6 +207,13 @@ fi
 client_dependencies="$(cargo tree --locked -p huterm-client --target all --all-features --prefix none --edges normal,build | tail -n +2)"
 if echo "$client_dependencies" | rg '^(huterm-core|huterm-ghostty|portable-pty|gpui-pre)( |-)'; then
   echo "huterm-client must not depend on huterm-core, huterm-ghostty, portable-pty, or gpui-pre" >&2
+  exit 1
+fi
+# huterm-socket holds the socket rules both the server and the client
+# share, so it stays as light as the client needs it.
+socket_dependencies="$(cargo tree --locked -p huterm-socket --target all --all-features --depth 1 --prefix none --edges normal,build | tail -n +2)"
+if echo "$socket_dependencies" | rg -v '^nix '; then
+  echo "huterm-socket may depend only on nix; extend this allowlist deliberately" >&2
   exit 1
 fi
 # huterm-server serves a runtime to clients and never links the desktop.
@@ -683,7 +690,7 @@ esac
 
 [tasks."bench:ipc"]
 depends = ["ghostty:prepare"]
-description = "Measure runtime IPC round trips, hierarchy event latency, and remote viewer keystroke, output, and flood latency over a Unix socket pair"
+description = "Measure runtime IPC round trips, hierarchy event latency, and remote viewer keystroke, output, and flood latency over a bound Unix socket"
 run = '''
 set -eu
 # One benchmark at a time, so neither disturbs the other's timings.

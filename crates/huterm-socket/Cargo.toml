@@ -1,0 +1,19 @@
+[package]
+name = "huterm-socket"
+description = "Unix socket placement, permission checks, and peer credentials for Huterm's runtime IPC"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "0.34.0"
+
+[features]
+default = []
+# Private temporary socket directories for server and client tests.
+test-support = []
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[lints]
+workspace = true

@@ -5,10 +5,12 @@
 //! [`MAX_IN_FLIGHT_REQUESTS`] and [`WRITER_STALL_DEADLINE`]; the limits
 //! here bind only the server's own memory and are never advertised.
 
+use std::time::Duration;
+
 use huterm_wire::caps::{MessageCaps, MessageKind};
-use huterm_wire::handshake::MAX_IN_FLIGHT_REQUESTS;
 #[cfg(doc)]
 use huterm_wire::handshake::WRITER_STALL_DEADLINE;
+use huterm_wire::handshake::{HANDSHAKE_DEADLINE, MAX_IN_FLIGHT_REQUESTS};
 
 /// The most close tickets one connection holds, a ticket whose record a
 /// running job holds included. Past it, `PrepareClose` answers
@@ -42,8 +44,7 @@ pub const MAX_CONNECTION_VIEWERS: usize = 256;
 /// How long a viewer's staged ordered messages wait before the connection
 /// offers them to core again, the desktop's input retry interval. The
 /// deadline is armed only while something is staged.
-pub const STAGING_RETRY: std::time::Duration =
-    std::time::Duration::from_millis(16);
+pub const STAGING_RETRY: Duration = Duration::from_millis(16);
 
 /// The most ended viewers a connection remembers, so a request naming one
 /// answers `Revoked` or `Stopped` instead of `StaleTarget`.
@@ -52,6 +53,15 @@ pub const MAX_ENDED_VIEWERS: usize = 256;
 /// The most bytes a frame header takes beyond the frame limit's count: the
 /// length that does not count itself.
 const EFFECT_FRAME_HEADER: usize = 4;
+
+/// The most connections one listener serves at once. Past it, a new
+/// connection's `Hello` is answered with `Reject { ServerBusy }`.
+pub const MAX_CONNECTIONS: usize = 64;
+
+/// The most connections a listener answers with `ServerBusy` at once, each
+/// for at most the handshake deadline. Past it, the listener closes a new
+/// connection at once, so a flood of connections costs no more threads.
+pub const MAX_REFUSALS: usize = 8;
 
 /// Limits a server applies to each connection. The defaults are the named
 /// constants; tests lower them to reach a limit cheaply.
@@ -66,6 +76,10 @@ pub struct ServerConfig {
     pub outbound_budget: usize,
     /// See [`MAX_CONNECTION_VIEWERS`].
     pub max_viewers: usize,
+    /// See [`MAX_CONNECTIONS`].
+    pub max_connections: usize,
+    /// How long a connection waits for `Hello`; see [`HANDSHAKE_DEADLINE`].
+    pub handshake_deadline: Duration,
 }
 
 impl Default for ServerConfig {
@@ -75,6 +89,8 @@ impl Default for ServerConfig {
             hierarchy_lane_budget: HIERARCHY_LANE_BUDGET,
             outbound_budget: OUTBOUND_BUDGET,
             max_viewers: MAX_CONNECTION_VIEWERS,
+            max_connections: MAX_CONNECTIONS,
+            handshake_deadline: HANDSHAKE_DEADLINE,
         }
     }
 }

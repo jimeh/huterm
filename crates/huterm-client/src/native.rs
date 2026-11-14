@@ -20,7 +20,12 @@
 //! connection state, and [`ClientHandle::reconnect`] replaces the
 //! connection with one over a new stream. When a connection ends, the
 //! driver shuts its socket down and joins both I/O threads before it
-//! reports the end. Slice 5 adds `connect`, which resolves a socket path.
+//! reports the end.
+//!
+//! [`Client::connect`] opens the first connection to a [`SocketPath`], and
+//! [`connect`] opens a stream for [`ClientHandle::reconnect`]; both check
+//! that the socket's directory is private and that the server runs as this
+//! user before the client sends anything.
 
 use std::collections::HashMap;
 use std::io::{self, IoSlice, Read, Write};
@@ -36,6 +41,7 @@ use huterm_protocol::{
     AttachmentId, HierarchyState, HostEffectKind, ScrollCommand, TerminalId,
     TerminalInput, TerminalSnapshot, TerminalStatus, ViewerId,
 };
+pub use huterm_socket::{SocketError, SocketPath, connect};
 use huterm_wire::error::{ErrorCode, WireError};
 use huterm_wire::hierarchy::HierarchySnapshot;
 use huterm_wire::request::Request;
@@ -121,6 +127,7 @@ impl std::fmt::Debug for Event {
 #[derive(Debug, Default)]
 struct Stats {
     io_threads: AtomicUsize,
+    received: AtomicUsize,
 }
 
 /// Counts one live I/O thread until it exits.
@@ -201,6 +208,25 @@ impl Client {
         })
     }
 
+    /// Connects to the server listening on `socket` and starts a client
+    /// over the connection, as [`Client::spawn`] does.
+    ///
+    /// # Errors
+    /// Refuses a socket directory that is not private to this user and a
+    /// server that runs as another user, and returns the error of
+    /// connecting, such as no server listening, or of starting the client.
+    pub fn connect(
+        config: ClientConfig,
+        socket: &SocketPath,
+    ) -> Result<Self, SocketError> {
+        let stream = connect(socket)?;
+        Self::spawn(config, stream).map_err(|error| SocketError::Io {
+            action: "start a client for socket",
+            path: socket.path().to_path_buf(),
+            error,
+        })
+    }
+
     /// A handle to the client.
     #[must_use]
     pub fn handle(&self) -> ClientHandle {
@@ -211,6 +237,12 @@ impl Client {
     #[must_use]
     pub fn io_threads(&self) -> usize {
         self.stats.io_threads.load(Ordering::Acquire)
+    }
+
+    /// The bytes the client has read and taken in, over every connection.
+    #[must_use]
+    pub fn received(&self) -> usize {
+        self.stats.received.load(Ordering::Acquire)
     }
 
     /// Ends the connection, resolves what is outstanding as a disconnect
@@ -482,7 +514,7 @@ impl ClientHandle {
 
     /// Replaces the connection with one over `stream`, applying the
     /// disconnect rules to the old one, and resolves with the new
-    /// handshake's outcome.
+    /// handshake's outcome. [`connect`] opens a stream to a socket path.
     ///
     /// # Errors
     /// Returns why the new connection ended before its handshake
@@ -813,6 +845,7 @@ impl Driver {
                     io.reading = false;
                 }
                 self.session.receive(&bytes, now);
+                self.stats.received.fetch_add(bytes.len(), Ordering::AcqRel);
             }
             Event::ReadEnded(generation) | Event::WriteFailed(generation)
                 if Some(generation) == current =>

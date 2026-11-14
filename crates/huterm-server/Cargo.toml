@@ -14,7 +14,7 @@ default = []
 test-minor = ["huterm-wire/test-minor"]
 # Raw wire helpers that tests use as a client: building Hello and request
 # frames and decoding what the server sends.
-test-support = []
+test-support = ["huterm-socket/test-support"]
 
 [dependencies]
 async-channel.workspace = true
@@ -27,6 +27,7 @@ huterm-wire.workspace = true
 async-executor.workspace = true
 async-io.workspace = true
 blocking.workspace = true
+huterm-socket.workspace = true
 # The socket is non-blocking, so the driver writes what the socket takes at
 # once and the reader and writer threads wait with `poll`.
 nix.workspace = true
@@ -36,6 +37,7 @@ nix.workspace = true
 # real client. The client's tests depend on this crate the same way; Cargo
 # allows the cycle because both edges are dev edges.
 huterm-client.workspace = true
+huterm-socket = { workspace = true, features = ["test-support"] }
 # The test feed's tests deliver test-minor events, so the wire crate's
 # test-only minor version is on whenever this crate's tests build.
 huterm-wire = { workspace = true, features = ["test-minor"] }

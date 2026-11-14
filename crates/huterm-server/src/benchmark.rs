@@ -1,5 +1,5 @@
 //! Release benchmark of runtime IPC requests and hierarchy events over the
-//! native adapters on a `UnixStream` pair: a structural request's round
+//! native adapters on a bound Unix socket: a structural request's round
 //! trip, the latency from a commit to the client's projection, and the
 //! same operation in process for context. Run it through
 //! `mise run bench:ipc`.
@@ -12,7 +12,6 @@
 //! runner has measured it yet.
 
 use std::future::Future;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,8 +23,7 @@ use huterm_wire::handshake::ClientKind;
 use huterm_wire::request::Request;
 use huterm_wire::response::Response;
 
-use crate::native::serve;
-use crate::test_support::{quiet_command, server};
+use crate::test_support::{SocketServer, quiet_command, server};
 use crate::{Server, ServerConfig};
 
 /// Samples per measurement, after as many again to warm up.
@@ -100,17 +98,17 @@ struct Pair {
     client: Client,
     handle: ClientHandle,
     tab: TabId,
+    // Dropped after the client, which ends the connection first.
+    _served: SocketServer,
 }
 
 impl Pair {
     fn new() -> Self {
         let server = Arc::new(server(ServerConfig::default()));
-        let (stream, accepted) = UnixStream::pair().unwrap();
-        // The connection ends when the client shuts down.
-        let _connection = serve(Arc::clone(&server), accepted).unwrap();
-        let client = Client::spawn(
+        let listening = SocketServer::start(Arc::clone(&server));
+        let client = Client::connect(
             ClientConfig::local(ClientKind::Desktop, "benchmark", "test"),
-            stream,
+            listening.socket(),
         )
         .unwrap();
         let handle = client.handle();
@@ -148,6 +146,7 @@ impl Pair {
             client,
             handle,
             tab: opened.tab,
+            _served: listening,
         }
     }
 
