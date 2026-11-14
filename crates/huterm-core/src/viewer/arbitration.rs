@@ -91,7 +91,8 @@ pub(crate) struct Candidate {
 /// The controlling viewer: the candidate that most recently gained focus or
 /// typed, ties going to the latest registration. Whether a viewer is shown
 /// does not matter, as with tmux's `latest`. It decides the presentation
-/// under every policy, and the size under [`SizingPolicy::Latest`].
+/// under every policy, and the size under [`SizingPolicy::Latest`] and
+/// under [`SizingPolicy::Manual`] until the terminal is first typed in.
 pub(crate) fn select_controller(candidates: &[Candidate]) -> Option<Candidate> {
     candidates
         .iter()

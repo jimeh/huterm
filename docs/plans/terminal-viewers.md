@@ -1419,7 +1419,8 @@ Delivered for [#207][issue-207] with these decisions:
   and on every reload.
 - Participants are the candidates `latest` already uses, shown or hidden.
   Visibility still plays no part, so tab switches, focus, typing, and
-  snapshots never resize under `smallest`, `largest`, or `manual`.
+  snapshots never resize under `smallest` or `largest`, or under `manual`
+  once the terminal has been typed in.
 - `smallest` and `largest` take the minimum or maximum of columns and of
   rows separately, clamped to the cell limit. Their cell size is the largest
   width and height any participant reports, so focus never changes the

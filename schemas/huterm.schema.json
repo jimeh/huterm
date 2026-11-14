@@ -11909,7 +11909,7 @@
             }
           ],
           "default": "latest",
-          "description": "Which views decide a terminal's rows and columns when more than one\nwindow shows it; under Manual, none do. Set Terminal Size pins one\nterminal whatever this says.",
+          "description": "Which views decide a terminal's rows and columns when more than one\nwindow shows it; under Manual, none do once you type in it. Set\nTerminal Size pins one terminal whatever this says.",
           "x-huterm-apply": "live",
           "x-huterm-group": "Size",
           "x-huterm-label": "Size of a terminal shown in several views",

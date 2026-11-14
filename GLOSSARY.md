@@ -89,8 +89,8 @@ typed.
 A terminal's rule for its size when several viewers show it: `latest`
 follows the controlling viewer, `smallest` and `largest` aggregate every
 participating viewer's columns and rows, and `manual` lets no viewer resize
-it. A **manual size** set on the terminal overrides the policy until it is
-cleared.
+it once it has been typed in. A **manual size** set on the terminal
+overrides the policy until it is cleared.
 
 **Client layout**:
 The saved arrangement of a client's views, workspace selections, and presentation

@@ -862,7 +862,9 @@ sizing = "latest" # latest, smallest, largest, or manual
   Each keeps the size it has from then on, until **Set Terminal Size**
   changes it. Until you first type in a terminal, such as a new tab, pane,
   or Quake window's shell, it follows its view like `"latest"`, so it starts
-  at the size its window settles at.
+  at the size its window settles at. Typing while a window is still
+  changing size, such as during a switch to fullscreen, keeps the size at
+  that moment.
 
 Every view that shows a terminal counts, including one on a tab its window
 is not showing, so switching tabs, focusing a window, and typing never
@@ -877,9 +879,11 @@ change to open terminals at once.
 
 The **Set Terminal Size** command fixes the focused terminal at a size
 whatever `sizing` says, and **Clear Terminal Size** returns it to `sizing`.
-See [Commands](keybindings.md#commands). A fixed size lasts until it is
-cleared or the terminal ends; it is not saved with the session. Views larger
-or smaller than a fixed size show background around it or part of it.
+Under `"manual"`, a terminal already typed in then keeps the fixed size,
+since no view resizes it. See [Commands](keybindings.md#commands). A fixed
+size lasts until it is cleared or the terminal ends; it is not saved with
+the session. Views larger or smaller than a fixed size show background
+around it or part of it.
 
 ## Dragging between windows
 
