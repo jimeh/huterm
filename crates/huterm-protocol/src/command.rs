@@ -901,6 +901,12 @@ pub mod ids {
     pub const CLEAR_SCROLLBACK: CommandId = CommandId::new("clear_scrollback");
     /// Resets the terminal emulator's state.
     pub const RESET_TERMINAL: CommandId = CommandId::new("reset_terminal");
+    /// Fixes the terminal at a manual size, whatever the sizing policy.
+    pub const SET_TERMINAL_SIZE: CommandId =
+        CommandId::new("set_terminal_size");
+    /// Returns the terminal to the sizing policy.
+    pub const CLEAR_TERMINAL_SIZE: CommandId =
+        CommandId::new("clear_terminal_size");
     /// Opens a tab's working directory in the file manager.
     pub const OPEN_TAB_DIRECTORY: CommandId =
         CommandId::new("open_tab_directory");
@@ -1156,6 +1162,31 @@ const RESIZE: &[ArgumentSpec] = &[ArgumentSpec {
     required: Requirement::Optional,
     prompt: false,
 }];
+
+/// A manual terminal size; an omitted dimension keeps the view's own.
+const TERMINAL_SIZE: &[ArgumentSpec] = &[
+    ArgumentSpec {
+        name: "columns",
+        kind: ArgumentKind::Integer {
+            min: 1,
+            max: TERMINAL_SIZE_MAX,
+        },
+        required: Requirement::Optional,
+        prompt: true,
+    },
+    ArgumentSpec {
+        name: "rows",
+        kind: ArgumentKind::Integer {
+            min: 1,
+            max: TERMINAL_SIZE_MAX,
+        },
+        required: Requirement::Optional,
+        prompt: true,
+    },
+];
+
+/// The most columns or rows Set Terminal Size accepts.
+const TERMINAL_SIZE_MAX: i64 = 1000;
 
 /// Movement commands extend the selection instead when `select` is true.
 const SELECT: &[ArgumentSpec] = &[ArgumentSpec {
@@ -2128,6 +2159,21 @@ const CATALOG: &[CommandSpec] = &[
         "Reset Terminal",
         "Reset the terminal's modes, screen, and scrollback, as after a \
          garbled program exits. Running programs are unaffected.",
+        &[],
+    ),
+    spec(
+        ids::SET_TERMINAL_SIZE,
+        CommandScope::Terminal,
+        "Set Terminal Size",
+        "Fix the terminal at `columns` by `rows`, whatever the sizing \
+         setting says; an omitted one keeps the size this view shows.",
+        TERMINAL_SIZE,
+    ),
+    spec(
+        ids::CLEAR_TERMINAL_SIZE,
+        CommandScope::Terminal,
+        "Clear Terminal Size",
+        "Return the terminal to the sizing setting after Set Terminal Size.",
         &[],
     ),
     spec(

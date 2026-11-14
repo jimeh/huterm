@@ -1,12 +1,16 @@
 use std::sync::Arc;
 
 use huterm_protocol::{
-    CellSize, GridSize, InputStamp, Modifiers, MouseAction, MouseButton,
-    MouseInput, MousePosition, RuntimeId, TerminalId, TerminalPresentation,
-    ViewerCapabilities, WheelDirection,
+    CellSize, GridSize, InputStamp, MAX_GRID_CELLS, Modifiers, MouseAction,
+    MouseButton, MouseInput, MousePosition, Rgb, RuntimeId, SizingPolicy,
+    TerminalId, TerminalPresentation, ViewerCapabilities, ViewerId,
+    WheelDirection,
 };
 
-use super::{Arbiter, Candidate, Effects, Report, select_controller};
+use super::{
+    Arbiter, Candidate, Effects, ManualSize, Report, select_controller,
+    select_size,
+};
 use crate::viewer::{Initial, Registry, Slot};
 
 fn cell() -> CellSize {
@@ -78,24 +82,96 @@ fn blank() -> Initial {
 
 fn candidate(id: u64, activity: u64, order: u64) -> Candidate {
     Candidate {
-        id: huterm_protocol::ViewerId::new(id),
+        id: ViewerId::new(id),
         activity,
         order,
+        geometry: (grid(80), cell()),
     }
+}
+
+fn controller(candidates: &[Candidate]) -> Option<ViewerId> {
+    select_controller(candidates).map(|candidate| candidate.id)
 }
 
 #[test]
 fn latest_controller_follows_activity_then_registration_order() {
-    assert_eq!(select_controller([]), None);
+    assert_eq!(controller(&[]), None);
     assert_eq!(
-        select_controller([candidate(1, 5, 1), candidate(2, 3, 2)]),
-        Some(huterm_protocol::ViewerId::new(1))
+        controller(&[candidate(1, 5, 1), candidate(2, 3, 2)]),
+        Some(ViewerId::new(1))
     );
     assert_eq!(
-        select_controller([candidate(1, 0, 1), candidate(2, 0, 2)]),
-        Some(huterm_protocol::ViewerId::new(2)),
+        controller(&[candidate(1, 0, 1), candidate(2, 0, 2)]),
+        Some(ViewerId::new(2)),
         "ties go to the latest registration"
     );
+}
+
+#[test]
+fn each_policy_sizes_differently_sized_viewers_deterministically() {
+    let sized = |id, activity, columns, rows, width, height| Candidate {
+        geometry: (
+            GridSize::clamped(columns, rows),
+            CellSize { width, height },
+        ),
+        ..candidate(id, activity, id)
+    };
+    // The most recently active viewer is neither the smallest nor the
+    // largest in either dimension, and its cell is the narrowest.
+    let wide = sized(1, 1, 200, 20, 16, 32);
+    let tall = sized(2, 0, 60, 70, 8, 34);
+    let active = sized(3, 2, 100, 40, 7, 14);
+    for candidates in [[wide, tall, active], [active, tall, wide]] {
+        assert_eq!(
+            select_size(SizingPolicy::Latest, &candidates),
+            Some((
+                GridSize::clamped(100, 40),
+                CellSize {
+                    width: 7,
+                    height: 14
+                }
+            ))
+        );
+        let densest = CellSize {
+            width: 16,
+            height: 34,
+        };
+        assert_eq!(
+            select_size(SizingPolicy::Smallest, &candidates),
+            Some((GridSize::clamped(60, 20), densest)),
+            "columns and rows aggregate separately; the cell is the largest"
+        );
+        assert_eq!(
+            select_size(SizingPolicy::Largest, &candidates),
+            Some((GridSize::clamped(200, 70), densest))
+        );
+        assert_eq!(select_size(SizingPolicy::Manual, &candidates), None);
+    }
+    for policy in [
+        SizingPolicy::Latest,
+        SizingPolicy::Smallest,
+        SizingPolicy::Largest,
+        SizingPolicy::Manual,
+    ] {
+        assert_eq!(select_size(policy, &[]), None, "{policy:?} keeps size");
+    }
+}
+
+#[test]
+fn the_largest_policy_keeps_the_grid_within_the_cell_limit() {
+    // Each grid fits the limit, but the widest and the tallest together do
+    // not.
+    let wide = Candidate {
+        geometry: (GridSize::clamped(4000, 200), cell()),
+        ..candidate(1, 0, 1)
+    };
+    let tall = Candidate {
+        geometry: (GridSize::clamped(200, 4000), cell()),
+        ..candidate(2, 0, 2)
+    };
+    let (grid, _) = select_size(SizingPolicy::Largest, &[wide, tall]).unwrap();
+    assert!(grid.cells() <= MAX_GRID_CELLS);
+    assert_eq!(grid.columns, grid.rows, "the clamp keeps the aspect");
 }
 
 #[test]
@@ -698,4 +774,181 @@ fn initial_focus_needs_input_or_size() {
         0,
         "no activity to outrank other host-effect recipients"
     );
+}
+
+fn set_policy(
+    fixture: &mut Fixture,
+    slot: &Slot,
+    policy: SizingPolicy,
+) -> Effects {
+    fixture.arbiter.report(slot, Report::Policy(policy))
+}
+
+#[test]
+fn smallest_and_largest_ignore_focus_and_typing() {
+    for (policy, expected) in [
+        (SizingPolicy::Smallest, grid(100)),
+        (SizingPolicy::Largest, grid(120)),
+    ] {
+        let mut fixture = Fixture::new();
+        let first = fixture.sized(100);
+        let second = fixture.sized(120);
+        let effects = set_policy(&mut fixture, &first, policy);
+        assert_eq!(
+            effects.resize.map(|(grid, _)| grid),
+            (expected != grid(120)).then_some(expected),
+            "{policy:?} takes effect when it is set"
+        );
+        assert_eq!(fixture.arbiter.canonical.0, expected);
+        let revision = fixture.arbiter.geometry_revision();
+        for effects in [
+            fixture.arbiter.report(&first, Report::Focus(true)),
+            fixture.arbiter.typed(&second),
+            fixture.arbiter.report(&second, Report::Focus(true)),
+            fixture.arbiter.report(&second, Report::Focus(false)),
+            fixture.arbiter.typed(&first),
+        ] {
+            assert_eq!(effects.resize, None, "{policy:?}");
+        }
+        assert_eq!(fixture.arbiter.geometry_revision(), revision);
+    }
+}
+
+#[test]
+fn smallest_follows_every_participant_s_geometry_and_departure() {
+    let mut fixture = Fixture::new();
+    let first = fixture.sized(100);
+    let second = fixture.sized(120);
+    set_policy(&mut fixture, &first, SizingPolicy::Smallest);
+    // A viewer that has not focused or typed still constrains the size.
+    let effects = fixture
+        .arbiter
+        .report(&second, Report::Geometry(grid(90), cell()));
+    assert_eq!(effects.resize, Some((grid(90), cell())));
+    // A viewer without `size` and one that has reported no geometry take
+    // no part.
+    let (_, effects) = fixture.viewer(
+        ViewerCapabilities {
+            input: true,
+            ..ViewerCapabilities::NONE
+        },
+        Initial {
+            focused: true,
+            geometry: Some((grid(10), cell())),
+            presentation: None,
+        },
+    );
+    assert_eq!(effects.resize, None);
+    let (_, effects) = fixture.viewer(ViewerCapabilities::ALL, blank());
+    assert_eq!(effects.resize, None);
+    // Dropping the smallest viewer grows the terminal at once.
+    second
+        .dropped
+        .store(true, std::sync::atomic::Ordering::Release);
+    let effects = fixture.arbiter.sync(&fixture.registry);
+    assert_eq!(effects.resize, Some((grid(100), cell())));
+}
+
+#[test]
+fn presentation_follows_the_latest_viewer_under_every_policy() {
+    let presentation = |red| TerminalPresentation {
+        background: Rgb {
+            red,
+            green: 0,
+            blue: 0,
+        },
+        ..TerminalPresentation::default()
+    };
+    let mut fixture = Fixture::new();
+    let first = fixture.sized(100);
+    let second = fixture.sized(120);
+    set_policy(&mut fixture, &first, SizingPolicy::Smallest);
+    fixture.arbiter.presentation(&first, presentation(1));
+    let effects = fixture.arbiter.presentation(&second, presentation(2));
+    assert_eq!(effects.presentation, Some(presentation(2)));
+    let effects = fixture.arbiter.report(&first, Report::Focus(true));
+    assert_eq!(effects.presentation, Some(presentation(1)));
+    assert_eq!(effects.resize, None);
+}
+
+#[test]
+fn the_manual_policy_keeps_the_size_until_one_is_set() {
+    let mut fixture = Fixture::new();
+    let first = fixture.sized(100);
+    let second = fixture.sized(120);
+    let effects = set_policy(&mut fixture, &first, SizingPolicy::Manual);
+    assert_eq!(effects.resize, None, "the current size stays");
+    for effects in [
+        fixture.arbiter.report(&first, Report::Focus(true)),
+        fixture.arbiter.typed(&first),
+        fixture
+            .arbiter
+            .report(&second, Report::Geometry(grid(60), cell())),
+    ] {
+        assert_eq!(effects.resize, None);
+    }
+    assert_eq!(fixture.arbiter.canonical.0, grid(120));
+    // Returning to a viewer-driven policy resizes at once.
+    let effects = set_policy(&mut fixture, &second, SizingPolicy::Smallest);
+    assert_eq!(effects.resize, Some((grid(60), cell())));
+}
+
+#[test]
+fn a_manual_size_overrides_every_policy_until_it_is_cleared() {
+    let mut fixture = Fixture::new();
+    let first = fixture.sized(100);
+    let second = fixture.sized(120);
+    let large = CellSize {
+        width: 16,
+        height: 32,
+    };
+    fixture
+        .arbiter
+        .report(&second, Report::Geometry(GridSize::clamped(120, 30), large));
+    // An omitted dimension and the cell size come from the requesting
+    // viewer's own geometry.
+    let effects = fixture.arbiter.report(
+        &first,
+        Report::Manual(Some(ManualSize {
+            columns: Some(70),
+            rows: None,
+        })),
+    );
+    assert_eq!(effects.resize, Some((GridSize::clamped(70, 24), cell())));
+    for effects in [
+        fixture.arbiter.report(&second, Report::Focus(true)),
+        set_policy(&mut fixture, &second, SizingPolicy::Largest),
+        fixture
+            .arbiter
+            .report(&first, Report::Geometry(grid(200), cell())),
+    ] {
+        assert_eq!(effects.resize, None, "the manual size holds");
+    }
+    // A second request replaces the first.
+    let effects = fixture.arbiter.report(
+        &second,
+        Report::Manual(Some(ManualSize {
+            columns: None,
+            rows: Some(10),
+        })),
+    );
+    assert_eq!(effects.resize, Some((GridSize::clamped(120, 10), large)));
+    // Clearing returns to the policy, which the viewers' latest geometry
+    // decides.
+    let effects = fixture.arbiter.report(&first, Report::Manual(None));
+    assert_eq!(effects.resize, Some((GridSize::clamped(200, 30), large)));
+}
+
+#[test]
+fn a_manual_size_from_a_viewer_without_geometry_keeps_the_canonical_rest() {
+    let mut fixture = Fixture::new();
+    let (unsized_viewer, _) = fixture.viewer(ViewerCapabilities::ALL, blank());
+    let effects = fixture.arbiter.report(
+        &unsized_viewer,
+        Report::Manual(Some(ManualSize {
+            columns: None,
+            rows: Some(5),
+        })),
+    );
+    assert_eq!(effects.resize, Some((GridSize::clamped(80, 5), cell())));
 }

@@ -18,6 +18,24 @@
     "theme": false
   },
   {
+    "name": "terminal sizing smallest",
+    "toml": "[terminal]\nsizing = \"smallest\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "terminal sizing manual",
+    "toml": "[terminal]\nsizing = \"manual\"",
+    "valid": true,
+    "theme": false
+  },
+  {
+    "name": "terminal sizing unknown",
+    "toml": "[terminal]\nsizing = \"aggressive\"",
+    "valid": false,
+    "theme": false
+  },
+  {
     "name": "empty config",
     "toml": "",
     "valid": true,

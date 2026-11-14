@@ -740,7 +740,8 @@ impl RuntimeMessage {
                     ..
                 } => capabilities.input || capabilities.size,
                 Self::Arbitration {
-                    report: Report::Geometry(..),
+                    report:
+                        Report::Geometry(..) | Report::Policy(_) | Report::Manual(_),
                     ..
                 } => capabilities.size,
                 Self::Presentation { .. } => true,

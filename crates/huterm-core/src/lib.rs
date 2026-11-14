@@ -46,8 +46,8 @@ pub use terminal::{
     SnapshotReply, SnapshotRequest, TerminalRuntime,
 };
 pub use viewer::{
-    HostEffectViewerOptions, TerminalViewer, ViewerOptions, ViewerUpdate,
-    ViewerWake,
+    HostEffectViewerOptions, ManualSize, TerminalViewer, ViewerOptions,
+    ViewerUpdate, ViewerWake,
 };
 
 /// Whether this build can compress idle scrollback: true on every 64-bit

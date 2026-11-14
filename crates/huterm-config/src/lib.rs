@@ -158,6 +158,7 @@ pub struct TerminalConfig {
     pub link_modifiers: LinkModifiers,
     pub macos_option_as_alt: MacosOptionAsAlt,
     pub right_click: RightClickAction,
+    pub sizing: TerminalSizing,
     pub scrollback: ScrollbackLimit,
     pub scrollback_compression: bool,
 }
@@ -177,6 +178,7 @@ impl Default for TerminalConfig {
             link_modifiers: LinkModifiers::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
             right_click: RightClickAction::Menu,
+            sizing: TerminalSizing::Latest,
             scrollback: ScrollbackLimit::DEFAULT,
             scrollback_compression: true,
         }
@@ -216,6 +218,58 @@ pub enum RightClickAction {
         schemars(extend("x-huterm-label" = "Do nothing"))
     )]
     Ignore,
+}
+
+/// Which views decide a terminal's rows and columns when more than one
+/// window shows it.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalSizing {
+    /// The view that last gained focus or was typed in. Moving between
+    /// differently sized windows resizes the terminal.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Most recently used view"))
+    )]
+    Latest,
+    /// The fewest columns and the fewest rows any view has, so every view
+    /// shows the whole terminal. Larger views show background around it.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Smallest view"))
+    )]
+    Smallest,
+    /// The most columns and the most rows any view has. Smaller views show
+    /// part of the terminal.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Largest view"))
+    )]
+    Largest,
+    /// Views never resize terminals. Each keeps its size until Set Terminal
+    /// Size changes it.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Manual"))
+    )]
+    Manual,
+}
+
+impl TerminalSizing {
+    /// The runtime policy this setting selects.
+    #[must_use]
+    pub const fn to_protocol(self) -> huterm_protocol::SizingPolicy {
+        match self {
+            Self::Latest => huterm_protocol::SizingPolicy::Latest,
+            Self::Smallest => huterm_protocol::SizingPolicy::Smallest,
+            Self::Largest => huterm_protocol::SizingPolicy::Largest,
+            Self::Manual => huterm_protocol::SizingPolicy::Manual,
+        }
+    }
 }
 
 /// How often terminals redraw.
@@ -3145,6 +3199,17 @@ pub struct RawTerminal {
         "x-huterm-apply" = "live",
     )))]
     pub right_click: RightClickAction,
+    /// Which views decide a terminal's rows and columns when more than one
+    /// window shows it. Set Terminal Size pins one terminal whatever this
+    /// says.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Size",
+        "x-huterm-label" = "Size of a terminal shown in several views",
+        "x-huterm-order" = 25,
+        "x-huterm-apply" = "live",
+    )))]
+    pub sizing: TerminalSizing,
     /// Live history each terminal keeps above its screen, in rows, from 0 to
     /// 100000; 0 keeps none.
     #[cfg_attr(feature = "schema", schemars(range(max = ScrollbackLimit::MAX.rows()), extend(
@@ -3195,6 +3260,7 @@ impl Default for RawTerminal {
             bell: BellConfig::default(),
             macos_option_as_alt: MacosOptionAsAlt::Off,
             right_click: RightClickAction::Menu,
+            sizing: TerminalSizing::Latest,
             scrollback_rows: ScrollbackLimit::DEFAULT.rows(),
             scrollback_bytes: None,
             scrollback_compression: true,

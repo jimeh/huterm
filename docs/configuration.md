@@ -839,6 +839,45 @@ size_indicator = "full" # full, compact, or off
 size_indicator_linger_ms = 100 # 0 to 10000
 ```
 
+## Shared terminal size
+
+A terminal shown in more than one window, such as a session open in two
+windows, has one size: one grid of rows and columns that every view shows.
+`sizing` chooses which views decide it:
+
+```toml
+[terminal]
+sizing = "latest" # latest, smallest, largest, or manual
+```
+
+- `"latest"`, the default, follows the view that last gained focus or was
+  typed in. Moving between two differently sized windows resizes the
+  terminal each time.
+- `"smallest"` takes the fewest columns and, separately, the fewest rows of
+  any view, so every view shows the whole terminal and larger views show
+  background around it.
+- `"largest"` takes the most columns and the most rows of any view. Smaller
+  views show the part of the terminal that fits.
+- `"manual"` lets no view resize a terminal. Each keeps the size it has when
+  the setting takes effect, or the size it started with, until **Set
+  Terminal Size** changes it.
+
+Every view that shows a terminal counts, including one on a tab its window
+is not showing, so switching tabs, focusing a window, and typing never
+resize a terminal under `"smallest"`, `"largest"`, or `"manual"`. A view's
+own size changes, such as a window resize, font change, or pane zoom, still
+count. Under `"smallest"` and `"largest"`, the pixel size programs see uses
+the largest cell any view reports, which suits the sharpest display when
+windows sit on displays with different scales. The theme a terminal reports
+to programs always follows the most recently used view. Reload applies a
+change to open terminals at once.
+
+The **Set Terminal Size** command fixes the focused terminal at a size
+whatever `sizing` says, and **Clear Terminal Size** returns it to `sizing`.
+See [Commands](keybindings.md#commands). A fixed size lasts until it is
+cleared or the terminal ends; it is not saved with the session. Views larger
+or smaller than a fixed size show background around it or part of it.
+
 ## Dragging between windows
 
 A tab or pane dragged onto another Huterm window drops into its tab bar, its
