@@ -6,7 +6,7 @@ license.workspace = true
 publish = false
 repository.workspace = true
 rust-version.workspace = true
-version = "0.34.0"
+version = "0.35.0"
 
 [lints]
 workspace = true
