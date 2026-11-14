@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.35.0](https://github.com/jimeh/huterm/compare/v0.34.0...v0.35.0) (2026-11-14)
+
+
+### Features
+
+* move tabs and workspaces between workspaces and sessions from menus, the palette, and the keyboard ([#465](https://github.com/jimeh/huterm/issues/465)) ([5b8b1dd](https://github.com/jimeh/huterm/commit/5b8b1dd19b9d05e1e4675f901e3e72e291044fcc))
+
+
+### Bug Fixes
+
+* keep fullscreen tabs beside the sidebar and leave no gap above the terminal on notched displays ([#468](https://github.com/jimeh/huterm/issues/468)) ([ba75c3f](https://github.com/jimeh/huterm/commit/ba75c3f08849a724a71698bce2478860082b62c7))
+
 ## [0.34.0](https://github.com/jimeh/huterm/compare/v0.33.1...v0.34.0) (2026-11-10)
 
 
