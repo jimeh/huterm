@@ -1864,10 +1864,13 @@ impl WorkspaceView {
         } else {
             workspace_chrome::CORNER_MARGIN
         };
+        // The button's row starts under the safe area, or level with a
+        // notch shelf's bar.
         let corner = div()
             .id("workspace-panel-strip")
             .flex_none()
             .h(strip)
+            .pt(layout.workspace_row)
             .flex()
             .items_center()
             .px(inset)

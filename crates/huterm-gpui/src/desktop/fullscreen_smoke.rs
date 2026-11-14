@@ -266,7 +266,12 @@ fn read_state(cx: &mut App) -> String {
             let insets = view.fullscreen_insets;
             writeln!(output, "w{index}.insets={},{},{},{}", f32::from(insets.top), f32::from(insets.right), f32::from(insets.bottom), f32::from(insets.left)).unwrap();
             writeln!(output, "w{index}.tab_bounds={}", rect(view.tab_strip(window).bounds)).unwrap();
-            writeln!(output, "w{index}.bar_bounds={}", rect(view.chrome_layout(window).tabs)).unwrap();
+            let layout = view.chrome_layout(window);
+            writeln!(output, "w{index}.bar_bounds={}", rect(layout.tabs)).unwrap();
+            // The docked sidebar and its button, which keep clear of a
+            // notch shelf's bar.
+            writeln!(output, "w{index}.sidebar_band={}", layout.workspace.map_or_else(|| "none".to_owned(), rect)).unwrap();
+            writeln!(output, "w{index}.sidebar_button={}", view.sidebar_button_bounds.get().map_or_else(|| "none".to_owned(), rect)).unwrap();
             writeln!(output, "w{index}.notch_shelves={}", view.notch_shelves.map_or_else(|| "none".to_owned(), |shelves| format!("l={};r={}", rect(shelves.left), rect(shelves.right)))).unwrap();
             // Every retained view, shown or hidden, holds the geometry the
             // window's chrome gives it.
