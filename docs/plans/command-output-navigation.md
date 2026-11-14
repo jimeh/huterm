@@ -30,7 +30,8 @@ back to the prompt.
   so its records may still change; the encoders destructure exhaustively, so
   new fields fail to compile until they have a wire form and digest words.
 - `bench:engine` and `bench:wire` must stay inside their gates. Snapshot
-  construction must not walk history in proportion to its length.
+  construction walks history only per record, at most 256 records over at
+  most `ScrollbackLimit::MAX` rows, and measures that worst case.
 - Rows above the viewport cost one page walk each to read (see the engine
   guide). Every scan of them is bounded.
 - The other running threads own selection anchoring across reflow and core
@@ -71,16 +72,19 @@ screen. The alternate screen gets none.
   `pointFromPin` walks page nodes. In viewport space it walks forward from
   the viewport's top page and returns no value for a pin above the viewport
   (`PageList.zig` `pointFromPin`); in screen space it walks from the top of
-  history. Core reads every record with a value once in viewport space,
-  which costs a page or two per record at live output, and orders the ones
-  it can place by row, not sequence: cursor addressing can draw a newer
-  prompt above an older one. Of the records above the viewport, only the
-  newest four are placed in screen space, and the lowest of them owns the
-  viewport's top row. A first design binary-searched the records on the
-  assumption that sequence order is row order; review showed cursor
-  addressing breaks that assumption, and the full scan costs about 20 us at
-  live and 70 us scrolled near the top of 100,000 rows with 256 records
-  (`bench:engine` `resize-history`).
+  history. (The `page-list-pin-nearest` patch speeds up the other
+  direction, resolving a point, which row reads use.) Core reads every
+  record with a value once in viewport space, which costs a page or two per
+  record at live output, and orders the ones it can place by row, not
+  sequence: cursor addressing can draw any number of newer prompts above an
+  older one. Every record above the viewport is then placed in screen
+  space, and the lowest validated one owns the viewport's top row. A first
+  design binary-searched the records on the assumption that sequence order
+  is row order, and a second placed only the newest four above the
+  viewport; review broke both with cursor-addressed prompts. In
+  `bench:engine` `resize-history`, with 256 records in 100,000 rows of
+  history, a snapshot takes about 196 us at live and 190 us scrolled near
+  the top, against 116 us on main.
 - **Validation and aliasing:** a record is used only when its anchor row is
   still marked as a primary prompt, and of records on one row only the
   newest is: in-place erasure (or `scrollback = 0`, which deletes rows in
@@ -111,7 +115,11 @@ screen. The alternate screen gets none.
   semantic content), or else the last prompt row.
 - **Accepted gap:** a prompt with no record, such as an empty Enter or a
   Ctrl-L redraw, does not start a block. Rows between it and the next
-  record belong to the earlier block, apart from the trimmed tail.
+  record belong to the earlier block, apart from the trimmed tail. If a
+  program erases the screen in place and a prompt without a record later
+  lands exactly on an older record's stale anchor, that older record's
+  status shows on it; this needs an exact row coincidence and is
+  accepted.
 
 - **Bindings:** `huterm-ghostty` gains the grid reference style read
   (`ghostty_grid_ref_style`) and the cell's semantic content
@@ -285,6 +293,10 @@ no scroll.
   test or a `smoke:macos-input` extension. Linux was not checked by hand.
 - `bench:wire` runs in CI's `ci:benchmarks` and `fuzz:wire` in the nightly
   workflow; neither ran locally for this change.
+- No test asserts that a status-only change, such as a command's end with
+  no row changed, requests a repaint: the view test checks the records and
+  the marks they produce. The request is the same one-line `changed` flag
+  the other status fields set.
 
 ## Open questions
 

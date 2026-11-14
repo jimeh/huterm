@@ -1653,6 +1653,27 @@ fn sticky_rows_past_sixteen_bit_positions_travel_in_full() {
         "{:?}",
         &delta.rows[rows..]
     );
+    // The streamed encoder makes the same message.
+    let mut streams = encoder();
+    let mut streamed = Vec::new();
+    for snapshot in [&first, &second] {
+        streamed.clear();
+        let mut frames = streams
+            .plan(snapshot, false)
+            .unwrap()
+            .frames(vectors::scope())
+            .unwrap();
+        while frames.remaining() > 0 {
+            frames.fill(&mut streamed, usize::MAX).unwrap();
+        }
+    }
+    let expected = encode_message(
+        &Message::TerminalUpdate(delta.clone()),
+        vectors::scope(),
+        CAPS,
+    )
+    .unwrap();
+    assert_eq!(streamed, expected);
     applied(&mut client, &delta);
     assert!(shows(&client, &second));
 }
