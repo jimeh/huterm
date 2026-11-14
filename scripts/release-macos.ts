@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { createMacosCliArchive, verifyMacosCliArchive } from "./cli-package.ts";
 import {
   fixtureAppcastLocation,
   generateAppcast,
@@ -36,7 +37,13 @@ const sparkleVersionRelative = `${sparkleFrameworkRelative}/Versions/B`;
 export interface SigningTarget {
   path: string;
   entitlements: "huterm" | "none";
+  /** Overrides the identifier codesign derives from a bare executable's name. */
+  identifier?: string;
 }
+
+export const guiExecutableRelative = "Contents/MacOS/huterm-gui";
+export const cliExecutableRelative = "Contents/MacOS/huterm";
+export const cliSigningIdentifier = "app.huterm.dev.cli";
 
 export function signingPlan(bundlePath: string): SigningTarget[] {
   return [
@@ -45,7 +52,9 @@ export function signingPlan(bundlePath: string): SigningTarget[] {
     { path: join(bundlePath, `${sparkleVersionRelative}/Updater.app`), entitlements: "none" },
     { path: join(bundlePath, `${sparkleVersionRelative}/Sparkle`), entitlements: "none" },
     { path: join(bundlePath, sparkleFrameworkRelative), entitlements: "none" },
-    { path: join(bundlePath, "Contents/MacOS/huterm"), entitlements: "huterm" },
+    // The command line hosts no terminals, so it asks for no privacy access.
+    { path: join(bundlePath, cliExecutableRelative), entitlements: "none", identifier: cliSigningIdentifier },
+    { path: join(bundlePath, guiExecutableRelative), entitlements: "huterm" },
     { path: bundlePath, entitlements: "huterm" },
   ];
 }
@@ -495,10 +504,12 @@ export function validateMachOMinimum(output: string, architecture: string): void
 }
 
 async function verifyHutermMinimum(bundlePath: string): Promise<void> {
-  const binary = join(bundlePath, "Contents/MacOS/huterm");
-  for (const architecture of ["arm64", "x86_64"]) {
-    const result = await runCaptured("vtool", ["-arch", architecture, "-show-build", binary]);
-    validateMachOMinimum(result.stdout, architecture);
+  for (const relativePath of [guiExecutableRelative, cliExecutableRelative]) {
+    const binary = join(bundlePath, relativePath);
+    for (const architecture of ["arm64", "x86_64"]) {
+      const result = await runCaptured("vtool", ["-arch", architecture, "-show-build", binary]);
+      validateMachOMinimum(result.stdout, architecture);
+    }
   }
 }
 
@@ -550,7 +561,7 @@ async function verifyPackageConfiguration(bundlePath: string, expectedVersion?: 
   validateUpdatePlist(info, version, await expectedSparklePublicKey());
   await verifyHutermMinimum(bundlePath);
   await verifySparkleFramework(bundlePath);
-  const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);
+  const linkage = await runCaptured("otool", ["-L", join(bundlePath, guiExecutableRelative)]);
   const dependencies = linkage.stdout.split(/\r?\n/).filter(line => /^\s+/.test(line)).join("\n");
   if (dependencies.includes("libghostty")) throw new Error("package verification failed: Ghostty must be statically linked");
   if (!dependencies.includes("@rpath/Sparkle.framework/Versions/B/Sparkle")) {
@@ -570,7 +581,7 @@ async function verifyLocalPackageConfiguration(bundlePath: string, expectedVersi
   await verifyHutermMinimum(bundlePath);
   await assertAbsent(join(bundlePath, sparkleFrameworkRelative), "Sparkle framework");
   await assertAbsent(join(bundlePath, "Contents/Resources/Sparkle-LICENSE"), "Sparkle license");
-  const linkage = await runCaptured("otool", ["-L", join(bundlePath, "Contents/MacOS/huterm")]);
+  const linkage = await runCaptured("otool", ["-L", join(bundlePath, guiExecutableRelative)]);
   if (linkage.stdout.includes("libghostty")) throw new Error("package verification failed: Ghostty must be statically linked");
   if (linkage.stdout.includes("Sparkle.framework")) {
     throw new Error("package verification failed: Sparkle-free Huterm links Sparkle");
@@ -698,10 +709,11 @@ async function findMachOBinaries(root: string): Promise<string[]> {
   return found.sort((left, right) => right.split("/").length - left.split("/").length || left.localeCompare(right));
 }
 
-async function codesignTarget(target: string, identity: string, keychain: string, entitlements: boolean): Promise<void> {
+async function codesignTarget(target: SigningTarget, identity: string, keychain: string): Promise<void> {
   const args = ["--force", "--sign", identity, "--keychain", keychain, "--options", "runtime", "--timestamp"];
-  if (entitlements) args.push("--entitlements", entitlementPath);
-  args.push(target);
+  if (target.identifier) args.push("--identifier", target.identifier);
+  if (target.entitlements === "huterm") args.push("--entitlements", entitlementPath);
+  args.push(target.path);
   await runInherited("codesign", args);
 }
 
@@ -716,7 +728,7 @@ async function extractedEntitlements(target: string): Promise<JsonObject> {
 }
 
 async function signAndVerifyApp(identity: string, teamId: string): Promise<void> {
-  const mainExecutable = join(appPath, "Contents/MacOS/huterm");
+  const mainExecutable = join(appPath, guiExecutableRelative);
   const keychain = keychainPaths().keychain;
   const binaries = await findMachOBinaries(appPath);
   if (!binaries.includes(mainExecutable)) throw new Error("packaged app does not contain the Huterm Mach-O executable");
@@ -727,13 +739,13 @@ async function signAndVerifyApp(identity: string, teamId: string): Promise<void>
     throw new Error(`packaged app contains unplanned Mach-O files: ${unplannedBinaries.map(file => relative(appPath, file)).join(", ")}`);
   }
   for (const target of plan) {
-    await codesignTarget(target.path, identity, keychain, target.entitlements === "huterm");
+    await codesignTarget(target, identity, keychain);
   }
   await verifySignedApp(teamId);
 }
 
 async function verifySignedApp(teamId: string): Promise<void> {
-  const mainExecutable = join(appPath, "Contents/MacOS/huterm");
+  const mainExecutable = join(appPath, guiExecutableRelative);
   const binaries = await findMachOBinaries(appPath);
   if (!binaries.includes(mainExecutable)) throw new Error("packaged app does not contain the Huterm Mach-O executable");
   await runInherited("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath]);
@@ -746,7 +758,11 @@ async function verifySignedApp(teamId: string): Promise<void> {
   for (const target of plan) {
     await runInherited("codesign", ["--verify", "--strict", "--verbose=2", target.path]);
     const details = await runCaptured("codesign", ["-dvvv", target.path]);
-    validateSignatureDetails(`${details.stdout}\n${details.stderr}`, teamId, relative(repoRoot, target.path));
+    const signature = `${details.stdout}\n${details.stderr}`;
+    validateSignatureDetails(signature, teamId, relative(repoRoot, target.path));
+    if (target.identifier && !signature.split(/\r?\n/).includes(`Identifier=${target.identifier}`)) {
+      throw new Error(`${relative(repoRoot, target.path)} is not signed with identifier ${target.identifier}`);
+    }
     const entitlements = await extractedEntitlements(target.path);
     if (target.entitlements === "huterm") validateEntitlements(entitlements);
     else if (Object.keys(entitlements).length > 0) {
@@ -760,6 +776,31 @@ async function zipApp(destination: string): Promise<void> {
   await rm(destination, { force: true });
   await mkdir(dirname(destination), { recursive: true });
   await runInherited("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", appPath, destination]);
+}
+
+async function submitNotarization(archive: string, keyPath: string, keyId: string, issuerId: string): Promise<void> {
+  const notarization = await runCaptured("xcrun", [
+    "notarytool", "submit", archive,
+    "--wait", "--output-format", "json",
+    "--key", keyPath,
+    "--key-id", keyId,
+    "--issuer", issuerId,
+  ]);
+  const result = objectValue(JSON.parse(notarization.stdout), "notarization result");
+  if (result.status !== "Accepted") throw new Error(`notarization of ${basename(archive)} finished with status ${String(result.status)}`);
+  console.log(`notarization of ${basename(archive)} accepted: ${String(result.id)}`);
+}
+
+/**
+ * Archives the stapled app's signed `huterm` unchanged and notarizes it on
+ * its own. Apple cannot staple a ticket to a bare executable, so Gatekeeper
+ * looks this one up online.
+ */
+async function releaseCli(destination: string, version: string, notarize: (archive: string) => Promise<void>): Promise<void> {
+  const bundled = join(appPath, cliExecutableRelative);
+  await createMacosCliArchive(bundled, version, destination);
+  await verifyMacosCliArchive(destination, version, bundled);
+  await notarize(destination);
 }
 
 async function buildRelease(): Promise<void> {
@@ -792,24 +833,14 @@ async function buildRelease(): Promise<void> {
     await runMacReleasePipeline({
       signAndVerify: () => signAndVerifyApp(signing.identity, teamId),
       createNotarizationArchive: () => zipApp(notarizationZip),
-      submitNotarization: async () => {
-        const notarization = await runCaptured("xcrun", [
-          "notarytool", "submit", notarizationZip,
-          "--wait", "--output-format", "json",
-          "--key", signing.notaryKeyPath,
-          "--key-id", keyId,
-          "--issuer", issuerId,
-        ]);
-        const result = objectValue(JSON.parse(notarization.stdout), "notarization result");
-        if (result.status !== "Accepted") throw new Error(`notarization finished with status ${String(result.status)}`);
-        console.log(`notarization accepted: ${String(result.id)}`);
-      },
+      submitNotarization: () => submitNotarization(notarizationZip, signing.notaryKeyPath, keyId, issuerId),
       staple: () => runReported("xcrun", ["stapler", "staple", appPath]),
       validateStaple: () => runReported("xcrun", ["stapler", "validate", appPath]),
       verifyStapledSignatures: () => verifySignedApp(teamId),
       assessGatekeeper: () => runReported("spctl", ["--assess", "--type", "execute", "--verbose=4", appPath]),
       createFinalArchive: () => zipApp(finalArchive),
     });
+    await releaseCli(join(dist, names.macosCli), inputs.version, archive => submitNotarization(archive, signing.notaryKeyPath, keyId, issuerId));
     await generateSbom(dist, appPath, inputs.version);
     await generateFixtureAppcast(dist, names.macos, { ...inputs, tag: `v${inputs.version}` });
     for (const name of names.platforms[0].payloads) {
@@ -874,6 +905,19 @@ async function checkEmbeddedNotes(): Promise<void> {
   console.log(`verified generate_appcast embeds the ${version} release notes in a signed feed`);
 }
 
+/** The standalone command line must be the app's signed `huterm`, byte for byte. */
+async function verifyCandidateCli(appArchive: string, cliArchive: string, version: string): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-cli-candidate-"));
+  try {
+    await extractZip(appArchive, directory);
+    const bundled = join(directory, "Huterm.app", cliExecutableRelative);
+    await runInherited("codesign", ["--verify", "--strict", "--verbose=2", bundled]);
+    await verifyMacosCliArchive(cliArchive, version, bundled);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function verifyReleaseCandidate(): Promise<void> {
   const inputs = currentBuildInputs();
   const dist = requiredEnv("RELEASE_DIST_DIR");
@@ -884,6 +928,7 @@ async function verifyReleaseCandidate(): Promise<void> {
   await runInherited("pyspdxtools", ["-i", sbomPath]);
   const archive = join(dist, names.macos);
   await sparklePublicKeyFromArchive(archive, await expectedSparklePublicKey());
+  await verifyCandidateCli(archive, join(dist, names.macosCli), inputs.version);
   const fixture = await mkdtemp(join(tmpdir(), "huterm-candidate-signing-"));
   try {
     await copyFile(archive, join(fixture, names.macos));

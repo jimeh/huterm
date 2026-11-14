@@ -75,7 +75,12 @@ description = "Run the native Huterm app"
 depends = ["ghostty:prepare", "terminfo:prepare"]
 # A worktree-local state directory, so a dev build neither restores nor
 # overwrites the installed app's sessions.
-run = 'HUTERM_STATE_DIR="$PWD/target/dev-state" bash scripts/build-exec.sh cargo run --locked -p huterm'
+# Building the command line first puts `huterm` beside `huterm-gui`, where
+# shell integration's `path` feature finds it.
+run = [
+  "bash scripts/build-exec.sh cargo build --locked -p huterm-cli",
+  'HUTERM_STATE_DIR="$PWD/target/dev-state" bash scripts/build-exec.sh cargo run --locked -p huterm',
+]
 
 [tasks.build]
 description = "Build the workspace"
@@ -149,7 +154,7 @@ description = "Type-check all workspace targets"
 run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --features huterm-gpui/test-support --locked"
 
 [tasks.architecture]
-description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, client, socket, server, and IPC simulation boundaries"
+description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, client, socket, server, command-line, and IPC simulation boundaries"
 run = '''
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
@@ -220,6 +225,13 @@ fi
 server_dependencies="$(cargo tree --locked -p huterm-server --target all --all-features --prefix none --edges normal,build | tail -n +2)"
 if echo "$server_dependencies" | rg '^gpui-pre( |-)'; then
   echo "huterm-server must not depend on gpui-pre" >&2
+  exit 1
+fi
+# The `huterm` command line runs without a display, so it never links the
+# desktop; its standalone download depends on that.
+cli_dependencies="$(cargo tree --locked -p huterm-cli --target all --all-features --prefix none --edges normal,build | tail -n +2)"
+if echo "$cli_dependencies" | rg '^(gpui-pre|huterm-gpui|huterm-ui)( |-)'; then
+  echo "huterm-cli must not depend on gpui-pre, huterm-gpui, or huterm-ui" >&2
   exit 1
 fi
 # huterm-ipc-sim is a standalone design simulation, not product code.
@@ -306,6 +318,7 @@ smoke_state=$(mktemp -d)
 trap 'rm -rf "$smoke_config" "$smoke_state"' EXIT
 printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
 set +e
+# Launches through the `huterm` command line, which opens `huterm-gui`.
 HUTERM_CONFIG_FILE="$smoke_config" HUTERM_STATE_DIR="$smoke_state" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
   -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
 status=$?
@@ -349,7 +362,7 @@ xvfb-run -a -s '-screen 0 1280x800x24 -noreset' sh -c '
   kill "$wm_pid" >/dev/null 2>&1 || true
   wait "$wm_pid" >/dev/null 2>&1 || true
   exit "$result"
-' sh "$workload" target/release/huterm
+' sh "$workload" target/release/huterm-gui
 status=$?
 set -e
 if [ "$status" -ne 124 ]; then
@@ -379,7 +392,7 @@ description = "Measure delay from terminal output or a keystroke to an applied s
 run = [
   "bash scripts/build-exec.sh cargo build --release --locked -p huterm",
   "bash scripts/build-exec.sh cargo build --release --locked -p huterm-gpui --example render_workload",
-  "bash scripts/headless.sh bun scripts/run-output-latency.ts target/release/huterm target/release/examples/render_workload",
+  "bash scripts/headless.sh bun scripts/run-output-latency.ts target/release/huterm-gui target/release/examples/render_workload",
 ]
 
 [tasks."bench:scroll"]
@@ -444,7 +457,7 @@ if [ "$platform" = Linux ]; then
     kill "$wm_pid" >/dev/null 2>&1 || true
     wait "$wm_pid" >/dev/null 2>&1 || true
     exit "$result"
-  ' sh "$workload" target/release/huterm "$report" "$revision" "$hardware"
+  ' sh "$workload" target/release/huterm-gui "$report" "$revision" "$hardware"
   status=$?
   set -e
   if [ "$status" -ne 0 ]; then
@@ -455,7 +468,7 @@ else
   SHELL="$workload" HUTERM_SCROLL_BENCH=1 \
     HUTERM_SCROLL_REVISION="$revision" \
     HUTERM_SCROLL_HARDWARE="$hardware" \
-    bun scripts/host-smoke-lock.ts bun scripts/run-scroll-benchmark.ts "$report" target/release/huterm
+    bun scripts/host-smoke-lock.ts bun scripts/run-scroll-benchmark.ts "$report" target/release/huterm-gui
 fi
 bun scripts/check-scroll-benchmark.ts "$report"
 '''
@@ -486,7 +499,8 @@ if [ "${HUTERM_MACOS_UPDATER:-}" = 1 ]; then
   bun scripts/release-macos.ts prepare-updater-package "$bundle"
 fi
 plist="$bundle/Contents/Info.plist"
-executable="$bundle/Contents/MacOS/huterm"
+executable="$bundle/Contents/MacOS/huterm-gui"
+cli="$bundle/Contents/MacOS/huterm"
 metadata="$(cargo metadata --no-deps --format-version 1)"
 identifier="$(printf '%s' "$metadata" | bun scripts/package-metadata.ts identifier)"
 version="$(printf '%s' "$metadata" | bun scripts/package-metadata.ts version)"
@@ -505,6 +519,7 @@ assert_file() {
 assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" "$identifier" "CFBundleIdentifier"
 assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" "$version" "CFBundleShortVersionString"
 assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :LSApplicationCategoryType' "$plist")" "public.app-category.developer-tools" "LSApplicationCategoryType"
+assert_equal "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")" "huterm-gui" "CFBundleExecutable"
 bun scripts/icons.ts verify-bundle "$bundle"
 for notice in catppuccin folke dracula nordtheme binaryify chriskempson projekt0n altercation ellisonleao rose-pine ayu-theme navarasu sainnhe rebelot; do
   assert_file "$bundle/Contents/Resources/themes/licenses/$notice.txt" "theme license"
@@ -538,11 +553,20 @@ if [ ! -x "$executable" ]; then
 fi
 lipo "$executable" -verify_arch arm64
 lipo "$executable" -verify_arch x86_64
+if [ ! -x "$cli" ]; then
+  echo "package verification failed: command line is missing or not executable at $cli" >&2
+  exit 1
+fi
+lipo "$cli" -verify_arch arm64
+lipo "$cli" -verify_arch x86_64
 if [ "${HUTERM_MACOS_UPDATER:-}" = 1 ]; then
   bun scripts/release-macos.ts verify-package-config "$bundle"
 else
   bun scripts/release-macos.ts verify-local-package-config "$bundle"
 fi
+# The release signs this executable before archiving it; this checks the
+# unsigned archive's layout and behavior.
+bun scripts/cli-package.ts macos "$cli" "$version" target/release/bundle
 echo "verified $bundle ($identifier, version $version, arm64 + x86_64)"
 '''
 
@@ -773,17 +797,19 @@ hide = true
 depends = ["ghostty:prepare", "terminfo:prepare", "package:targets:macos", "icons:check"]
 run = '''
 set -eu
+features=""
 if [ "${HUTERM_MACOS_UPDATER:-}" = 1 ]; then
-  bash scripts/build-exec.sh cargo auditable build --release --locked --target aarch64-apple-darwin -p huterm --features macos-updater
-  bash scripts/build-exec.sh cargo auditable build --release --locked --target x86_64-apple-darwin -p huterm --features macos-updater
-else
-  bash scripts/build-exec.sh cargo auditable build --release --locked --target aarch64-apple-darwin -p huterm
-  bash scripts/build-exec.sh cargo auditable build --release --locked --target x86_64-apple-darwin -p huterm
+  features="--features=huterm/macos-updater"
 fi
+for target in aarch64-apple-darwin x86_64-apple-darwin; do
+  bash scripts/build-exec.sh cargo auditable build --release --locked --target "$target" -p huterm -p huterm-cli $features
+done
 mkdir -p target/universal-apple-darwin/release
-lipo -create target/aarch64-apple-darwin/release/huterm target/x86_64-apple-darwin/release/huterm -output target/universal-apple-darwin/release/huterm
-lipo target/universal-apple-darwin/release/huterm -verify_arch arm64
-lipo target/universal-apple-darwin/release/huterm -verify_arch x86_64
+for executable in huterm-gui huterm; do
+  lipo -create "target/aarch64-apple-darwin/release/$executable" "target/x86_64-apple-darwin/release/$executable" -output "target/universal-apple-darwin/release/$executable"
+  lipo "target/universal-apple-darwin/release/$executable" -verify_arch arm64
+  lipo "target/universal-apple-darwin/release/$executable" -verify_arch x86_64
+done
 '''
 
 [tasks."package:targets:macos"]
@@ -871,7 +897,7 @@ depends = ["scripts:install"]
 run = "bun scripts/ui-icons.ts check"
 
 [tasks."package:linux"]
-description = "Build and verify native Linux AppImage and tarball artifacts"
+description = "Build and verify native Linux AppImage, tarball, and command-line artifacts"
 depends = ["ghostty:prepare", "icons:check"]
 run = "bun scripts/package-linux.ts build"
 
@@ -903,6 +929,7 @@ directory="dist/linux/$arch"
 bun scripts/package-linux.ts verify-artifacts \
   "$directory/Huterm-$version-Linux-$arch.AppImage" \
   "$directory/Huterm-$version-Linux-$arch.tar.gz" \
+  "$directory/Huterm-CLI-$version-Linux-$arch.tar.gz" \
   --version "$version" --arch "$arch"
 '''
 
@@ -945,7 +972,7 @@ if [ "$(uname -s)" != Linux ]; then
 fi
 bash scripts/build-exec.sh cargo build --workspace --locked
 bash scripts/build-exec.sh cargo build --locked -p huterm-gpui --example palette_smoke
-xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-linux-input.ts target/debug/huterm target/debug/examples/palette_smoke
+xvfb-run -a -s '-screen 0 1280x800x24 -noreset' bun scripts/check-linux-input.ts target/debug/huterm-gui target/debug/examples/palette_smoke
 '''
 
 [tasks."smoke:linux-fullscreen"]
@@ -1083,11 +1110,11 @@ fi
 for tool in openbox xclip xdotool xvfb-run tmux; do
   command -v "$tool" >/dev/null || { echo "Clipboard smoke requires $tool" >&2; exit 1; }
 done
-bash scripts/build-exec.sh cargo build --locked -p huterm --bin huterm
+bash scripts/build-exec.sh cargo build --locked -p huterm --bin huterm-gui
 xvfb_log="${HUTERM_SMOKE_EVIDENCE_DIR:-${TMPDIR:-/tmp}}/clipboard-xvfb.log"
 mkdir -p "$(dirname "$xvfb_log")"
 xvfb-run -a -e "$xvfb_log" -s '-screen 0 1280x800x24 -noreset' \
-  bun scripts/check-clipboard.ts target/debug/huterm
+  bun scripts/check-clipboard.ts target/debug/huterm-gui
 '''
 
 [tasks."smoke:macos-palette"]
@@ -1164,7 +1191,9 @@ case "$(uname -s)" in
   Linux)
     bash scripts/build-exec.sh cargo build --locked \
       -p huterm \
+      -p huterm-cli \
       -p huterm-gpui \
+      --bin huterm-gui \
       --bin huterm \
       --example renderer_smoke \
       --example integration_smoke \
@@ -1292,6 +1321,7 @@ case "$(uname -s)" in
         bun scripts/check-presentation-queries.ts target/debug/examples/presentation_query_smoke
     fi
 
+    # Launches through the `huterm` command line, which opens `huterm-gui`.
     if run_smoke_step linux-desktop; then
       smoke_config=$(mktemp)
       smoke_state=$(mktemp -d)
@@ -1311,11 +1341,11 @@ case "$(uname -s)" in
 
     if run_smoke_step linux-input; then
       xvfb-run -a -e "$evidence_dir/linux-input-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
-        bun scripts/check-linux-input.ts target/debug/huterm target/debug/examples/palette_smoke
+        bun scripts/check-linux-input.ts target/debug/huterm-gui target/debug/examples/palette_smoke
     fi
     if run_smoke_step linux-clipboard; then
       xvfb-run -a -e "$evidence_dir/clipboard-xvfb.log" -s '-screen 0 1280x800x24 -noreset' \
-        bun scripts/check-clipboard.ts target/debug/huterm
+        bun scripts/check-clipboard.ts target/debug/huterm-gui
     fi
     # Each palette-harness smoke runs as its own step so a failure names it.
     if run_smoke_step linux-palette; then

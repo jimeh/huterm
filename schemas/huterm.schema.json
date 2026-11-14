@@ -12051,11 +12051,11 @@
       "type": "object"
     },
     "ShellFeature": {
-      "description": "A known opt-in shell capability.",
+      "description": "A known optional shell capability.",
       "oneOf": [
         {
           "const": "path",
-          "description": "Append Huterm's executable directory to PATH once.",
+          "description": "Append the directory holding the `huterm` command to PATH once.",
           "type": "string"
         }
       ]
@@ -12065,8 +12065,10 @@
       "description": "Automatic shell integration for terminals started after this setting changes.",
       "properties": {
         "features": {
-          "default": [],
-          "description": "Optional capabilities. `path` appends Huterm's executable directory to PATH.",
+          "default": [
+            "path"
+          ],
+          "description": "Optional capabilities. `path`, on by default, appends the directory\nholding the `huterm` command to PATH.",
           "items": {
             "$ref": "#/definitions/ShellFeature"
           },

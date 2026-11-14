@@ -32,7 +32,7 @@ export function argumentsFor(args: string[]): Options {
     case "dev":
     case "clean":
       if (rest.length > 0) throw new Error(`vm:macos:${mode} takes no arguments`);
-      return { mode, graphics: mode === "dev", command: mode === "dev" ? ["target/debug/huterm"] : [] };
+      return { mode, graphics: mode === "dev", command: mode === "dev" ? ["target/debug/huterm-gui"] : [] };
     default:
       throw new Error("expected smoke, exec, dev, or clean");
   }
@@ -119,7 +119,7 @@ function spawnTart(args: string[]): Promise<number> {
 async function stopApp(name: string): Promise<void> {
   const app = appChild;
   await stopWithFallback(
-    () => { capture(["exec", name, "pkill", "-x", "huterm"], false); },
+    () => { capture(["exec", name, "pkill", "-x", "huterm-gui"], false); },
     () => appChild !== app,
     () => app?.kill("SIGKILL"),
   );
@@ -251,7 +251,8 @@ let activeSession: DevSession | undefined;
 
 async function develop(root: string, target: string, command: string[]): Promise<number> {
   const session = new DevSession({
-    rebuild: () => host(["bash", "scripts/build-exec.sh", "cargo", "build", "--locked", "-p", "huterm"], root),
+    // The CLI rides beside the app so shells in the VM find `huterm`.
+    rebuild: () => host(["bash", "scripts/build-exec.sh", "cargo", "build", "--locked", "-p", "huterm", "-p", "huterm-cli"], root),
     stage: () => run(["exec", target, "/bin/sh", GUEST, "stage"]),
     launch: () => spawnTart(["exec", target, "/bin/sh", GUEST, "exec", ...command]),
     stopApp: () => stopApp(target),
@@ -278,7 +279,7 @@ async function develop(root: string, target: string, command: string[]): Promise
 
 async function main(args: string[]): Promise<number> {
   if (args[0] === "--help" || args[1] === "--help") {
-  console.log("Usage: mise run vm:macos:{smoke [step],exec -- <command ...>,dev,clean}\nSmokes and exec use a disposable headless VM; dev runs target/debug/huterm in this worktree's persistent VM window.");
+  console.log("Usage: mise run vm:macos:{smoke [step],exec -- <command ...>,dev,clean}\nSmokes and exec use a disposable headless VM; dev runs target/debug/huterm-gui in this worktree's persistent VM window.");
     return 0;
   }
   const options = argumentsFor(args);

@@ -188,7 +188,8 @@ jobs:
             "$RELEASE_DIST_DIR/macos-SHA256SUMS" \
             "$RELEASE_DIST_DIR/Huterm-$RELEASE_VERSION-macOS-universal.zip" \
             "$RELEASE_DIST_DIR/Huterm-$RELEASE_VERSION-macOS-universal.spdx.json" \
-            "$RELEASE_DIST_DIR/appcast.xml"
+            "$RELEASE_DIST_DIR/appcast.xml" \
+            "$RELEASE_DIST_DIR/Huterm-CLI-$RELEASE_VERSION-macOS-universal.zip"
 
       - id: artifact-name
         name: Record macOS artifact name
@@ -204,6 +205,7 @@ jobs:
             dist-macos/Huterm-${{ inputs.version }}-macOS-universal.zip
             dist-macos/Huterm-${{ inputs.version }}-macOS-universal.spdx.json
             dist-macos/appcast.xml
+            dist-macos/Huterm-CLI-${{ inputs.version }}-macOS-universal.zip
             dist-macos/macos-SHA256SUMS
           if-no-files-found: error
           retention-days: 30
@@ -279,10 +281,12 @@ jobs:
           mkdir -p "$stage"
           cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" "$stage/"
           cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" "$stage/"
+          cp "dist/linux/$RELEASE_ARCH/Huterm-CLI-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" "$stage/"
           bun scripts/release.ts write-platform-manifest \
             "$stage/linux-$RELEASE_ARCH-SHA256SUMS" \
             "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" \
-            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz"
+            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" \
+            "$stage/Huterm-CLI-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz"
 
       - id: artifact-name
         name: Record Linux artifact name
@@ -373,10 +377,12 @@ jobs:
           mkdir -p "$stage"
           cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" "$stage/"
           cp "dist/linux/$RELEASE_ARCH/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" "$stage/"
+          cp "dist/linux/$RELEASE_ARCH/Huterm-CLI-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" "$stage/"
           bun scripts/release.ts write-platform-manifest \
             "$stage/linux-$RELEASE_ARCH-SHA256SUMS" \
             "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.AppImage" \
-            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz"
+            "$stage/Huterm-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz" \
+            "$stage/Huterm-CLI-$RELEASE_VERSION-Linux-$RELEASE_ARCH.tar.gz"
 
       - id: artifact-name
         name: Record Linux artifact name
