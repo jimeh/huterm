@@ -1,6 +1,6 @@
 # `huterm` command-line entry point (#350)
 
-Status: in progress. Plans [issue #350][issue-350] (parent [#37][issue-37]).
+Status: implemented. Plans [issue #350][issue-350] (parent [#37][issue-37]).
 Later subcommands build on it: the SSH helper ([#351][issue-351]), server
 control ([#45][issue-45]), and CLI control of a running app ([#46][issue-46]).
 
