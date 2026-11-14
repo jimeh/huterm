@@ -1424,7 +1424,10 @@ Delivered for [#207][issue-207] with these decisions:
   rows separately, clamped to the cell limit. Their cell size is the largest
   width and height any participant reports, so focus never changes the
   PTY's pixel size on mixed display scales.
-- `manual` keeps the current size. A manual size overrides every policy:
+- `manual` keeps the current size. A terminal no viewer has reported
+  geometry for yet still has its spawn estimate, so `manual` follows
+  `latest` until the first geometry report applies. A manual size overrides
+  every policy:
   omitted columns or rows, and the cell size, come from the requesting
   viewer's latest geometry. Requested geometry and pane zoom never change
   it, and clearing returns to the policy at once. It is not saved with the

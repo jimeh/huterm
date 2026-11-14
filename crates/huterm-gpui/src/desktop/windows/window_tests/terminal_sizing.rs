@@ -50,6 +50,8 @@ fn set_terminal_size_fixes_the_grid_until_it_is_cleared(
     let mut harness = DesktopHarness::new(cx);
     let tab = harness.open_tab(ECHO);
     let (window, own) = ready(&mut harness, tab);
+    // Each step must change the size, or a broken one could pass.
+    assert!(own.columns != 40 && own.rows != 7, "window grid {own:?}");
     invoke_sizing(
         &mut harness,
         window,
@@ -128,5 +130,56 @@ fn a_reload_sends_the_sizing_policy_to_an_open_terminal(
     });
     harness.wait_canonical(tab, "the smaller view's size", |snapshot| {
         snapshot.size == own
+    });
+}
+
+#[gpui::test]
+fn a_new_tab_under_manual_sizing_takes_its_view_s_size(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = DesktopHarness::with_config(cx, |config| {
+        config.terminal.sizing = huterm_config::TerminalSizing::Manual;
+    });
+    let tab = harness.open_tab(ECHO);
+    let (window, _) = ready(&mut harness, tab);
+    let pane = harness.first_pane(tab);
+    harness.split(tab, pane, SplitDirection::Right, ECHO);
+    harness.wait_for("the window to show the split", |cx| {
+        window
+            .update(cx, |root, _, cx| {
+                let view = root.downcast::<WorkspaceView>().unwrap();
+                view.read(cx).active_tab_view(cx).is_some_and(|tab| {
+                    tab.pane(pane).is_some() && tab.panes.len() == 2
+                })
+            })
+            .unwrap()
+    });
+    let half = harness.update_view(window, |view, _, cx| {
+        view.active_view(cx).unwrap().read(cx).requested_grid
+    });
+    // The new tab spawns at the focused pane's half-width grid, an
+    // estimate, and lays out across the whole window afterwards.
+    harness.invoke(window, ids::NEW_TAB).unwrap();
+    let mut added = None;
+    harness.wait_for("the new tab", |cx| {
+        added = window
+            .update(cx, |root, _, cx| {
+                let view = root.downcast::<WorkspaceView>().unwrap();
+                view.read(cx).tabs.last().map(|last| last.id)
+            })
+            .unwrap()
+            .filter(|last| *last != tab);
+        added.is_some()
+    });
+    let added = added.unwrap();
+    let mut full = half;
+    harness.wait_for("the new tab's layout", |cx| {
+        terminal(cx, window, added).is_some_and(|view| {
+            full = view.read(cx).requested_grid;
+            full.columns > half.columns
+        })
+    });
+    harness.wait_canonical(added, "the new tab's laid-out size", |snapshot| {
+        snapshot.size == full
     });
 }
