@@ -1192,3 +1192,4 @@ fn a_word_expanding_when_its_viewer_is_revoked_completes_through_the_replacement
 }
 
 mod a11y;
+mod commands;

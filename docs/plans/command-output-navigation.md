@@ -171,33 +171,36 @@ resulting viewport instead of predicting it.
   - Typing drops it, as it drops other pending intents.
   - On completion the desired offset becomes the reply's viewport.
 - **Sticky header**, in the style `[terminal] sticky_prompt` selects:
-  `"command_status"` (H3, the default: the command row plus the record's
-  state at the right), `"command"` (H1: the command row only), `"prompt"`
-  (H2: every prompt row, at most 3), or `"off"`. It is painted over the
-  grid's top row, inside the grid's bounds, with a lifted background from
-  the theme (background mixed toward foreground) and a 1px rule. It is
+  `"status"` (H3, the default: the command row plus the record's state at
+  the right), `"command"` (H1: the command row only), `"prompt"` (H2:
+  every prompt row, at most 3), or `"off"`. It is an element over the
+  pane's top rows: the foreground at 7% opacity over the pane's background,
+  a 1px rule in the foreground at 25%, and the prompt rows painted by the
+  terminal renderer at the grid's columns. The grid paints only below the
+  header, so a covered row never shows through a translucent pane. It is
   hidden on the alternate screen, in panes under 6 rows, and when the
-  setting is `"off"`. Pressing the left button on it scrolls
-  the prompt is at the top, by sending `Prompt(-1)`, which Ghostty resolves
-  on the runtime against the current grid. Ghostty finds the nearest prompt
-  above the viewport's top, which is the header's prompt. Output or a
-  resize between paint and click therefore cannot misplace it, as an
-  absolute offset from an older snapshot could. The press starts no
-  selection and is not reported to a mouse-tracking program. The
-  pointer becomes a pointing hand. A drag that starts below it and moves up
-  passes under it and keeps selecting.
+  setting is `"off"`. The running state's clock ticks through the view's
+  animation schedule, once a second, only while it shows. Pressing the left
+  button on it scrolls the prompt to the top by sending `Prompt(-1)`, which
+  Ghostty resolves on the runtime against the current grid: it finds the
+  nearest prompt above the viewport's top, which is the header's prompt.
+  Output or a resize between paint and click therefore cannot misplace it,
+  as an absolute offset from an older snapshot could. The press starts no
+  selection and is not reported to a mouse-tracking program. The pointer
+  becomes a pointing hand. A drag that starts below it and moves up passes
+  under it and keeps selecting.
 - **Failure status**, in the style `[terminal] command_status` selects:
   `"tint"` (T1, the default: a faint red background on failed blocks),
   `"tint_marks"` (T2: T1 plus a 3px mark beside each prompt, green for exit
   0 and red for nonzero), `"bar"` (T3: a 3px red bar along each failed
-  block, with no tint), or `"off"`. It is drawn from the
-  snapshot's blocks and the latest status. Only `Finished` with a nonzero
-  exit code counts as a failure. `Finished` without a code, `Abandoned`, and
-  `Running` are never marked as successes, and only exit 0 gets a success
-  mark. The tint is a translucent color painted after cell backgrounds and
-  before selection, so ANSI backgrounds and selections stay legible. It
-  follows the pane's opacity and unfocused tint like other backgrounds.
-  Marks and bars sit in the left padding.
+  block, with no tint), or `"off"`. It is drawn from the snapshot's blocks
+  and the latest status. Only `Finished` with a nonzero exit code counts as
+  a failure. `Finished` without a code, `Abandoned`, and `Running` are never
+  marked as successes, and only exit 0 gets a success mark. The tint is the
+  theme's ANSI red at 10% on dark themes and 7% on light ones, across the
+  pane's width. It paints over the pane's background and under the grid, so
+  ANSI cell backgrounds cover it and the selection paints over it. Marks
+  and bars sit in the left padding.
 - **Settings:** both keys appear under Terminal in Settings, are in the
   schema, and are documented in `docs/configuration.md`.
 - **Repaint:** `same_presentation` also compares `commands` and
@@ -206,9 +209,10 @@ resulting viewport instead of predicting it.
   changed, and status and snapshot arrive independently in either order.
 - **Accessibility:** the accessibility document holds only the displayed
   rows, so the prompt the header shows is not in it. The header is a
-  button node next to the terminal node, not text inside it. Its label is
-  the command row's text and its state (for example, "Command prompt: rg -n
-  TODO crates, running"), and pressing it scrolls to the prompt. The
+  button node, a child of the terminal node beside its text runs, not text
+  inside the document. Its label is what pressing it does, the command row,
+  and its state (for example, "Scroll to prompt: $ make, failed with exit
+  status 2 after 4.2s"). The
   terminal document is unchanged, so no text is read twice. The tint is
   visual only. Previous Command is the keyboard equivalent of the
   header.
@@ -251,7 +255,7 @@ resulting viewport instead of predicting it.
 | Snapshot cost | `bench:engine` with a full record list, live and scrolled, before and after |
 | Wire round trip, caps, digest, vectors | `huterm-wire` tests and vectors; `bench:wire` gate; `mise run fuzz:wire` smoke |
 | Controller handling of `Prompt`: admission at an unchanged offset, accumulation, replacement by wheel and Live, typing | `scroll/tests.rs` |
-| Header click under output arriving between paint and execution | Core runtime test: `Prompt(-1)` after more output lands the header's prompt at the top |
+| Header click under output arriving between paint and execution | Core engine test: `Prompt(-1)` after more output lands the header's prompt at the top |
 | Aliased anchors: a newer prompt drawn on an older anchor's row, and `scrollback = 0` | Core engine tests |
 | Output without a final newline before the next prompt | Core engine test |
 | Theme change while the header shows | Core engine test: header rows recolor |

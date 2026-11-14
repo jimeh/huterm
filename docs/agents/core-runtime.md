@@ -326,6 +326,25 @@ terminal up, so the end follows at once; on Linux a descendant that ignores
 SIGHUP keeps it open, and the record stays running until that descendant
 closes it.
 
+Snapshots position the records for #38 (see
+[the plan](../plans/command-output-navigation.md)): `commands` holds the
+blocks that reach into the viewport and `sticky_prompt` the prompt rows of
+the block that owns the top row when its prompt is above the viewport.
+`CommandLog::layout` must not read every record's anchor per snapshot,
+because each tracked read walks history pages. It binary-searches the
+records in viewport space, which reports no value above the viewport, on
+the assumption that sequence order is row order, and reads forward only
+through the viewport. A record is used only when its anchor sits on a
+primary prompt row and below every older record's: in-place erasure and
+`scrollback = 0` move anchors onto other rows, and an older failed record
+on a newer prompt's row would tint the wrong command. Every grid read there
+picks the cheapest space (active, viewport, then screen) and is bounded, and
+a failed read leaves the blocks out rather than failing the snapshot.
+`bench:engine`'s `resize-history` reports `scrolled_snapshot_us` for the
+costliest place, near the top of 100,000 rows with 256 records below.
+`ScrollCommand::Prompt` is Ghostty's prompt jump; nothing predicts where it
+lands, so `requested_viewport` reports the current offset for it.
+
 ## Snapshots and link lookup
 
 Construct non-Send native handles on their owner thread before spawning the PTY;
@@ -557,6 +576,12 @@ dependency rule.
   decoders bound the expanded row count at every operation. `mise run
   bench:wire` measures the codec and gates its time and bytes; see
   [the plan's performance pass](../plans/runtime-ipc.md#wire-performance-pass).
+- A snapshot's sticky prompt rows travel as an update's rows after the
+  viewport's, so they keep and diff like viewport rows; the header carries
+  the command blocks and the sticky prompt's row count. A baseline holds
+  up to `sticky_rows_limit` rows beyond the grid, so a kept range may reach
+  past the grid's rows, and the style table may hold an entry per sticky
+  cell too (`style_table_limit`). Update caps include both.
 - Core keeps every state encodable on every path, embedded mode included:
   `GridSize::clamped` caps grids at `MAX_GRID_CELLS`, row extraction cuts
   cell text at `MAX_CELL_TEXT_BYTES`, and `StatusPublisher` cuts status text

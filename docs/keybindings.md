@@ -322,6 +322,10 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `scroll_page_up` | Terminal | |
 | `scroll_page_down` | Terminal | |
 | `scroll_to_bottom` | Terminal | |
+| `previous_command` | Terminal | Scrolls to the shell prompt above the pane's top row and puts it at the top. Needs shell integration's prompt marks. Scrolls every view of the terminal, as other scrolling does. |
+| `next_command` | Terminal | Scrolls to the next shell prompt below the pane's top row, or to live output when that prompt is on the live screen. |
+| `select_command_output` | Terminal | Selects the output of the command whose rows fill the pane's top row while scrolled back, or of the newest command at live output. Does nothing when that command has no output or Huterm holds no record of it. |
+| `select_command` | Terminal | Selects that command's prompt, command line, and output. No default binding. |
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab. |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace. |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session. |
@@ -451,6 +455,8 @@ menus, or your own bindings.
 | `clear_scrollback` | `cmd-k` | |
 | `scroll_page_up` / `scroll_page_down` | `shift-pageup` / `shift-pagedown` | `shift-pageup` / `shift-pagedown` |
 | `scroll_to_bottom` | `shift-end` | `shift-end` |
+| `previous_command` / `next_command` | `cmd-shift-up` / `cmd-shift-down` | `ctrl-shift-up` / `ctrl-shift-down` |
+| `select_command_output` | `cmd-shift-a` | |
 | `toggle_fullscreen` | `cmd-enter`, `f11` | `f11` |
 | `reload_config` | `cmd-<` | `ctrl-<` |
 | `open_settings` | `cmd-,` | `ctrl-,` |
