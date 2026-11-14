@@ -454,10 +454,10 @@ pub enum SizingPolicy {
     /// The most columns and the most rows any viewer reports, each taken
     /// separately.
     Largest,
-    /// Viewers never resize the terminal: it keeps its size until a manual
-    /// size is set. Until any viewer first types in it, the terminal still
-    /// follows `Latest`, so it keeps the size its window settled at rather
-    /// than the estimate it was spawned with.
+    /// Once any viewer has typed in the terminal, viewers never resize it:
+    /// it keeps its size until a manual size is set. Until then it follows
+    /// `Latest`, so it keeps the size its window settled at rather than the
+    /// estimate it was spawned with.
     Manual,
 }
 
