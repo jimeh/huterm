@@ -686,6 +686,7 @@ fn subscribe(pair: &mut Pair, session: u64, terminal: u64) -> ViewerId {
             geometry: None,
             presentation: None,
             spawned: false,
+            allowed_effects: huterm_wire::effect::EffectKinds::NONE,
         },
         true,
         pair.now,

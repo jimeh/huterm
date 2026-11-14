@@ -10,10 +10,17 @@
 //! drains it. Every snapshot shares the rows that did not change, so a
 //! viewer's deltas keep them. Nothing here touches a thread, a clock, or a
 //! random source, so a run replays exactly.
+//!
+//! A viewer subscribed with host effects gets a recipient with core's
+//! rules in miniature: per-kind permissions under the client's numbered
+//! generations, one recipient chosen per effect (the most recent eligible
+//! one, never redirected), and the terminal's effect and byte limits, held
+//! by each effect until it is dropped.
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use huterm_core::{RuntimeError, ViewerUpdate};
 use huterm_protocol::{
@@ -24,9 +31,22 @@ use huterm_protocol::{
     TerminalStatus, ViewerId, Viewport,
 };
 
-use crate::viewer::{
-    Ordered, Reply, SnapshotOutcome, ViewerPort, Wake, WakeSource,
+use huterm_core::{HostEffectClientOrigin, HostEffectViewerOptions};
+use huterm_protocol::{ClipboardDestination, HostEffectKind};
+use huterm_wire::effect::{
+    EffectPayload, EffectPayloadRef, INITIAL_EFFECT_GENERATION,
 };
+
+use crate::viewer::{
+    Ordered, PendingEffect, Reply, SnapshotOutcome, ViewerPort, Wake,
+    WakeSource,
+};
+
+/// Effects one model terminal holds, as core's terminal does.
+const EFFECT_LIMIT: usize = 8;
+
+/// Effect bytes one model terminal holds, as core's terminal does.
+const EFFECT_BYTE_LIMIT: usize = 64 << 20;
 
 /// Viewers one model terminal admits, as core does.
 const VIEWER_LIMIT: usize = 32;
@@ -80,6 +100,91 @@ struct Slot {
     receiver: async_channel::Receiver<()>,
     /// The wake signalled since the harness last collected it.
     signalled: bool,
+    /// The viewer's host-effect recipient, if it has one.
+    effects: Option<Recipient>,
+    /// When the viewer was last active, as core's activity ordinal: the
+    /// most recently active eligible recipient receives each effect.
+    activity: u64,
+}
+
+/// A model viewer's host-effect recipient.
+#[derive(Debug)]
+struct Recipient {
+    /// Whether the recipient may receive effects at all: a local desktop
+    /// that was not withdrawn.
+    eligible: bool,
+    allowed: [bool; HostEffectKind::ALL.len()],
+    generation: [u64; HostEffectKind::ALL.len()],
+    queue: VecDeque<ModelEffect>,
+}
+
+impl Recipient {
+    fn is_current(&self, kind: HostEffectKind, generation: u64) -> bool {
+        self.eligible
+            && self.allowed[kind.index()]
+            && self.generation[kind.index()] == generation
+    }
+}
+
+/// What a model terminal's queued effects hold.
+#[derive(Debug, Default)]
+struct EffectBudget {
+    effects: AtomicUsize,
+    bytes: AtomicUsize,
+}
+
+/// One effect's hold on its terminal's budget, released when dropped.
+#[derive(Debug)]
+struct Reservation {
+    budget: Arc<EffectBudget>,
+    bytes: usize,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.budget.effects.fetch_sub(1, Ordering::AcqRel);
+        self.budget.bytes.fetch_sub(self.bytes, Ordering::AcqRel);
+    }
+}
+
+/// An effect a model terminal admitted for one viewer.
+#[derive(Debug)]
+pub struct ModelEffect {
+    payload: EffectPayload,
+    generation: u64,
+    terminal: TerminalId,
+    viewer: ViewerId,
+    state: Weak<Mutex<State>>,
+    _reservation: Reservation,
+}
+
+impl PendingEffect for ModelEffect {
+    fn is_current(&self) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        let state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.slots.iter().any(|slot| {
+            slot.id == self.viewer
+                && !slot.revoked
+                && !slot.dropped
+                && slot.effects.as_ref().is_some_and(|recipient| {
+                    recipient.is_current(self.payload.kind(), self.generation)
+                })
+        })
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    fn terminal(&self) -> TerminalId {
+        self.terminal
+    }
+
+    fn payload(&self) -> Option<EffectPayloadRef<'_>> {
+        Some(self.payload.as_ref())
+    }
 }
 
 impl Slot {
@@ -119,6 +224,8 @@ struct State {
     refuse_scrolls: Option<RuntimeError>,
     /// The text every selection answers, when set.
     selection: Option<String>,
+    /// What the terminal's queued and sending effects hold.
+    effect_budget: Arc<EffectBudget>,
 }
 
 /// A model terminal, shared by its ports and the caller that drives it.
@@ -199,6 +306,7 @@ impl ModelTerminal {
                 stopped: false,
                 refuse_scrolls: None,
                 selection: None,
+                effect_budget: Arc::default(),
             })),
         }
     }
@@ -219,6 +327,19 @@ impl ModelTerminal {
     /// Returns `Stopped` once the terminal stopped, and `ViewerLimit` past
     /// its viewer limit.
     pub fn subscribe(&self) -> Result<Arc<ModelPort>, RuntimeError> {
+        self.subscribe_with(None)
+    }
+
+    /// Registers a viewer as [`Self::subscribe`] does, with a host-effect
+    /// recipient when `effects` asks for one. Only a local desktop's is
+    /// eligible, as in core.
+    ///
+    /// # Errors
+    /// As [`Self::subscribe`].
+    pub fn subscribe_with(
+        &self,
+        effects: Option<&HostEffectViewerOptions>,
+    ) -> Result<Arc<ModelPort>, RuntimeError> {
         let mut state = self.lock();
         if state.stopped {
             return Err(RuntimeError::Stopped);
@@ -246,6 +367,20 @@ impl ModelTerminal {
             wake,
             receiver,
             signalled: false,
+            activity: 0,
+            effects: effects.map(|options| {
+                let permissions = options.options.permissions;
+                Recipient {
+                    eligible: options.options.origin
+                        == HostEffectClientOrigin::LocalDesktop
+                        && options.options.writable,
+                    allowed: HostEffectKind::ALL
+                        .map(|kind| permissions.allows(kind)),
+                    generation: [INITIAL_EFFECT_GENERATION;
+                        HostEffectKind::ALL.len()],
+                    queue: VecDeque::new(),
+                }
+            }),
         };
         slot.signal();
         state.slots.push(slot);
@@ -364,6 +499,119 @@ impl ModelTerminal {
         }
     }
 
+    /// Admits a clipboard write, as OSC 52 asks, for the most recently
+    /// registered viewer whose recipient permits it, and wakes that viewer.
+    /// Returns whether it was admitted: false without such a recipient, or
+    /// with the terminal's effect or byte limit reached.
+    #[must_use]
+    pub fn clipboard(&self, text: &str) -> bool {
+        self.admit_clipboard(text).is_some()
+    }
+
+    /// Admits a clipboard write as [`Self::clipboard`] does, returning the
+    /// viewer whose recipient it went to.
+    #[must_use]
+    pub fn admit_clipboard(&self, text: &str) -> Option<ViewerId> {
+        self.admit(EffectPayload::ClipboardWrite {
+            destination: ClipboardDestination::System,
+            text: text.to_owned(),
+        })
+    }
+
+    /// Admits a notification as [`Self::clipboard`] admits a write.
+    #[must_use]
+    pub fn notify(&self, title: &str, body: &str) -> bool {
+        self.admit(EffectPayload::Notification {
+            title: title.to_owned(),
+            body: body.to_owned(),
+        })
+        .is_some()
+    }
+
+    fn admit(&self, payload: EffectPayload) -> Option<ViewerId> {
+        let weak = Arc::downgrade(&self.state);
+        let mut state = self.lock();
+        if state.stopped {
+            return None;
+        }
+        let kind = payload.kind();
+        let bytes = match &payload {
+            EffectPayload::ClipboardWrite { text, .. } => text.len(),
+            EffectPayload::Notification { title, body } => {
+                title.len() + body.len()
+            }
+        };
+        let budget = Arc::clone(&state.effect_budget);
+        let terminal = state.terminal;
+        // The most recently active eligible recipient, the latest
+        // registered on a tie.
+        let slot = state
+            .slots
+            .iter_mut()
+            .rev()
+            .filter(|slot| {
+                !slot.revoked
+                    && !slot.dropped
+                    && slot.effects.as_ref().is_some_and(|recipient| {
+                        recipient.eligible && recipient.allowed[kind.index()]
+                    })
+            })
+            .reduce(|best, slot| {
+                if slot.activity > best.activity {
+                    slot
+                } else {
+                    best
+                }
+            })?;
+        if budget.effects.load(Ordering::Acquire) >= EFFECT_LIMIT
+            || budget.bytes.load(Ordering::Acquire) + bytes > EFFECT_BYTE_LIMIT
+        {
+            return None;
+        }
+        budget.effects.fetch_add(1, Ordering::AcqRel);
+        budget.bytes.fetch_add(bytes, Ordering::AcqRel);
+        let viewer = slot.id;
+        let recipient = slot.effects.as_mut()?;
+        let generation = recipient.generation[kind.index()];
+        recipient.queue.push_back(ModelEffect {
+            payload,
+            generation,
+            terminal,
+            viewer,
+            state: weak,
+            _reservation: Reservation { budget, bytes },
+        });
+        slot.signal();
+        Some(viewer)
+    }
+
+    /// Marks `viewer` as the most recently active, as typing or a focus
+    /// gain does in core, so the next effect selects it if it is eligible.
+    pub fn activate(&self, viewer: ViewerId) {
+        let mut state = self.lock();
+        let next = state
+            .slots
+            .iter()
+            .map(|slot| slot.activity)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        if let Some(slot) = state.slot(viewer) {
+            slot.activity = next;
+        }
+    }
+
+    /// The effects and bytes the terminal's queued and sending effects
+    /// hold.
+    #[must_use]
+    pub fn effects_held(&self) -> (usize, usize) {
+        let state = self.lock();
+        (
+            state.effect_budget.effects.load(Ordering::Acquire),
+            state.effect_budget.bytes.load(Ordering::Acquire),
+        )
+    }
+
     /// Withdraws `viewer`'s authority: its queued messages are discarded.
     pub fn revoke(&self, viewer: ViewerId) {
         let mut state = self.lock();
@@ -371,6 +619,10 @@ impl ModelTerminal {
         if let Some(slot) = state.slot(viewer) {
             slot.revoked = true;
             slot.reserved = 0;
+            if let Some(recipient) = slot.effects.as_mut() {
+                recipient.eligible = false;
+                recipient.queue.clear();
+            }
             slot.signal();
         }
     }
@@ -589,6 +841,57 @@ impl ViewerPort for ModelPort {
         self.id
     }
 
+    fn next_effect(&self) -> Option<Box<dyn PendingEffect>> {
+        let mut state = self.terminal.lock();
+        let slot = state.slot(self.id)?;
+        let usable = !slot.revoked && !slot.dropped;
+        let recipient = slot.effects.as_mut()?;
+        while let Some(effect) = recipient.queue.pop_front() {
+            if usable
+                && recipient
+                    .is_current(effect.payload.kind(), effect.generation)
+            {
+                return Some(Box::new(effect));
+            }
+        }
+        None
+    }
+
+    fn set_effect_permission(
+        &self,
+        kind: HostEffectKind,
+        allowed: bool,
+        generation: u64,
+    ) -> bool {
+        let mut state = self.terminal.lock();
+        let Some(recipient) =
+            state.slot(self.id).and_then(|slot| slot.effects.as_mut())
+        else {
+            return false;
+        };
+        if generation <= recipient.generation[kind.index()] {
+            return false;
+        }
+        recipient.generation[kind.index()] = generation;
+        recipient.allowed[kind.index()] = allowed;
+        if !allowed {
+            recipient
+                .queue
+                .retain(|effect| effect.payload.kind() != kind);
+        }
+        true
+    }
+
+    fn revoke_effects(&self) {
+        let mut state = self.terminal.lock();
+        if let Some(recipient) =
+            state.slot(self.id).and_then(|slot| slot.effects.as_mut())
+        {
+            recipient.eligible = false;
+            recipient.queue.clear();
+        }
+    }
+
     fn poll(&self) -> ViewerUpdate {
         let mut state = self.terminal.lock();
         let status = Arc::clone(&state.status);
@@ -784,7 +1087,6 @@ impl ModelTerminals {
                     },
                 ..
             }) => {
-                let _ = options;
                 let Some(model) = self.get(terminal) else {
                     return crate::Completion::Subscribed(Err(
                         huterm_wire::error::WireError::new(
@@ -793,19 +1095,21 @@ impl ModelTerminals {
                         ),
                     ));
                 };
-                crate::Completion::Subscribed(match model.subscribe() {
-                    Ok(port) => Ok(Subscription::Viewer {
-                        status: model.status(),
-                        port,
-                    }),
-                    Err(RuntimeError::Stopped) => {
-                        Ok(Subscription::Stopped(model.status()))
-                    }
-                    Err(error) => Err(huterm_wire::error::WireError::new(
-                        crate::runtime::runtime_code(&error),
-                        error.to_string(),
-                    )),
-                })
+                crate::Completion::Subscribed(
+                    match model.subscribe_with(options.host_effects.as_ref()) {
+                        Ok(port) => Ok(Subscription::Viewer {
+                            status: model.status(),
+                            port,
+                        }),
+                        Err(RuntimeError::Stopped) => {
+                            Ok(Subscription::Stopped(model.status()))
+                        }
+                        Err(error) => Err(huterm_wire::error::WireError::new(
+                            crate::runtime::runtime_code(&error),
+                            error.to_string(),
+                        )),
+                    },
+                )
             }
             job => crate::runtime::execute(server, job),
         }

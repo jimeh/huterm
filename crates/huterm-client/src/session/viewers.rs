@@ -20,6 +20,14 @@
 //! subscribes again after a reconnect to the same incarnation reports the
 //! exit, bells, and failures it missed.
 //!
+//! A viewer subscribed with host effects owns each effect kind's
+//! permission and numbers its changes, which travel in order with its
+//! input. The session hands the caller an effect only while its viewer is
+//! live and the effect's generation is the viewer's current one for its
+//! kind, so an effect sent before a revoke is never executed, even after a
+//! re-grant; the caller rechecks with
+//! [`ClientSession::host_effect_current`] right before it acts.
+//!
 //! [`TransportProfile::viewer_input_budget`]:
 //! huterm_wire::handshake::TransportProfile::viewer_input_budget
 
@@ -27,8 +35,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use huterm_protocol::{
-    AttachmentId, InputStamp, ScrollCommand, StatusBaseline, StatusChanges,
-    TerminalId, TerminalInput, TerminalSnapshot, TerminalStatus, ViewerId,
+    AttachmentId, HostEffectKind, InputStamp, ScrollCommand, StatusBaseline,
+    StatusChanges, TerminalId, TerminalInput, TerminalSnapshot, TerminalStatus,
+    ViewerId,
+};
+use huterm_wire::effect::{
+    EffectKinds, EffectPayload, HostEffect, INITIAL_EFFECT_GENERATION,
+    SetHostEffectPermission, effect_kind_since,
 };
 use huterm_wire::error::{ErrorCode, WireError};
 use huterm_wire::message::{Message, Paste, encode_message};
@@ -96,6 +109,30 @@ pub enum ViewerEvent {
         /// The viewer.
         viewer: ViewerId,
     },
+    /// Terminal content asked the client to act, through a viewer that
+    /// still permits the effect's kind. Recheck
+    /// [`ClientSession::host_effect_current`] right before acting.
+    HostEffect(EffectDelivery),
+}
+
+/// A host effect for the caller to execute.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectDelivery {
+    /// The viewer whose recipient core selected.
+    pub viewer: ViewerId,
+    /// The terminal whose content asked for it.
+    pub terminal: TerminalId,
+    /// The permission generation of its kind it was admitted under.
+    pub generation: u64,
+    /// What to do.
+    pub payload: EffectPayload,
+}
+
+/// One effect kind's permission on the client.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KindPermission {
+    generation: u64,
+    allowed: bool,
 }
 
 /// Something a viewer sends, in the order the caller issued it.
@@ -108,6 +145,7 @@ enum Outgoing {
         cost: usize,
     },
     Focus(bool),
+    Permission(HostEffectKind, KindPermission),
     Call(CallId),
 }
 
@@ -129,6 +167,8 @@ pub(super) struct ClientViewer {
     pending: VecDeque<Outgoing>,
     /// The last scroll number assigned, which typing stamps carry.
     scrolls: u64,
+    /// Each effect kind's permission, for a viewer with host effects.
+    effects: Option<[KindPermission; HostEffectKind::ALL.len()]>,
 }
 
 /// What a subscription in flight subscribes to.
@@ -137,6 +177,9 @@ pub(super) struct Subscribing {
     terminal: TerminalId,
     spawned: bool,
     visible: bool,
+    /// The kinds the viewer permits from the start, when it asked for host
+    /// effects.
+    effects: Option<EffectKinds>,
 }
 
 /// The most ended viewers a session remembers on one connection, so a
@@ -191,6 +234,10 @@ impl ClientSession {
         now: std::time::Duration,
     ) -> CallId {
         let spawned = options.spawned;
+        let effects = options
+            .capabilities
+            .host_effects
+            .then_some(options.allowed_effects);
         let call = self.request(
             Request::SubscribeTerminal {
                 attachment,
@@ -206,6 +253,7 @@ impl ClientSession {
                     terminal,
                     spawned,
                     visible,
+                    effects,
                 },
             );
         }
@@ -276,6 +324,66 @@ impl ClientSession {
         };
         entry.pending.push_back(Outgoing::Focus(focused));
         self.flush_viewer(viewer);
+    }
+
+    /// Sets whether terminal content may use `kind` through `viewer`,
+    /// numbering the change. It applies on the client at once: an effect
+    /// admitted under an earlier generation is never handed over or
+    /// current again. The change reaches the server in order with the
+    /// viewer's input. Returns the change's generation.
+    ///
+    /// # Errors
+    /// Returns `NotPermitted` for a viewer subscribed without host effects,
+    /// `Unsupported` for a kind the negotiated version does not know, and
+    /// `StaleTarget`, `Stopped`, or `Revoked` for a viewer this session
+    /// does not hold.
+    pub fn set_host_effect_permission(
+        &mut self,
+        viewer: ViewerId,
+        kind: HostEffectKind,
+        allowed: bool,
+    ) -> Result<u64, WireError> {
+        if effect_kind_since(kind) > self.minor {
+            return Err(WireError::new(
+                ErrorCode::Unsupported,
+                "the server's version does not know this effect kind",
+            ));
+        }
+        let Some(entry) = self.viewers.get_mut(&viewer) else {
+            return Err(self.unknown_viewer(viewer));
+        };
+        let Some(effects) = entry.effects.as_mut() else {
+            return Err(WireError::new(
+                ErrorCode::NotPermitted,
+                "the viewer was subscribed without host effects",
+            ));
+        };
+        let permission = &mut effects[kind.index()];
+        permission.generation += 1;
+        permission.allowed = allowed;
+        let change = *permission;
+        entry.pending.push_back(Outgoing::Permission(kind, change));
+        self.flush_viewer(viewer);
+        Ok(change.generation)
+    }
+
+    /// Whether an effect `viewer` received under `generation` for `kind`
+    /// may still be executed: the viewer is live, permits the kind, and
+    /// has not changed its permission since.
+    #[must_use]
+    pub fn host_effect_current(
+        &self,
+        viewer: ViewerId,
+        kind: HostEffectKind,
+        generation: u64,
+    ) -> bool {
+        self.viewers
+            .get(&viewer)
+            .and_then(|entry| entry.effects)
+            .is_some_and(|effects| {
+                let permission = effects[kind.index()];
+                permission.allowed && permission.generation == generation
+            })
     }
 
     /// Scrolls `viewer`'s shared viewport, numbering the scroll so typing
@@ -446,6 +554,16 @@ impl ClientSession {
                         focused,
                     }));
                 }
+                Some(Outgoing::Permission(kind, permission)) => {
+                    self.send_message(&Message::SetHostEffectPermission(
+                        SetHostEffectPermission {
+                            viewer,
+                            kind,
+                            generation: permission.generation,
+                            allowed: permission.allowed,
+                        },
+                    ));
+                }
                 Some(Outgoing::Call(call)) => {
                     let closes = self.calls.get(&call).is_some_and(|entry| {
                         entry.kind == huterm_wire::request::RequestKind::CloseViewer
@@ -541,6 +659,7 @@ impl ClientSession {
             terminal,
             spawned,
             visible,
+            effects,
         }) = self.subscribing.remove(&call)
         else {
             return;
@@ -573,6 +692,12 @@ impl ClientSession {
                         unacked_cost: 0,
                         pending: VecDeque::new(),
                         scrolls: 0,
+                        effects: effects.map(|allowed| {
+                            HostEffectKind::ALL.map(|kind| KindPermission {
+                                generation: INITIAL_EFFECT_GENERATION,
+                                allowed: allowed.contains(kind),
+                            })
+                        }),
                     },
                 );
                 self.observe(terminal, Some(*viewer), status);
@@ -686,6 +811,7 @@ impl ClientSession {
                     },
                 ));
             }
+            Message::HostEffect(effect) => self.host_effect(effect),
             Message::ViewerRevoked(revoked) => {
                 let Some(entry) = self.viewers.remove(&revoked.viewer) else {
                     return;
@@ -704,6 +830,35 @@ impl ClientSession {
             }
             _ => {}
         }
+    }
+
+    /// Hands the caller an effect whose viewer is live and still at the
+    /// generation the effect was admitted under; drops any other.
+    fn host_effect(&mut self, effect: HostEffect) {
+        let HostEffect {
+            effect: _,
+            viewer,
+            permission_generation,
+            terminal,
+            payload,
+        } = effect;
+        if !self.host_effect_current(
+            viewer,
+            payload.kind(),
+            permission_generation,
+        ) {
+            self.stats.effects_discarded += 1;
+            return;
+        }
+        self.events
+            .push_back(ClientEvent::Viewer(ViewerEvent::HostEffect(
+                EffectDelivery {
+                    viewer,
+                    terminal,
+                    generation: permission_generation,
+                    payload,
+                },
+            )));
     }
 
     /// Fails a viewer's calls that never left, after the viewer ended.

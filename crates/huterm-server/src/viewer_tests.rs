@@ -28,7 +28,7 @@ use crate::{Server, ServerConfig};
 /// How long one step may take before a test gives up.
 const PROMPT: Duration = Duration::from_secs(10);
 
-fn block_on<T>(future: impl Future<Output = T>) -> T {
+pub(crate) fn block_on<T>(future: impl Future<Output = T>) -> T {
     futures_lite::future::block_on(futures_lite::future::or(
         async { Some(future.await) },
         async {
@@ -72,6 +72,7 @@ pub(crate) fn writable() -> SubscribeOptions {
         geometry: None,
         presentation: None,
         spawned: false,
+        allowed_effects: huterm_wire::effect::EffectKinds::NONE,
     }
 }
 
@@ -108,10 +109,20 @@ impl Remote {
         session: u64,
         terminal: u64,
     ) -> Self {
+        Self::connect_as(server, session, terminal, ClientKind::Desktop)
+    }
+
+    /// Connects a client of kind `kind`.
+    pub(crate) fn connect_as(
+        server: &Arc<Server>,
+        session: u64,
+        terminal: u64,
+        kind: ClientKind,
+    ) -> Self {
         let (stream, accepted) = UnixStream::pair().unwrap();
         let connection = serve(Arc::clone(server), accepted).unwrap();
         let client = Client::spawn(
-            ClientConfig::local(ClientKind::Desktop, "viewer-tests", "test"),
+            ClientConfig::local(kind, "viewer-tests", "test"),
             stream,
         )
         .unwrap();
@@ -269,7 +280,7 @@ impl Local {
                 .subscribe_terminal(
                     attachment,
                     TerminalId::in_runtime(runtime, terminal),
-                    crate::convert::viewer_options(writable()),
+                    crate::convert::viewer_options(writable(), None),
                 )
                 .unwrap();
         }

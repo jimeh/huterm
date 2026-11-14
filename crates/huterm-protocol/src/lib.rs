@@ -219,11 +219,31 @@ impl std::fmt::Debug for ClipboardWrite {
     }
 }
 
+/// Characters core keeps of a notification's title; it ends longer titles
+/// in an ellipsis.
+pub const NOTIFICATION_TITLE_CHARS: usize = 128;
+
+/// Characters core keeps of a notification's body; it ends longer bodies
+/// in an ellipsis.
+pub const NOTIFICATION_BODY_CHARS: usize = 512;
+
+/// The most bytes a notification's title holds: every kept character at
+/// four bytes, and the ellipsis.
+pub const MAX_NOTIFICATION_TITLE_BYTES: usize =
+    4 * NOTIFICATION_TITLE_CHARS + '…'.len_utf8();
+
+/// The most bytes a notification's body holds: every kept character at
+/// four bytes, and the ellipsis.
+pub const MAX_NOTIFICATION_BODY_BYTES: usize =
+    4 * NOTIFICATION_BODY_CHARS + '…'.len_utf8();
+
 /// A desktop notification a program requested (OSC 9 or OSC 777).
 ///
 /// Core builds it from untrusted terminal text: control and bidirectional
 /// formatting characters are removed, whitespace is collapsed, and both
-/// fields are bounded. Clients still present it only as plain text.
+/// fields are bounded by [`NOTIFICATION_TITLE_CHARS`] and
+/// [`NOTIFICATION_BODY_CHARS`]. Clients still present it only as plain
+/// text.
 #[derive(Clone, Eq, PartialEq)]
 pub struct TerminalNotification {
     title: String,

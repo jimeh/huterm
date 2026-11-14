@@ -312,6 +312,19 @@ pub(crate) struct Wanted {
     pub(crate) subscribing: Option<huterm_client::CallId>,
     /// The terminal stopped, so nothing subscribes to it again.
     pub(crate) stopped: bool,
+    /// The viewer asks for host effects, every kind permitted.
+    pub(crate) effects: bool,
+}
+
+impl Wanted {
+    /// The options its subscription asks for.
+    fn options(&self) -> SubscribeOptions {
+        if self.effects {
+            effect_options()
+        } else {
+            options()
+        }
+    }
 }
 
 /// One client: its session, its connection on the server, and the link
@@ -341,7 +354,10 @@ pub(crate) struct Peer {
     /// the server writes whatever the link has room for at once.
     pub(crate) batch: Option<usize>,
     pub(crate) write_rate: usize,
-    writing: Option<(Vec<u8>, usize)>,
+    pub(crate) writing: Option<(Vec<u8>, usize)>,
+    /// Effects the server dropped at a deadline on this peer's ended
+    /// connections.
+    pub(crate) effects_expired: u64,
 }
 
 /// The world.
@@ -362,6 +378,15 @@ pub(crate) struct World {
     limits: ModelLimits,
 }
 
+/// Writable viewer options with host effects, every kind permitted.
+pub(crate) fn effect_options() -> SubscribeOptions {
+    SubscribeOptions {
+        capabilities: ViewerCapabilities::ALL,
+        allowed_effects: huterm_wire::effect::EffectKinds::ALL,
+        ..options()
+    }
+}
+
 /// Writable viewer options without host effects.
 pub(crate) fn options() -> SubscribeOptions {
     SubscribeOptions {
@@ -373,6 +398,7 @@ pub(crate) fn options() -> SubscribeOptions {
         geometry: None,
         presentation: None,
         spawned: false,
+        allowed_effects: huterm_wire::effect::EffectKinds::NONE,
     }
 }
 
@@ -428,13 +454,20 @@ impl World {
         Duration::from_millis(self.now)
     }
 
-    /// Adds a peer over `profile` that attaches to the world's session.
+    /// Adds a desktop peer over `profile` that attaches to the world's
+    /// session.
     pub(crate) fn add_peer(&mut self, profile: LinkProfile) -> usize {
-        let session = ClientSession::new(ClientConfig::local(
-            ClientKind::Desktop,
-            "world",
-            "test",
-        ));
+        self.add_peer_as(profile, ClientKind::Desktop)
+    }
+
+    /// Adds a peer of client kind `kind` over `profile`.
+    pub(crate) fn add_peer_as(
+        &mut self,
+        profile: LinkProfile,
+        kind: ClientKind,
+    ) -> usize {
+        let session =
+            ClientSession::new(ClientConfig::local(kind, "world", "test"));
         self.peers.push(Peer {
             session,
             connection: None,
@@ -454,6 +487,7 @@ impl World {
             batch: None,
             write_rate: usize::MAX,
             writing: None,
+            effects_expired: 0,
         });
         let index = self.peers.len() - 1;
         self.connect(index);
@@ -501,6 +535,7 @@ impl World {
         let index = peer;
         let peer = &mut self.peers[index];
         if let Some(mut connection) = peer.connection.take() {
+            peer.effects_expired += connection.effect_stats().expired;
             peer.works.extend(connection.close(now));
             // Cleanup and late completions still run against the server.
             let works = std::mem::take(&mut peer.works);
@@ -517,6 +552,27 @@ impl World {
 
     /// Wants a viewer of terminal `terminal` on `peer`.
     pub(crate) fn want(&mut self, peer: usize, terminal: usize, visible: bool) {
+        self.want_viewer(peer, terminal, visible, false);
+    }
+
+    /// Wants a viewer of terminal `terminal` on `peer` that receives host
+    /// effects.
+    pub(crate) fn want_effects(
+        &mut self,
+        peer: usize,
+        terminal: usize,
+        visible: bool,
+    ) {
+        self.want_viewer(peer, terminal, visible, true);
+    }
+
+    fn want_viewer(
+        &mut self,
+        peer: usize,
+        terminal: usize,
+        visible: bool,
+        effects: bool,
+    ) {
         let terminal = self.client_terminal(peer, terminal);
         self.peers[peer].wanted.push(Wanted {
             terminal,
@@ -524,7 +580,48 @@ impl World {
             viewer: None,
             subscribing: None,
             stopped: false,
+            effects,
         });
+    }
+
+    /// Sends `message` on `peer`'s link in one frame, as its client would,
+    /// bypassing the session, so a test can send what a conforming client
+    /// never does.
+    pub(crate) fn inject(
+        &mut self,
+        peer: usize,
+        message: &huterm_wire::message::Message,
+    ) {
+        let peer = &mut self.peers[peer];
+        let runtime = peer.session.connected().expect("connected").runtime;
+        let bytes = huterm_wire::message::encode_message(
+            message,
+            huterm_wire::codec::IdScope::new(runtime),
+            huterm_wire::caps::MessageCaps::for_minor(0),
+        )
+        .expect("the message encodes");
+        let frame = huterm_wire::frame::Frame {
+            stream: 0,
+            end: huterm_wire::frame::FrameEnd::Final,
+            payload: bytes,
+        }
+        .encode(huterm_wire::frame::DEFAULT_MAX_FRAME)
+        .expect("the frame encodes");
+        peer.client_out.extend(frame);
+    }
+
+    /// The host effects `peer` received, in order.
+    pub(crate) fn effects(
+        &self,
+        peer: usize,
+    ) -> Vec<&huterm_client::EffectDelivery> {
+        self.viewer_events(peer, 0)
+            .into_iter()
+            .filter_map(|event| match event {
+                ViewerEvent::HostEffect(delivery) => Some(delivery),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The model terminal `index`'s identity in `peer`'s scope, once
@@ -866,7 +963,7 @@ impl World {
                 wanted.subscribing = Some(peer.session.subscribe_terminal(
                     attachment,
                     wanted.terminal,
-                    options(),
+                    wanted.options(),
                     wanted.visible,
                     now,
                 ));

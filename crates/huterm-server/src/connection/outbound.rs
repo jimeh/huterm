@@ -19,6 +19,22 @@
 //! whole, until the transport has accepted its last frame, and every frame
 //! of a streamed or late-encoded message from when it is cut until it is
 //! written.
+//!
+//! Host effects travel apart from the lanes, on the stream the server keeps
+//! for them, one effect at a time, with at most one of its frames with the
+//! writer at once: a slot of its own, outside the budget. The text streams
+//! from the effect itself, which the queue drops, releasing its
+//! reservations, once its last frame is cut or the effect is aborted.
+//!
+//! While lanes have work, effect frames and lane frames take turns leading
+//! batches: a batch the effect slot led is followed by one the lanes lead,
+//! whose leftover room the effect's next frame may take. So a busy
+//! connection delays an effect's first frame by at most what the writer
+//! already holds and one more batch (the native adapter keeps a batch to
+//! 256 KiB, a few tens of milliseconds at the transport profile's minimum
+//! throughput), every lane keeps reaching the front of a batch in turn
+//! however many effects follow each other, and with no other traffic an
+//! effect has the whole link.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::IoSlice;
@@ -28,13 +44,19 @@ use huterm_protocol::{TerminalStatus, ViewerId};
 use huterm_wire::caps::{MessageCaps, MessageKind};
 use huterm_wire::codec::{EncodeError, IdScope, Writer};
 use huterm_wire::frame::Frame;
+use huterm_wire::frame::FrameEnd;
 use huterm_wire::status::encode_status;
 use huterm_wire::stream::{HOST_EFFECT_STREAM, OutboundStreams};
 use huterm_wire::update::{PlannedUpdate, UpdateFrames};
 use huterm_wire::viewer::{InputAck, encode_input_ack};
 
+use crate::viewer::PendingEffect;
+
 /// The frame flag that ends a message, as `huterm-wire` frames it.
 const FINAL: u8 = 0b01;
+
+/// The frame flag that abandons a message, as `huterm-wire` frames it.
+const ABORT: u8 = 0b10;
 
 /// A frame header's most bytes: the length, the flags, and a `u32`
 /// stream varint.
@@ -171,6 +193,9 @@ struct LaneQueue {
     retained: usize,
     /// The lane takes no new items and goes away once empty.
     closing: bool,
+    /// A message on the lane was written whole: for a viewer's lane, the
+    /// subscription result that opens it.
+    announced: bool,
 }
 
 impl LaneQueue {
@@ -240,6 +265,75 @@ struct Handed {
     /// Bytes the queue stops retaining once this frame is written.
     release: usize,
     lane: Option<Lane>,
+    /// A host effect's frame, which frees the effect's slot once written.
+    effect: Option<EffectFrame>,
+}
+
+/// What a host effect's frame was.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EffectFrame {
+    /// A frame of the effect's message; `last` ends it.
+    Message { first: bool, last: bool },
+    /// The frame that abandons it.
+    Abort,
+}
+
+/// The host effect in the effect slot.
+#[derive(Debug)]
+struct EffectMessage {
+    head: Vec<u8>,
+    /// The effect, whose text streams after the head, until its last
+    /// frame is cut.
+    source: Option<Box<dyn PendingEffect>>,
+    len: usize,
+    cut: usize,
+    stream: u32,
+    first_written: bool,
+}
+
+impl EffectMessage {
+    /// The message's next `len` bytes, copied from the head and the
+    /// effect's text.
+    fn fill(&self, len: usize) -> Result<Vec<u8>, String> {
+        let text = self
+            .source
+            .as_ref()
+            .and_then(|source| source.payload())
+            .map_or("", |payload| payload.streamed());
+        let mut out = Vec::with_capacity(len);
+        let mut at = self.cut;
+        for part in [self.head.as_slice(), text.as_bytes()] {
+            if out.len() == len {
+                break;
+            }
+            if at >= part.len() {
+                at -= part.len();
+                continue;
+            }
+            let take = (part.len() - at).min(len - out.len());
+            out.extend_from_slice(&part[at..at + take]);
+            at = 0;
+        }
+        if out.len() == len {
+            Ok(out)
+        } else {
+            Err("a host effect ended early".into())
+        }
+    }
+}
+
+/// Where the effect slot stands, for the connection's deadlines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EffectProgress {
+    /// No effect holds the slot: the next may start.
+    Idle,
+    /// An effect's message is under way.
+    Sending {
+        /// Its first frame was written.
+        first_written: bool,
+    },
+    /// An abandoned effect's last frame or abort is still with the writer.
+    Draining,
 }
 
 /// One frame for the writer: its header and a range of its message's
@@ -329,12 +423,16 @@ impl Transmit {
 fn frame_header(
     stream: u32,
     body: usize,
-    last: bool,
+    end: FrameEnd,
 ) -> ([u8; HEADER_BYTES], u8) {
     let mut header = [0; HEADER_BYTES];
     let body = u32::try_from(body).unwrap_or(u32::MAX);
     header[..4].copy_from_slice(&body.to_le_bytes());
-    header[4] = if last { FINAL } else { 0 };
+    header[4] = match end {
+        FrameEnd::More => 0,
+        FrameEnd::Final => FINAL,
+        FrameEnd::Abort => ABORT,
+    };
     let mut len = 5;
     let mut value = stream;
     loop {
@@ -349,6 +447,15 @@ fn frame_header(
         len += 1;
     }
     (header, u8::try_from(len).unwrap_or(u8::MAX))
+}
+
+/// How a message's frame ends: its last frame ends the message.
+const fn frame_end(last: bool) -> FrameEnd {
+    if last {
+        FrameEnd::Final
+    } else {
+        FrameEnd::More
+    }
 }
 
 /// What a lane's turn produced.
@@ -384,6 +491,15 @@ pub(crate) struct Outbound {
     /// The retained bytes at which streamed messages stop producing frames
     /// until the writer catches up.
     budget: usize,
+    /// The host effect being sent, if any.
+    effect: Option<EffectMessage>,
+    /// An abandoned effect's abort frame, waiting for the slot.
+    effect_abort: Option<u32>,
+    /// The bytes of the effect frame with the writer, outside the budget.
+    effect_handed: usize,
+    /// The last batch opened with an effect frame, so the next opens with
+    /// the lanes' while they have work.
+    effect_led: bool,
 }
 
 impl Outbound {
@@ -408,6 +524,10 @@ impl Outbound {
             encoding: None,
             fault: None,
             budget,
+            effect: None,
+            effect_abort: None,
+            effect_handed: 0,
+            effect_led: false,
         }
     }
 
@@ -426,10 +546,78 @@ impl Outbound {
         self.retained
     }
 
+    /// The bytes of the effect frame with the writer, which the slot holds
+    /// outside the budget.
+    pub(crate) fn effect_retained(&self) -> usize {
+        self.effect_handed
+    }
+
+    /// Where the effect slot stands.
+    pub(crate) fn effect_progress(&self) -> EffectProgress {
+        match &self.effect {
+            Some(effect) => EffectProgress::Sending {
+                first_written: effect.first_written,
+            },
+            None if self.effect_abort.is_some() || self.effect_handed > 0 => {
+                EffectProgress::Draining
+            }
+            None => EffectProgress::Idle,
+        }
+    }
+
+    /// Starts sending `source` as a `HostEffect` message whose bytes before
+    /// its streamed text are `head`. The slot must be idle.
+    pub(crate) fn start_effect(
+        &mut self,
+        head: Vec<u8>,
+        source: Box<dyn PendingEffect>,
+    ) {
+        let text = source
+            .payload()
+            .map_or(0, |payload| payload.streamed().len());
+        let len = head.len() + text;
+        let Ok(stream) = self.streams.open_reserved(len) else {
+            self.fault = Some("the host effect stream was busy".into());
+            return;
+        };
+        self.effect = Some(EffectMessage {
+            head,
+            source: Some(source),
+            len,
+            cut: 0,
+            stream,
+            first_written: false,
+        });
+    }
+
+    /// Abandons the effect being sent, dropping it and its reservations at
+    /// once. A message not yet begun leaves nothing; one partly cut ends
+    /// with an abort frame after the frame already with the writer; one
+    /// whose frames are all cut still arrives whole. Returns whether an
+    /// effect was abandoned before its last frame was cut.
+    pub(crate) fn abort_effect(&mut self) -> bool {
+        let Some(effect) = self.effect.take() else {
+            return false;
+        };
+        if effect.cut == effect.len {
+            // Its last frame is with the writer, and its source is gone.
+            return false;
+        }
+        if effect.cut > 0 {
+            self.effect_abort = Some(effect.stream);
+        } else {
+            self.streams.release(effect.stream);
+        }
+        true
+    }
+
     /// Whether anything waits to be written: bytes the queue retains, or an
     /// item not yet encoded.
     pub(crate) fn pending(&self) -> bool {
         self.retained > 0
+            || self.effect.is_some()
+            || self.effect_abort.is_some()
+            || self.effect_handed > 0
             || self.raw.is_some()
             || [&self.control, &self.large, &self.hierarchy]
                 .into_iter()
@@ -458,6 +646,14 @@ impl Outbound {
             Lane::Hierarchy => Some(&mut self.hierarchy),
             Lane::Viewer(viewer) => self.viewers.get_mut(&viewer),
         }
+    }
+
+    /// Whether a viewer's subscription result, the first message on its
+    /// lane, was written whole, so the client knows the viewer.
+    pub(crate) fn viewer_announced(&self, viewer: ViewerId) -> bool {
+        self.viewers
+            .get(&viewer)
+            .is_some_and(|queue| queue.announced)
     }
 
     /// Whether a viewer's lane takes new items.
@@ -602,9 +798,21 @@ impl Outbound {
                 len,
                 release: len,
                 lane: None,
+                effect: None,
             });
         }
         let mut first = true;
+        // Effect frames and lane frames take turns leading batches while
+        // the lanes have work.
+        let lead = self.effect_handed == 0
+            && (!self.effect_led || !self.lanes_have_work());
+        self.effect_led = false;
+        if lead && let Some(chunk) = self.cut_effect(room.max(HEADER_BYTES + 1))
+        {
+            first = false;
+            self.effect_led = true;
+            transmit.push(chunk);
+        }
         let mut idle = 0;
         while transmit.len() < room && idle < self.ring.len() {
             let Some(lane) = self.ring.pop_front() else {
@@ -630,8 +838,93 @@ impl Outbound {
                 break;
             }
         }
+        if !lead
+            && self.effect_handed == 0
+            && room.saturating_sub(transmit.len()) > HEADER_BYTES
+            && let Some(chunk) = self.cut_effect(room - transmit.len())
+        {
+            transmit.push(chunk);
+        }
         self.dedupe_ring();
         (!transmit.is_empty()).then_some(transmit)
+    }
+
+    /// Whether any lane has something to send.
+    fn lanes_have_work(&self) -> bool {
+        [&self.control, &self.large, &self.hierarchy]
+            .into_iter()
+            .chain(self.viewers.values())
+            .any(LaneQueue::has_work)
+    }
+
+    /// Cuts the effect slot's next frame within `space`: an abandoned
+    /// effect's abort, or the effect's next frame.
+    fn cut_effect(&mut self, space: usize) -> Option<Chunk> {
+        let limit = self.limit;
+        if let Some(stream) = self.effect_abort.take() {
+            let body = Frame::body_len(stream, 0);
+            let (header, header_len) =
+                frame_header(stream, body, FrameEnd::Abort);
+            self.streams.release(stream);
+            return Some(self.hand_effect(
+                Chunk {
+                    header,
+                    header_len,
+                    payload: Arc::new(Vec::new()),
+                    start: 0,
+                    end: 0,
+                },
+                EffectFrame::Abort,
+            ));
+        }
+        let effect = self.effect.as_mut()?;
+        if effect.cut == effect.len {
+            return None;
+        }
+        let stream = effect.stream;
+        let empty = Frame::body_len(stream, 0);
+        let payload_len = Frame::capacity(stream, limit)
+            .min(effect.len - effect.cut)
+            .min(space.saturating_sub(4 + empty))
+            .max(1);
+        let bytes = match effect.fill(payload_len) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.fault = Some(error);
+                return None;
+            }
+        };
+        let first = effect.cut == 0;
+        effect.cut += payload_len;
+        let last = effect.cut == effect.len;
+        if last {
+            // The rest is copied into frames; the effect's reservations go.
+            effect.source = None;
+            self.streams.release(stream);
+        }
+        let (header, header_len) =
+            frame_header(stream, empty + payload_len, frame_end(last));
+        Some(self.hand_effect(
+            Chunk {
+                header,
+                header_len,
+                payload: Arc::new(bytes),
+                start: 0,
+                end: payload_len,
+            },
+            EffectFrame::Message { first, last },
+        ))
+    }
+
+    fn hand_effect(&mut self, chunk: Chunk, frame: EffectFrame) -> Chunk {
+        self.effect_handed = chunk.len();
+        self.handed.push_back(Handed {
+            len: chunk.len(),
+            release: 0,
+            lane: None,
+            effect: Some(frame),
+        });
+        chunk
     }
 
     /// Drops repeated entries from the turn ring, keeping each lane's
@@ -831,7 +1124,7 @@ impl Outbound {
         current.cut += payload_len;
         let last = current.cut == total;
         let (header, header_len) =
-            frame_header(stream, empty + payload_len, last);
+            frame_header(stream, empty + payload_len, frame_end(last));
         let chunk = Chunk {
             header,
             header_len,
@@ -852,6 +1145,7 @@ impl Outbound {
             len: chunk.len(),
             release,
             lane: Some(lane),
+            effect: None,
         });
         if last {
             let finished = queue.current.take();
@@ -882,10 +1176,24 @@ impl Outbound {
             let Some(done) = self.handed.pop_front() else {
                 return;
             };
+            if let Some(frame) = done.effect {
+                self.effect_handed = 0;
+                if let EffectFrame::Message { first, last } = frame
+                    && let Some(effect) = self.effect.as_mut()
+                {
+                    effect.first_written |= first;
+                    if last {
+                        self.effect = None;
+                    }
+                }
+            }
             self.retained -= done.release;
             if let Some(lane) = done.lane {
                 let remove = match self.queue_mut(lane) {
                     Some(queue) => {
+                        // Only a message's last frame, or a streamed frame
+                        // after the lane's first message ended, releases.
+                        queue.announced |= done.release > 0;
                         queue.retained -= done.release;
                         queue.closing && !queue.has_work()
                     }
@@ -909,6 +1217,10 @@ impl Outbound {
         self.handed.clear();
         self.written_into_front = 0;
         self.retained = 0;
+        self.effect = None;
+        self.effect_abort = None;
+        self.effect_handed = 0;
+        self.effect_led = false;
     }
 }
 

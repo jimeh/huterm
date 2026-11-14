@@ -22,6 +22,10 @@ pub mod connection;
 mod contract_tests;
 mod convert;
 #[cfg(test)]
+mod effect_acceptance;
+#[cfg(all(test, unix))]
+mod effect_tests;
+#[cfg(test)]
 mod faults;
 pub mod feed;
 #[cfg(any(test, feature = "test-support"))]

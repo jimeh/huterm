@@ -8,18 +8,26 @@
 //! awaits on its executor; none of them blocks a thread. A test or the
 //! fault-injection harness supplies ports of its own, such as a model
 //! terminal driven by a seeded generator.
+//!
+//! A viewer subscribed with host effects also hands the connection the
+//! effects core admitted for its recipient, one [`PendingEffect`] at a
+//! time, and takes the client's numbered permission changes.
 
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use huterm_core::{RuntimeError, TerminalViewer, ViewerUpdate};
-use huterm_protocol::{
-    BufferPoint, BufferRange, CellSize, GridSize, InputStamp, LinkLookup,
-    MousePosition, ScrollCommand, ScrollbackLimit, SelectionUnit,
-    TerminalInput, TerminalPresentation, TerminalSnapshot, ViewerId,
+use huterm_core::{
+    PendingHostEffect, RuntimeError, TerminalViewer, ViewerUpdate,
 };
+use huterm_protocol::{
+    BufferPoint, BufferRange, CellSize, GridSize, HostEffect, HostEffectKind,
+    InputStamp, LinkLookup, MousePosition, ScrollCommand, ScrollbackLimit,
+    SelectionUnit, TerminalId, TerminalInput, TerminalPresentation,
+    TerminalSnapshot, ViewerId,
+};
+use huterm_wire::effect::EffectPayloadRef;
 
 use crate::work::Completion;
 
@@ -73,6 +81,25 @@ pub struct SnapshotOutcome {
     pub link: Option<LinkLookup>,
 }
 
+/// One host effect core admitted for a viewer's recipient. Holding it
+/// keeps its reservations; dropping it releases them.
+pub trait PendingEffect: Send + fmt::Debug {
+    /// Whether the effect still belongs to its recipient's live generation
+    /// for its kind, so it may still be sent.
+    fn is_current(&self) -> bool;
+
+    /// The permission generation of its kind when core admitted it.
+    fn generation(&self) -> u64;
+
+    /// The terminal whose content asked for it.
+    fn terminal(&self) -> TerminalId;
+
+    /// What it asks the client to do, borrowed so a large payload streams
+    /// from its own buffer, or `None` for a kind with no wire form, which
+    /// the connection drops.
+    fn payload(&self) -> Option<EffectPayloadRef<'_>>;
+}
+
 /// One viewer, as a connection drives it.
 pub trait ViewerPort: Send + Sync + fmt::Debug {
     /// The viewer's identity.
@@ -114,6 +141,61 @@ pub trait ViewerPort: Send + Sync + fmt::Debug {
         head: BufferPoint,
         unit: SelectionUnit,
     ) -> Reply<Option<BufferRange>>;
+
+    /// Takes the next current effect queued for the viewer's recipient,
+    /// without waiting, dropping stale ones on the way. A viewer without a
+    /// recipient has none.
+    fn next_effect(&self) -> Option<Box<dyn PendingEffect>>;
+
+    /// Applies the client's numbered change to one kind's permission.
+    /// Returns false, changing nothing, for a generation not above the
+    /// current one or a viewer without a recipient.
+    fn set_effect_permission(
+        &self,
+        kind: HostEffectKind,
+        allowed: bool,
+        generation: u64,
+    ) -> bool;
+
+    /// Withdraws the viewer's recipient for good, as its connection ends,
+    /// even while a job still holds the viewer.
+    fn revoke_effects(&self);
+}
+
+/// A core effect, which a connection sends as it is.
+#[derive(Debug)]
+struct CoreEffect(PendingHostEffect);
+
+impl PendingEffect for CoreEffect {
+    fn is_current(&self) -> bool {
+        self.0.is_current()
+    }
+
+    fn generation(&self) -> u64 {
+        self.0.metadata().recipient_generation
+    }
+
+    fn terminal(&self) -> TerminalId {
+        self.0.metadata().origin.terminal_id
+    }
+
+    fn payload(&self) -> Option<EffectPayloadRef<'_>> {
+        match self.0.effect() {
+            HostEffect::ClipboardWrite(write) => {
+                Some(EffectPayloadRef::ClipboardWrite {
+                    destination: write.destination,
+                    text: write.text(),
+                })
+            }
+            HostEffect::Notification(notification) => {
+                Some(EffectPayloadRef::Notification {
+                    title: notification.title(),
+                    body: notification.body(),
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A viewer operation that answers later.
@@ -290,6 +372,29 @@ impl ViewerPort for TerminalViewer {
         match self.request_select_units(generation, anchor, head, unit) {
             Ok(request) => Box::pin(async move { request.recv().await }),
             Err(error) => Box::pin(async move { Err(error) }),
+        }
+    }
+
+    fn next_effect(&self) -> Option<Box<dyn PendingEffect>> {
+        let recipient = self.host_effects()?;
+        let pending = recipient.try_next()?;
+        Some(Box::new(CoreEffect(pending)))
+    }
+
+    fn set_effect_permission(
+        &self,
+        kind: HostEffectKind,
+        allowed: bool,
+        generation: u64,
+    ) -> bool {
+        self.host_effects().is_some_and(|recipient| {
+            recipient.set_permission(kind, allowed, generation)
+        })
+    }
+
+    fn revoke_effects(&self) {
+        if let Some(recipient) = self.host_effects() {
+            recipient.revoke();
         }
     }
 }

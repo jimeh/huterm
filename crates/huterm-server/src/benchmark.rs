@@ -332,7 +332,10 @@ fn keystroke_in_process() -> Samples {
         mux.subscribe_terminal(
             attachment,
             huterm_protocol::TerminalId::in_runtime(runtime, terminal),
-            crate::convert::viewer_options(crate::viewer_tests::writable()),
+            crate::convert::viewer_options(
+                crate::viewer_tests::writable(),
+                None,
+            ),
         )
         .unwrap()
     };
@@ -377,7 +380,10 @@ fn output_to_client() -> Samples {
         mux.subscribe_terminal(
             attachment,
             huterm_protocol::TerminalId::in_runtime(runtime, terminal),
-            crate::convert::viewer_options(crate::viewer_tests::writable()),
+            crate::convert::viewer_options(
+                crate::viewer_tests::writable(),
+                None,
+            ),
         )
         .unwrap()
     };
@@ -462,7 +468,10 @@ fn throughput() -> (Samples, Samples) {
             mux.subscribe_terminal(
                 attachment,
                 huterm_protocol::TerminalId::in_runtime(runtime, terminal),
-                crate::convert::viewer_options(crate::viewer_tests::writable()),
+                crate::convert::viewer_options(
+                    crate::viewer_tests::writable(),
+                    None,
+                ),
             )
             .unwrap()
         };
