@@ -1091,6 +1091,29 @@ pub enum SelectionUnit {
     Line,
 }
 
+/// A settled selection a viewer asks its runtime to keep on its text
+/// through output, scrolling, and reflow.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrackedSelection {
+    /// The client's number for this selection, echoed in placements.
+    pub id: u64,
+    /// The snapshot generation `range` was made against. A runtime that
+    /// has moved past it treats the selection as gone.
+    pub generation: u64,
+    /// The selected cells, both ends inclusive.
+    pub range: BufferRange,
+}
+
+/// Where a viewer's tracked selection lies in one snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectionPlacement {
+    /// The [`TrackedSelection::id`] this placement answers.
+    pub id: u64,
+    /// The selection's cells at the snapshot's generation; `None` when its
+    /// text is gone.
+    pub range: Option<BufferRange>,
+}
+
 fn buffer_point_precedes(first: BufferPoint, second: BufferPoint) -> bool {
     first.rows_from_live_bottom > second.rows_from_live_bottom
         || (first.rows_from_live_bottom == second.rows_from_live_bottom

@@ -2045,8 +2045,8 @@ A pinned refusal of an emptied close waits for the projection, as a
 `ViewNotEmpty` one does, and owes the close again when the workspace went.
 Row menus (`MenuKind::WorkspaceRow`,
 `MenuKind::SessionRow`) are ordinary menus and may open natively. A sidebar
-change relays out every terminal as a window resize does, so a selection
-survives only when the grid size stays the same (#373).
+change relays out every terminal as a window resize does; a settled selection
+follows its text through it (#373).
 
 ## Configuration and schemas
 

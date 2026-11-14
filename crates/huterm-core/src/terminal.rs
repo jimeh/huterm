@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use huterm_protocol::{
     AttachmentId, BufferPoint, BufferRange, ExitStatus, GridSize, InputStamp,
-    MAX_GRID_CELLS, MouseTracking, RuntimeId, ScrollCommand, SelectionUnit,
-    TerminalCommand, TerminalId, TerminalInput, TerminalMetadata,
-    TerminalSnapshot,
+    MAX_GRID_CELLS, MouseTracking, RuntimeId, ScrollCommand,
+    SelectionPlacement, SelectionUnit, TerminalCommand, TerminalId,
+    TerminalInput, TerminalMetadata, TerminalSnapshot, TrackedSelection,
 };
 #[cfg(test)]
 use huterm_protocol::{CellSize, TerminalPresentation};
@@ -273,6 +273,10 @@ pub struct SnapshotReply {
     /// first to include for its viewer. `None` when nothing changed since
     /// that viewer's last snapshot.
     pub invalidated_at: Option<Instant>,
+    /// Where the viewer's tracked selection lies in this snapshot; `None`
+    /// when the runtime tracks no selection for it. See
+    /// [`crate::TerminalViewer::track_selection`].
+    pub selection: Option<SelectionPlacement>,
 }
 
 impl SnapshotRequest {
@@ -369,6 +373,56 @@ impl SelectionRequest {
 
     #[cfg(test)]
     pub(crate) fn recv_blocking(self) -> Result<Option<String>, RuntimeError> {
+        self.receiver
+            .recv_blocking()
+            .map_err(|_| RuntimeError::Stopped)?
+    }
+}
+
+/// A tracked selection's text and the generation it was read at.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SelectionText {
+    /// The terminal generation the text belongs to.
+    pub generation: u64,
+    /// The selection's text, as Copy copies it.
+    pub text: String,
+}
+
+/// Pending asynchronous tracked selection text response.
+#[derive(Debug)]
+pub struct TrackedSelectionRequest {
+    receiver:
+        async_channel::Receiver<Result<Option<SelectionText>, RuntimeError>>,
+}
+
+impl TrackedSelectionRequest {
+    pub(crate) fn new(
+        receiver: async_channel::Receiver<
+            Result<Option<SelectionText>, RuntimeError>,
+        >,
+    ) -> Self {
+        Self { receiver }
+    }
+
+    /// Waits asynchronously for the selection's text.
+    ///
+    /// A successful `None` means the viewer tracks another selection, or
+    /// this one's text is gone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime stops before replying.
+    pub async fn recv(self) -> Result<Option<SelectionText>, RuntimeError> {
+        self.receiver
+            .recv()
+            .await
+            .map_err(|_| RuntimeError::Stopped)?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recv_blocking(
+        self,
+    ) -> Result<Option<SelectionText>, RuntimeError> {
         self.receiver
             .recv_blocking()
             .map_err(|_| RuntimeError::Stopped)?
@@ -814,6 +868,21 @@ pub(crate) enum RuntimeControl {
         unit: SelectionUnit,
         reply: async_channel::Sender<Result<Option<BufferRange>, RuntimeError>>,
     },
+    /// Replaces or forgets a viewer's tracked selection.
+    TrackSelection {
+        slot: Arc<Slot>,
+        selection: Option<TrackedSelection>,
+    },
+    /// Reads the text of a viewer's tracked selection.
+    TrackedSelectionText {
+        slot: Arc<Slot>,
+        id: u64,
+        reply:
+            async_channel::Sender<Result<Option<SelectionText>, RuntimeError>>,
+    },
+    /// Reports how many tracked selections hold references.
+    #[cfg(test)]
+    TrackedSelections(Sender<usize>),
     WorkerFailed(String),
     WriterFailed(String),
     /// The writer stopped because the terminal hung up: no process holds
@@ -939,6 +1008,7 @@ fn build_snapshot(
         }
     };
     let invalidated_at = slot.snapshot_built();
+    let selection = engine.selection_placement(slot.id);
     let snapshot_duration = started.elapsed();
     let lookup_started = Instant::now();
     let link = point.map(|point| {
@@ -956,6 +1026,7 @@ fn build_snapshot(
         snapshot_duration,
         completed_at: Instant::now(),
         invalidated_at,
+        selection,
     })
 }
 
@@ -1080,6 +1151,9 @@ impl Owner<'_> {
     fn apply(&mut self, effects: Effects) -> bool {
         if effects.is_empty() {
             return true;
+        }
+        for viewer in &effects.finalized {
+            self.engine.forget_selection(*viewer);
         }
         if let Some((grid, cell)) = effects.resize {
             if !self.child_exited
@@ -1658,6 +1732,51 @@ fn run_terminal(
                                 .select_units(generation, anchor, head, unit)
                         };
                         let _ = reply.try_send(result);
+                    }
+                    RuntimeControl::TrackSelection { slot, selection } => {
+                        // A viewer registered since this turn's reconcile
+                        // gets its entry first.
+                        if !owner.reconcile(&mut arbiter) {
+                            closing.store(true, Ordering::Release);
+                            continue;
+                        }
+                        // Controls are not counted toward a dropped
+                        // viewer's queue, so only this check keeps a
+                        // selection from outliving its viewer's entry,
+                        // whose finalization forgets it.
+                        if !slot.is_revoked()
+                            && !slot.is_dropped()
+                            && arbiter.has_entry(&slot)
+                        {
+                            owner.engine.track_selection(slot.id, selection);
+                        }
+                    }
+                    RuntimeControl::TrackedSelectionText {
+                        slot,
+                        id,
+                        reply,
+                    } => {
+                        let result = if slot.is_revoked() {
+                            Err(RuntimeError::Revoked)
+                        } else {
+                            // Extraction restores every page it reads.
+                            owner.compression.restored(Instant::now());
+                            let generation = owner.engine.generation();
+                            owner
+                                .engine
+                                .tracked_selection_text(slot.id, id)
+                                .map(|text| {
+                                    text.map(|text| SelectionText {
+                                        generation,
+                                        text,
+                                    })
+                                })
+                        };
+                        let _ = reply.try_send(result);
+                    }
+                    #[cfg(test)]
+                    RuntimeControl::TrackedSelections(reply) => {
+                        let _ = reply.send(owner.engine.tracked_selections());
                     }
                     RuntimeControl::WriterFailed(message) => {
                         // Exit may have happened since the loop's initial

@@ -196,8 +196,9 @@ insertion or deletion.
 
 `GridRef` and `RowRef` are untracked references that borrow the terminal, so
 no write or resize can run while one is held, and Ghostty's garbage flag never
-applies to them. Keep link lookup on them. Command-record anchors are the one
-tracked use: `TrackedRef` owns a `ghostty_terminal_grid_ref_track` handle,
+applies to them. Keep link lookup on them. Command-record anchors and viewers'
+settled selections are the tracked uses: `TrackedRef` owns a
+`ghostty_terminal_grid_ref_track` handle,
 frees it on drop, even after its terminal, and is read only through
 `Terminal::has_value` and `Terminal::tracked_point`, whose borrow of the
 creating terminal proves no write is moving it. A tracked pin follows
@@ -207,6 +208,21 @@ deletion, such as ED 2 away from a prompt, DL, and scroll regions, remap it to
 the replacing row instead. With `scrollback = 0`, Ghostty scrolls by deleting
 the top row in place, so anchors move onto the rows that replace theirs and
 records leave only through the count cap. `tracked_ref_tests.rs` pins these.
+
+A selection (`engine/selections.rs`) keeps its start and end references and
+the screen they were made on. Resolving it reads only `tracked_point`, never
+cells, so placements restore no compressed page. A start without a value
+means eviction or ED 3 took the selection's oldest rows, so it resolves to the
+oldest retained cell; an end without a value, or another active screen, means
+gone, and a gone selection stays gone. Reflow leaves a reference on a wide
+character's first half on the spacer head when the wrap pushes the character
+to the next row, so right after a column change the engine tracks such an end
+again at the character, start on its first column and end on its second; the
+width change already restored all history. Ghostty resizes the alternate
+screen without reflow and clips the primary one on a narrower width while
+wraparound (DECAWM, mode 7) is off, so any grid change drops an
+alternate-screen selection and such a narrowing drops a primary one.
+`tracked_selection_tests.rs` pins these.
 
 Reflow, not link lookup, bounds `ScrollbackLimit::MAX` at 100,000 rows. A width
 change rewraps all history on the runtime thread at about 65 ns per row in the
@@ -219,7 +235,8 @@ history memory fails CI. Link lookup stays under 0.5 ms p95 at a million rows.
 Raising the maximum again needs cheaper reflow first.
 
 Every tracked reference adds reflow work: Ghostty scans every pin for each row
-it reflows, and again for each cell of a row that holds one. The fixture
+it reflows, and again for each cell of a row that holds one. Each viewer's
+selection adds at most two. The fixture
 therefore fills history with OSC 133 commands on short prompt rows, so the gate
 includes a full list of 256 records and the runtime's eviction pass. Locally
 that took the median from 6.3 ms to 14.1 ms at 100,000 rows, and from 0.6 to

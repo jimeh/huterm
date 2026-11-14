@@ -1,8 +1,9 @@
 # Selections that survive reflow
 
-Status: approved on 2026-11-14. Jim chose to keep a settled selection on its
-text through output (Ghostty's behavior) over clearing it when output rewrites
-a selected row, or remapping it only across resizes.
+Status: implemented on 2026-11-14. Jim chose to keep a settled selection on
+its text through output (Ghostty's behavior) over clearing it when output
+rewrites a selected row, or remapping it only across resizes. See
+[as implemented](#as-implemented) for details the design left open.
 
 Issue: [#373: Keep a terminal selection when only the cell size
 changes][issue-373], including the reflow case added to it on 2026-11-07.
@@ -259,5 +260,23 @@ additive.
   wider and toggle a workspace panel, and confirm the highlight and Copy
   cover the same text. This runs through the existing macOS input smoke if
   it can drive a resize, or by hand otherwise.
+
+## As implemented
+
+- Text by id is `TerminalViewer::request_tracked_selection`, a new method;
+  `request_selection` is unchanged for the server. Its reply,
+  `SelectionText`, carries the generation it was read at, so the view can
+  cache it for that generation.
+- A reference is tracked again at the wide character only when it was not on
+  a spacer head before the column change, so a selection that ended on one on
+  purpose is not extended.
+- A cell-size-only resize keeps an alternate-screen selection: only a change
+  of rows or columns is a grid change.
+- A selection core reported gone stays gone, even if its screen comes back.
+- A text reply by id that finds the current selection gone clears it in the
+  view, without waiting for a snapshot.
+- The viewer-replacement test runs in the tier 2 window harness, because the
+  tier 1 harness keeps draining the replaced viewer's wake.
+- The native check was not run with this change.
 
 [issue-373]: https://github.com/jimeh/huterm/issues/373

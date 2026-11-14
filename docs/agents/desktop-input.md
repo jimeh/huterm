@@ -225,6 +225,21 @@ or hide caches the text only once no request is in flight or wanted. A Copy
 while expanding asks for the range itself, because the right-click clears the
 selection straight after.
 
+A selection settles once no gesture is left: a released cell drag, a word or
+line whose expansion completed after release, Select All, and
+`TerminalView::set_selection`. Settling gives it a new `selection_id` and sends
+`track_selection`; clearing sends `None`. Core then keeps it on its text
+through output and resizes, and each snapshot reply decides it: a placement
+with the current id moves or clears it, and a reply without that id keeps it
+only at the selection's own generation, because it was built before core saw
+the selection. Never clear a settled selection on a generation change
+elsewhere, such as `refresh`'s invalidation; a selection still in a gesture
+does clear there. The cached text is valid only while the shown snapshot has
+its generation; otherwise Copy asks for the text by id. Typing and pasting
+(any non-mouse input in `admit_input`) clear the selection; commands such as
+Copy do not. A replacement viewer gets the settled selection again before its
+first snapshot request.
+
 Use the same inset track for painting and drag mapping. Indicator visibility
 depends on recent interaction, including at offset zero; schedule its hold
 deadline and frame-driven fade so idle terminals redraw it. Keep the label
