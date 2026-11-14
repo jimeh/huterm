@@ -14,7 +14,7 @@ use crate::native::{
 use crate::types::{
     Boundaries, Cell as GridCell, Compression, DeviceAttributes, Effect, Fill,
     MemoryUsage, Mode, Palette, Point, PointSpace, Rgb, Row, Screen,
-    ScreenMemory, Scroll, Scrollbar, WriteStop, palette_from_ffi,
+    ScreenMemory, Scroll, Scrollbar, Style, WriteStop, palette_from_ffi,
     palette_to_ffi,
 };
 
@@ -843,6 +843,15 @@ impl GridRef<'_> {
     /// Fails if the reference is invalid.
     pub fn graphemes(&self, buffer: &mut [u32]) -> Result<Fill> {
         self.0.graphemes(buffer)
+    }
+
+    /// The cell's style; the default for an unstyled cell.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the reference is invalid.
+    pub fn style(&self) -> Result<Style> {
+        self.0.style()
     }
 
     /// Writes the cell's OSC 8 URI; `Written(0)` means no hyperlink.

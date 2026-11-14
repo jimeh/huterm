@@ -726,6 +726,15 @@ pub mod ids {
     pub const SCROLL_PAGE_DOWN: CommandId = CommandId::new("scroll_page_down");
     /// Scrolls the terminal to live output.
     pub const SCROLL_TO_BOTTOM: CommandId = CommandId::new("scroll_to_bottom");
+    /// Scrolls the terminal to the previous shell prompt.
+    pub const PREVIOUS_COMMAND: CommandId = CommandId::new("previous_command");
+    /// Scrolls the terminal to the next shell prompt.
+    pub const NEXT_COMMAND: CommandId = CommandId::new("next_command");
+    /// Selects a shell command's output.
+    pub const SELECT_COMMAND_OUTPUT: CommandId =
+        CommandId::new("select_command_output");
+    /// Selects a shell command's prompt, command line, and output.
+    pub const SELECT_COMMAND: CommandId = CommandId::new("select_command");
     /// Renames a tab.
     pub const RENAME_TAB: CommandId = CommandId::new("rename_tab");
     /// Renames a workspace.
@@ -1482,6 +1491,39 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Terminal,
         "Scroll to Bottom",
         "Scroll the terminal to live output.",
+        &[],
+    ),
+    spec(
+        ids::PREVIOUS_COMMAND,
+        CommandScope::Terminal,
+        "Previous Command",
+        "Scroll to the previous shell prompt, putting it at the top of the \
+         pane. Needs shell integration.",
+        &[],
+    ),
+    spec(
+        ids::NEXT_COMMAND,
+        CommandScope::Terminal,
+        "Next Command",
+        "Scroll to the next shell prompt, or to live output after the last \
+         one. Needs shell integration.",
+        &[],
+    ),
+    spec(
+        ids::SELECT_COMMAND_OUTPUT,
+        CommandScope::Terminal,
+        "Select Command Output",
+        "Select the output of the command at the top of the pane, or of the \
+         latest command at live output. Needs shell integration.",
+        &[],
+    ),
+    spec(
+        ids::SELECT_COMMAND,
+        CommandScope::Terminal,
+        "Select Command",
+        "Select the prompt, command line, and output of the command at the \
+         top of the pane, or of the latest command at live output. Needs \
+         shell integration.",
         &[],
     ),
     spec(

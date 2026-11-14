@@ -14,7 +14,7 @@ use huterm_protocol::{
     COMMAND_RECORD_CAPACITY, GridSize, MAX_CELL_TEXT_BYTES, MAX_GRID_CELLS,
     MAX_HIERARCHY_ITEMS, MAX_NAME_BYTES, MAX_NOTIFICATION_BODY_BYTES,
     MAX_NOTIFICATION_TITLE_BYTES, MAX_SPLIT_CHILDREN, MAX_STATUS_TEXT_BYTES,
-    TERMINAL_FAILURE_CAPACITY,
+    STICKY_PROMPT_ROWS, TERMINAL_FAILURE_CAPACITY,
 };
 
 use crate::codec::{MAX_VARINT_BYTES, varint_len};
@@ -277,10 +277,16 @@ impl MessageCaps {
                 message_cap(kind, host_effect_record_cap())
             }
             // The largest any grid allows; each update's own cap follows
-            // the grid its header declares.
+            // the grid its header declares. Sticky prompt rows add at most
+            // the grid's own cells and three rows, and command blocks one
+            // per row and one more.
             MessageKind::TerminalUpdate => message_cap(
                 kind,
-                update_record_cap(MAX_GRID_CELLS, u16::MAX as usize),
+                update_body_cap(
+                    2 * MAX_GRID_CELLS,
+                    u16::MAX as usize + STICKY_PROMPT_ROWS,
+                    u16::MAX as usize + 1,
+                ),
             ),
             MessageKind::ViewerStatus => message_cap(kind, status_record_cap()),
             MessageKind::Input => message_cap(kind, input_record_cap()),
@@ -433,8 +439,8 @@ const OPTIONAL_RGB: usize = 1 + 3;
 const CELL_COLOR: usize = 1 + 3;
 
 /// The fixed fields of an update record: grid, viewer, sequences, credit
-/// and digest, revisions, cursor, modes, viewport, colors, and the two
-/// sequence counts.
+/// and digest, revisions, cursor, modes, viewport, colors, the sticky
+/// prompt, and the three sequence counts.
 const fn update_header_bytes() -> usize {
     let grid = 2 * varint_len(u16::MAX as u64);
     let sequences = MAX_VARINT_BYTES + 1 + MAX_VARINT_BYTES;
@@ -446,7 +452,14 @@ const fn update_header_bytes() -> usize {
     // A modes record: its length, Kitty flags, mode flags, and two tags.
     let modes = 1 + 2 + MAX_VARINT_BYTES + 2 + APPENDED_HEADROOM;
     let viewport = 2 * MAX_VARINT_BYTES;
-    let counts = 2 * varint_len(MAX_GRID_CELLS as u64);
+    let counts = 3 * varint_len(2 * MAX_GRID_CELLS as u64);
+    // A sticky prompt record: its option tag, length, sequence, row count,
+    // and input row.
+    let sticky = 1
+        + 1
+        + MAX_VARINT_BYTES
+        + 2 * varint_len(u16::MAX as u64)
+        + APPENDED_HEADROOM;
     APPENDED_HEADROOM
         + grid
         + MAX_VARINT_BYTES
@@ -458,7 +471,13 @@ const fn update_header_bytes() -> usize {
         + viewport
         + 2 * OPTIONAL_RGB
         + counts
+        + sticky
 }
+
+/// A command block record: its length, sequence, prompt, output option,
+/// and end.
+const COMMAND_BLOCK: usize =
+    1 + 3 * MAX_VARINT_BYTES + 1 + MAX_VARINT_BYTES + UPDATE_ITEM_HEADROOM;
 
 /// An update record over `cells` cells in `rows` rows, at its worst case:
 /// a style-table entry per cell, every row in full, and a run per cell
@@ -469,6 +488,21 @@ const fn update_header_bytes() -> usize {
 /// larger than a full row's operation, so the worst case is a run of its
 /// own per cell with one length-prefixed text.
 const fn update_record_cap(cells: usize, rows: usize) -> usize {
+    let sticky_rows = if rows < STICKY_PROMPT_ROWS {
+        rows
+    } else {
+        STICKY_PROMPT_ROWS
+    };
+    let columns = match cells.checked_div(rows) {
+        Some(columns) => columns,
+        None => 0,
+    };
+    update_body_cap(cells + sticky_rows * columns, rows + sticky_rows, rows + 1)
+}
+
+/// An update record carrying `cells` cells in `rows` rows, viewport and
+/// sticky prompt rows together, and `blocks` command blocks.
+const fn update_body_cap(cells: usize, rows: usize, blocks: usize) -> usize {
     let index = varint_len((MAX_GRID_CELLS as u64) << 2 | 3);
     let count = varint_len(u16::MAX as u64);
     let style = 1 + 2 * CELL_COLOR + MAX_VARINT_BYTES + UPDATE_ITEM_HEADROOM;
@@ -482,7 +516,10 @@ const fn update_record_cap(cells: usize, rows: usize) -> usize {
         + 1
         + count
         + UPDATE_ITEM_HEADROOM;
-    update_header_bytes() + cells * (style + cell) + rows * row
+    update_header_bytes()
+        + cells * (style + cell)
+        + rows * row
+        + blocks * COMMAND_BLOCK
 }
 
 /// A status record: revisions, the title, six metadata strings, the

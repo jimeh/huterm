@@ -19,10 +19,11 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::Arc;
 
 use huterm_protocol::{
-    Cell, CellColor, CellStyle, CellText, Cursor, CursorShape, GridSize,
-    KittyKeyboardFlags, MAX_CELL_TEXT_BYTES, MAX_GRID_CELLS, MouseEncoding,
-    MouseTracking, Rgb, RowPrompt, TerminalId, TerminalModes, TerminalRow,
-    TerminalSnapshot, ViewerId, Viewport,
+    Cell, CellColor, CellStyle, CellText, CommandBlock, Cursor, CursorShape,
+    GridSize, KittyKeyboardFlags, MAX_CELL_TEXT_BYTES, MAX_GRID_CELLS,
+    MouseEncoding, MouseTracking, Rgb, RowPrompt, STICKY_PROMPT_ROWS,
+    StickyPrompt, TerminalId, TerminalModes, TerminalRow, TerminalSnapshot,
+    ViewerId, Viewport,
 };
 
 use crate::codec::{
@@ -45,8 +46,60 @@ pub const fn style_flags(minor: u16) -> u64 {
     STYLE_FLAGS
 }
 
-/// A viewport's non-row state: everything an update carries besides rows.
+/// The most sticky prompt rows a grid of `rows` rows carries, so a sticky
+/// prompt never holds more cells than its grid.
+#[must_use]
+pub fn sticky_rows_limit(rows: u16) -> u16 {
+    rows.min(u16::try_from(STICKY_PROMPT_ROWS).unwrap_or(u16::MAX))
+}
+
+/// The most command blocks a grid of `rows` rows carries: one starting on
+/// each row, and the block that owns the top row from above it.
+#[must_use]
+pub fn command_blocks_limit(rows: u16) -> usize {
+    usize::from(rows) + 1
+}
+
+/// The most style-table entries an update over `size` holds: one per cell
+/// of its rows and of the most sticky prompt rows it can carry.
+#[must_use]
+pub fn style_table_limit(size: GridSize) -> usize {
+    size.cells()
+        + usize::from(sticky_rows_limit(size.rows)) * usize::from(size.columns)
+}
+
+/// A sticky prompt besides its rows, which travel as an update's rows after
+/// the viewport's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StickyHeader {
+    /// The record the prompt belongs to.
+    pub sequence: u64,
+    /// How many rows follow the viewport's, from 1 to
+    /// [`sticky_rows_limit`].
+    pub rows: u16,
+    /// The index among those rows of the row that holds the command line.
+    pub input: u16,
+}
+
+impl StickyHeader {
+    fn valid(self, grid_rows: u16) -> bool {
+        self.rows >= 1
+            && self.rows <= sticky_rows_limit(grid_rows)
+            && self.input < self.rows
+    }
+}
+
+/// Whether a block's positions are ordered: the prompt at or above the end,
+/// and any output between them, all counted from the live bottom.
+fn valid_block(block: &CommandBlock) -> bool {
+    block.prompt >= block.end
+        && block
+            .output
+            .is_none_or(|output| output < block.prompt && output >= block.end)
+}
+
+/// A viewport's non-row state: everything an update carries besides rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewMetadata {
     /// Content generation.
     pub generation: u64,
@@ -68,9 +121,39 @@ pub struct ViewMetadata {
     pub cursor_color: Option<Rgb>,
     /// Default background override.
     pub default_background: Option<Rgb>,
+    /// Command blocks that reach into the viewport, at most
+    /// [`command_blocks_limit`].
+    pub commands: Arc<[CommandBlock]>,
+    /// The sticky prompt, whose rows follow the viewport's.
+    pub sticky: Option<StickyHeader>,
 }
 
 impl ViewMetadata {
+    /// How many rows an update carries: the viewport's and the sticky
+    /// prompt's.
+    #[must_use]
+    pub fn row_count(&self) -> usize {
+        usize::from(self.size.rows)
+            + self.sticky.map_or(0, |sticky| usize::from(sticky.rows))
+    }
+
+    /// The structural checks a decoder makes on the non-row state.
+    fn check(&self) -> Result<(), &'static str> {
+        if self.commands.len() > command_blocks_limit(self.size.rows) {
+            return Err("command blocks");
+        }
+        if !self.commands.iter().all(valid_block) {
+            return Err("command block");
+        }
+        if self
+            .sticky
+            .is_some_and(|sticky| !sticky.valid(self.size.rows))
+        {
+            return Err("sticky prompt");
+        }
+        Ok(())
+    }
+
     /// The non-row state of `snapshot`.
     #[must_use]
     pub fn of(snapshot: &TerminalSnapshot) -> Self {
@@ -87,6 +170,8 @@ impl ViewMetadata {
             history_size,
             cursor_color,
             default_background,
+            commands,
+            sticky_prompt,
         } = snapshot;
         Self {
             generation: *generation,
@@ -99,16 +184,25 @@ impl ViewMetadata {
             history_size: *history_size,
             cursor_color: *cursor_color,
             default_background: *default_background,
+            commands: Arc::clone(commands),
+            sticky: sticky_prompt.as_ref().map(|sticky| StickyHeader {
+                sequence: sticky.sequence,
+                rows: u16::try_from(sticky.rows.len()).unwrap_or(u16::MAX),
+                input: u16::try_from(sticky.input).unwrap_or(u16::MAX),
+            }),
         }
     }
 
-    /// A snapshot of `terminal` with this state and `rows`.
+    /// A snapshot of `terminal` with this state and `rows`: the viewport's
+    /// rows, then the sticky prompt's.
     #[must_use]
     pub fn snapshot(
         self,
         terminal: TerminalId,
-        rows: Vec<Arc<TerminalRow>>,
+        mut rows: Vec<Arc<TerminalRow>>,
     ) -> TerminalSnapshot {
+        let sticky_rows =
+            rows.split_off(usize::from(self.size.rows).min(rows.len()));
         let Self {
             generation,
             revision,
@@ -120,6 +214,8 @@ impl ViewMetadata {
             history_size,
             cursor_color,
             default_background,
+            commands,
+            sticky,
         } = self;
         TerminalSnapshot {
             terminal_id: terminal,
@@ -134,6 +230,12 @@ impl ViewMetadata {
             history_size,
             cursor_color,
             default_background,
+            commands,
+            sticky_prompt: sticky.map(|sticky| StickyPrompt {
+                sequence: sticky.sequence,
+                rows: sticky_rows,
+                input: usize::from(sticky.input),
+            }),
         }
     }
 }
@@ -225,7 +327,8 @@ pub struct TerminalUpdate {
     pub metadata: ViewMetadata,
     /// The styles full rows use.
     pub styles: Vec<StyleEntry>,
-    /// Exactly `metadata.size.rows` rows.
+    /// Exactly [`ViewMetadata::row_count`] rows: the viewport's, then the
+    /// sticky prompt's.
     pub rows: Vec<RowOp>,
 }
 
@@ -259,8 +362,39 @@ pub trait UpdateSource {
     type Row: SourceRow;
     /// Everything besides rows.
     fn metadata(&self) -> ViewMetadata;
-    /// The rows, `metadata().size.rows` of them.
+    /// The viewport's rows, `metadata().size.rows` of them.
     fn rows(&self) -> &[Self::Row];
+    /// The sticky prompt's rows, which follow the viewport's.
+    fn sticky_rows(&self) -> &[Self::Row] {
+        &[]
+    }
+}
+
+/// Every row an update carries from `source`, viewport rows first.
+fn all_rows<S: UpdateSource>(source: &S) -> impl Iterator<Item = &S::Row> {
+    source.rows().iter().chain(source.sticky_rows())
+}
+
+/// The row an update carries at `index`, viewport rows first.
+fn row_at<S: UpdateSource>(source: &S, index: usize) -> Option<&S::Row> {
+    let rows = source.rows();
+    rows.get(index)
+        .or_else(|| source.sticky_rows().get(index - rows.len()))
+}
+
+/// Checks a source's row counts against its metadata.
+fn check_rows<S: UpdateSource>(
+    source: &S,
+    metadata: &ViewMetadata,
+) -> Result<(), EncodeError> {
+    metadata.check().map_err(EncodeError::Invalid)?;
+    if source.rows().len() != usize::from(metadata.size.rows)
+        || source.rows().len() + source.sticky_rows().len()
+            != metadata.row_count()
+    {
+        return Err(EncodeError::Invalid("row count"));
+    }
+    Ok(())
 }
 
 /// The flag bits of a protocol cell style.
@@ -340,6 +474,12 @@ impl UpdateSource for Arc<TerminalSnapshot> {
 
     fn rows(&self) -> &[Self::Row] {
         &self.rows
+    }
+
+    fn sticky_rows(&self) -> &[Self::Row] {
+        self.sticky_prompt
+            .as_ref()
+            .map_or(&[], |sticky| sticky.rows.as_slice())
     }
 }
 
@@ -448,9 +588,9 @@ const PACKED_FLAG_BITS: u32 = 14;
 /// Every count and length precedes what it counts, so distinct views give
 /// distinct word sequences.
 #[must_use]
-pub fn view_digest<R: UpdateRow>(
+pub fn view_digest<'a, R: UpdateRow + 'a>(
     metadata: &ViewMetadata,
-    rows: &[R],
+    rows: impl IntoIterator<Item = &'a R>,
     minor: u16,
 ) -> u64 {
     let ViewMetadata {
@@ -464,6 +604,8 @@ pub fn view_digest<R: UpdateRow>(
         history_size,
         cursor_color,
         default_background,
+        commands,
+        sticky,
     } = metadata;
     let mut hash = WordHash::new();
     hash.word(*generation);
@@ -472,7 +614,7 @@ pub fn view_digest<R: UpdateRow>(
     hash.word(
         u64::from(size.columns)
             | u64::from(size.rows) << 16
-            | (rows.len() as u64) << 32,
+            | (metadata.row_count() as u64) << 32,
     );
     hash.word(cursor.map_or(0, |Cursor { row, column, shape }| {
         1 | u64::from(row) << 8
@@ -489,6 +631,17 @@ pub fn view_digest<R: UpdateRow>(
     hash.word(viewport.bottom_offset as u64);
     hash.word(*history_size as u64);
     hash.word(rgb_word(*cursor_color) | rgb_word(*default_background) << 32);
+    hash.word(commands.len() as u64);
+    for block in commands.iter() {
+        hash.word(block.sequence);
+        hash.word(block.prompt as u64);
+        hash.word(block.output.map_or(0, |output| output as u64 + 1));
+        hash.word(block.end as u64);
+    }
+    hash.word(sticky.map_or(0, |sticky| {
+        1 | u64::from(sticky.rows) << 8 | u64::from(sticky.input) << 24
+    }));
+    hash.word(sticky.map_or(0, |sticky| sticky.sequence));
     for row in rows {
         let TerminalRow {
             cells,
@@ -894,10 +1047,7 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
         {
             return Err(EncodeError::LimitExceeded { field: "grid size" });
         }
-        let rows = current.rows();
-        if rows.len() != usize::from(size.rows) {
-            return Err(EncodeError::Invalid("row count"));
-        }
+        check_rows(current, &metadata)?;
         let baseline = self.baseline.as_ref().filter(|baseline| {
             let previous = baseline.metadata();
             previous.geometry_revision == metadata.geometry_revision
@@ -906,7 +1056,7 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
         let keep: KeyMap<usize, u16> = baseline
             .map(|baseline| {
                 let mut keep = KeyMap::default();
-                for (index, row) in baseline.rows().iter().enumerate() {
+                for (index, row) in all_rows(baseline).enumerate() {
                     keep.entry(row.identity())
                         .or_insert(u16::try_from(index).unwrap_or(u16::MAX));
                 }
@@ -920,8 +1070,8 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
             index: HashMap::default(),
             last: None,
         };
-        let mut ops = Vec::with_capacity(rows.len());
-        for row in rows {
+        let mut ops = Vec::with_capacity(metadata.row_count());
+        for row in all_rows(current) {
             ops.push(match keep.get(&row.identity()) {
                 Some(index) => RowOp::Keep(*index),
                 None => RowOp::Full(builder.full(row)?),
@@ -929,7 +1079,7 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
         }
         let complete = baseline.is_none();
         let digest = if complete || self.deltas + 1 == UPDATE_DIGEST_INTERVAL {
-            Some(view_digest(&metadata, rows, self.minor))
+            Some(view_digest(&metadata, all_rows(current), self.minor))
         } else {
             None
         };
@@ -1009,9 +1159,7 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
         {
             return Err(EncodeError::LimitExceeded { field: "grid size" });
         }
-        if current.rows().len() != usize::from(size.rows) {
-            return Err(EncodeError::Invalid("row count"));
-        }
+        check_rows(current, &metadata)?;
         let baseline = self.baseline.take().filter(|baseline| {
             let previous = baseline.metadata();
             previous.geometry_revision == metadata.geometry_revision
@@ -1111,7 +1259,7 @@ impl<S: UpdateSource> PlannedUpdate<S> {
             .as_ref()
             .map(|(_, baseline)| {
                 let mut keep = KeyMap::default();
-                for (index, row) in baseline.rows().iter().enumerate() {
+                for (index, row) in all_rows(baseline).enumerate() {
                     keep.entry(row.identity())
                         .or_insert(u16::try_from(index).unwrap_or(u16::MAX));
                 }
@@ -1127,7 +1275,7 @@ impl<S: UpdateSource> PlannedUpdate<S> {
         };
         let mut ops: Vec<FrameOp> = Vec::new();
         let mut runs: Vec<Run> = Vec::new();
-        for (index, row) in current.rows().iter().enumerate() {
+        for (index, row) in all_rows(&current).enumerate() {
             if let Some(kept) = keep.get(&row.identity()) {
                 match ops.last_mut() {
                     Some(FrameOp::Keep { start, count })
@@ -1153,7 +1301,7 @@ impl<S: UpdateSource> PlannedUpdate<S> {
             });
         }
         let digest =
-            digest.then(|| view_digest(&metadata, current.rows(), minor));
+            digest.then(|| view_digest(&metadata, all_rows(&current), minor));
         let mut header = Writer::new();
         write_header(
             &mut header,
@@ -1169,7 +1317,7 @@ impl<S: UpdateSource> PlannedUpdate<S> {
         )?;
         header.seq(
             builder.styles.iter(),
-            size.cells(),
+            style_table_limit(size),
             "style table",
             write_style,
         )?;
@@ -1282,7 +1430,9 @@ impl<S: UpdateSource> UpdateFrames<S> {
                     w.u16(*count);
                 }
                 FrameOp::Full { row, runs, len: _ } => {
-                    let row = self.current.rows()[*row].row();
+                    let row = row_at(&self.current, *row)
+                        .ok_or(EncodeError::Invalid("update row"))?
+                        .row();
                     w.tag(1);
                     write_cell_row(
                         &mut w,
@@ -1467,7 +1617,7 @@ impl<R: ViewRow> ViewerView<R> {
         let matches = update.digest.is_none_or(|expected| {
             expected == view_digest(&update.metadata, &rows, self.minor)
         });
-        self.view = Some((update.metadata, rows));
+        self.view = Some((update.metadata.clone(), rows));
         self.applied = update.seq;
         if update.baseline.is_none() {
             if !matches {
@@ -1489,9 +1639,9 @@ impl ViewerView<Arc<TerminalRow>> {
     /// The view as a snapshot of `terminal`, once an update was applied.
     #[must_use]
     pub fn snapshot(&self, terminal: TerminalId) -> Option<TerminalSnapshot> {
-        self.view
-            .as_ref()
-            .map(|(metadata, rows)| metadata.snapshot(terminal, rows.clone()))
+        self.view.as_ref().map(|(metadata, rows)| {
+            metadata.clone().snapshot(terminal, rows.clone())
+        })
     }
 }
 
@@ -1653,7 +1803,8 @@ pub fn encode_update(
     if size.columns == 0 || size.rows == 0 || size.cells() > MAX_GRID_CELLS {
         return Err(EncodeError::LimitExceeded { field: "grid size" });
     }
-    if rows.len() != usize::from(size.rows) {
+    metadata.check().map_err(EncodeError::Invalid)?;
+    if rows.len() != metadata.row_count() {
         return Err(EncodeError::Invalid("row count"));
     }
     if styles.iter().any(|style| style.flags & !flags != 0) {
@@ -1669,7 +1820,9 @@ pub fn encode_update(
     }
     for op in rows {
         match op {
-            RowOp::Keep(index) if baseline.is_none() || *index >= size.rows => {
+            RowOp::Keep(index)
+                if baseline.is_none() || *index >= keep_limit(size.rows) =>
+            {
                 return Err(EncodeError::Invalid("keep index"));
             }
             RowOp::Full(row)
@@ -1721,9 +1874,14 @@ fn write_update(
                 metadata,
             },
         )?;
-        w.seq(styles.iter(), size.cells(), "style table", write_style)?;
+        w.seq(
+            styles.iter(),
+            style_table_limit(size),
+            "style table",
+            write_style,
+        )?;
         let ops = wire_ops(rows);
-        w.seq(ops.iter(), usize::from(size.rows), "rows", |w, op| {
+        w.seq(ops.iter(), metadata.row_count(), "rows", |w, op| {
             write_op(w, op, usize::from(size.columns))
         })
     })
@@ -1766,6 +1924,8 @@ fn write_header(
         history_size,
         cursor_color,
         default_background,
+        commands,
+        sticky,
     } = metadata;
     w.u16(size.columns);
     w.u16(size.rows);
@@ -1801,7 +1961,38 @@ fn write_header(
     w.option(*default_background, |w, rgb| {
         write_rgb(w, rgb);
         Ok(())
+    })?;
+    w.seq(
+        commands.iter(),
+        command_blocks_limit(size.rows),
+        "command blocks",
+        |w, block| {
+            w.record(|w| {
+                w.u64(block.sequence);
+                w.usize(block.prompt);
+                w.option(block.output, |w, output| {
+                    w.usize(output);
+                    Ok(())
+                })?;
+                w.usize(block.end);
+                Ok(())
+            })
+        },
+    )?;
+    w.option(*sticky, |w, sticky| {
+        w.record(|w| {
+            w.u64(sticky.sequence);
+            w.u16(sticky.rows);
+            w.u16(sticky.input);
+            Ok(())
+        })
     })
+}
+
+/// The highest baseline row a kept range may reach: a baseline holds the
+/// viewport's rows and at most [`sticky_rows_limit`] more.
+fn keep_limit(rows: u16) -> u16 {
+    rows.saturating_add(sticky_rows_limit(rows))
 }
 
 fn write_style(w: &mut Writer, style: &StyleEntry) -> Result<(), EncodeError> {
@@ -2105,7 +2296,23 @@ pub fn decode_update(
         let history_size = r.usize()?;
         let cursor_color = r.option("cursor color", read_rgb)?;
         let default_background = r.option("default background", read_rgb)?;
-        let styles = r.seq(size.cells(), "style table", |r| {
+        let (commands, sticky) = read_commands(r, size)?;
+        let metadata = ViewMetadata {
+            generation,
+            revision,
+            geometry_revision,
+            size,
+            cursor,
+            modes,
+            viewport,
+            history_size,
+            cursor_color,
+            default_background,
+            commands,
+            sticky,
+        };
+        metadata.check().map_err(DecodeError::Invalid)?;
+        let styles = r.seq(style_table_limit(size), "style table", |r| {
             r.record(|r| {
                 let style = StyleEntry {
                     foreground: read_color(r)?,
@@ -2119,8 +2326,15 @@ pub fn decode_update(
             })
         })?;
         let columns = usize::from(size.columns);
-        let rows = decode_ops(r, size, baseline.is_some(), columns, &styles)?;
-        if rows.len() != usize::from(size.rows) {
+        let rows = decode_ops(
+            r,
+            metadata.row_count(),
+            keep_limit(size.rows),
+            baseline.is_some(),
+            columns,
+            &styles,
+        )?;
+        if rows.len() != metadata.row_count() {
             return Err(DecodeError::Invalid("row count"));
         }
         Ok(TerminalUpdate {
@@ -2129,34 +2343,52 @@ pub fn decode_update(
             baseline,
             credited,
             digest,
-            metadata: ViewMetadata {
-                generation,
-                revision,
-                geometry_revision,
-                size,
-                cursor,
-                modes,
-                viewport,
-                history_size,
-                cursor_color,
-                default_background,
-            },
+            metadata,
             styles,
             rows,
         })
     })
 }
 
+/// Reads an update's command blocks and sticky prompt.
+fn read_commands(
+    r: &mut Reader<'_>,
+    size: GridSize,
+) -> Result<(Arc<[CommandBlock]>, Option<StickyHeader>), DecodeError> {
+    let commands = r
+        .seq(command_blocks_limit(size.rows), "command blocks", |r| {
+            r.record(|r| {
+                Ok(CommandBlock {
+                    sequence: r.u64()?,
+                    prompt: r.usize()?,
+                    output: r.option("block output", Reader::usize)?,
+                    end: r.usize()?,
+                })
+            })
+        })?
+        .into();
+    let sticky = r.option("sticky prompt", |r| {
+        r.record(|r| {
+            Ok(StickyHeader {
+                sequence: r.u64()?,
+                rows: r.u16()?,
+                input: r.u16()?,
+            })
+        })
+    })?;
+    Ok((commands, sticky))
+}
+
 /// Reads an update's row operations, expanding each range of kept rows,
 /// which a complete snapshot never holds.
 fn decode_ops(
     r: &mut Reader<'_>,
-    size: GridSize,
+    total: usize,
+    keep_limit: u16,
     delta: bool,
     columns: usize,
     styles: &[StyleEntry],
 ) -> Result<Vec<RowOp>, DecodeError> {
-    let total = usize::from(size.rows);
     let count = r.usize()?;
     if count > total {
         return Err(DecodeError::TooLong { field: "rows" });
@@ -2168,7 +2400,7 @@ fn decode_ops(
                 let start = r.u16()?;
                 let kept = r.u16()?;
                 let end = usize::from(start) + usize::from(kept);
-                if !delta || kept == 0 || end > total {
+                if !delta || kept == 0 || end > usize::from(keep_limit) {
                     return Err(DecodeError::Invalid("keep index"));
                 }
                 // Checked per operation, so repeated ranges never build

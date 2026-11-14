@@ -106,9 +106,12 @@ impl ScrollController {
             let delta = i64::try_from(self.desired).unwrap_or(i64::MAX)
                 - i64::try_from(previous).unwrap_or(i64::MAX);
             self.pending_scroll = Some(match self.pending_scroll {
-                Some(ScrollCommand::Absolute(_) | ScrollCommand::Live) => {
-                    ScrollCommand::Absolute(self.desired)
-                }
+                // A newer gesture replaces a prompt jump not yet sent.
+                Some(
+                    ScrollCommand::Absolute(_)
+                    | ScrollCommand::Live
+                    | ScrollCommand::Prompt(_),
+                ) => ScrollCommand::Absolute(self.desired),
                 Some(ScrollCommand::Relative(pending)) => {
                     ScrollCommand::Relative(pending.saturating_add(delta))
                 }
@@ -116,6 +119,21 @@ impl ScrollController {
             });
         }
         changed
+    }
+
+    /// Jumps by `prompts` shell prompts, toward history when negative. The
+    /// runtime decides where that lands, so the request goes out even when
+    /// the desired offset is unchanged, and jumps not yet sent add up.
+    pub(super) fn prompt(&mut self, prompts: i32) {
+        self.pending_scroll = Some(match self.pending_scroll {
+            Some(ScrollCommand::Prompt(pending)) => {
+                ScrollCommand::Prompt(pending.saturating_add(prompts))
+            }
+            _ => ScrollCommand::Prompt(prompts),
+        });
+        self.desired = self.displayed;
+        self.pixel_remainder = 0.0;
+        self.dirty = true;
     }
 
     pub(super) fn page(&mut self, rows: u16, upward: bool) -> bool {
@@ -204,7 +222,7 @@ impl ScrollController {
         self.history = history;
         self.displayed = viewport.bottom_offset.min(history);
         self.desired = match self.pending_scroll {
-            None => self.displayed,
+            None | Some(ScrollCommand::Prompt(_)) => self.displayed,
             Some(ScrollCommand::Live) => 0,
             Some(ScrollCommand::Absolute(offset)) => offset.min(history),
             Some(ScrollCommand::Relative(delta)) if delta >= 0 => self
@@ -223,7 +241,10 @@ impl ScrollController {
             self.pending_scroll =
                 (delta != 0).then_some(ScrollCommand::Relative(delta));
         }
-        if self.desired == self.displayed {
+        if matches!(self.pending_scroll, Some(ScrollCommand::Prompt(_))) {
+            // A prompt jump queued behind this request still goes out.
+            self.dirty = true;
+        } else if self.desired == self.displayed {
             self.pending_scroll = None;
         }
         self.in_flight = false;

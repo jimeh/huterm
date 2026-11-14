@@ -20,11 +20,11 @@ use huterm_core::{
     TerminalViewer, ViewerWake,
 };
 use huterm_protocol::{
-    BufferPoint, BufferRange, CellSize, CommandError, CommandInvocation,
-    CommandOutcome, CommandValue, GridSize, HostEffect, HostEffectKind,
-    Modifiers, ScrollbackLimit, TabId, TerminalCommand, TerminalId,
-    TerminalInput, TerminalLifecycle, TerminalMetadata, TerminalPresentation,
-    TerminalSnapshot, ids,
+    BufferPoint, BufferRange, CellSize, CommandBlock, CommandError,
+    CommandInvocation, CommandOutcome, CommandValue, GridSize, HostEffect,
+    HostEffectKind, Modifiers, ScrollbackLimit, TabId, TerminalCommand,
+    TerminalId, TerminalInput, TerminalLifecycle, TerminalMetadata,
+    TerminalPresentation, TerminalRow, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -160,6 +160,7 @@ fn bind_keymap(cx: &mut App, compiled: CompiledKeymap) -> InstalledKeymap {
     installed
 }
 
+#[expect(clippy::too_many_lines, reason = "one entry per menu item")]
 fn install_menus(cx: &mut App) {
     if !cfg!(target_os = "macos") {
         return;
@@ -213,6 +214,8 @@ fn install_menus(cx: &mut App) {
                 item(ids::COPY),
                 item(ids::PASTE),
                 item(ids::SELECT_ALL),
+                item(ids::SELECT_COMMAND_OUTPUT),
+                item(ids::SELECT_COMMAND),
                 MenuItem::separator(),
                 item(ids::CLEAR_SCROLLBACK),
                 item(ids::RESET_TERMINAL),
@@ -227,6 +230,8 @@ fn install_menus(cx: &mut App) {
                 item(ids::SCROLL_PAGE_UP),
                 item(ids::SCROLL_PAGE_DOWN),
                 item(ids::SCROLL_TO_BOTTOM),
+                item(ids::PREVIOUS_COMMAND),
+                item(ids::NEXT_COMMAND),
                 MenuItem::separator(),
                 item(ids::WINDOW_TRANSPARENCY),
                 item(ids::TOGGLE_FULLSCREEN),
@@ -1820,6 +1825,10 @@ impl TerminalView {
             | ids::SCROLL_PAGE_UP
             | ids::SCROLL_PAGE_DOWN
             | ids::SCROLL_TO_BOTTOM
+            | ids::PREVIOUS_COMMAND
+            | ids::NEXT_COMMAND
+            | ids::SELECT_COMMAND_OUTPUT
+            | ids::SELECT_COMMAND
             | ids::SELECT_ALL
             | ids::CLEAR_SCROLLBACK
             | ids::RESET_TERMINAL => Ok(()),
@@ -1923,6 +1932,19 @@ impl TerminalView {
             ids::SCROLL_TO_BOTTOM => {
                 self.scroll_command(cx, |scroll, _| scroll.bottom());
             }
+            ids::PREVIOUS_COMMAND | ids::NEXT_COMMAND => {
+                let prompts = if invocation.id == ids::PREVIOUS_COMMAND {
+                    -1
+                } else {
+                    1
+                };
+                self.scroll_command(cx, |scroll, _| {
+                    scroll.prompt(prompts);
+                    true
+                });
+            }
+            ids::SELECT_COMMAND_OUTPUT => self.select_command(true, cx),
+            ids::SELECT_COMMAND => self.select_command(false, cx),
             other => return Err(CommandError::UnknownCommand(other)),
         }
         Ok(CommandOutcome::Completed)
@@ -2609,18 +2631,53 @@ impl TerminalView {
             return;
         };
         let rows = usize::from(snapshot.size.rows);
+        if rows == 0 {
+            return;
+        }
+        self.select_rows(snapshot.history_size + rows - 1, 0, cx);
+    }
+
+    /// Selects the output, or with `output` false the whole block, of the
+    /// command at the viewport's top while scrolled back, or of the newest
+    /// command at live output. Does nothing without one.
+    fn select_command(&mut self, output: bool, cx: &mut Context<'_, Self>) {
+        let Some(block) = self.snapshot.as_deref().and_then(target_block)
+        else {
+            return;
+        };
+        let first = if output {
+            block.output
+        } else {
+            Some(block.prompt)
+        };
+        if let Some(first) = first {
+            self.select_rows(first, block.end, cx);
+        }
+    }
+
+    /// Selects whole rows from `first` down to `last`, both counted from the
+    /// live bottom, and extracts their text.
+    fn select_rows(
+        &mut self,
+        first: usize,
+        last: usize,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
         let columns = snapshot.size.columns;
-        if rows == 0 || columns == 0 {
+        if columns == 0 {
             return;
         }
         let selection = Selection::cells(
             snapshot.generation,
             BufferPoint {
-                rows_from_live_bottom: snapshot.history_size + rows - 1,
+                rows_from_live_bottom: first,
                 column: 0,
             },
             BufferPoint {
-                rows_from_live_bottom: 0,
+                rows_from_live_bottom: last,
                 column: columns - 1,
             },
         );
@@ -4390,6 +4447,29 @@ fn locale_environment(
     }
 }
 
+/// The command block the select commands act on: the one that owns the
+/// viewport's top row while the view is scrolled back, which is the block
+/// a prompt jump just put there or the sticky prompt's, and the newest one
+/// at live output.
+fn target_block(snapshot: &TerminalSnapshot) -> Option<CommandBlock> {
+    if snapshot.viewport.bottom_offset == 0 {
+        return snapshot
+            .commands
+            .iter()
+            .max_by_key(|block| block.sequence)
+            .copied();
+    }
+    let top = snapshot.viewport.bottom_offset
+        + usize::from(snapshot.size.rows).saturating_sub(1);
+    snapshot
+        .commands
+        .iter()
+        .take_while(|block| block.prompt >= top)
+        .last()
+        .or_else(|| snapshot.commands.first())
+        .copied()
+}
+
 /// Whether two snapshots draw the same view. Unchanged rows share their `Arc`
 /// across snapshots. The generation is not compared: presentation updates
 /// change colors without advancing it.
@@ -4404,12 +4484,27 @@ fn same_presentation(
         && shown.modes == next.modes
         && shown.viewport == next.viewport
         && shown.history_size == next.history_size
+        && shown.commands == next.commands
+        && shown.sticky_prompt.as_ref().map(|sticky| sticky.sequence)
+            == next.sticky_prompt.as_ref().map(|sticky| sticky.sequence)
+        && sticky_rows(shown)
+            .zip(sticky_rows(next))
+            .all(|(shown, next)| Arc::ptr_eq(shown, next))
         && shown.rows.len() == next.rows.len()
         && shown
             .rows
             .iter()
             .zip(&next.rows)
             .all(|(shown, next)| Arc::ptr_eq(shown, next))
+}
+
+fn sticky_rows(
+    snapshot: &TerminalSnapshot,
+) -> impl Iterator<Item = &Arc<TerminalRow>> {
+    snapshot
+        .sticky_prompt
+        .iter()
+        .flat_map(|sticky| sticky.rows.iter())
 }
 
 #[expect(
@@ -4689,6 +4784,8 @@ mod tests {
             history_size: 0,
             cursor_color: None,
             default_background: None,
+            commands: std::sync::Arc::new([]),
+            sticky_prompt: None,
         };
         // Presentation updates can change colors without a new generation,
         // and an unchanged generation must not hide new rows.
@@ -4728,6 +4825,8 @@ mod tests {
             history_size: 0,
             cursor_color: None,
             default_background: None,
+            commands: std::sync::Arc::new([]),
+            sticky_prompt: None,
         };
         let mouse = TerminalInput::Mouse(MouseInput {
             position: MousePosition::default(),

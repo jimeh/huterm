@@ -20,7 +20,9 @@ fn satisfied_pending_scroll_is_not_replayed_on_invalidation() {
             ScrollCommand::Live => {
                 scroll.bottom();
             }
-            ScrollCommand::Relative(_) => unreachable!(),
+            ScrollCommand::Relative(_) | ScrollCommand::Prompt(_) => {
+                unreachable!()
+            }
         }
         scroll.complete(
             Viewport {
@@ -351,4 +353,53 @@ fn a_restart_after_a_revoked_request_lets_the_next_invalidation_request() {
     scroll.restart();
     scroll.invalidate();
     assert!(scroll.begin_request().is_some());
+}
+
+#[test]
+fn prompt_jumps_go_out_at_an_unchanged_offset_and_add_up_until_sent() {
+    let mut scroll = ScrollController::default();
+    scroll.complete(Viewport { bottom_offset: 0 }, 100);
+    assert!(scroll.begin_request().is_none(), "nothing to do");
+    scroll.prompt(-1);
+    scroll.prompt(-1);
+    scroll.begin_request().unwrap();
+    assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Prompt(-2)));
+    // One more arrives while the first is in flight; it waits, then goes.
+    scroll.prompt(1);
+    assert!(scroll.begin_request().is_none(), "one request at a time");
+    scroll.complete(Viewport { bottom_offset: 40 }, 100);
+    assert_eq!(scroll.desired(), 40, "the runtime decided where it landed");
+    scroll.begin_request().unwrap();
+    assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Prompt(1)));
+    scroll.complete(Viewport { bottom_offset: 25 }, 100);
+    assert_eq!((scroll.desired(), scroll.displayed()), (25, 25));
+    assert!(scroll.begin_request().is_none());
+}
+
+#[test]
+fn newer_gestures_and_typing_replace_a_pending_prompt_jump() {
+    let mut scroll = ScrollController::default();
+    scroll.complete(Viewport { bottom_offset: 10 }, 100);
+    scroll.prompt(-1);
+    scroll.scroll_rows(3);
+    scroll.begin_request().unwrap();
+    assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Absolute(13)));
+    scroll.complete(Viewport { bottom_offset: 13 }, 100);
+
+    scroll.prompt(-1);
+    scroll.bottom();
+    scroll.begin_request().unwrap();
+    assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Live));
+    scroll.complete(Viewport { bottom_offset: 0 }, 100);
+
+    // A jump after wheel input replaces the wheel's relative intent.
+    scroll.scroll_rows(4);
+    scroll.prompt(-1);
+    scroll.begin_request().unwrap();
+    assert_eq!(scroll.submitted_scroll(), Some(ScrollCommand::Prompt(-1)));
+    scroll.complete(Viewport { bottom_offset: 30 }, 100);
+
+    scroll.prompt(1);
+    scroll.typed();
+    assert!(!scroll.has_pending_scroll());
 }
