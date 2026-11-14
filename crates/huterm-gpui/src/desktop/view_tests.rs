@@ -880,9 +880,9 @@ fn osc11_presentation_change_with_retained_rows_redraws(
                 .zip(&changed.rows)
                 .all(|(a, b)| Arc::ptr_eq(a, b))
         );
-        assert!(view.apply_snapshot(changed.clone(), cx));
-        assert!(!view.apply_snapshot(changed, cx));
-        assert!(view.apply_snapshot(original, cx));
+        assert!(view.apply_snapshot(changed.clone(), None, cx));
+        assert!(!view.apply_snapshot(changed, None, cx));
+        assert!(view.apply_snapshot(original, None, cx));
     });
 }
 
@@ -960,7 +960,11 @@ fn drag_words(
 impl ViewHarness {
     fn wait_for_selected(&mut self, expected: &str) {
         self.wait_for(&format!("{expected:?} to be selected"), |view, _| {
-            !view.selecting && view.selected_text.as_deref() == Some(expected)
+            !view.selecting
+                && view
+                    .selected_text
+                    .as_ref()
+                    .is_some_and(|selected| selected.text == expected)
         });
     }
 
@@ -1147,11 +1151,15 @@ fn a_word_drag_held_above_the_top_edge_keeps_scrolling_and_growing(
     });
     harness.wait_for("the grown selection's text", |view, _| {
         !view.selecting
-            && view.selected_text.as_deref().is_some_and(|text| {
-                text.starts_with("line ")
-                    && text.ends_with("line")
-                    && text.lines().count() >= 6
-            })
+            && view
+                .selected_text
+                .as_ref()
+                .map(|selected| selected.text.as_str())
+                .is_some_and(|text| {
+                    text.starts_with("line ")
+                        && text.ends_with("line")
+                        && text.lines().count() >= 6
+                })
     });
 }
 
@@ -1189,6 +1197,348 @@ fn a_word_expanding_when_its_viewer_is_revoked_completes_through_the_replacement
         );
     });
     harness.wait_for_selected("beta.gamma");
+}
+
+impl ViewHarness {
+    /// Selects `beta.gamma` on the top row of [`WORDS`] as a settled
+    /// selection, as a client that sets one does, and waits for its text.
+    /// Returns its range.
+    fn select_beta_gamma(&mut self) -> BufferRange {
+        let range = self.update(|view, _, cx| {
+            let snapshot = view.snapshot.clone().unwrap();
+            let at = |column| BufferPoint {
+                rows_from_live_bottom: usize::from(snapshot.size.rows - 1),
+                column,
+            };
+            let selection =
+                Selection::cells(snapshot.generation, at(6), at(15));
+            view.set_selection(selection, cx);
+            selection.range().unwrap()
+        });
+        self.wait_for_selected("beta.gamma");
+        range
+    }
+
+    /// A viewer that types but never takes control, so the echo child's
+    /// output reaches the view without its own typing.
+    fn typist(&mut self) -> TerminalViewer {
+        self.runtime
+            .subscribe(ViewerOptions::new(ViewerCapabilities {
+                input: true,
+                ..ViewerCapabilities::NONE
+            }))
+            .unwrap()
+    }
+
+    /// Has `typist` type `text`, waits for the child's echo of everything
+    /// it received, `received` in all, and checks that the settled
+    /// selection is still selected and placed in the shown snapshot.
+    fn assert_kept_through_output(
+        &mut self,
+        typist: &TerminalViewer,
+        text: &str,
+        received: &str,
+    ) {
+        typist.send_input(TerminalInput::Text(text.into())).unwrap();
+        self.assert_received(received);
+        self.read(|view, _| {
+            let shown = view.snapshot.as_ref().unwrap().generation;
+            assert!(view.selection_id.is_some(), "the selection settled");
+            assert_eq!(
+                view.selection.map(|selection| selection.generation),
+                Some(shown),
+                "the shown snapshot placed the selection"
+            );
+            assert!(view.selection.and_then(Selection::range).is_some());
+        });
+    }
+
+    fn copy(&mut self) {
+        self.update(|view, window, cx| {
+            view.run_command(
+                &CommandInvocation::new(ids::COPY, Vec::new()),
+                window,
+                cx,
+            )
+            .unwrap();
+        });
+    }
+}
+
+#[gpui::test]
+fn a_settled_selection_follows_its_text_through_a_rewrapping_resize(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let before = harness.select_beta_gamma();
+    // Another viewer takes control and narrows the grid, so the line
+    // rewraps across rows.
+    let _controller = harness.controller(GridSize::clamped(10, 14), CELL);
+    harness.wait_for("the selection placed in the narrower grid", |view, _| {
+        view.selection.is_some_and(|selection| {
+            Some(selection.generation)
+                == view.snapshot.as_ref().map(|shown| shown.generation)
+        })
+    });
+    let placed =
+        harness.read(|view, _| view.selection.and_then(Selection::range));
+    let placed = placed.expect("the selection is kept");
+    assert_ne!(placed, before, "the rewrap moved it");
+    assert_ne!(
+        placed.start.rows_from_live_bottom, placed.end.rows_from_live_bottom,
+        "it now spans two rows"
+    );
+    harness.update(|_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("STALE".into()));
+    });
+    harness.copy();
+    harness.wait_for_clipboard("beta.gamma");
+    harness.wait_for("the accessible selection", |view, _| {
+        super::terminal_a11y::tests::selected(&view.a11y.model())
+            .is_some_and(|(_, _, text)| text == "beta.gamma")
+    });
+}
+
+/// #373: a font change that keeps the grid still resizes the terminal's
+/// cells, which advances the generation.
+#[gpui::test]
+fn a_cell_size_only_change_keeps_the_selection(cx: &mut TestAppContext) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let before = harness.select_beta_gamma();
+    let (generation, revision) = harness.read(|view, _| {
+        let shown = view.snapshot.as_ref().unwrap();
+        (shown.generation, shown.geometry_revision)
+    });
+    harness.update(|view, window, cx| {
+        view.metrics = GridMetrics::fixed(CELL_WIDTH, CELL_HEIGHT + 0.5)
+            .at_scale(window.scale_factor());
+        view.renderer.borrow_mut().reconfigure(
+            view.terminal_font.clone(),
+            view.theme.clone(),
+            view.metrics,
+        );
+        view.resize_to_layout(window, false);
+        cx.notify();
+    });
+    harness.wait_for("the new cell size applied", |view, _| {
+        view.snapshot
+            .as_ref()
+            .is_some_and(|shown| shown.geometry_revision > revision)
+    });
+    harness.read(|view, _| {
+        let shown = view.snapshot.as_ref().unwrap();
+        assert_eq!(shown.size, view.requested_grid, "the grid stayed");
+        assert_ne!(shown.generation, generation);
+        assert_eq!(view.selection.and_then(Selection::range), Some(before));
+    });
+    harness.update(|_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("STALE".into()));
+    });
+    harness.copy();
+    harness.wait_for_clipboard("beta.gamma");
+}
+
+#[gpui::test]
+fn snapshot_replies_place_clear_or_keep_a_settled_selection(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    harness.select_beta_gamma();
+    // Replies built here stand in for the runtime's, in one update so no
+    // real reply lands between them.
+    harness.update(|view, _, cx| {
+        let shown = view.snapshot.clone().unwrap();
+        let id = view.selection_id.unwrap();
+        let newer = |generation: u64| {
+            let mut snapshot = (*shown).clone();
+            snapshot.generation = generation;
+            Arc::new(snapshot)
+        };
+        let next = shown.generation + 1;
+        view.apply_snapshot(Arc::clone(&shown), None, cx);
+        assert!(
+            view.selection.is_some(),
+            "a reply without the id at the selection's generation keeps it"
+        );
+        let moved = BufferRange::ordered(
+            BufferPoint {
+                rows_from_live_bottom: 3,
+                column: 0,
+            },
+            BufferPoint {
+                rows_from_live_bottom: 3,
+                column: 4,
+            },
+        );
+        let placed = SelectionPlacement {
+            id,
+            range: Some(moved),
+        };
+        view.apply_snapshot(newer(next), Some(placed), cx);
+        assert_eq!(view.selection.and_then(Selection::range), Some(moved));
+        let gone = SelectionPlacement { id, range: None };
+        view.apply_snapshot(newer(next + 1), Some(gone), cx);
+        assert_eq!(view.selection, None, "a gone placement clears it");
+        view.apply_snapshot(shown, None, cx);
+    });
+    harness.select_beta_gamma();
+    harness.update(|view, _, cx| {
+        let shown = view.snapshot.clone().unwrap();
+        let stale = SelectionPlacement {
+            id: view.selection_id.unwrap() - 1,
+            range: Some(view.selection.and_then(Selection::range).unwrap()),
+        };
+        let mut newer = (*shown).clone();
+        newer.generation += 1;
+        view.apply_snapshot(Arc::new(newer), Some(stale), cx);
+        assert_eq!(
+            view.selection, None,
+            "a reply without the id at another generation clears it"
+        );
+        view.apply_snapshot(shown, None, cx);
+    });
+}
+
+#[gpui::test]
+fn typing_clears_a_settled_selection_and_output_clears_a_drag(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    harness.select_beta_gamma();
+    harness.update(|view, _, _| {
+        let (accepted, _) = view.enqueue_input(TerminalInput::Text("x".into()));
+        assert!(accepted);
+        assert_eq!(view.selection, None);
+    });
+    harness.assert_received("x");
+    let (from, to) = (harness.cell_center(0, 0), harness.cell_center(4, 0));
+    harness.update(|view, window, cx| {
+        view.mouse_down(&press(from), window, cx);
+        view.mouse_move(
+            &MouseMoveEvent {
+                pressed_button: Some(MouseButton::Left),
+                ..hover(to)
+            },
+            window,
+            cx,
+        );
+        assert!(view.selection.and_then(Selection::range).is_some());
+    });
+    let typist = harness.typist();
+    typist.send_input(TerminalInput::Text("y".into())).unwrap();
+    harness.wait_for("the echo to clear the drag", |view, _| {
+        received(view).as_deref() == Some(b"xy") && view.selection.is_none()
+    });
+}
+
+#[gpui::test]
+fn select_all_and_a_released_word_selection_are_tracked(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let typist = harness.typist();
+    harness.update(|view, _, cx| view.select_all(cx));
+    harness.wait_for("Select All's text", |view, _| {
+        view.selected_text
+            .as_ref()
+            .is_some_and(|selected| selected.text.starts_with("alpha"))
+    });
+    harness.assert_kept_through_output(&typist, "a", "a");
+    let gamma = harness.cell_center(12, 0);
+    harness.update(|view, window, cx| {
+        multi_click(view, window, cx, gamma, 2, Modifiers::none());
+    });
+    harness.wait_for_selected("beta.gamma");
+    harness.assert_kept_through_output(&typist, "b", "ab");
+}
+
+#[gpui::test]
+fn a_cell_drag_released_after_edge_scrolling_is_tracked(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &echo_fixture(60, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    let start = harness.cell_center(3, 2);
+    let above = gpui::point(start.x, px(-8.0));
+    let anchor = harness.update(|view, window, cx| {
+        view.mouse_down(&press(start), window, cx);
+        view.mouse_move(
+            &MouseMoveEvent {
+                pressed_button: Some(MouseButton::Left),
+                ..hover(above)
+            },
+            window,
+            cx,
+        );
+        view.selection.unwrap().anchor
+    });
+    harness.wait_for("the held drag to scroll back three rows", |view, _| {
+        view.selection
+            .and_then(Selection::range)
+            .is_some_and(|range| {
+                range.start.rows_from_live_bottom
+                    >= anchor.rows_from_live_bottom + 3
+            })
+    });
+    harness.update(|view, window, cx| {
+        view.mouse_up(&release(above), window, cx);
+    });
+    harness.wait_for("the released drag's text", |view, _| {
+        !view.selecting
+            && view.selection_id.is_some()
+            && view
+                .selected_text
+                .as_ref()
+                .is_some_and(|selected| selected.text.contains("\nline "))
+    });
+    // Back to live output, where the echo shows.
+    harness.update(|view, window, cx| {
+        view.run_command(
+            &CommandInvocation::new(ids::SCROLL_TO_BOTTOM, Vec::new()),
+            window,
+            cx,
+        )
+        .unwrap();
+    });
+    let typist = harness.typist();
+    harness.assert_kept_through_output(&typist, "c", "c");
+}
+
+#[gpui::test]
+fn copy_or_paste_copies_the_placed_selection_then_clears_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    harness.select_beta_gamma();
+    let _controller = harness.controller(GridSize::clamped(10, 14), CELL);
+    harness.wait_for("the selection placed in the narrower grid", |view, _| {
+        view.selection.is_some_and(|selection| {
+            Some(selection.generation)
+                == view.snapshot.as_ref().map(|shown| shown.generation)
+        })
+    });
+    let corner = harness.cell_center(0, 0);
+    harness.update(|view, window, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("PASTED".into()));
+        view.right_click = config::RightClickAction::CopyOrPaste;
+        view.mouse_down(
+            &MouseDownEvent {
+                button: MouseButton::Right,
+                ..press(corner)
+            },
+            window,
+            cx,
+        );
+        assert_eq!(view.selection, None, "the copy clears the selection");
+        assert!(view.input_queue.is_empty(), "nothing was pasted");
+    });
+    harness.wait_for_clipboard("beta.gamma");
 }
 
 mod a11y;
