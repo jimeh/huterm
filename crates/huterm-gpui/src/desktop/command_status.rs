@@ -218,12 +218,26 @@ pub(super) fn header(
         return None;
     }
     let input = sticky.rows.get(sticky.input)?;
+    // Every row the header covers must belong to its own command, or it
+    // would hide the next command's prompt; a whole prompt that would
+    // gives way to its command row.
+    let top = snapshot.viewport.bottom_offset
+        + usize::from(snapshot.size.rows).saturating_sub(1);
+    let fits = |count: usize| {
+        snapshot
+            .commands
+            .iter()
+            .find(|block| block.sequence == sticky.sequence)
+            .is_some_and(|block| top + 1 >= block.end + count)
+    };
     let (rows, input) = match style {
         StickyPromptStyle::Off => return None,
-        StickyPromptStyle::Status | StickyPromptStyle::Command => {
-            (vec![Arc::clone(input)], 0)
+        StickyPromptStyle::Prompt if fits(sticky.rows.len()) => {
+            (sticky.rows.clone(), sticky.input)
         }
-        StickyPromptStyle::Prompt => (sticky.rows.clone(), sticky.input),
+        StickyPromptStyle::Status
+        | StickyPromptStyle::Command
+        | StickyPromptStyle::Prompt => (vec![Arc::clone(input)], 0),
     };
     Some(Header {
         sequence: sticky.sequence,
@@ -308,8 +322,9 @@ fn duration(took: Duration) -> String {
 /// The header's command row cut to `columns` cells, so the status beside
 /// it covers nothing: `None` when the row already fits.
 ///
-/// A group of text at the row's right edge after a gap of two or more
-/// blanks, such as a shell's right prompt, is dropped first. A command line
+/// A group of text at the right edge of a row that does not wrap, after a
+/// gap of two or more blanks, such as a shell's right prompt, is dropped
+/// first. A command line
 /// still too long is cut after the last word that fits, or mid-word when
 /// that would drop more than half the space, and ends in an ellipsis.
 pub(super) fn fit_row(
@@ -317,16 +332,18 @@ pub(super) fn fit_row(
     columns: usize,
 ) -> Option<TerminalRow> {
     let cells = &row.cells;
+    // A wide character's spacer has no text but is part of the character.
     let blank = |index: usize| {
-        cells
-            .get(index)
-            .is_none_or(|cell| matches!(cell.text.displayed(), "" | " "))
+        cells.get(index).is_none_or(|cell| {
+            !cell.style.wide_spacer && matches!(cell.text.displayed(), "" | " ")
+        })
     };
     let last = (0..cells.len()).rev().find(|&index| !blank(index))?;
     // Text up to `end` is the command line; a right prompt ends within two
-    // cells of the edge, as zsh's indent leaves one.
+    // cells of the edge, as zsh's indent leaves one. A row that wraps is a
+    // long command line filling the row, not a right prompt.
     let mut end = last + 1;
-    if last + 3 > cells.len() {
+    if !row.wrapped && last + 3 > cells.len() {
         let mut start = last;
         while start > 0 && !(blank(start - 1) && start >= 2 && blank(start - 2))
         {

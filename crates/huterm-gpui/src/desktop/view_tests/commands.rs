@@ -236,3 +236,46 @@ fn the_select_commands_are_unavailable_without_a_command(
         );
     }
 }
+
+#[gpui::test]
+fn a_running_commands_clock_keeps_its_wake_after_each_tick(
+    cx: &mut TestAppContext,
+) {
+    // A command that printed a screenful and went quiet: nothing but the
+    // clock's own wake repaints its sticky prompt.
+    let mut harness = ViewHarness::new(
+        cx,
+        "m() { printf '\\033]133;%s\\007' \"$1\"; }; \
+         m A; printf '$ '; m B; printf 'build\\n'; m C; \
+         i=1; while [ $i -le 40 ]; do printf 'step %s\\n' $i; i=$((i+1)); done; \
+         printf READY; exec sleep 60",
+    );
+    harness.wait_for("the running command's output", |view, _| {
+        view.commands.len() == 1
+            && view.snapshot.as_ref().is_some_and(|snapshot| {
+                screen_text_of(snapshot).contains("READY")
+            })
+    });
+    harness.update(|view, _, cx| {
+        view.scroll_command(cx, |scroll, _| scroll.scroll_rows(10));
+    });
+    harness.wait_for("the running sticky prompt", |view, _| {
+        view.sticky_tick.is_some()
+    });
+    // The clock's wake fires: the view clears it and repaints, and the
+    // repaint must schedule the next one.
+    for _ in 0..2 {
+        harness.update(|view, window, cx| {
+            let now = Instant::now();
+            view.sticky_tick = Some(now);
+            refresh::Animated::advance_animation(view, now, false, window, cx);
+            assert!(view.sticky_tick.is_none());
+        });
+        harness.wait_for("the next wake", |view, _| view.sticky_tick.is_some());
+        let id = harness.view.entity_id();
+        let (tick, scheduled) = harness.read(|view, _| {
+            (view.sticky_tick, view.frame_clock.deadline_of(id))
+        });
+        assert_eq!(scheduled, tick, "the frame clock holds the clock's wake");
+    }
+}

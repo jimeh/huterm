@@ -1632,3 +1632,27 @@ fn malformed_command_blocks_and_sticky_prompts_are_rejected() {
         rejected(&update, "sticky prompt", "sticky prompt");
     }
 }
+
+#[test]
+fn sticky_rows_past_sixteen_bit_positions_travel_in_full() {
+    // The tallest grid: its sticky rows sit past the positions a kept
+    // range can name, so a delta sends them in full.
+    let rows = usize::from(u16::MAX);
+    let base = screen(&vec![""; rows], 1);
+    let first = with_commands(&base, &[], &["a", "b", "c"]);
+    let mut server = encoder();
+    let mut client: ViewerView = ViewerView::new(0);
+    applied(&mut client, &server.next(&first, false).unwrap());
+    let second = publish(&first, |_| {});
+    let delta = server.next(&second, false).unwrap();
+    assert_eq!(delta.rows[rows], RowOp::Keep(u16::MAX));
+    assert!(
+        delta.rows[rows + 1..]
+            .iter()
+            .all(|op| matches!(op, RowOp::Full(_))),
+        "{:?}",
+        &delta.rows[rows..]
+    );
+    applied(&mut client, &delta);
+    assert!(shows(&client, &second));
+}

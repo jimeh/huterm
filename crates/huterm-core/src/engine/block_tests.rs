@@ -448,3 +448,103 @@ fn a_header_click_jump_lands_on_its_prompt_after_more_output() {
         Some((sequence, top))
     );
 }
+
+#[test]
+fn a_newer_prompt_drawn_above_an_older_one_keeps_its_own_rows() {
+    // Cursor addressing draws command 2 low on the screen and then command
+    // 3 above it, as a program that repositions the shell's output would.
+    let mut engine = engine(30, 12);
+    process(&mut engine, &format!("{}\r\n", "x\r\n".repeat(20)));
+    process(&mut engine, &command("one", &["a"], "D;1"));
+    process(
+        &mut engine,
+        &format!(
+            "\x1b[9;1H{}$ {}two\r\n{}b\r\n{}",
+            mark("A"),
+            mark("B"),
+            mark("C"),
+            mark("D;1")
+        ),
+    );
+    process(
+        &mut engine,
+        &format!(
+            "\x1b[3;1H{}$ {}three\r\n{}c\r\n{}\x1b[12;1H",
+            mark("A"),
+            mark("B"),
+            mark("C"),
+            mark("D;0")
+        ),
+    );
+    for offset in [0, 2] {
+        engine.scroll(ScrollCommand::Absolute(offset)).unwrap();
+        let snapshot = engine.snapshot().unwrap();
+        let named: Vec<(u64, String)> = snapshot
+            .commands
+            .iter()
+            .map(|block| {
+                (block.sequence, block_text(&engine, &snapshot, block).1)
+            })
+            .collect();
+        // Each block starts at its own prompt; the rows the fixture left
+        // between them belong to the block above.
+        let three = named.iter().find(|(sequence, _)| *sequence == 3);
+        assert!(
+            three.is_some_and(|(_, text)| text.starts_with("$ three\nc\n")),
+            "scrolled {offset}: {named:?}"
+        );
+        let two = named.iter().find(|(sequence, _)| *sequence == 2);
+        assert!(
+            two.is_some_and(|(_, text)| text.starts_with("$ two\nb")),
+            "scrolled {offset}: {named:?}"
+        );
+        // Rows run top to bottom, so command 3 comes before command 2.
+        assert_eq!(
+            snapshot
+                .commands
+                .iter()
+                .map(|block| block.sequence)
+                .filter(|sequence| *sequence != 1)
+                .collect::<Vec<_>>(),
+            [3, 2],
+            "scrolled {offset}"
+        );
+    }
+}
+
+#[test]
+fn a_sticky_prompt_never_holds_more_rows_than_its_grid() {
+    use huterm_wire::update::UpdateEncoder;
+
+    for rows in [1_u16, 2, 3] {
+        let mut engine = engine(30, rows);
+        // A three-row prompt, then output the viewport can scroll into.
+        let output: Vec<String> =
+            (1..=30).map(|line| format!("out {line}")).collect();
+        let output: Vec<&str> = output.iter().map(String::as_str).collect();
+        process(
+            &mut engine,
+            &format!(
+                "{}~/src\r\nmain\r\n$ {}make\r\n{}{}\r\n{}",
+                mark("A"),
+                mark("B"),
+                mark("C"),
+                output.join("\r\n"),
+                mark("D;0")
+            ),
+        );
+        process(&mut engine, &prompt());
+        engine.scroll(ScrollCommand::Relative(10)).unwrap();
+        let snapshot = std::sync::Arc::new(engine.snapshot().unwrap());
+        let sticky = snapshot.sticky_prompt.as_ref().expect("a sticky prompt");
+        assert!(sticky.rows.len() <= usize::from(rows), "{rows} rows");
+        assert_eq!(
+            sticky_text(&snapshot).unwrap().last().map(String::as_str),
+            Some("$ make"),
+            "the command line row stays"
+        );
+        UpdateEncoder::new(huterm_protocol::ViewerId::new(1), 0)
+            .next(&snapshot, false)
+            .unwrap_or_else(|error| panic!("{rows} rows: {error}"));
+    }
+}

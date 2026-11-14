@@ -330,17 +330,19 @@ Snapshots position the records for #38 (see
 [the plan](../plans/command-output-navigation.md)): `commands` holds the
 blocks that reach into the viewport and `sticky_prompt` the prompt rows of
 the block that owns the top row when its prompt is above the viewport.
-`CommandLog::layout` must not read every record's anchor per snapshot,
-because each tracked read walks history pages. It binary-searches the
-records in viewport space, which reports no value above the viewport, on
-the assumption that sequence order is row order, and reads forward only
-through the viewport. A record is used only when its anchor sits on a
-primary prompt row and below every older record's: in-place erasure and
-`scrollback = 0` move anchors onto other rows, and an older failed record
-on a newer prompt's row would tint the wrong command. Every grid read there
-picks the cheapest space (active, viewport, then screen) and is bounded, and
-a failed read leaves the blocks out rather than failing the snapshot.
-`bench:engine`'s `resize-history` reports `scrolled_snapshot_us` for the
+`CommandLog::layout` reads every record's anchor once per snapshot in
+viewport space, which walks only from the viewport's top page and reports
+no value above it, and orders records by row, never by sequence: cursor
+addressing can draw a newer prompt above an older one, and a binary search
+over sequences once gave a newer command's rows to an older failure. Only
+the newest few records above the viewport are placed in screen space, the
+costliest read. A record is used only when its anchor sits on a primary
+prompt row, and of records on one row only the newest: in-place erasure
+and `scrollback = 0` move anchors onto other rows. The sticky prompt holds
+at most `min(3, grid rows)` rows, or the wire would refuse it. Every grid
+read there picks the cheapest space (active, viewport, then screen) and is
+bounded, and a failed read leaves the blocks out rather than failing the
+snapshot. `bench:engine`'s `resize-history` reports `scrolled_snapshot_us` for the
 costliest place, near the top of 100,000 rows with 256 records below.
 `ScrollCommand::Prompt` is Ghostty's prompt jump; nothing predicts where it
 lands, so `requested_viewport` reports the current offset for it.

@@ -283,90 +283,82 @@ impl CommandLog {
 
     /// Positions the blocks that reach into `view` and the sticky prompt.
     ///
-    /// Records follow row order except where cursor addressing moved
-    /// output, so a binary search finds the first record at or below the
-    /// viewport's top in a few probes, and only the records in the viewport
-    /// are read beyond it. Each tracked read walks history pages, so
-    /// reading every record would cost a walk per record per snapshot. A
-    /// record whose anchor is not on a primary prompt row, or whose row is
-    /// not below every older record's, is left out: in-place erasure can
-    /// move an older anchor onto a newer prompt.
+    /// Every record with a value is read once in viewport space, which
+    /// walks only from the viewport's top page and reports no value for a
+    /// record above the viewport; at live output that is a page or two per
+    /// record. Records are ordered by row, not sequence: cursor addressing
+    /// can draw a newer prompt above an older one. A record is used only
+    /// when its anchor sits on a primary prompt row, and of records on one
+    /// row only the newest is: in-place erasure can move an older anchor
+    /// onto a newer prompt. Of the records above the viewport, only the
+    /// newest few are placed in screen space, the costliest read, and the
+    /// lowest of them owns the viewport's top row.
     pub(super) fn layout<H>(
         &self,
         terminal: &Terminal<H>,
         view: View,
     ) -> Result<Layout, ghostty::Error> {
-        let valued: Vec<&Entry> = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry
-                    .anchor
-                    .as_ref()
-                    .is_some_and(|anchor| terminal.has_value(&anchor.0))
-            })
-            .collect();
-        let viewport_row = |entry: &Entry| -> Option<usize> {
-            let anchor = entry.anchor.as_ref()?;
-            let point = terminal
-                .tracked_point(&anchor.0, PointSpace::Viewport)
-                .ok()??;
-            usize::try_from(point.y).ok()
-        };
-        let boundary =
-            valued.partition_point(|entry| viewport_row(entry).is_none());
-
-        let mut starts: Vec<Start> = Vec::new();
-        let mut below = None;
-        for entry in &valued[boundary..] {
-            let Some(row) = viewport_row(entry) else {
+        let mut above = Vec::new();
+        let mut placed: Vec<Start> = Vec::new();
+        for entry in &self.entries {
+            let Some(anchor) = entry
+                .anchor
+                .as_ref()
+                .filter(|anchor| terminal.has_value(&anchor.0))
+            else {
                 continue;
             };
-            let row = view.top + row;
-            if row >= view.top + view.rows {
-                below = Some(row);
-                break;
+            let point = terminal
+                .tracked_point(&anchor.0, PointSpace::Viewport)
+                .ok()
+                .flatten()
+                .and_then(|point| usize::try_from(point.y).ok());
+            match point {
+                Some(row) => placed.push(Start {
+                    sequence: entry.record.sequence,
+                    row: view.top + row,
+                }),
+                None => above.push(entry),
             }
-            if !is_prompt_start(terminal, view, row)? {
+        }
+        // Newest first within a row, so the dedup keeps the newest.
+        placed.sort_by_key(|start| {
+            (start.row, std::cmp::Reverse(start.sequence))
+        });
+        placed.dedup_by_key(|start| start.row);
+        let bottom = view.top + view.rows;
+        let mut starts = Vec::new();
+        let mut below = None;
+        for start in placed {
+            if !is_prompt_start(terminal, view, start.row)? {
                 continue;
             }
-            while starts.last().is_some_and(|start| start.row >= row) {
-                starts.pop();
+            if start.row < bottom {
+                starts.push(start);
+            } else {
+                below = Some(start.row);
+                break;
             }
-            starts.push(Start {
-                sequence: entry.record.sequence,
-                row,
-            });
         }
 
-        // The record before the boundary owns the viewport's top row.
-        let owner = match boundary.checked_sub(1).map(|index| valued[index]) {
-            Some(entry) => owner_start(terminal, view, entry)?,
-            None => None,
-        };
-        let owner = owner.filter(|owner| {
+        let owner = owner_start(terminal, view, &above)?.filter(|owner| {
             starts.first().is_none_or(|first| owner.row < first.row)
         });
-
         let pending = self
             .pending
             .as_ref()
             .and_then(|anchor| screen_row(terminal, view, &anchor.0));
-        let newest = self.entries.back().map(|entry| entry.record.sequence);
         let all: Vec<Start> = owner.into_iter().chain(starts).collect();
         let mut layout = Layout::default();
         for (index, start) in all.iter().enumerate() {
-            let bound = all
-                .get(index + 1)
-                .map(|next| next.row)
-                .or(below)
-                .or_else(|| {
-                    (Some(start.sequence) == newest)
-                        .then_some(pending)
-                        .flatten()
-                        .filter(|&row| row > start.row)
-                })
-                .unwrap_or_else(|| view.cursor.max(start.row) + 1);
+            // The next prompt below this one, whichever comes first.
+            let bound =
+                [all.get(index + 1).map(|next| next.row), below, pending]
+                    .into_iter()
+                    .flatten()
+                    .filter(|&row| row > start.row)
+                    .min()
+                    .unwrap_or_else(|| view.cursor.max(start.row) + 1);
             let (output, end) = extent(terminal, view, start.row, bound)?;
             let block = CommandBlock {
                 sequence: start.sequence,
@@ -414,24 +406,39 @@ impl CommandLog {
     }
 }
 
-/// The validated prompt row of the record just above the viewport.
+/// How many of the newest records above the viewport [`owner_start`]
+/// places. A record that cursor addressing drew below a newer one was on
+/// the screen with it, so it is among the newest few.
+const OWNER_CANDIDATES: usize = 4;
+
+/// The validated prompt row nearest above the viewport among the newest of
+/// `above`, the records above it, oldest first.
 fn owner_start<H>(
     terminal: &Terminal<H>,
     view: View,
-    entry: &Entry,
+    above: &[&Entry],
 ) -> Result<Option<Start>, ghostty::Error> {
-    let Some(row) = entry
-        .anchor
-        .as_ref()
-        .and_then(|anchor| screen_row(terminal, view, &anchor.0))
-        .filter(|&row| row < view.top)
-    else {
-        return Ok(None);
-    };
-    Ok(is_prompt_start(terminal, view, row)?.then_some(Start {
-        sequence: entry.record.sequence,
-        row,
-    }))
+    let mut owner: Option<Start> = None;
+    for entry in above.iter().rev().take(OWNER_CANDIDATES) {
+        let Some(row) = entry
+            .anchor
+            .as_ref()
+            .and_then(|anchor| screen_row(terminal, view, &anchor.0))
+            .filter(|&row| row < view.top)
+        else {
+            continue;
+        };
+        if owner.is_some_and(|owner| owner.row >= row)
+            || !is_prompt_start(terminal, view, row)?
+        {
+            continue;
+        }
+        owner = Some(Start {
+            sequence: entry.record.sequence,
+            row,
+        });
+    }
+    Ok(owner)
 }
 
 /// An anchor's screen row, read in the cheapest space that holds it.
@@ -540,7 +547,10 @@ fn sticky_rows<H>(
             }
         }
     }
-    let first = start.row.max(input + 1 - STICKY_PROMPT_ROWS.min(input + 1));
+    // A grid shorter than the most rows a header holds shows fewer, so
+    // the sticky prompt never holds more cells than its grid.
+    let most = STICKY_PROMPT_ROWS.min(view.rows).max(1);
+    let first = start.row.max(input + 1 - most.min(input + 1));
     Ok(StickyRows {
         sequence: start.sequence,
         first,
