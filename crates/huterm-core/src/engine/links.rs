@@ -695,6 +695,8 @@ mod tests {
                 history_size: history,
                 cursor_color: None,
                 default_background: None,
+                commands: std::sync::Arc::new([]),
+                sticky_prompt: None,
             };
             for row in 0..ROWS {
                 for column in 0..COLUMNS {

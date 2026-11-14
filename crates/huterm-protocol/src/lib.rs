@@ -565,6 +565,11 @@ pub enum ScrollCommand {
     Absolute(usize),
     /// Follow live output.
     Live,
+    /// Move by shell prompts (OSC 133 marks), toward history for negative
+    /// values, putting the prompt reached at the viewport's top. A prompt
+    /// on the live screen returns to live output; with no prompt in that
+    /// direction the viewport stays.
+    Prompt(i32),
 }
 
 /// A keyboard key whose terminal encoding depends on emulator modes.
@@ -1151,6 +1156,38 @@ pub enum RowPrompt {
     Continuation,
 }
 
+/// Most prompt rows a [`StickyPrompt`] carries.
+pub const STICKY_PROMPT_ROWS: usize = 3;
+
+/// A shell command's block of rows, positioned for one snapshot: its prompt
+/// and input, then its output. Positions count rows above the live screen
+/// bottom, like [`BufferPoint`]. The block's state is the
+/// [`CommandRecord`] with the same sequence in [`TerminalStatus`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommandBlock {
+    /// The record this block belongs to.
+    pub sequence: u64,
+    /// The block's first prompt row.
+    pub prompt: usize,
+    /// The block's first output row, when it has output.
+    pub output: Option<usize>,
+    /// The block's last row with text, at or below `prompt`.
+    pub end: usize,
+}
+
+/// The prompt of the command whose output fills a viewport's top row, when
+/// that prompt starts above the viewport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StickyPrompt {
+    /// The record the prompt belongs to.
+    pub sequence: u64,
+    /// The prompt's rows, first row first, at most
+    /// [`STICKY_PROMPT_ROWS`], each with the snapshot's column count.
+    pub rows: Vec<Arc<TerminalRow>>,
+    /// The index in `rows` of the row that holds the command line.
+    pub input: usize,
+}
+
 /// Immutable viewport snapshot produced by the terminal runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalSnapshot {
@@ -1181,6 +1218,12 @@ pub struct TerminalSnapshot {
     pub cursor_color: Option<Rgb>,
     /// Effective OSC 11 default background override, cleared by OSC 111.
     pub default_background: Option<Rgb>,
+    /// Command blocks that reach into the viewport, in row order. Empty on
+    /// the alternate screen.
+    pub commands: Arc<[CommandBlock]>,
+    /// The prompt of the block that owns the viewport's top row, when it
+    /// starts above the viewport.
+    pub sticky_prompt: Option<StickyPrompt>,
 }
 
 impl TerminalSnapshot {

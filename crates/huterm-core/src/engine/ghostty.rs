@@ -13,21 +13,21 @@ use huterm_ghostty::{
     self as ghostty, Boundaries, CellContent, CellWidth, ClipboardLocation,
     ClipboardWrite, ClipboardWriteResult, ColorOverrides, ColorScheme,
     CursorStyle, DeviceAttributes, Dirty, Fill, Host, Mode, MouseProbe, Point,
-    ProbedFormat, ProbedTracking, RenderState, RowSemanticPrompt, Screen,
-    Scroll, StyleColor,
+    ProbedFormat, ProbedTracking, RenderState, RowRef, RowSemanticPrompt,
+    Screen, Scroll, StyleColor,
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, Cell, CellColor, CellSize, CellStyle, CellText,
-    CommandRecord, Cursor, CursorShape, GridSize, LinkLookup, MouseEncoding,
-    MouseTracking, Rgb, RowPrompt, ScrollCommand, ScrollbackLimit,
-    SelectionUnit, TerminalAppearance, TerminalId, TerminalModes,
-    TerminalPresentation, TerminalProgress, TerminalRow, TerminalSnapshot,
-    Viewport, appearance_for_background,
+    CommandBlock, CommandRecord, Cursor, CursorShape, GridSize, LinkLookup,
+    MouseEncoding, MouseTracking, Rgb, RowPrompt, ScrollCommand,
+    ScrollbackLimit, SelectionUnit, StickyPrompt, TerminalAppearance,
+    TerminalId, TerminalModes, TerminalPresentation, TerminalProgress,
+    TerminalRow, TerminalSnapshot, Viewport, appearance_for_background,
 };
 
 use super::escape_hint::EscapeHint;
 use super::links::{LinkBuffer, MAX_LINK_BYTES};
-use super::records::CommandLog;
+use super::records::{self, CommandLog};
 use super::row_matcher::{RowMatcher, viewport_shift};
 use super::{DirectoryUpdate, EngineEffect, normalize_directory};
 use crate::host_effects::{
@@ -281,6 +281,9 @@ pub(super) struct TerminalEngine {
     grapheme: Vec<u8>,
     effects: Vec<ghostty::Effect>,
     commands: CommandLog,
+    /// The last snapshot's sticky prompt, whose rows a new snapshot reuses
+    /// when they read the same.
+    retained_sticky: Option<StickyPrompt>,
     server_hostname: Option<String>,
     notifications: NotificationLimiter,
     #[cfg(test)]
@@ -342,6 +345,7 @@ impl TerminalEngine {
             grapheme: Vec::new(),
             effects: Vec::new(),
             commands: CommandLog::default(),
+            retained_sticky: None,
             server_hostname: server_hostname(),
             notifications: NotificationLimiter::default(),
             #[cfg(test)]
@@ -708,6 +712,11 @@ impl TerminalEngine {
                     self.terminal.scrollback_rows()?.saturating_sub(offset),
                 ),
                 ScrollCommand::Live => Scroll::Bottom,
+                ScrollCommand::Prompt(prompts) => {
+                    Scroll::Prompt(isize::try_from(prompts).unwrap_or(
+                        if prompts < 0 { isize::MIN } else { isize::MAX },
+                    ))
+                }
             };
         Ok(self.terminal.scroll(scroll)?)
     }
@@ -750,6 +759,12 @@ impl TerminalEngine {
         };
 
         let built = self.build_rows(full, &previous, viewport, &colors)?;
+        let (commands, sticky_prompt) = if modes.alternate_screen {
+            (Arc::from([]), None)
+        } else {
+            self.command_layout(viewport.0, &colors)
+        };
+        self.retained_sticky.clone_from(&sticky_prompt);
         // Consume damage only once the retained rows are coherent.
         self.render.clean()?;
         self.prompt_marks_stale = false;
@@ -776,6 +791,79 @@ impl TerminalEngine {
             history_size: viewport.1,
             cursor_color,
             default_background,
+            commands,
+            sticky_prompt,
+        })
+    }
+
+    /// The command blocks in the viewport, `offset` rows above the live
+    /// bottom, and the sticky prompt. A grid read that fails leaves both
+    /// out rather than failing the snapshot.
+    fn command_layout(
+        &mut self,
+        offset: usize,
+        colors: &Colors,
+    ) -> (Arc<[CommandBlock]>, Option<StickyPrompt>) {
+        let Ok(view) = self.layout_view(offset) else {
+            return (Arc::from([]), None);
+        };
+        let Ok(layout) = self.commands.layout(&self.terminal, view) else {
+            return (Arc::from([]), None);
+        };
+        let sticky = layout
+            .sticky
+            .and_then(|rows| self.sticky_prompt(view, rows, colors).ok());
+        (Arc::from(layout.blocks), sticky)
+    }
+
+    fn layout_view(
+        &self,
+        offset: usize,
+    ) -> Result<records::View, RuntimeError> {
+        let total = self.terminal.total_rows()?;
+        let rows = usize::from(self.size.rows);
+        let (_, cursor) = self.terminal.cursor_position()?;
+        Ok(records::View {
+            total,
+            rows,
+            columns: self.size.columns,
+            top: total.saturating_sub(rows).saturating_sub(offset),
+            cursor: total.saturating_sub(rows) + usize::from(cursor),
+        })
+    }
+
+    /// Extracts a sticky prompt's rows, reusing the last snapshot's `Arc`
+    /// for each row that reads the same.
+    fn sticky_prompt(
+        &mut self,
+        view: records::View,
+        rows: records::StickyRows,
+        colors: &Colors,
+    ) -> Result<StickyPrompt, RuntimeError> {
+        let resolver = Resolver {
+            overrides: &self.overrides,
+            colors,
+        };
+        let previous = self
+            .retained_sticky
+            .as_ref()
+            .map_or(&[][..], |sticky| sticky.rows.as_slice());
+        let mut extracted = Vec::with_capacity(rows.count);
+        for row in rows.first..rows.first + rows.count {
+            let line = view.row(&self.terminal, row)?;
+            let mut out = TerminalRow::default();
+            extract_ref_row(&line, &mut out, &resolver, view.columns)?;
+            extracted.push(
+                previous
+                    .iter()
+                    .find(|retained| ***retained == out)
+                    .map_or_else(|| Arc::new(out), Arc::clone),
+            );
+        }
+        Ok(StickyPrompt {
+            sequence: rows.sequence,
+            rows: extracted,
+            input: rows.input - rows.first,
         })
     }
 
@@ -1342,6 +1430,88 @@ fn extract_row(
             std::mem::swap(&mut foreground, &mut background);
         }
         out.push(Cell {
+            text,
+            foreground,
+            background,
+            style: CellStyle {
+                bold: style.bold,
+                dim: style.faint,
+                italic: style.italic,
+                underline: style.underline,
+                strikeout: style.strikethrough,
+                hidden: style.invisible,
+                wide: width == CellWidth::Wide,
+                wide_spacer: width.is_spacer(),
+            },
+        });
+    }
+    Ok(())
+}
+
+/// Reads one row's cells and flags through a grid reference, as
+/// [`extract_row`] reads them from the render state, for rows outside the
+/// viewport. A row narrower than `columns`, which incomplete reflow can
+/// leave, is padded with empty cells.
+fn extract_ref_row(
+    row: &RowRef<'_>,
+    out: &mut TerminalRow,
+    resolver: &Resolver<'_>,
+    columns: u16,
+) -> Result<(), RuntimeError> {
+    let hints = row.row()?;
+    out.wrapped = hints.wrapped()?;
+    out.wrap_continuation = hints.wrap_continuation()?;
+    out.prompt = row_prompt(hints.semantic_prompt()?);
+    out.cells.clear();
+    let mut codepoints = [0_u32; LINK_GRAPHEME_CODEPOINTS];
+    let mut grapheme = String::new();
+    for column in 0..columns {
+        let Ok(reference) = row.cell(column) else {
+            out.cells.push(Cell {
+                text: CellText::EMPTY,
+                foreground: CellColor::DefaultForeground,
+                background: CellColor::DefaultBackground,
+                style: CellStyle::default(),
+            });
+            continue;
+        };
+        let cell = reference.cell()?;
+        let style = if cell.has_styling()? {
+            reference.style()?
+        } else {
+            ghostty::Style::default()
+        };
+        let (text, background) = match cell.content()? {
+            CellContent::BackgroundPalette => (
+                CellText::EMPTY,
+                StyleColor::Palette(cell.background_palette()?),
+            ),
+            CellContent::BackgroundRgb => {
+                (CellText::EMPTY, StyleColor::Rgb(cell.background_rgb()?))
+            }
+            _ => {
+                let text = match reference.graphemes(&mut codepoints)? {
+                    Fill::Written(len) if len > 0 => {
+                        grapheme.clear();
+                        grapheme.extend(codepoints[..len].iter().map(
+                            |&codepoint| {
+                                char::from_u32(codepoint).unwrap_or('\u{fffd}')
+                            },
+                        ));
+                        grapheme_text(grapheme.as_bytes())
+                    }
+                    _ => CellText::EMPTY,
+                };
+                (text, style.background)
+            }
+        };
+        let width = cell.width()?;
+        let mut foreground = resolver.foreground(style.foreground);
+        let mut background = resolver.background(background);
+        if style.inverse {
+            std::mem::swap(&mut foreground, &mut background);
+        }
+        out.cells.push(Cell {
             text,
             foreground,
             background,

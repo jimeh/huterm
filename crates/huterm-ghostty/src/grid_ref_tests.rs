@@ -169,3 +169,86 @@ fn screen_points_track_pruned_history() {
         Error::InvalidValue
     );
 }
+
+#[test]
+fn history_cells_read_their_osc_133_role_and_style() {
+    let mut terminal = paged_terminal();
+    terminal
+        .write(b"\x1b]133;A\x07\x1b[32m> \x1b[0m\x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n")
+        .unwrap();
+    write_rows(&mut terminal, usize::from(ROWS) * 2);
+    let total = terminal.total_rows().unwrap();
+    let prompt = u32::try_from(total - usize::from(ROWS) * 2 - 3).unwrap();
+    let row = terminal.row_ref(Point::screen(4, prompt)).unwrap();
+    let cell = |column| row.cell(column).unwrap();
+    assert_eq!(
+        cell(0).cell().unwrap().semantic().unwrap(),
+        crate::CellSemantic::Prompt
+    );
+    assert_eq!(
+        cell(0).style().unwrap().foreground,
+        crate::StyleColor::Palette(2)
+    );
+    assert_eq!(
+        cell(2).cell().unwrap().semantic().unwrap(),
+        crate::CellSemantic::Input
+    );
+    assert_eq!(cell(2).style().unwrap(), crate::Style::default());
+    let output = terminal.row_ref(Point::screen(0, prompt + 1)).unwrap();
+    assert_eq!(
+        output.cell(0).unwrap().cell().unwrap().semantic().unwrap(),
+        crate::CellSemantic::Output
+    );
+}
+
+#[test]
+fn prompt_scrolls_put_the_prompt_at_the_top_and_stop_at_live() {
+    let mut terminal = paged_terminal();
+    for command in 0..3 {
+        terminal
+            .write(
+                format!("\x1b]133;A\x07$ cmd{command}\r\n\x1b]133;C\x07")
+                    .as_bytes(),
+            )
+            .unwrap();
+        write_rows(&mut terminal, usize::from(ROWS) * 3);
+    }
+    terminal.write(b"\x1b]133;A\x07$ ").unwrap();
+    let top_text = |terminal: &Terminal<()>| {
+        let row = terminal.row_ref(Point::viewport(COLUMNS - 1, 0)).unwrap();
+        let mut text = String::new();
+        for column in 0..6 {
+            let codepoint = row
+                .cell(column)
+                .unwrap()
+                .cell()
+                .unwrap()
+                .codepoint()
+                .unwrap();
+            text.push(char::from_u32(codepoint).unwrap_or(' '));
+        }
+        text.trim_end_matches('\0').to_owned()
+    };
+    // The live screen holds the newest prompt, so the first jump back
+    // reaches the prompt above it.
+    terminal.scroll(Scroll::Prompt(-1)).unwrap();
+    assert_eq!(top_text(&terminal), "$ cmd2");
+    terminal.scroll(Scroll::Prompt(-2)).unwrap();
+    assert_eq!(top_text(&terminal), "$ cmd0");
+    let at_first = terminal.scrollbar().unwrap();
+    terminal.scroll(Scroll::Prompt(-1)).unwrap();
+    assert_eq!(terminal.scrollbar().unwrap(), at_first, "no prompt above");
+    terminal.scroll(Scroll::Prompt(1)).unwrap();
+    assert_eq!(top_text(&terminal), "$ cmd1");
+    // The newest prompt is in the active area, which returns to live.
+    terminal.scroll(Scroll::Prompt(2)).unwrap();
+    let live = terminal.scrollbar().unwrap();
+    assert_eq!(live.offset + live.len, live.total);
+}
+
+/// Writes `count` plain rows.
+fn write_rows(terminal: &mut Terminal<()>, count: usize) {
+    for _ in 0..count {
+        terminal.write(b"x\r\n").unwrap();
+    }
+}

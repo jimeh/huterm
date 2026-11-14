@@ -34,8 +34,8 @@ use crate::ffi::{
     TerminalOption, TerminalPointer,
 };
 use crate::types::{
-    Cell, CellContent, CellWidth, Fill, Point, PointSpace, Rgb, Row,
-    RowSemanticPrompt, Scroll, Style, StyleColor,
+    Cell, CellContent, CellSemantic, CellWidth, Fill, Point, PointSpace, Rgb,
+    Row, RowSemanticPrompt, Scroll, Style, StyleColor,
 };
 
 /// An allocator that outlives every object created with it. `None` selects
@@ -285,6 +285,10 @@ impl NativeTerminal {
             Scroll::Row(row) => (
                 ffi::GHOSTTY_SCROLL_VIEWPORT_ROW,
                 ffi::GhosttyTerminalScrollViewportValue { row },
+            ),
+            Scroll::Prompt(delta_prompt) => (
+                ffi::GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT,
+                ffi::GhosttyTerminalScrollViewportValue { delta_prompt },
             ),
         };
         let behavior = ffi::GhosttyTerminalScrollViewport { tag, value };
@@ -687,6 +691,17 @@ impl GridRef<'_> {
         fill(code, len)
     }
 
+    /// The cell's style; the default for an unstyled cell.
+    pub(crate) fn style(&self) -> Result<Style> {
+        let mut style: ffi::GhosttyStyle = ffi::sized();
+        // SAFETY: grid_ref.h `ghostty_grid_ref_style` reads a current ref
+        // and writes the style to the exclusive, sized output.
+        let code = unsafe {
+            ffi::ghostty_grid_ref_style(&raw const self.raw, &raw mut style)
+        };
+        Error::from_code(code).map(|()| style_from_ffi(&style))
+    }
+
     /// Writes the cell's hyperlink URI; zero bytes means no hyperlink.
     pub(crate) fn hyperlink_uri(&self, buffer: &mut [u8]) -> Result<Fill> {
         let mut len = 0;
@@ -904,6 +919,16 @@ impl Cell {
     /// Fails if the library rejects the key.
     pub fn has_hyperlink(self) -> Result<bool> {
         self.get::<ffi::keys::cell_data::HasHyperlink>()
+    }
+
+    /// What OSC 133 marked the cell as.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the library rejects the key.
+    pub fn semantic(self) -> Result<CellSemantic> {
+        self.get::<ffi::keys::cell_data::SemanticContent>()
+            .map(CellSemantic::from_ffi)
     }
 
     /// The background palette index of a background-only cell.
