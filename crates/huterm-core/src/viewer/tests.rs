@@ -1993,3 +1993,20 @@ fn sizing_policies_and_a_manual_size_change_a_live_pty() {
     assert_eq!(pty_size(&probe, "cleared"), "8 70");
     runtime.shutdown().unwrap();
 }
+
+#[test]
+fn a_manual_terminal_follows_its_view_until_it_is_typed_in() {
+    let runtime = spawn(254, SIZE_SCRIPT);
+    let view = sized_viewer(&runtime, 40, 8);
+    let probe = prober(&runtime);
+    wait_for_text(&view, "READY");
+    view.set_sizing_policy(SizingPolicy::Manual).unwrap();
+    view.report_geometry(GridSize::clamped(50, 9), cell())
+        .unwrap();
+    // The probe's typing settles the terminal after the report resized it.
+    assert_eq!(pty_size(&probe, "settling"), "9 50");
+    view.report_geometry(GridSize::clamped(60, 10), cell())
+        .unwrap();
+    assert_eq!(pty_size(&probe, "settled"), "9 50");
+    runtime.shutdown().unwrap();
+}

@@ -90,8 +90,9 @@ sticky_prompt = "status"
 # the left margin), or "off". Both need shell integration.
 command_status = "tint"
 # Which views size a terminal shown in several windows: "latest" (the view
-# last focused or typed in), "smallest", "largest", or "manual" (views never
-# resize it). Set Terminal Size pins one terminal whatever this says.
+# last focused or typed in), "smallest", "largest", or "manual" (views stop
+# resizing it once you type in it). Set Terminal Size pins one terminal
+# whatever this says.
 sizing = "latest"
 
 [terminal.bell]

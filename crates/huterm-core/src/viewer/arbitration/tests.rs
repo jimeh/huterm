@@ -868,6 +868,8 @@ fn presentation_follows_the_latest_viewer_under_every_policy() {
         let mut fixture = Fixture::new();
         let first = fixture.sized(100);
         let second = fixture.sized(120);
+        // Typed in, so `manual` no longer follows the views' sizes.
+        fixture.arbiter.typed(&second);
         set_policy(&mut fixture, &first, policy);
         fixture.arbiter.presentation(&first, presentation(1));
         let effects = fixture.arbiter.presentation(&second, presentation(2));
@@ -882,10 +884,8 @@ fn the_manual_policy_keeps_the_size_until_one_is_set() {
     let mut fixture = Fixture::new();
     let first = fixture.sized(100);
     let second = fixture.sized(120);
-    // A viewer has laid the terminal out, so its size is no estimate.
-    fixture
-        .arbiter
-        .report(&second, Report::Geometry(grid(120), cell()));
+    // A terminal someone has typed in has settled.
+    fixture.arbiter.typed(&second);
     let effects = set_policy(&mut fixture, &first, SizingPolicy::Manual);
     assert_eq!(effects.resize, None, "the current size stays");
     for effects in [
@@ -964,20 +964,31 @@ fn a_manual_size_from_a_viewer_without_geometry_keeps_the_canonical_rest() {
 }
 
 #[test]
-fn the_manual_policy_takes_the_first_layout_after_a_spawn_estimate() {
+fn the_manual_policy_follows_views_until_the_terminal_is_typed_in() {
     let mut fixture = Fixture::new();
-    // The view that spawned the terminal starts with an estimate, as a new
-    // tab opened from one pane of a split does, and the policy reaches the
-    // runtime before the view's first layout.
+    // The view that spawned the terminal starts with an estimate, and its
+    // window can lay out more than once before it settles, as a Quake
+    // window does at the regular size before its frame.
     let view = fixture.sized(60);
-    let effects = set_policy(&mut fixture, &view, SizingPolicy::Manual);
-    assert_eq!(effects.resize, None);
-    let effects = fixture
-        .arbiter
-        .report(&view, Report::Geometry(grid(120), cell()));
-    assert_eq!(effects.resize, Some((grid(120), cell())));
-    let effects = fixture
-        .arbiter
-        .report(&view, Report::Geometry(grid(90), cell()));
-    assert_eq!(effects.resize, None, "the first layout is kept");
+    set_policy(&mut fixture, &view, SizingPolicy::Manual);
+    for columns in [100, 120] {
+        let effects = fixture
+            .arbiter
+            .report(&view, Report::Geometry(grid(columns), cell()));
+        assert_eq!(effects.resize, Some((grid(columns), cell())));
+    }
+    // Typing in another view moves control and resizes first, then the
+    // terminal keeps that size. Focus alone settles nothing.
+    fixture.arbiter.report(&view, Report::Focus(true));
+    let other = fixture.sized(90);
+    let effects = fixture.arbiter.typed(&other);
+    assert_eq!(effects.resize, Some((grid(90), cell())));
+    for effects in [
+        fixture
+            .arbiter
+            .report(&other, Report::Geometry(grid(70), cell())),
+        fixture.arbiter.typed(&view),
+    ] {
+        assert_eq!(effects.resize, None);
+    }
 }

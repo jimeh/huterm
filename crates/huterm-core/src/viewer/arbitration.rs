@@ -137,10 +137,11 @@ pub(crate) struct Arbiter {
     policy: SizingPolicy,
     /// The manual size, which overrides the policy while it is set.
     manual: Option<(GridSize, CellSize)>,
-    /// Whether any viewer has reported geometry. Until one has, the size is
-    /// the estimate the terminal was spawned with, which the `manual`
-    /// policy must not keep.
-    laid_out: bool,
+    /// Whether any viewer has typed in the terminal. Until one has, its
+    /// window may still be settling from the estimate it was spawned with,
+    /// such as a Quake window that lays out at the regular size before its
+    /// frame, so the `manual` policy still follows its views.
+    typed_in: bool,
     geometry_revision: u64,
     presentation: TerminalPresentation,
     /// Focused viewers with the `input` capability.
@@ -160,7 +161,7 @@ impl Arbiter {
             canonical: (grid, cell),
             policy: SizingPolicy::default(),
             manual: None,
-            laid_out: false,
+            typed_in: false,
             geometry_revision: 0,
             presentation,
             focused: 0,
@@ -343,10 +344,6 @@ impl Arbiter {
             }
         };
         effects.merge(self.recompute());
-        // After the recompute, so the first layout itself still applies.
-        if matches!(report, Report::Geometry(..)) {
-            self.laid_out = true;
-        }
         effects
     }
 
@@ -369,7 +366,11 @@ impl Arbiter {
             return Effects::default();
         };
         self.touch(index);
-        self.recompute()
+        let effects = self.recompute();
+        // After the recompute, so a terminal under `manual` takes the size
+        // of the view first typed in before it keeps it.
+        self.typed_in = true;
+        effects
     }
 
     /// Whether a mouse report from this viewer reaches the application,
@@ -411,11 +412,11 @@ impl Arbiter {
     }
 
     /// The policy that decides the size now: `manual` follows `latest`
-    /// until a viewer first lays the terminal out, so a terminal keeps the
-    /// size its first view gives it rather than its spawn estimate.
+    /// until the terminal is first typed in, so it keeps the size its
+    /// window settled at rather than its spawn estimate.
     fn effective_policy(&self) -> SizingPolicy {
         match self.policy {
-            SizingPolicy::Manual if !self.laid_out => SizingPolicy::Latest,
+            SizingPolicy::Manual if !self.typed_in => SizingPolicy::Latest,
             policy => policy,
         }
     }
