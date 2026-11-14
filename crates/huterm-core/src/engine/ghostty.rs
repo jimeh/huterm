@@ -1450,8 +1450,8 @@ fn extract_row(
 
 /// Reads one row's cells and flags through a grid reference, as
 /// [`extract_row`] reads them from the render state, for rows outside the
-/// viewport. A row narrower than `columns`, which incomplete reflow can
-/// leave, is padded with empty cells.
+/// viewport. Callers resolve the row at its last column, so every column is
+/// in bounds; a cell that still cannot be read is left empty.
 fn extract_ref_row(
     row: &RowRef<'_>,
     out: &mut TerminalRow,

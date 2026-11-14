@@ -403,3 +403,27 @@ fn newer_gestures_and_typing_replace_a_pending_prompt_jump() {
     scroll.typed();
     assert!(!scroll.has_pending_scroll());
 }
+
+#[test]
+fn a_gesture_that_leaves_the_offset_unchanged_still_replaces_a_prompt_jump() {
+    // At live output, Live and a downward scroll both clamp at offset 0.
+    for gesture in [
+        ScrollController::bottom as fn(&mut ScrollController) -> bool,
+        |scroll| scroll.scroll_rows(-3),
+        |scroll| scroll.set_desired(0),
+    ] {
+        let mut scroll = ScrollController::default();
+        scroll.complete(Viewport { bottom_offset: 0 }, 100);
+        scroll.prompt(-1);
+        gesture(&mut scroll);
+        scroll.begin_request().unwrap();
+        assert!(
+            !matches!(
+                scroll.submitted_scroll(),
+                Some(ScrollCommand::Prompt(_))
+            ),
+            "{:?}",
+            scroll.submitted_scroll()
+        );
+    }
+}

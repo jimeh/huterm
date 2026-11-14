@@ -3708,9 +3708,6 @@ impl TerminalView {
             )
     }
 
-    /// The pill at the bottom centre of the terminal bounds while scrolled
-    /// back. It consumes presses and releases so a click cannot start a
-    /// selection or application mouse input, and fades with the indicator.
     /// The sticky prompt over the pane's top rows: the prompt rows of the
     /// command whose output fills the pane, and with the `status` style how
     /// that command stands. Pressing it scrolls to the prompt.
@@ -3906,6 +3903,9 @@ impl TerminalView {
         fitted
     }
 
+    /// The pill at the bottom centre of the terminal bounds while scrolled
+    /// back. It consumes presses and releases so a click cannot start a
+    /// selection or application mouse input, and fades with the indicator.
     fn render_scroll_pill(
         &self,
         pill: ScrollPill,
@@ -4358,6 +4358,16 @@ impl Render for TerminalView {
         if let Some(header) = header {
             root = root
                 .child(self.render_sticky_prompt(header, layout, window, cx));
+            // The schedule taken at the top of this render predates the
+            // tick the header just set; without it the clock would stop
+            // once the command goes quiet.
+            if self.sticky_tick.is_some() {
+                self.frame_clock.animate(
+                    cx.entity().downgrade(),
+                    refresh::Animated::animation_schedule(self, Instant::now()),
+                    cx,
+                );
+            }
         } else {
             self.sticky_tick = None;
         }
@@ -4817,8 +4827,13 @@ fn same_presentation(
         && shown.viewport == next.viewport
         && shown.history_size == next.history_size
         && shown.commands == next.commands
-        && shown.sticky_prompt.as_ref().map(|sticky| sticky.sequence)
-            == next.sticky_prompt.as_ref().map(|sticky| sticky.sequence)
+        && shown
+            .sticky_prompt
+            .as_ref()
+            .map(|sticky| (sticky.sequence, sticky.input, sticky.rows.len()))
+            == next.sticky_prompt.as_ref().map(|sticky| {
+                (sticky.sequence, sticky.input, sticky.rows.len())
+            })
         && sticky_rows(shown)
             .zip(sticky_rows(next))
             .all(|(shown, next)| Arc::ptr_eq(shown, next))

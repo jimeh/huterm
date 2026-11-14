@@ -1057,8 +1057,11 @@ impl<S: UpdateSource + Clone> UpdateEncoder<S> {
             .map(|baseline| {
                 let mut keep = KeyMap::default();
                 for (index, row) in all_rows(baseline).enumerate() {
-                    keep.entry(row.identity())
-                        .or_insert(u16::try_from(index).unwrap_or(u16::MAX));
+                    // A sticky row past the 16-bit positions a kept
+                    // range names travels in full instead.
+                    if let Ok(index) = u16::try_from(index) {
+                        keep.entry(row.identity()).or_insert(index);
+                    }
                 }
                 keep
             })
@@ -1260,8 +1263,11 @@ impl<S: UpdateSource> PlannedUpdate<S> {
             .map(|(_, baseline)| {
                 let mut keep = KeyMap::default();
                 for (index, row) in all_rows(baseline).enumerate() {
-                    keep.entry(row.identity())
-                        .or_insert(u16::try_from(index).unwrap_or(u16::MAX));
+                    // A sticky row past the 16-bit positions a kept
+                    // range names travels in full instead.
+                    if let Ok(index) = u16::try_from(index) {
+                        keep.entry(row.identity()).or_insert(index);
+                    }
                 }
                 keep
             })
@@ -1279,8 +1285,9 @@ impl<S: UpdateSource> PlannedUpdate<S> {
             if let Some(kept) = keep.get(&row.identity()) {
                 match ops.last_mut() {
                     Some(FrameOp::Keep { start, count })
-                        if u32::from(*start) + u32::from(*count)
-                            == u32::from(*kept) =>
+                        if *count < u16::MAX
+                            && u32::from(*start) + u32::from(*count)
+                                == u32::from(*kept) =>
                     {
                         *count += 1;
                     }
@@ -1821,7 +1828,8 @@ pub fn encode_update(
     for op in rows {
         match op {
             RowOp::Keep(index)
-                if baseline.is_none() || *index >= keep_limit(size.rows) =>
+                if baseline.is_none()
+                    || usize::from(*index) >= keep_limit(size.rows) =>
             {
                 return Err(EncodeError::Invalid("keep index"));
             }
@@ -1989,10 +1997,10 @@ fn write_header(
     })
 }
 
-/// The highest baseline row a kept range may reach: a baseline holds the
+/// How many baseline rows a kept range may reach: a baseline holds the
 /// viewport's rows and at most [`sticky_rows_limit`] more.
-fn keep_limit(rows: u16) -> u16 {
-    rows.saturating_add(sticky_rows_limit(rows))
+fn keep_limit(rows: u16) -> usize {
+    usize::from(rows) + usize::from(sticky_rows_limit(rows))
 }
 
 fn write_style(w: &mut Writer, style: &StyleEntry) -> Result<(), EncodeError> {
@@ -2022,8 +2030,9 @@ fn wire_ops(rows: &[RowOp]) -> Vec<WireOp<'_>> {
     for op in rows {
         match (op, ops.last_mut()) {
             (RowOp::Keep(index), Some(WireOp::Keep { start, count }))
-                if u32::from(*start) + u32::from(*count)
-                    == u32::from(*index) =>
+                if *count < u16::MAX
+                    && u32::from(*start) + u32::from(*count)
+                        == u32::from(*index) =>
             {
                 *count += 1;
             }
@@ -2384,7 +2393,7 @@ fn read_commands(
 fn decode_ops(
     r: &mut Reader<'_>,
     total: usize,
-    keep_limit: u16,
+    keep_limit: usize,
     delta: bool,
     columns: usize,
     styles: &[StyleEntry],
@@ -2400,7 +2409,12 @@ fn decode_ops(
                 let start = r.u16()?;
                 let kept = r.u16()?;
                 let end = usize::from(start) + usize::from(kept);
-                if !delta || kept == 0 || end > usize::from(keep_limit) {
+                // Every kept position is a 16-bit row number.
+                if !delta
+                    || kept == 0
+                    || end > keep_limit
+                    || end > usize::from(u16::MAX) + 1
+                {
                     return Err(DecodeError::Invalid("keep index"));
                 }
                 // Checked per operation, so repeated ranges never build
@@ -2408,7 +2422,7 @@ fn decode_ops(
                 if rows.len() + usize::from(kept) > total {
                     return Err(DecodeError::TooLong { field: "rows" });
                 }
-                rows.extend((start..).take(usize::from(kept)).map(RowOp::Keep));
+                rows.extend((start..=start + (kept - 1)).map(RowOp::Keep));
             }
             1 if rows.len() == total => {
                 return Err(DecodeError::TooLong { field: "rows" });

@@ -142,7 +142,9 @@ fn marks_are_clipped_to_the_viewport() {
 
 #[test]
 fn the_header_shows_the_command_row_or_the_whole_prompt() {
-    let mut shown = snapshot(30, &[]);
+    // Scrolled 30 rows up, the top row is 39 rows above the bottom, inside
+    // command 4's output.
+    let mut shown = snapshot(30, &[block(4, 60, Some(58), 20)]);
     shown.sticky_prompt = Some(StickyPrompt {
         sequence: 4,
         rows: vec![row("~/src"), row("$ make")],
@@ -165,6 +167,14 @@ fn the_header_shows_the_command_row_or_the_whole_prompt() {
     );
     assert_eq!(whole.input, 1);
     assert!(header(&shown, StickyPromptStyle::Off).is_none());
+    // When the command ends on the top row, two header rows would cover the
+    // next command's prompt, so the whole prompt gives way to its command
+    // row.
+    let mut ending = shown.clone();
+    ending.commands = [block(4, 60, Some(58), 39)].into();
+    let row_only = header(&ending, StickyPromptStyle::Prompt).unwrap();
+    assert_eq!(row_only.rows.len(), 1);
+    assert_eq!(row_text(&row_only.rows[0]), "$ make");
 
     let mut short = shown.clone();
     short.size = GridSize::clamped(20, STICKY_MIN_ROWS - 1);
@@ -268,4 +278,26 @@ fn the_command_row_makes_room_for_the_status() {
         fitted("$ echo one two three four five", 31, 20).as_deref(),
         Some("$ echo one two\u{2026}")
     );
+}
+
+#[test]
+fn a_wrapped_command_row_or_a_wide_character_is_not_a_right_prompt() {
+    // A command long enough to wrap fills its row; its double space is part
+    // of the command, so it is cut with an ellipsis, not dropped.
+    let mut wrapped = padded("$ echo a  bbbbbbbbbb", 20);
+    wrapped.wrapped = true;
+    assert_eq!(
+        fit_row(&wrapped, 14).map(|row| row_text(&row)).as_deref(),
+        Some("$ echo a\u{2026}")
+    );
+    // A wide character's spacer and one space are not a two-blank gap.
+    let mut wide = padded("$ ls ", 12);
+    wide.cells[5].text = CellText::from("\u{754c}");
+    wide.cells[5].style.wide = true;
+    wide.cells[6].style.wide_spacer = true;
+    wide.cells[7].text = CellText::BLANK;
+    wide.cells[8].text = CellText::from("x");
+    wide.cells[9].text = CellText::from("y");
+    wide.cells[10].text = CellText::from("z");
+    assert_eq!(fit_row(&wide, 12), None, "it fits as it is");
 }

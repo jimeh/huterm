@@ -1,6 +1,6 @@
 # Command output navigation, selection, and status (#38)
 
-Status: approved.
+Status: implemented in PR #477.
 
 Jim settled the styles on 2026-11-14: every header variant (H1 to H3) and
 every failure display (T1 to T3) from the mockups is a setting, with H3 and
@@ -70,32 +70,28 @@ screen. The alternate screen gets none.
 - **Positions** come from each record's tracked anchor. Ghostty's
   `pointFromPin` walks page nodes. In viewport space it walks forward from
   the viewport's top page and returns no value for a pin above the viewport
-  (`PageList.zig` `pointFromPin`). In screen space it walks from the top of
-  history. Walking every record on every snapshot would cost up to 256
-  history walks, so core assumes that records follow row order (sequence
-  order is row order unless cursor addressing intervened):
-  - It binary-searches the records in viewport space for the oldest one at
-    or below the viewport's top. That takes about 8 probes.
-  - It reads the following records forward until one lies below the
-    viewport.
-  - The record just before that boundary owns the top row. Its prompt
-    position costs one walk in screen space, and only while the header is
-    shown.
-  A `bench:engine` fixture with 256 records, live and scrolled near the top
-  of 100,000 rows, measures the cost before and after.
+  (`PageList.zig` `pointFromPin`); in screen space it walks from the top of
+  history. Core reads every record with a value once in viewport space,
+  which costs a page or two per record at live output, and orders the ones
+  it can place by row, not sequence: cursor addressing can draw a newer
+  prompt above an older one. Of the records above the viewport, only the
+  newest four are placed in screen space, and the lowest of them owns the
+  viewport's top row. A first design binary-searched the records on the
+  assumption that sequence order is row order; review showed cursor
+  addressing breaks that assumption, and the full scan costs about 20 us at
+  live and 70 us scrolled near the top of 100,000 rows with 256 records
+  (`bench:engine` `resize-history`).
 - **Validation and aliasing:** a record is used only when its anchor row is
-  still marked as a primary prompt. Positions must also strictly increase
-  with sequence. When a newer record's row is at or above an older record's,
-  as when in-place erasure (or `scrollback = 0`, which deletes rows in
-  place) moves an older anchor onto a newer prompt (see the #352 plan), the
-  older record is dropped. Its status therefore never paints over another
-  command's block. A record that fails these checks gets no block, tint, or
-  header.
+  still marked as a primary prompt, and of records on one row only the
+  newest is: in-place erasure (or `scrollback = 0`, which deletes rows in
+  place) can move an older anchor onto a newer prompt (see the #352 plan),
+  and the older record's status must never paint over that command's
+  block. A record that fails these checks gets no block, tint, or header.
 - **Block extent:** a block runs from its prompt row to the row before the
-  next block's prompt. The next block is the next validated record in row
-  order, the pending prompt anchor, or, for the newest command, the cursor
-  row. `output` is the first row after the prompt group (the primary row and
-  the continuation rows after it) and is `None` if that row is past the end.
+  next prompt below it: the nearest of the next validated record in row
+  order and the pending prompt anchor, or else the cursor row. `output` is
+  the first row after the prompt group (the primary row and the
+  continuation rows after it) and is `None` if that row is past the end.
   `end` trims trailing rows that hold no text or carry a prompt mark,
   bounded to 64 rows. This trimming removes empty prompts from Enter and
   Ctrl-L left between two commands. OSC 133 A is a fresh-line prompt start
@@ -104,15 +100,15 @@ screen. The alternate screen gets none.
   starts prompts with `P` alone can share a row; that is accepted.
 - **Which blocks:** those that overlap the viewport, plus the block that owns
   the viewport's top row when its prompt is above the viewport.
-- **Sticky prompt:** set when the top viewport row is neither a prompt row
-  nor the owning block's first output row, and the owning block's prompt is
-  above the viewport. Its rows are extracted through grid references with
-  the same cell mapping as viewport rows (colors, styles, graphemes, and the
-  text caps). They are cached by sequence, generation, and the effective
-  colors, because presentation changes recolor rows without advancing the
-  generation. An unchanged header keeps its `Arc` rows. `input` is the
-  first prompt row with an input cell (Ghostty's cell semantic content), or
-  else the last prompt row.
+- **Sticky prompt:** set when the owning block's prompt is above the
+  viewport and the viewport's top row is in its output. It holds at most
+  `min(3, grid rows)` rows, so it never holds more cells than its grid.
+  Its rows are extracted through grid references with the same cell
+  mapping as viewport rows (colors, styles, graphemes, and the text caps).
+  They are extracted again for every snapshot, which follows presentation
+  changes, and each keeps the last snapshot's `Arc` when it reads the same.
+  `input` is the first prompt row with an input cell (Ghostty's cell
+  semantic content), or else the last prompt row.
 - **Accepted gap:** a prompt with no record, such as an empty Enter or a
   Ctrl-L redraw, does not start a block. Rows between it and the next
   record belong to the earlier block, apart from the trimmed tail.
@@ -121,8 +117,6 @@ screen. The alternate screen gets none.
   (`ghostty_grid_ref_style`) and the cell's semantic content
   (`GHOSTTY_CELL_DATA_SEMANTIC_CONTENT`). Both get safe wrappers,
   regenerated bindings (`mise run ghostty:bindings`), and contract tests.
-  Tracked anchors are read through `ghostty_tracked_grid_ref_snapshot`,
-  which needs no walk.
 
 ### Core: prompt navigation
 
@@ -134,14 +128,16 @@ move. Because the command uses Ghostty's row marks, it also stops at prompts
 that have no record. It travels as a scroll, with the existing scroll
 numbering, capability check, and return-to-live rules, and needs a wire tag.
 `Engine::requested_viewport`, which predicts a scroll's offset, cannot
-predict a prompt jump. For `Prompt` it applies the scroll and reads the
-resulting viewport instead of predicting it.
+predict a prompt jump. For `Prompt` it reports the current offset, as for
+no scroll.
 
 ### Wire
 
 - A `ScrollCommand` tag for `Prompt`.
 - Update encoding for `commands` and `sticky_prompt`. Sticky rows travel as
-  rows, each with the same caps and run forms as viewport rows. Both fields
+  rows after the viewport's, each with the same caps and run forms, and keep
+  and diff like them; a sticky row past the 16-bit positions a kept range
+  names, which only the tallest grids reach, travels in full. Both fields
   get digest words and caps headroom.
 - Minor 0 vectors and `SAMPLE_VIEW_DIGEST` are regenerated, because minor 0
   is unreleased. `huterm-server`'s `ModelTerminal` handles `Prompt`.
@@ -274,6 +270,21 @@ resulting viewport instead of predicting it.
 | Settings toggles and schema | config tests and the schema check |
 | Native: navigate and select in a real shell, while another pane does not move | `smoke:macos-input` extension, or a desktop harness test if the smoke cannot drive it; manual check on Linux in the GNOME VM if needed |
 | Tint legibility with themes, selection, ANSI backgrounds, opacity | Screenshots: dark and light themes, a selection, an ANSI background, a translucent window; compared with the chosen mockup |
+
+### Deviations
+
+- Record cap and clear scrollback for blocks rely on the #352 record tests
+  (eviction and the cap), which decide which records layout sees.
+- ED 2 away from a prompt scrolls the screen into history in Ghostty, so
+  the remapped-anchor test deletes the prompt's row in place (DL) instead.
+- No runtime test for `Prompt` scroll numbering or for two viewers: the
+  jump travels through the existing numbered scroll path, and moving every
+  view of a terminal is the shared viewport's documented behavior.
+- A drag passing under the header and native navigation in a real shell
+  were checked by hand in a computer-use UX review on macOS, not by a view
+  test or a `smoke:macos-input` extension. Linux was not checked by hand.
+- `bench:wire` runs in CI's `ci:benchmarks` and `fuzz:wire` in the nightly
+  workflow; neither ran locally for this change.
 
 ## Open questions
 

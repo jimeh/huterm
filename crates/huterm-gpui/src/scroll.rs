@@ -91,6 +91,7 @@ impl ScrollController {
 
     pub(super) fn scroll_rows(&mut self, rows: i64) -> bool {
         let previous = self.desired;
+        let jumping = self.prompt_pending();
         if rows > 0 {
             self.desired = self
                 .desired
@@ -102,11 +103,14 @@ impl ScrollController {
             );
         }
         let changed = self.desired != previous;
-        if changed {
+        if jumping {
+            // A newer gesture replaces a prompt jump not yet sent, even one
+            // clamped at either end.
+            self.pending_scroll = Some(ScrollCommand::Absolute(self.desired));
+        } else if changed {
             let delta = i64::try_from(self.desired).unwrap_or(i64::MAX)
                 - i64::try_from(previous).unwrap_or(i64::MAX);
             self.pending_scroll = Some(match self.pending_scroll {
-                // A newer gesture replaces a prompt jump not yet sent.
                 Some(
                     ScrollCommand::Absolute(_)
                     | ScrollCommand::Live
@@ -118,7 +122,11 @@ impl ScrollController {
                 None => ScrollCommand::Relative(delta),
             });
         }
-        changed
+        changed || jumping
+    }
+
+    fn prompt_pending(&self) -> bool {
+        matches!(self.pending_scroll, Some(ScrollCommand::Prompt(_)))
     }
 
     /// Jumps by `prompts` shell prompts, toward history when negative. The
@@ -147,7 +155,7 @@ impl ScrollController {
     pub(super) fn bottom(&mut self) -> bool {
         let changed = self.desired != 0;
         self.desired = 0;
-        if changed || self.in_flight {
+        if changed || self.in_flight || self.prompt_pending() {
             self.pending_scroll = Some(ScrollCommand::Live);
         }
         self.pixel_remainder = 0.0;
@@ -168,7 +176,7 @@ impl ScrollController {
         let offset = offset.min(self.history);
         let changed = self.desired != offset;
         self.desired = offset;
-        if changed {
+        if changed || self.prompt_pending() {
             self.pending_scroll = Some(ScrollCommand::Absolute(offset));
         }
         self.pixel_remainder = 0.0;
