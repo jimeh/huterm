@@ -270,6 +270,10 @@ pub(crate) fn write_scroll(w: &mut Writer, scroll: ScrollCommand) {
             w.usize(offset);
         }
         ScrollCommand::Live => w.tag(2),
+        ScrollCommand::Prompt(prompts) => {
+            w.tag(3);
+            w.i64(i64::from(prompts));
+        }
     }
 }
 
@@ -281,6 +285,10 @@ pub(crate) fn read_scroll(
         0 => ScrollCommand::Relative(r.i64()?),
         1 => ScrollCommand::Absolute(r.usize()?),
         2 => ScrollCommand::Live,
+        3 => ScrollCommand::Prompt(
+            i32::try_from(r.i64()?)
+                .map_err(|_| DecodeError::Invalid("prompt scroll"))?,
+        ),
         tag => {
             return Err(DecodeError::UnknownTag {
                 field: "scroll command",

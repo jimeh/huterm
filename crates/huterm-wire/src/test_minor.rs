@@ -457,7 +457,7 @@ impl UpdateSource for Arc<TestSnapshot> {
     type Row = Arc<TestRow>;
 
     fn metadata(&self) -> ViewMetadata {
-        self.metadata
+        self.metadata.clone()
     }
 
     fn rows(&self) -> &[Self::Row] {

@@ -110,6 +110,8 @@ fn snapshot_of(
         history_size: 0,
         cursor_color: None,
         default_background: None,
+        commands: std::sync::Arc::new([]),
+        sticky_prompt: None,
     }
 }
 

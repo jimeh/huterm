@@ -326,6 +326,28 @@ terminal up, so the end follows at once; on Linux a descendant that ignores
 SIGHUP keeps it open, and the record stays running until that descendant
 closes it.
 
+Snapshots position the records for #38 (see
+[the plan](../plans/command-output-navigation.md)): `commands` holds the
+blocks that reach into the viewport and `sticky_prompt` the prompt rows of
+the block that owns the top row when its prompt is above the viewport.
+`CommandLog::layout` reads every record's anchor once per snapshot in
+viewport space, which walks only from the viewport's top page and reports
+no value above it, and orders records by row, never by sequence: cursor
+addressing can draw a newer prompt above an older one, and a binary search
+over sequences once gave a newer command's rows to an older failure. Every
+record above the viewport is placed in screen space, the costliest read,
+because any number of newer prompts can sit above the one that owns the
+top row. A record is used only when its anchor sits on a primary
+prompt row, and of records on one row only the newest: in-place erasure
+and `scrollback = 0` move anchors onto other rows. The sticky prompt holds
+at most `min(3, grid rows)` rows, or the wire would refuse it. Every grid
+read there picks the cheapest space (active, viewport, then screen) and is
+bounded, and a failed read leaves the blocks out rather than failing the
+snapshot. `bench:engine`'s `resize-history` reports `scrolled_snapshot_us` for the
+costliest place, near the top of 100,000 rows with 256 records below.
+`ScrollCommand::Prompt` is Ghostty's prompt jump; nothing predicts where it
+lands, so `requested_viewport` reports the current offset for it.
+
 ## Snapshots and link lookup
 
 Construct non-Send native handles on their owner thread before spawning the PTY;
@@ -557,6 +579,12 @@ dependency rule.
   decoders bound the expanded row count at every operation. `mise run
   bench:wire` measures the codec and gates its time and bytes; see
   [the plan's performance pass](../plans/runtime-ipc.md#wire-performance-pass).
+- A snapshot's sticky prompt rows travel as an update's rows after the
+  viewport's, so they keep and diff like viewport rows; the header carries
+  the command blocks and the sticky prompt's row count. A baseline holds
+  up to `sticky_rows_limit` rows beyond the grid, so a kept range may reach
+  past the grid's rows, and the style table may hold an entry per sticky
+  cell too (`style_table_limit`). Update caps include both.
 - Core keeps every state encodable on every path, embedded mode included:
   `GridSize::clamped` caps grids at `MAX_GRID_CELLS`, row extraction cuts
   cell text at `MAX_CELL_TEXT_BYTES`, and `StatusPublisher` cuts status text

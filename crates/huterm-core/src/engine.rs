@@ -213,7 +213,9 @@ impl TerminalEngine {
     ) -> Result<huterm_protocol::Viewport, RuntimeError> {
         let (current, history) = self.inner.viewport_state()?;
         let offset = match scroll {
-            None => current,
+            // Where a prompt jump lands depends on the grid's marks, so
+            // it is not predicted.
+            None | Some(ScrollCommand::Prompt(_)) => current,
             Some(ScrollCommand::Live) => 0,
             Some(ScrollCommand::Absolute(offset)) => offset,
             Some(ScrollCommand::Relative(delta)) if delta >= 0 => current
@@ -382,6 +384,9 @@ mod directory_tests;
 
 #[cfg(test)]
 mod record_tests;
+
+#[cfg(test)]
+mod block_tests;
 
 #[cfg(test)]
 mod clipboard_tests;

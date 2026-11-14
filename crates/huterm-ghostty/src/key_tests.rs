@@ -353,6 +353,11 @@ fn screen_cell_and_row_keys_write_exactly_their_output_type() {
             &ffi::GhosttyColorRgb::default()
         )
     );
+    exact!(
+        cells,
+        SemanticContent,
+        key_probe::cell::<cell::SemanticContent>(text, &0)
+    );
     covers(cells, cell::KEYS);
 
     let value = terminal

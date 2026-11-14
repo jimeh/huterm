@@ -14,7 +14,10 @@ and on Linux x86_64 and aarch64 under X11 or XWayland. Every terminal uses
 GPUI for rendering.
 
 Huterm automatically loads [shell integration](docs/configuration.md#shell-integration)
-for bash, zsh, fish, and nushell, with an opt-in Elvish module.
+for bash, zsh, fish, and nushell, with an opt-in Elvish module. With it,
+you can [jump between commands](docs/configuration.md#commands-and-their-output),
+select a command's output, see failed commands at a glance, and keep a
+long command's prompt pinned above its output.
 
 ## What works today
 

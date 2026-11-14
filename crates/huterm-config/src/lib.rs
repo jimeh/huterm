@@ -160,6 +160,8 @@ pub struct TerminalConfig {
     pub right_click: RightClickAction,
     pub scrollback: ScrollbackLimit,
     pub scrollback_compression: bool,
+    pub sticky_prompt: StickyPromptStyle,
+    pub command_status: CommandStatusStyle,
 }
 
 impl Default for TerminalConfig {
@@ -179,8 +181,80 @@ impl Default for TerminalConfig {
             right_click: RightClickAction::Menu,
             scrollback: ScrollbackLimit::DEFAULT,
             scrollback_compression: true,
+            sticky_prompt: StickyPromptStyle::default(),
+            command_status: CommandStatusStyle::default(),
         }
     }
+}
+
+/// What a pane shows at its top while a command's output fills it and the
+/// command's prompt has scrolled above it.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum StickyPromptStyle {
+    /// The prompt row holding the command, and how the command stands.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Command and status"))
+    )]
+    Status,
+    /// The prompt row holding the command.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Command"))
+    )]
+    Command,
+    /// Every row of the prompt, up to three.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Whole prompt"))
+    )]
+    Prompt,
+    /// Nothing.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Off"))
+    )]
+    Off,
+}
+
+/// How a pane marks commands that exited with a nonzero status.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CommandStatusStyle {
+    /// A faint red background behind the failed command's rows.
+    #[default]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Tint"))
+    )]
+    Tint,
+    /// The tint, and a mark beside every prompt: green when the command
+    /// exited 0, red when it failed.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Tint and prompt marks"))
+    )]
+    TintMarks,
+    /// A red bar in the left margin along the failed command's rows.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Bar in the margin"))
+    )]
+    Bar,
+    /// Nothing.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("x-huterm-label" = "Off"))
+    )]
+    Off,
 }
 
 /// What a right-click on the terminal does when no application has taken
@@ -3178,6 +3252,27 @@ pub struct RawTerminal {
         "x-huterm-apply" = "live",
     )))]
     pub scrollback_compression: bool,
+    /// While a command's output fills a pane and its prompt has scrolled
+    /// above the pane, show that prompt at the top. Clicking it scrolls to
+    /// the prompt. Needs shell integration.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Shell integration",
+        "x-huterm-label" = "Sticky prompt",
+        "x-huterm-order" = 82,
+        "x-huterm-apply" = "live",
+    )))]
+    pub sticky_prompt: StickyPromptStyle,
+    /// Mark commands that exited with a nonzero status. Needs shell
+    /// integration.
+    #[cfg_attr(feature = "schema", schemars(extend(
+        "x-huterm-section" = "terminal",
+        "x-huterm-group" = "Shell integration",
+        "x-huterm-label" = "Failed commands",
+        "x-huterm-order" = 83,
+        "x-huterm-apply" = "live",
+    )))]
+    pub command_status: CommandStatusStyle,
 }
 impl Default for RawTerminal {
     fn default() -> Self {
@@ -3198,6 +3293,8 @@ impl Default for RawTerminal {
             scrollback_rows: ScrollbackLimit::DEFAULT.rows(),
             scrollback_bytes: None,
             scrollback_compression: true,
+            sticky_prompt: StickyPromptStyle::default(),
+            command_status: CommandStatusStyle::default(),
         }
     }
 }

@@ -394,6 +394,24 @@ const RESIZE_HISTORY_P50_BUDGET_US: u128 = 45_000;
 /// for allocator and platform differences.
 const RESIZE_HISTORY_PEAK_RSS_BUDGET_KIB: i64 = 140 * 1024;
 
+/// Sorted snapshot times, in microseconds, scrolled `offset` rows above
+/// live output. Near the top of history every record lies below the
+/// viewport, the costliest place for the command layout's reads. Each step
+/// moves the viewport, as a wheel scroll does.
+fn scrolled_snapshots(engine: &mut TerminalEngine, offset: usize) -> Vec<u128> {
+    engine.scroll(ScrollCommand::Absolute(offset)).unwrap();
+    let mut scrolled = Vec::new();
+    for iteration in 0..20 {
+        let rows = if iteration % 2 == 0 { -1 } else { 1 };
+        engine.scroll(ScrollCommand::Relative(rows)).unwrap();
+        let started = Instant::now();
+        black_box(engine.snapshot().unwrap());
+        scrolled.push(started.elapsed().as_micros());
+    }
+    scrolled.sort_unstable();
+    scrolled
+}
+
 #[test]
 #[ignore = "release benchmark; run through mise run bench:engine"]
 fn engine_benchmark_resize_history() {
@@ -466,12 +484,18 @@ fn engine_benchmark_resize_history() {
         }
         resizing.sort_unstable();
         snapshots.sort_unstable();
+        let scrolled = scrolled_snapshots(&mut engine, after);
         let peak_rss = peak_rss_kib();
         // Sizes above the configurable maximum are measured, not gated.
         let gated = rows <= ScrollbackLimit::MAX.rows();
         println!(
-            "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} records={records} gated={gated} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={} peak_rss_kib={peak_rss}",
-            resizing[10], resizing[19], snapshots[10], snapshots[19]
+            "engine=ghostty fixture=resize-history iterations=20 columns=100/120 rows=40 limit_rows={rows} history_rows_before={before} history_rows_after={after} records={records} gated={gated} resize_us_p50={} resize_us_max={} snapshot_us_p50={} snapshot_us_max={} scrolled_snapshot_us_p50={} scrolled_snapshot_us_max={} peak_rss_kib={peak_rss}",
+            resizing[10],
+            resizing[19],
+            snapshots[10],
+            snapshots[19],
+            scrolled[10],
+            scrolled[19]
         );
         // The budgets hold only for saturated history that reflow keeps.
         assert!(

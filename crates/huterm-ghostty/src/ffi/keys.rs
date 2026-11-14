@@ -739,6 +739,7 @@ pub(crate) mod cell_data {
         "HAS_HYPERLINK",
         "COLOR_PALETTE",
         "COLOR_RGB",
+        "SEMANTIC_CONTENT",
     ];
 
     /// `GHOSTTY_CELL_DATA_CODEPOINT`.
@@ -811,6 +812,16 @@ pub(crate) mod cell_data {
     impl super::super::CellData for ColorRgb {
         const KEY: ffi::GhosttyCellData = ffi::GHOSTTY_CELL_DATA_COLOR_RGB;
         type Out = ffi::GhosttyColorRgb;
+    }
+
+    /// `GHOSTTY_CELL_DATA_SEMANTIC_CONTENT`.
+    #[derive(Debug)]
+    pub(crate) enum SemanticContent {}
+
+    impl super::super::CellData for SemanticContent {
+        const KEY: ffi::GhosttyCellData =
+            ffi::GHOSTTY_CELL_DATA_SEMANTIC_CONTENT;
+        type Out = ffi::GhosttyCellSemanticContent;
     }
 }
 

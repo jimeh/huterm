@@ -129,6 +129,11 @@ pub enum Scroll {
     Delta(isize),
     /// Top-based row that becomes the viewport's first row.
     Row(usize),
+    /// Prompts to move by, putting the prompt reached at the viewport's
+    /// top; negative values move toward history. A prompt in the active
+    /// area returns the viewport to the live screen, and with no prompt in
+    /// that direction the viewport stays.
+    Prompt(isize),
 }
 
 /// A terminal mode identifier, packed like the header's `GhosttyMode`.
@@ -598,6 +603,33 @@ pub enum CellContent {
     BackgroundRgb,
     /// A tag this binding does not know.
     Unknown(i32),
+}
+
+/// What OSC 133 marked a cell as when it was written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CellSemantic {
+    /// Command output, and the default for unmarked cells.
+    Output,
+    /// Text the user typed at a prompt.
+    Input,
+    /// Prompt text.
+    Prompt,
+    /// A value this binding does not know.
+    Unknown(i32),
+}
+
+impl CellSemantic {
+    pub(crate) const fn from_ffi(
+        value: ffi::GhosttyCellSemanticContent,
+    ) -> Self {
+        match value {
+            ffi::GHOSTTY_CELL_SEMANTIC_OUTPUT => Self::Output,
+            ffi::GHOSTTY_CELL_SEMANTIC_INPUT => Self::Input,
+            ffi::GHOSTTY_CELL_SEMANTIC_PROMPT => Self::Prompt,
+            other => Self::Unknown(other),
+        }
+    }
 }
 
 /// A cell's width role.

@@ -345,6 +345,8 @@ fn snapshot(
         history_size,
         cursor_color: None,
         default_background: None,
+        commands: std::sync::Arc::new([]),
+        sticky_prompt: None,
     })
 }
 

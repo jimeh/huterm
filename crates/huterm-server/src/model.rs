@@ -781,6 +781,8 @@ impl State {
             history_size: self.history.len(),
             cursor_color: None,
             default_background: None,
+            commands: std::sync::Arc::new([]),
+            sticky_prompt: None,
         }
     }
 }
@@ -992,6 +994,9 @@ impl ViewerPort for ModelPort {
                 }
                 ScrollCommand::Absolute(offset) => offset,
                 ScrollCommand::Live => 0,
+                // The model records no prompts, so a prompt jump finds
+                // none and stays.
+                ScrollCommand::Prompt(_) => state.offset,
             }
             .min(history);
             state.scrolls.push((id, number));
