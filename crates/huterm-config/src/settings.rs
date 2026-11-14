@@ -1172,6 +1172,7 @@ mod tests {
             titles,
             [
                 "Shell",
+                "Size",
                 "Keyboard",
                 "Mouse",
                 "Clipboard",
@@ -1181,13 +1182,14 @@ mod tests {
                 "Compatibility"
             ]
         );
-        assert_eq!(groups[3].1, ["terminal.clipboard_write"]);
+        assert_eq!(groups[1].1, ["terminal.sizing"]);
+        assert_eq!(groups[4].1, ["terminal.clipboard_write"]);
         assert_eq!(
-            groups[4].1,
+            groups[5].1,
             ["terminal.notifications", "terminal.progress_bar"]
         );
         assert_eq!(
-            groups[5].1,
+            groups[6].1,
             [
                 "terminal.bell.visual",
                 "terminal.bell.audio",

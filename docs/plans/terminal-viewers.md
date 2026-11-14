@@ -1410,6 +1410,29 @@ aggregation, cell size under mixed scales, and how manual size interacts
 with viewers' requests. It does not block [#26][issue-26], [#28][issue-28],
 or [#44][issue-44].
 
+Delivered for [#207][issue-207] with these decisions:
+
+- The arbiter keeps a per-terminal `SizingPolicy` and an optional manual
+  size. Viewers with `size` set both through ordered arbitration reports,
+  like geometry; the latest report from any viewer applies. The desktop
+  sends the configured policy with the history settings when a view starts
+  and on every reload.
+- Participants are the candidates `latest` already uses, shown or hidden.
+  Visibility still plays no part, so tab switches, focus, typing, and
+  snapshots never resize under `smallest`, `largest`, or `manual`.
+- `smallest` and `largest` take the minimum or maximum of columns and of
+  rows separately, clamped to the cell limit. Their cell size is the largest
+  width and height any participant reports, so focus never changes the
+  PTY's pixel size on mixed display scales.
+- `manual` keeps the current size. A manual size overrides every policy:
+  omitted columns or rows, and the cell size, come from the requesting
+  viewer's latest geometry. Requested geometry and pane zoom never change
+  it, and clearing returns to the policy at once. It is not saved with the
+  session.
+- Presentation follows the controlling viewer under every policy.
+- The policy and the manual size do not cross runtime IPC yet; see
+  [the runtime IPC plan](runtime-ipc.md).
+
 ## Verification
 
 ### PR 1

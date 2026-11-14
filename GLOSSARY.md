@@ -81,8 +81,16 @@ capabilities. One attachment can hold many viewers, one per displayed terminal.
 A viewer is not an attachment and does not affect session membership.
 
 **Controlling viewer**:
-The viewer whose geometry and presentation a terminal uses: the one that most
-recently gained focus or typed.
+The viewer whose presentation a terminal uses, and whose geometry it uses
+under the `latest` sizing policy: the one that most recently gained focus or
+typed.
+
+**Sizing policy**:
+A terminal's rule for its size when several viewers show it: `latest`
+follows the controlling viewer, `smallest` and `largest` aggregate every
+participating viewer's columns and rows, and `manual` lets no viewer resize
+it. A **manual size** set on the terminal overrides the policy until it is
+cleared.
 
 **Client layout**:
 The saved arrangement of a client's views, workspace selections, and presentation

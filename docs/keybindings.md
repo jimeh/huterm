@@ -319,6 +319,8 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `select_all` | Terminal | Selects the scrollback and screen. |
 | `clear_scrollback` | Terminal | Erases the scrollback and keeps the screen. |
 | `reset_terminal` | Terminal | Resets the screen, scrollback, and modes, as RIS does. |
+| `set_terminal_size` | Terminal | Optional `columns` and `rows`, each 1 to 1000; an omitted one keeps the size this view shows, so Enter in the palette fixes the terminal at its current view's size and Tab opens both. Fixes the focused terminal at that size whatever `terminal.sizing` says, until `clear_terminal_size` or the terminal ends; views of another size show background around it or part of it. No default binding. See [shared terminal size](configuration.md#shared-terminal-size). |
+| `clear_terminal_size` | Terminal | Returns the focused terminal to `terminal.sizing`. Does nothing when no size is set. No default binding. |
 | `scroll_page_up` | Terminal | |
 | `scroll_page_down` | Terminal | |
 | `scroll_to_bottom` | Terminal | |

@@ -17,7 +17,7 @@ fn schema_fixtures_match_application_parsing_and_keymap_compilation() {
         serde_json::from_str(include_str!("../../../../schemas/fixtures.json"))
             .unwrap();
     let fixtures = fixtures.as_array().unwrap();
-    assert_eq!(fixtures.len(), 319);
+    assert_eq!(fixtures.len(), 322);
     for fixture in fixtures {
         let source = fixture["toml"].as_str().unwrap();
         let expected = fixture["valid"].as_bool().unwrap();
@@ -73,6 +73,27 @@ fn scrollback_rows_and_bytes_reach_the_terminal_limit() {
     .terminal
     .scrollback;
     assert_eq!((both.rows(), both.bytes()), (100_000, Some(64 << 20)));
+}
+
+#[test]
+fn sizing_defaults_to_latest_and_accepts_each_policy() {
+    use huterm_protocol::SizingPolicy;
+    let sizing = |source: &str| {
+        parse(source).map(|config| config.terminal.sizing.to_protocol())
+    };
+    assert_eq!(sizing("").unwrap(), SizingPolicy::Latest);
+    for (value, policy) in [
+        ("latest", SizingPolicy::Latest),
+        ("smallest", SizingPolicy::Smallest),
+        ("largest", SizingPolicy::Largest),
+        ("manual", SizingPolicy::Manual),
+    ] {
+        assert_eq!(
+            sizing(&format!("[terminal]\nsizing = \"{value}\"")).unwrap(),
+            policy
+        );
+    }
+    assert!(sizing("[terminal]\nsizing = \"aggressive\"").is_err());
 }
 
 #[test]

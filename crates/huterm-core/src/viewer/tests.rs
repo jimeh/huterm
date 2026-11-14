@@ -11,12 +11,14 @@ use std::time::Duration;
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, GridSize, HostEffect, Modifiers,
     MouseAction, MouseButton, MouseInput, MousePosition, ScrollCommand,
-    ScrollbackLimit, SelectionUnit, TerminalCommand, TerminalFailure,
-    TerminalId, TerminalInput, TerminalLifecycle, TerminalPresentation,
-    TerminalSnapshot, ViewerCapabilities,
+    ScrollbackLimit, SelectionUnit, SizingPolicy, TerminalCommand,
+    TerminalFailure, TerminalId, TerminalInput, TerminalLifecycle,
+    TerminalPresentation, TerminalSnapshot, ViewerCapabilities,
 };
 
-use super::{HostEffectViewerOptions, TerminalViewer, ViewerOptions};
+use super::{
+    HostEffectViewerOptions, ManualSize, TerminalViewer, ViewerOptions,
+};
 use crate::terminal::RuntimeControl;
 use crate::test_support::wait_for_text;
 use crate::{
@@ -551,6 +553,18 @@ fn capabilities_are_enforced_by_the_runtime() {
     ));
     assert!(matches!(
         reader.set_focus(true),
+        Err(RuntimeError::NotPermitted)
+    ));
+    assert!(matches!(
+        reader.set_sizing_policy(SizingPolicy::Manual),
+        Err(RuntimeError::NotPermitted)
+    ));
+    assert!(matches!(
+        reader.set_manual_size(ManualSize::default()),
+        Err(RuntimeError::NotPermitted)
+    ));
+    assert!(matches!(
+        reader.clear_manual_size(),
         Err(RuntimeError::NotPermitted)
     ));
     assert!(reader.read_snapshot().is_ok(), "every viewer can read");
@@ -1945,5 +1959,37 @@ fn typing_stamped_before_a_client_numbered_scroll_leaves_it_in_place() {
         .unwrap();
     drained(&runtime);
     assert_eq!(viewer.read_snapshot().unwrap().viewport.bottom_offset, 0);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn sizing_policies_and_a_manual_size_change_a_live_pty() {
+    let runtime = spawn(253, SIZE_SCRIPT);
+    let first = sized_viewer(&runtime, 40, 8);
+    let second = runtime
+        .subscribe(ViewerOptions {
+            geometry: Some((GridSize::clamped(70, 6), cell())),
+            ..ViewerOptions::new(ViewerCapabilities::ALL)
+        })
+        .unwrap();
+    let probe = prober(&runtime);
+    wait_for_text(&first, "READY");
+    first.set_focus(true).unwrap();
+    assert_eq!(pty_size(&probe, "latest"), "8 40");
+    first.set_sizing_policy(SizingPolicy::Smallest).unwrap();
+    assert_eq!(pty_size(&probe, "smallest"), "6 40");
+    second.set_sizing_policy(SizingPolicy::Largest).unwrap();
+    assert_eq!(pty_size(&probe, "largest"), "8 70");
+    first
+        .set_manual_size(ManualSize {
+            columns: Some(30),
+            rows: None,
+        })
+        .unwrap();
+    assert_eq!(pty_size(&probe, "manual"), "8 30");
+    second.set_focus(true).unwrap();
+    assert_eq!(pty_size(&probe, "focus"), "8 30", "the manual size holds");
+    second.clear_manual_size().unwrap();
+    assert_eq!(pty_size(&probe, "cleared"), "8 70");
     runtime.shutdown().unwrap();
 }
