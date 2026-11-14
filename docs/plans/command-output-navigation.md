@@ -152,8 +152,10 @@ resulting viewport instead of predicting it.
   `select_command_output` and `select_command` select the target block's
   output or its whole block, then extract the text the way Select All does.
   The target is the block that owns the viewport's top row while the view is
-  scrolled, and the newest block at live output. With no target, nothing
-  happens. All four act on the focused pane only. Proposed keys:
+  scrolled, and the newest block at live output. Without a target, or for
+  output, a target without output, the commands are unavailable, as Copy is
+  without a selection, so the palette says why. All four act on the focused
+  pane only. Proposed keys:
   `previous_command` and `next_command` are cmd-shift-up and cmd-shift-down
   on macOS, ctrl-shift-up and ctrl-shift-down on Linux.
   `select_command_output` is cmd-shift-a on macOS and has no Linux default,
@@ -179,8 +181,13 @@ resulting viewport instead of predicting it.
   terminal renderer at the grid's columns. The grid paints only below the
   header, so a covered row never shows through a translucent pane. It is
   hidden on the alternate screen, in panes under 6 rows, and when the
-  setting is `"off"`. The running state's clock ticks through the view's
-  animation schedule, once a second, only while it shows. Pressing the left
+  setting is `"off"`. With `"status"`, the command row is fitted to the
+  columns left of the status, whose surface runs to the pane's edge: a
+  right-aligned group after a gap of two blanks (a right prompt) is dropped,
+  and a longer command line is cut after its last whole word with an
+  ellipsis (UX review, 2026-11-14). The running state's clock ticks
+  through the view's animation schedule, once a second, only while it
+  shows. Pressing the left
   button on it scrolls the prompt to the top by sending `Prompt(-1)`, which
   Ghostty resolves on the runtime against the current grid: it finds the
   nearest prompt above the viewport's top, which is the header's prompt.

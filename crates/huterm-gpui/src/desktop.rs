@@ -459,6 +459,10 @@ struct TerminalView {
     /// When the sticky prompt's running time next changes, while it shows
     /// one.
     sticky_tick: Option<Instant>,
+    /// The sticky prompt's command row as last fitted beside its status:
+    /// the source row, the columns it was fitted to, and the result, so an
+    /// unchanged header keeps its prepared row.
+    sticky_fit: Option<(Arc<TerminalRow>, usize, Arc<TerminalRow>)>,
     exited: bool,
     /// The root process's exit status, once it has exited with one.
     exit_code: Option<u32>,
@@ -932,6 +936,7 @@ impl TerminalView {
             sticky_prompt: config.terminal.sticky_prompt,
             command_status: config.terminal.command_status,
             sticky_tick: None,
+            sticky_fit: None,
             exited: false,
             exit_code: None,
             failed: false,
@@ -1855,11 +1860,26 @@ impl TerminalView {
             | ids::SCROLL_TO_BOTTOM
             | ids::PREVIOUS_COMMAND
             | ids::NEXT_COMMAND
-            | ids::SELECT_COMMAND_OUTPUT
-            | ids::SELECT_COMMAND
             | ids::SELECT_ALL
             | ids::CLEAR_SCROLLBACK
             | ids::RESET_TERMINAL => Ok(()),
+            ids::SELECT_COMMAND_OUTPUT | ids::SELECT_COMMAND => {
+                let block = self.snapshot.as_deref().and_then(target_block);
+                match block {
+                    None => Err(CommandError::Unavailable(
+                        "no command here".to_owned(),
+                    )),
+                    Some(block)
+                        if command == ids::SELECT_COMMAND_OUTPUT
+                            && block.output.is_none() =>
+                    {
+                        Err(CommandError::Unavailable(
+                            "the command has no output".to_owned(),
+                        ))
+                    }
+                    Some(_) => Ok(()),
+                }
+            }
             other => Err(CommandError::UnknownCommand(other)),
         }
     }
@@ -3696,23 +3716,15 @@ impl TerminalView {
     /// that command stands. Pressing it scrolls to the prompt.
     fn render_sticky_prompt(
         &mut self,
-        header: command_status::Header,
+        mut header: command_status::Header,
         layout: TerminalLayout,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> impl IntoElement + use<> {
-        let chip = (self.sticky_prompt
-            == huterm_config::StickyPromptStyle::Status)
-            .then(|| command_status::record(&self.commands, header.sequence))
-            .flatten()
-            .and_then(|record| {
-                command_status::chip(record, std::time::SystemTime::now())
-            });
-        self.sticky_tick = chip
-            .as_ref()
-            .and_then(|chip| chip.next_tick)
-            .map(|tick| Instant::now() + tick);
+        let chip = self.sticky_status(header.sequence);
         let foreground = color(self.theme.foreground);
-        let label = command_status::label(&header, chip.as_ref());
+        let label =
+            command_status::label(&header, chip.as_ref().map(|(chip, _)| chip));
         let metrics = self.metrics;
         #[expect(
             clippy::cast_precision_loss,
@@ -3727,15 +3739,20 @@ impl TerminalView {
             layout.bounds.origin.y + metrics.cell_height * header.input as f32;
         let prepare_renderer = Rc::clone(&self.renderer);
         let paint_renderer = Rc::clone(&self.renderer);
-        let rows = header.rows;
-        let chip_color = chip.as_ref().map(|chip| match chip.outcome {
-            Some(command_status::Outcome::Failed) => color(self.theme.ansi[1]),
-            Some(command_status::Outcome::Succeeded) => {
-                color(self.theme.ansi[2])
-            }
-            None => foreground.opacity(0.7),
-        });
         let typography = Typography::of(cx);
+        let chip_size = ui(11.0);
+        let chip_right = layout.bounds.origin.x + px(8.0);
+        if let Some((chip, _)) = &chip {
+            self.fit_sticky_row(
+                &mut header,
+                &chip.text,
+                (chip_size, chip_right),
+                layout,
+                window,
+                cx,
+            );
+        }
+        let rows = header.rows;
         let surface = self
             .renderer
             .borrow()
@@ -3785,16 +3802,108 @@ impl TerminalView {
                 )
                 .size_full(),
             )
-            .when_some(chip.zip(chip_color), |header, (chip, chip_color)| {
+            .when_some(chip, |header, (chip, chip_color)| {
                 header.child(sticky_chip(
                     chip.text,
                     chip_color,
                     surface,
-                    (layout.bounds.origin.x + px(8.0), input_top),
+                    (chip_right, input_top),
                     metrics.cell_height,
-                    typography.family,
+                    (typography.family, chip_size),
                 ))
             })
+    }
+
+    /// The sticky prompt's status for record `sequence` with the `status`
+    /// style, and its text color, scheduling the next tick of a running
+    /// command's clock.
+    fn sticky_status(
+        &mut self,
+        sequence: u64,
+    ) -> Option<(command_status::Chip, gpui::Hsla)> {
+        let chip = (self.sticky_prompt
+            == huterm_config::StickyPromptStyle::Status)
+            .then(|| command_status::record(&self.commands, sequence))
+            .flatten()
+            .and_then(|record| {
+                command_status::chip(record, std::time::SystemTime::now())
+            });
+        self.sticky_tick = chip
+            .as_ref()
+            .and_then(|chip| chip.next_tick)
+            .map(|tick| Instant::now() + tick);
+        let chip = chip?;
+        let text_color = match chip.outcome {
+            Some(command_status::Outcome::Failed) => color(self.theme.ansi[1]),
+            Some(command_status::Outcome::Succeeded) => {
+                color(self.theme.ansi[2])
+            }
+            None => color(self.theme.foreground).opacity(0.7),
+        };
+        Some((chip, text_color))
+    }
+
+    /// Fits the sticky prompt's command row to the columns left of a
+    /// status reading `text`, `right` from the pane's edge, so the status
+    /// never paints over the row's text.
+    fn fit_sticky_row(
+        &mut self,
+        header: &mut command_status::Header,
+        text: &str,
+        (size, right): (gpui::Rems, Pixels),
+        layout: TerminalLayout,
+        window: &mut Window,
+        cx: &App,
+    ) {
+        let mut font = window.text_style().font();
+        font.family = Typography::of(cx).family;
+        let run = gpui::TextRun {
+            len: text.len(),
+            font,
+            color: gpui::Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let width = window
+            .text_system()
+            .layout_line(text, size.to_pixels(window.rem_size()), &[run], None)
+            .width;
+        // The status's padding and a gap before it.
+        let room = self.viewport(window).width
+            - right
+            - width
+            - px(16.0)
+            - layout.bounds.origin.x;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the room is clamped at zero and far below usize's range"
+        )]
+        let columns =
+            (room / self.metrics.cell_width).floor().max(0.0) as usize;
+        if let Some(row) = header.rows.get_mut(header.input) {
+            *row = self.fitted_sticky_row(row, columns);
+        }
+    }
+
+    /// `row` fitted to `columns` beside the sticky prompt's status, reusing
+    /// the last fit while neither changed.
+    fn fitted_sticky_row(
+        &mut self,
+        row: &Arc<TerminalRow>,
+        columns: usize,
+    ) -> Arc<TerminalRow> {
+        if let Some((source, fitted_to, fitted)) = &self.sticky_fit
+            && Arc::ptr_eq(source, row)
+            && *fitted_to == columns
+        {
+            return Arc::clone(fitted);
+        }
+        let fitted = command_status::fit_row(row, columns)
+            .map_or_else(|| Arc::clone(row), Arc::new);
+        self.sticky_fit = Some((Arc::clone(row), columns, Arc::clone(&fitted)));
+        fitted
     }
 
     fn render_scroll_pill(
@@ -4247,7 +4356,8 @@ impl Render for TerminalView {
                 .size_full(),
             );
         if let Some(header) = header {
-            root = root.child(self.render_sticky_prompt(header, layout, cx));
+            root = root
+                .child(self.render_sticky_prompt(header, layout, window, cx));
         } else {
             self.sticky_tick = None;
         }
@@ -4368,28 +4478,29 @@ impl Render for TerminalView {
     }
 }
 
-/// The sticky prompt's status at the right of its command row, `(right,
-/// top)` from the pane's top-right corner, on the header's own surface so
-/// a long command line ends under it.
+/// The sticky prompt's status at the right of its command row, its text
+/// `right` from the pane's right edge and `top` from its top. Its surface
+/// runs to the edge, so nothing of the row shows beside it.
 fn sticky_chip(
     text: String,
     text_color: gpui::Hsla,
     surface: gpui::Hsla,
     (right, top): (Pixels, Pixels),
     height: Pixels,
-    family: gpui::SharedString,
+    (family, size): (gpui::SharedString, gpui::Rems),
 ) -> impl IntoElement {
     div()
         .absolute()
-        .right(right)
+        .right_0()
         .top(top)
         .h(height)
         .flex()
         .items_center()
         .pl(px(8.0))
+        .pr(right)
         .bg(surface)
         .font_family(family)
-        .text_size(ui(11.0))
+        .text_size(size)
         .text_color(text_color)
         .whitespace_nowrap()
         .child(text)

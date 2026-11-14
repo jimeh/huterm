@@ -73,6 +73,10 @@ fn the_select_commands_take_the_newest_command_at_live_output(
     cx: &mut TestAppContext,
 ) {
     let mut harness = harness(cx);
+    assert!(harness.read(|view, _| {
+        view.command_availability(ids::SELECT_COMMAND_OUTPUT)
+            .is_ok()
+    }));
     run(&mut harness, ids::SELECT_COMMAND_OUTPUT);
     wait_for_selection(&mut harness, &output(3));
     run(&mut harness, ids::SELECT_COMMAND);
@@ -127,6 +131,15 @@ fn the_sticky_prompt_shows_inside_output_and_a_click_on_it_jumps_back(
                 .is_some_and(|header| header.sequence == 2)
         })
     });
+    // The status needs room beside the command row, which the header fits
+    // to the columns left of it.
+    let fitted = harness.read(|view, _| {
+        view.sticky_fit.as_ref().map(|(_, columns, _)| *columns)
+    });
+    assert!(
+        fitted.is_some_and(|columns| (10..49).contains(&columns)),
+        "{fitted:?}"
+    );
     // Command 2 exited 1: its rows are tinted, the others are not.
     let tinted = harness.read(|view, _| {
         let snapshot = view.snapshot.as_ref().unwrap();
@@ -208,4 +221,18 @@ fn an_end_with_no_new_rows_still_marks_the_command(cx: &mut TestAppContext) {
         marks(&mut harness).tints,
         std::iter::once(0..3).collect::<Vec<_>>()
     );
+}
+
+#[gpui::test]
+fn the_select_commands_are_unavailable_without_a_command(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture("plain\\n", ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    for id in [ids::SELECT_COMMAND_OUTPUT, ids::SELECT_COMMAND] {
+        assert_eq!(
+            harness.read(|view, _| view.command_availability(id)),
+            Err(CommandError::Unavailable("no command here".to_owned()))
+        );
+    }
 }
