@@ -455,9 +455,9 @@ pub enum SizingPolicy {
     /// separately.
     Largest,
     /// Viewers never resize the terminal: it keeps its size until a manual
-    /// size is set. A terminal no viewer has reported geometry for yet
-    /// takes the first report, so it keeps its laid-out size rather than
-    /// the estimate it was spawned with.
+    /// size is set. Until any viewer first types in it, the terminal still
+    /// follows `Latest`, so it keeps the size its window settled at rather
+    /// than the estimate it was spawned with.
     Manual,
 }
 

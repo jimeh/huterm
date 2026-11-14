@@ -250,8 +250,8 @@ pub enum TerminalSizing {
         schemars(extend("x-huterm-label" = "Largest view"))
     )]
     Largest,
-    /// Views never resize terminals. Each keeps its size until Set Terminal
-    /// Size changes it.
+    /// Views stop resizing a terminal once you type in it. It keeps that
+    /// size until Set Terminal Size changes it.
     #[cfg_attr(
         feature = "schema",
         schemars(extend("x-huterm-label" = "Manual"))

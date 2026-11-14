@@ -12867,7 +12867,7 @@
         },
         {
           "const": "manual",
-          "description": "Views never resize terminals. Each keeps its size until Set Terminal\nSize changes it.",
+          "description": "Views stop resizing a terminal once you type in it. It keeps that\nsize until Set Terminal Size changes it.",
           "type": "string",
           "x-huterm-label": "Manual"
         }

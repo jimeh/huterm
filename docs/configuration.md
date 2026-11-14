@@ -858,14 +858,17 @@ sizing = "latest" # latest, smallest, largest, or manual
   background around it.
 - `"largest"` takes the most columns and the most rows of any view. Smaller
   views show the part of the terminal that fits.
-- `"manual"` lets no view resize a terminal. Each keeps the size it has when
-  the setting takes effect, or for a new terminal the size its first view
-  lays it out at, until **Set Terminal Size** changes it.
+- `"manual"` stops views resizing a terminal once you have typed in it.
+  Each keeps the size it has from then on, until **Set Terminal Size**
+  changes it. Until you first type in a terminal, such as a new tab, pane,
+  or Quake window's shell, it follows its view like `"latest"`, so it starts
+  at the size its window settles at.
 
 Every view that shows a terminal counts, including one on a tab its window
 is not showing, so switching tabs, focusing a window, and typing never
-resize a terminal under `"smallest"`, `"largest"`, or `"manual"`. A view's
-own size changes, such as a window resize, font change, or pane zoom, still
+resize a terminal under `"smallest"` or `"largest"`, or under `"manual"`
+once it has been typed in. Under `"smallest"` and `"largest"`, a view's own
+size changes, such as a window resize, font change, or pane zoom, still
 count. Under `"smallest"` and `"largest"`, the pixel size programs see uses
 the largest cell any view reports, which suits the sharpest display when
 windows sit on displays with different scales. The theme a terminal reports
