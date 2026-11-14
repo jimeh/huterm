@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { cliArchiveEntries, cliArchiveName, validateCliRuns, validateMacosCliLinkage } from "./cli-package.ts";
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { cliArchiveEntries, cliArchiveName, stageCliDirectory, validateCliRuns, validateMacosCliLinkage, verifyCliDirectory } from "./cli-package.ts";
 
 test("standalone archives are named per platform and hold one directory", () => {
   expect(cliArchiveName("1.2.3", "macOS-universal")).toBe("Huterm-CLI-1.2.3-macOS-universal.zip");
@@ -34,4 +37,23 @@ test("the macOS command line links only libSystem", () => {
     "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0)",
   ])).toThrow("AppKit");
   expect(() => validateMacosCliLinkage([])).toThrow("no dependencies");
+});
+
+test("archive directories hold regular files with fixed modes and the committed notices", async () => {
+  const root = await mkdtemp(join(tmpdir(), "huterm-cli-directory-"));
+  try {
+    const executable = join(root, "built-huterm");
+    await writeFile(executable, "binary");
+    const directory = await stageCliDirectory(root, "Huterm-CLI-1.2.3-Linux-x86_64", executable);
+    expect((await verifyCliDirectory(directory)).toString()).toBe("binary");
+
+    await chmod(join(directory, "LICENSE"), 0o600);
+    await expect(verifyCliDirectory(directory)).rejects.toThrow("LICENSE is not a mode 644 file");
+    await chmod(join(directory, "LICENSE"), 0o644);
+
+    // A symlink to an identical notice is still not a regular file.
+    await rm(join(directory, "LICENSE"));
+    await symlink(resolve(import.meta.dir, "../LICENSE"), join(directory, "LICENSE"));
+    await expect(verifyCliDirectory(directory)).rejects.toThrow();
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

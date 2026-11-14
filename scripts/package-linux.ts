@@ -651,8 +651,8 @@ async function verifyCliTarball(tarball: string, version: string, architecture: 
   try {
     await runInherited("tar", ["-xzf", tarball, "-C", extracted]);
     const directory = join(extracted, root);
-    await verifyCliDirectory(directory);
-    if (!(await readRegularFile(join(directory, "huterm"))).equals(await readRegularFile(bundled))) throw new Error(`${basename(tarball)} does not carry the packages' ${cliExecutable}`);
+    const bytes = await verifyCliDirectory(directory);
+    if (!bytes.equals(await readRegularFile(bundled))) throw new Error(`${basename(tarball)} does not carry the packages' ${cliExecutable}`);
     await verifyLinuxCli(join(directory, "huterm"), basename(tarball), version, architecture, await readPackagePolicy());
   } finally { await rm(extracted, { recursive: true, force: true }); }
   console.log(`verified ${basename(tarball)}`);

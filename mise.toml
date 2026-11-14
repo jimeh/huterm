@@ -315,10 +315,10 @@ fi
 bash scripts/build-exec.sh cargo build --workspace --locked
 smoke_config=$(mktemp)
 smoke_state=$(mktemp -d)
-# Launches through the `huterm` command line, which opens `huterm-gui`.
 trap 'rm -rf "$smoke_config" "$smoke_state"' EXIT
 printf '[terminal]\nclose_on_exit = false\n' > "$smoke_config"
 set +e
+# Launches through the `huterm` command line, which opens `huterm-gui`.
 HUTERM_CONFIG_FILE="$smoke_config" HUTERM_STATE_DIR="$smoke_state" SHELL=/bin/true timeout --signal=TERM --kill-after=2s 8s xvfb-run -a \
   -s '-screen 0 1280x800x24 -noreset' target/debug/huterm
 status=$?

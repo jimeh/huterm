@@ -247,7 +247,7 @@ let buildChild: ReturnType<typeof Bun.spawn> | undefined;
 export async function buildAndStage(root: string, stage: string): Promise<number> {
   const status = await runBuild([
     "bun", join(root, "scripts/linux.ts"), "exec", "--arch", ARCH, "bash", "-lc",
-    "mise run ghostty:prepare && mise run terminfo:prepare && mise run build:exec -- cargo build --locked -p huterm",
+    "mise run ghostty:prepare && mise run terminfo:prepare && mise run build:exec -- cargo build --locked -p huterm -p huterm-cli",
   ]);
   if (status !== 0) return status;
   const volume = cacheNames(root, ARCH).volumes[0]!;
@@ -260,7 +260,7 @@ export async function buildAndStage(root: string, stage: string): Promise<number
     mkdirSync(join(stage, "target/debug"), { recursive: true });
     mkdirSync(join(stage, "assets"), { recursive: true });
     cpSync(join(root, "assets/shell-integration"), join(stage, "assets/shell-integration"), { recursive: true });
-    for (const [from, to] of [["target/debug/huterm-gui", "target/debug/"], ["target/terminfo", "target/"]] as const) {
+    for (const [from, to] of [["target/debug/huterm-gui", "target/debug/"], ["target/debug/huterm", "target/debug/"], ["target/terminfo", "target/"]] as const) {
       if (capture(["docker", "cp", `${container}:/workspace/${from}`, join(stage, to)], false) === undefined) {
         console.error(`could not copy ${from} out of the Linux build container`);
         return 1;

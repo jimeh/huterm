@@ -251,7 +251,8 @@ let activeSession: DevSession | undefined;
 
 async function develop(root: string, target: string, command: string[]): Promise<number> {
   const session = new DevSession({
-    rebuild: () => host(["bash", "scripts/build-exec.sh", "cargo", "build", "--locked", "-p", "huterm"], root),
+    // The CLI rides beside the app so shells in the VM find `huterm`.
+    rebuild: () => host(["bash", "scripts/build-exec.sh", "cargo", "build", "--locked", "-p", "huterm", "-p", "huterm-cli"], root),
     stage: () => run(["exec", target, "/bin/sh", GUEST, "stage"]),
     launch: () => spawnTart(["exec", target, "/bin/sh", GUEST, "exec", ...command]),
     stopApp: () => stopApp(target),

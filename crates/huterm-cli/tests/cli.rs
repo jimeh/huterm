@@ -66,23 +66,37 @@ fn text(bytes: &[u8]) -> &str {
 
 #[test]
 fn help_prints_usage_to_stdout_without_a_display() {
+    let scratch = Scratch::new("help");
+    let cli = scratch.install_cli("bin");
+    scratch.install_gui("bin");
     for flag in ["--help", "-h"] {
-        let output = run(Path::new(CLI), &[flag]);
+        let output = run(&cli, &[flag]);
         assert_eq!(output.status.code(), Some(0), "{flag}");
         assert!(text(&output.stdout).contains("Usage: huterm"), "{flag}");
         assert_eq!(text(&output.stderr), "", "{flag}");
     }
+    assert!(
+        !scratch.0.join("bin/launched").exists(),
+        "help must not start the desktop app"
+    );
 }
 
 #[test]
 fn version_prints_the_package_version() {
-    let output = run(Path::new(CLI), &["--version"]);
+    let scratch = Scratch::new("version");
+    let cli = scratch.install_cli("bin");
+    scratch.install_gui("bin");
+    let output = run(&cli, &["--version"]);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         text(&output.stdout),
         format!("huterm {}\n", env!("CARGO_PKG_VERSION"))
     );
     assert_eq!(text(&output.stderr), "");
+    assert!(
+        !scratch.0.join("bin/launched").exists(),
+        "--version must not start the desktop app"
+    );
 }
 
 #[test]

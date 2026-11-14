@@ -1,5 +1,6 @@
 /** Stage, archive, and verify the standalone `huterm` command-line downloads. */
-import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, open, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -90,20 +91,34 @@ export async function verifyCliRuns(executable: string, version: string, label =
   }, version, label);
 }
 
-/** Checks an extracted archive directory's files, modes, and notices. */
-export async function verifyCliDirectory(directory: string): Promise<void> {
+/**
+ * Reads a regular file, refusing a symlink, with its mode from the same open
+ * handle so the checked file is the one read.
+ */
+async function readArchiveFile(file: string, mode: number, label: string): Promise<Buffer> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || (metadata.mode & 0o777) !== mode) throw new Error(`CLI archive ${label} is not a mode ${mode.toString(8)} file`);
+    return await handle.readFile();
+  } finally { await handle.close(); }
+}
+
+/**
+ * Checks an extracted archive directory's files, modes, and notices, and
+ * returns the executable's bytes as checked.
+ */
+export async function verifyCliDirectory(directory: string): Promise<Buffer> {
   const expected = ["huterm", ...cliNotices.map(notice => notice.target)].sort();
   const actual = (await readdir(directory)).sort();
   if (actual.join("\n") !== expected.join("\n")) throw new Error(`CLI archive contains missing or unexpected files: ${actual.join(", ")}`);
   if (((await stat(directory)).mode & 0o777) !== 0o755) throw new Error("CLI archive directory mode is not 755");
-  const executable = await stat(join(directory, "huterm"));
-  if (!executable.isFile() || (executable.mode & 0o777) !== 0o755) throw new Error("CLI archive huterm is not a mode 755 file");
+  const executable = await readArchiveFile(join(directory, "huterm"), 0o755, "huterm");
   for (const notice of cliNotices) {
-    const file = join(directory, notice.target);
-    const metadata = await stat(file);
-    if (!metadata.isFile() || (metadata.mode & 0o777) !== 0o644) throw new Error(`CLI archive ${notice.target} is not a mode 644 file`);
-    if (!(await readFile(file)).equals(await readFile(join(repoRoot, notice.source)))) throw new Error(`CLI archive ${notice.target} differs from ${notice.source}`);
+    const bytes = await readArchiveFile(join(directory, notice.target), 0o644, notice.target);
+    if (!bytes.equals(await readFile(join(repoRoot, notice.source)))) throw new Error(`CLI archive ${notice.target} differs from ${notice.source}`);
   }
+  return executable;
 }
 
 async function verifyMacosExecutable(executable: string): Promise<void> {
@@ -146,9 +161,9 @@ export async function verifyMacosCliArchive(archive: string, version: string, bu
   try {
     await required(["ditto", "-x", "-k", archive, extracted]);
     const directory = join(extracted, root);
-    await verifyCliDirectory(directory);
+    const bytes = await verifyCliDirectory(directory);
     const executable = join(directory, "huterm");
-    if (bundled && !(await readFile(executable)).equals(await readFile(bundled))) throw new Error(`${basename(archive)} does not carry the app's huterm executable`);
+    if (bundled && !bytes.equals(await readFile(bundled))) throw new Error(`${basename(archive)} does not carry the app's huterm executable`);
     await verifyMacosExecutable(executable);
     await verifyCliRuns(executable, version, basename(archive));
   } finally {
