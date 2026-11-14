@@ -366,6 +366,21 @@ fn any_grid_change_clears_an_alternate_screen_selection() {
     }
 }
 
+/// Core reads only the active screen's cells, so it cannot move an end off
+/// the spacer head a wrap leaves on the primary screen while the alternate
+/// one is active.
+#[test]
+fn a_column_change_while_another_screen_is_active_clears_the_selection() {
+    let mut engine = started(10, ROWS, "abcdefgh\u{4e2d}x".as_bytes());
+    // The end on the first half of `中`, which a narrower width pushes on.
+    track(&mut engine, VIEWER, 1, range(at(0, 0), at(0, 8)));
+    kept(&mut engine, VIEWER, 1, "abcdefgh\u{4e2d}");
+    engine.process(b"\x1b[?1049h").unwrap();
+    resize(&mut engine, 9, ROWS);
+    engine.process(b"\x1b[?1049l").unwrap();
+    gone(&mut engine, VIEWER, 1);
+}
+
 #[test]
 fn a_column_decrease_with_wraparound_off_clears_the_selection() {
     let mut engine = started(20, ROWS, b"\x1b[?7lalpha beta gamma");

@@ -108,10 +108,12 @@ Two dependency-neutral types in `huterm-protocol`:
   new selection replaces the old one, and references are freed on the owner
   thread.
 - The owner thread ignores a tracking control from a revoked or dropped
-  viewer, or one the arbiter has no entry for, and forgets the selection of
-  every viewer the arbiter finalizes. Controls are not counted toward a
-  dropped viewer's queue, so this check is what keeps references from
-  outliving their viewer.
+  viewer, and forgets the selection of every viewer the arbiter finalizes.
+  Controls are not counted toward a dropped viewer's queue, so this check is
+  what keeps references from outliving their viewer. Tracking does not need
+  an arbitration entry: reconciliation waits while PTY writes are backed up,
+  and a viewer is finalized only once it is revoked or dropped, whether or
+  not it had an entry.
 - `SnapshotReply` gains `selection: Option<SelectionPlacement>`, resolved in
   the same owner-thread step that builds the snapshot, so the range always
   matches the snapshot's generation. `None` means the viewer tracks nothing.
@@ -131,6 +133,9 @@ Two dependency-neutral types in `huterm-protocol`:
     next row: the start at its first column and the end at its second. A
     width change restores all history first, so this cell read restores
     nothing extra, and later resolutions need no cell reads.
+  - A column change while another screen than the selection's is active
+    clears it. Core reads only the active screen's cells, so it cannot move
+    an end the primary screen's reflow leaves on a spacer head.
   - Any grid change clears a selection made on the alternate screen. Ghostty
     resizes that screen without reflow, clipping cut columns and moving
     references onto the remaining rows, and full-screen programs repaint
@@ -194,8 +199,9 @@ Two dependency-neutral types in `huterm-protocol`:
 | Output scrolls the selection | Kept on its text. |
 | Output rewrites the selected cells in place, or deletes their rows | Kept on the cells or replacing rows, showing the new text, as Ghostty does. |
 | Scrolling inside a scroll region, or any scrolling with `scrollback = 0` | Kept on the rows that replace its own: Ghostty deletes rows in place there, so the selection does not follow its text. |
-| Entering the alternate screen, or leaving it | Clears when a snapshot shows the other screen. A round trip between two snapshots leaves the primary cells intact and keeps it. |
+| Entering the alternate screen, or leaving it | Clears when a snapshot shows the other screen. A round trip between two snapshots leaves the primary cells intact and keeps it, unless the columns changed meanwhile. |
 | Any resize while the selection is on the alternate screen | Clears. |
+| Column change on the primary screen while the alternate screen is active | Clears: core cannot read the inactive screen's cells to move an end off a spacer head. |
 | Column decrease with wraparound off | Clears. |
 | Word and line selections | Kept as their expanded range. |
 | Typing or pasting into the terminal | Clears. |
@@ -237,11 +243,13 @@ additive.
   - eviction that shrinks and that clears; a program's ED 3 that shrinks;
     RIS;
   - entering the alternate screen; an alternate-screen selection and a
-    resize; a column decrease with wraparound off;
+    resize; a column change while the alternate screen is active; a column
+    decrease with wraparound off;
   - a stale generation; replacement and forgetting; two viewers with
     separate selections through one resize;
   - a tracking control from a dropped or revoked viewer creates nothing,
-    and finalization frees the selection;
+    and finalization frees the selection; a viewer that tracks while PTY
+    writes are backed up keeps its selection;
   - resolving placements over compressed history leaves Ghostty's
     compressed page count unchanged, across repeated snapshots.
 - `huterm-gpui` view tests:
@@ -249,8 +257,12 @@ additive.
     the placement, and Copy writes the remapped text; the accessibility
     range matches it;
   - a gone placement clears it; a reply without the current `id` keeps it at
-    the same generation and clears it at another;
-  - typing clears it; a drag in progress still clears;
+    the same generation and clears it at another; a text reply by `id` that
+    finds it gone clears it;
+  - Copy after output rewrites the selected cells in place copies the new
+    text, not the cached text;
+  - typing and pasting clear it, a mouse report sent to the program keeps
+    it, and a drag in progress still clears;
   - Select All, a released word selection, and a cell drag released after
     edge scrolling each track;
   - CopyOrPaste copies the remapped text and then clears;
@@ -272,6 +284,14 @@ additive.
   purpose is not extended.
 - A cell-size-only resize keeps an alternate-screen selection: only a change
   of rows or columns is a grid change.
+- A column change clears a primary-screen selection while the alternate
+  screen is active, even if a snapshot never shows the alternate screen.
+  Otherwise an end the reflow left on a wide character's spacer head would
+  stay there after the round trip, and the highlight and Copy would drop the
+  character. A height-only or cell-size-only change keeps it.
+- A tracking control does not wait for the viewer's arbitration entry, which
+  a backlog of PTY writes defers; finalization frees the selection either
+  way.
 - A selection core reported gone stays gone, even if its screen comes back.
 - A text reply by id that finds the current selection gone clears it in the
   view, without waiting for a snapshot.

@@ -1241,6 +1241,12 @@ impl ViewHarness {
     ) {
         typist.send_input(TerminalInput::Text(text.into())).unwrap();
         self.assert_received(received);
+        self.assert_placed();
+    }
+
+    /// Checks that the settled selection is still selected and placed in
+    /// the shown snapshot.
+    fn assert_placed(&mut self) {
         self.read(|view, _| {
             let shown = view.snapshot.as_ref().unwrap().generation;
             assert!(view.selection_id.is_some(), "the selection settled");
@@ -1539,6 +1545,113 @@ fn copy_or_paste_copies_the_placed_selection_then_clears_it(
         assert!(view.input_queue.is_empty(), "nothing was pasted");
     });
     harness.wait_for_clipboard("beta.gamma");
+}
+
+/// Prints [`WORDS`] and `READY`, then rewrites `beta.gamma` in place as
+/// `BETA.GAMMA` once it reads a line.
+fn rewrite_fixture() -> String {
+    format!(
+        "stty -echo; printf '{WORDS}READY'; read l; \
+         printf '\\033[1;7HBETA.GAMMA'; read l"
+    )
+}
+
+#[gpui::test]
+fn copy_reads_text_that_output_rewrote_since_it_was_cached(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &rewrite_fixture());
+    harness.wait_ready(MouseTracking::Disabled);
+    harness.select_beta_gamma();
+    let cached =
+        harness.read(|view, _| view.selected_text.as_ref().unwrap().generation);
+    let typist = harness.typist();
+    typist.send_input(TerminalInput::Text("\n".into())).unwrap();
+    harness.wait_for("the rewritten selection placed", |view, _| {
+        let shown = view.snapshot.as_ref().map(|shown| shown.generation);
+        screen_text(view).is_some_and(|text| text.contains("BETA.GAMMA"))
+            && shown != Some(cached)
+            && view.selection.map(|selection| selection.generation) == shown
+    });
+    harness.update(|view, _, cx| {
+        assert_eq!(
+            view.selected_text
+                .as_ref()
+                .map(|selected| selected.generation),
+            Some(cached),
+            "the cached text is from before the rewrite"
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string("STALE".into()));
+    });
+    harness.copy();
+    harness.wait_for_clipboard("BETA.GAMMA");
+}
+
+#[gpui::test]
+fn a_text_reply_that_finds_the_selection_gone_clears_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, ""));
+    harness.wait_ready(MouseTracking::Disabled);
+    harness.select_beta_gamma();
+    // A hidden view requests no snapshot, so no placement can report the
+    // selection gone before the text reply does.
+    let shown = harness.update(|view, _, _| {
+        view.visible = false;
+        view.snapshot.as_ref().unwrap().generation
+    });
+    let typist = harness.typist();
+    typist.reset().unwrap();
+    harness.wait_for("another viewer's reset to apply", |_, _| {
+        typist.read_snapshot().is_ok_and(|snapshot| {
+            !snapshot
+                .cells()
+                .map(|cell| cell.text.displayed())
+                .collect::<String>()
+                .contains("READY")
+        })
+    });
+    harness.update(|view, _, cx| {
+        assert!(view.selection.is_some(), "nothing cleared it yet");
+        let id = view.selection_id.unwrap();
+        view.request_selection_text(id, false, cx);
+    });
+    harness.wait_for("the reply to clear the selection", |view, _| {
+        view.selection.is_none()
+    });
+    harness.read(|view, _| {
+        assert_eq!(
+            view.snapshot.as_ref().map(|snapshot| snapshot.generation),
+            Some(shown),
+            "no snapshot placed the selection"
+        );
+        assert_eq!(view.selection_id, None);
+    });
+}
+
+#[gpui::test]
+fn a_mouse_report_keeps_a_settled_selection_and_a_paste_clears_it(
+    cx: &mut TestAppContext,
+) {
+    let mut harness = ViewHarness::new(cx, &text_fixture(WORDS, BUTTONS));
+    harness.wait_ready(MouseTracking::Buttons);
+    harness.select_beta_gamma();
+    let corner = harness.cell_center(0, 3);
+    harness.click(corner);
+    harness.assert_received(&click(0, 3));
+    harness.assert_placed();
+    harness.update(|view, window, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("p".into()));
+        view.run_command(
+            &CommandInvocation::new(ids::PASTE, Vec::new()),
+            window,
+            cx,
+        )
+        .unwrap();
+        assert_eq!(view.selection, None, "the paste clears the selection");
+        assert_eq!(view.selection_id, None);
+    });
+    harness.assert_received(&(click(0, 3) + "p"));
 }
 
 mod a11y;
