@@ -17,7 +17,8 @@ use super::session_control::{SessionLabel, SessionListAnchor, switcher_label};
 use super::sidebar_rows::{self, ListRow, ROW_GAP, ROW_HEIGHT};
 use super::workspace_chrome::{CornerHost, Edge};
 use super::workspace_menu::{
-    WorkspacePick, WorkspaceRow, parse_pick, resolve, row_menu, workspace_rows,
+    RowPlace, WorkspacePick, WorkspaceRow, parse_pick, resolve, row_menu,
+    workspace_rows,
 };
 use super::*;
 
@@ -81,6 +82,8 @@ pub(super) fn keeps_switcher(command: huterm_protocol::CommandId) -> bool {
             | ids::SIDEBAR_SHOW
             | ids::SIDEBAR_RENAME
             | ids::SIDEBAR_MENU
+            | ids::SIDEBAR_MOVE_UP
+            | ids::SIDEBAR_MOVE_DOWN
             | ids::SIDEBAR_EXIT
             | ids::OPEN_WORKSPACE_SWITCHER
             | ids::OPEN_SESSION_MENU
@@ -406,8 +409,38 @@ impl WorkspaceView {
                 self.reveal_workspace_row(workspace, cx);
             }
             self.workspace_revealed = shown;
+            self.retry_reveal(window, cx);
         } else {
             self.workspace_revealed = None;
+            self.reveal_pending = None;
+        }
+    }
+
+    /// Repeats a reveal its list took before its first layout, which GPUI
+    /// dropped: the list's first prepaint has no overflow to scroll yet.
+    /// A list that has not laid out asks for one more frame; one that still
+    /// has no height after it gives the reveal up.
+    fn retry_reveal(&mut self, window: &mut Window, cx: &App) {
+        let Some((workspace, waited)) = self.reveal_pending else {
+            return;
+        };
+        let scroll = self.workspace_drag_scroll();
+        if scroll.bounds().size.height <= px(0.0) {
+            if waited {
+                self.reveal_pending = None;
+            } else {
+                self.reveal_pending = Some((workspace, true));
+                window.request_animation_frame();
+            }
+            return;
+        }
+        self.reveal_pending = None;
+        if let Some(index) = self
+            .workspace_rows(cx)
+            .iter()
+            .position(|row| row.workspace == workspace)
+        {
+            scroll.scroll_to_item(index);
         }
     }
 
@@ -556,6 +589,10 @@ impl WorkspaceView {
         {
             self.workspace_scroll.scroll_to_item(index);
             self.switcher_scroll.scroll_to_item(index);
+            // A drawn list that has not laid out yet drops the request.
+            if self.workspace_drag_scroll().bounds().size.height <= px(0.0) {
+                self.reveal_pending = Some((workspace, false));
+            }
         }
     }
 
@@ -653,6 +690,17 @@ impl WorkspaceView {
                 self.run_workspace_row(focused, RowAction::Show, window, cx);
                 Ok(CommandOutcome::Completed)
             }
+            // The row's focus handle follows its workspace, so focus stays
+            // on the moved row.
+            ids::SIDEBAR_MOVE_UP | ids::SIDEBAR_MOVE_DOWN => {
+                let up = command == ids::SIDEBAR_MOVE_UP;
+                match self.move_workspace_step(Some(focused), up, window, cx) {
+                    Err(CommandError::Unavailable(_)) => {
+                        Ok(CommandOutcome::Completed)
+                    }
+                    result => result,
+                }
+            }
             ids::SIDEBAR_RENAME => {
                 self.run_workspace_row(focused, RowAction::Rename, window, cx);
                 Ok(CommandOutcome::Completed)
@@ -700,6 +748,9 @@ impl WorkspaceView {
             RowAction::ClearName => ids::CLEAR_WORKSPACE_NAME,
             RowAction::TogglePin => ids::TOGGLE_WORKSPACE_PIN,
             RowAction::NewWindow => ids::MOVE_WORKSPACE_TO_NEW_WINDOW,
+            RowAction::MoveUp => ids::MOVE_WORKSPACE_UP,
+            RowAction::MoveDown => ids::MOVE_WORKSPACE_DOWN,
+            RowAction::ToSession => ids::MOVE_WORKSPACE_TO_SESSION,
             RowAction::Close => ids::CLOSE_WORKSPACE,
         };
         let invocation = CommandInvocation::new(
@@ -957,8 +1008,23 @@ impl WorkspaceView {
         cx: &App,
     ) -> Option<MenuSpec> {
         let rows = self.workspace_rows(cx);
-        let row = rows.iter().find(|row| row.workspace == workspace)?;
-        Some(row_menu(row, rows.len()))
+        let index = rows.iter().position(|row| row.workspace == workspace)?;
+        let session = self.attached_session(cx);
+        let other_session = cx
+            .global::<Desktop>()
+            .hierarchy
+            .state()
+            .sessions()
+            .iter()
+            .any(|other| Some(*other) != session);
+        Some(row_menu(
+            &rows[index],
+            RowPlace {
+                index,
+                count: rows.len(),
+                other_session,
+            },
+        ))
     }
 
     /// Runs a row menu pick.
@@ -982,6 +1048,9 @@ impl WorkspaceView {
             WorkspacePick::ClearName(raw) => (RowAction::ClearName, raw),
             WorkspacePick::TogglePin(raw) => (RowAction::TogglePin, raw),
             WorkspacePick::NewWindow(raw) => (RowAction::NewWindow, raw),
+            WorkspacePick::MoveUp(raw) => (RowAction::MoveUp, raw),
+            WorkspacePick::MoveDown(raw) => (RowAction::MoveDown, raw),
+            WorkspacePick::ToSession(raw) => (RowAction::ToSession, raw),
             WorkspacePick::Close(raw) => (RowAction::Close, raw),
         };
         let Some(workspace) = resolve(state, raw) else {
@@ -1012,32 +1081,61 @@ impl WorkspaceView {
         }
     }
 
-    /// Moves `workspace` before `before`, or to the end, on a worker. The
-    /// projection applies the committed order; this only reports failure.
+    /// Moves `workspace` of `session` into session `to`, its own for a
+    /// reorder, before `before` or to the end, on a worker, with the window
+    /// busy and Quit and checkpoints held (`hold_move`) until it settles.
+    /// The projection applies the committed order,
+    /// and a window that showed a workspace that left its session follows
+    /// through its emptied close; this reports failure and scrolls a
+    /// reordered row into view.
     pub(super) fn move_workspace(
+        &mut self,
         session: SessionId,
         workspace: WorkspaceId,
+        to: SessionId,
         before: Option<WorkspaceId>,
+        window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
+        self.busy = true;
+        super::workspace_moves::hold_move(cx, self.window);
         let task = cx.background_executor().spawn(async move {
-            runtime.move_workspace(session, workspace, session, before)
+            #[cfg(all(test, feature = "test-support"))]
+            if runtime.worker_hooks.enter(worker_hooks::Stage::Move).await {
+                return Committed {
+                    result: Err(RuntimeError::Stopped.into()),
+                    seq: runtime.lock().hierarchy_seq(),
+                };
+            }
+            runtime.move_workspace(session, workspace, to, before)
         });
         let app = cx.to_async();
-        cx.spawn(async move |view, cx| {
+        let (title, verb) = if to == session {
+            ("Reorder workspace", "reorder")
+        } else {
+            ("Move workspace", "move")
+        };
+        cx.spawn_in(window, async move |view, cx| {
             let Committed { result, seq } = task.await;
             projected(&app, seq).await;
-            let _ = view.update(cx, |view, cx| {
-                if let Err(error) = result
-                    && !terminating(cx)
-                {
-                    view.report_failure(
-                        "Reorder workspace",
-                        format!("Cannot reorder workspace: {error}"),
+            let _ = view.update_in(cx, |view, window, cx| {
+                view.busy = false;
+                match result {
+                    Err(error) if !terminating(cx) => view.report_failure(
+                        title,
+                        format!("Cannot {verb} workspace: {error}"),
                         cx,
-                    );
+                    ),
+                    Ok(()) if to == session => {
+                        view.reveal_workspace_row(workspace, cx);
+                    }
+                    _ => {}
                 }
+                view.reconcile_own(window, cx);
+                super::workspace_moves::release_move(cx, view.window);
+                view.resume_close(window, cx);
+                cx.notify();
             });
         })
         .detach();
@@ -2155,5 +2253,11 @@ pub(super) enum RowAction {
     TogglePin,
     /// Workspaces only: moves the row's workspace into a new window.
     NewWindow,
+    /// Workspaces only: moves the row's workspace one place up or down.
+    MoveUp,
+    MoveDown,
+    /// Workspaces only: moves the row's workspace to another session,
+    /// which the palette asks for.
+    ToSession,
     Close,
 }

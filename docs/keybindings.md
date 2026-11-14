@@ -291,6 +291,9 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `move_pane_to_new_window` | Window | Moves the focused pane into a new regular window, as its only tab, without restarting its terminal. Available in the palette and pane context menu, with no default binding. The only pane of a window's only tab does nothing. |
 | `move_workspace_to_new_window` | Window | Optional `workspace`, defaulting to the window's. Moves it into a new session shown by a new regular window, without restarting its terminals; a window that showed it moves to another workspace of its session. Available in the palette and a workspace row's menu, with no default binding. Unavailable for a session's only workspace. |
 | `move_tab_to_new_window` | Window | Optional `tab`, defaulting to the active tab. Moves it into a new regular window without restarting its terminals. Available in the palette and tab context menu, with no default binding. A window with one tab does nothing. |
+| `move_tab_to_workspace` | Window | `workspace`, which the palette prompts for, listing every workspace but the tab's own, in any session; `tab` defaults to the active tab. Moves the whole tab to the end of that workspace, keeping its layout and terminals, as a drop on its sidebar row does. The window keeps showing its workspace; one the move empties follows the drop's rules, so a window whose last tab leaves its session closes. Available in the palette and the tab context menu, with no default binding. Unavailable while no other workspace exists. |
+| `move_workspace_to_session` | Window | `session`, which the palette prompts for, listing every session but the workspace's own; `workspace` defaults to the window's. Moves the workspace to the end of that session without restarting its terminals; windows on that session keep showing what they showed. A window that showed it moves to another workspace of its session, or closes when it was the session's only workspace, as after a drop on another window. Available in the palette and a workspace row's menu, with no default binding. Unavailable while no other session exists. |
+| `move_workspace_up` / `move_workspace_down` | Window | Optional `workspace`, defaulting to the window's. Moves it one place up or down its session's workspaces, as a row drag does. Available in the palette and a workspace row's menu, with no default binding; unavailable at that end of the list. While the sidebar has focus, `sidebar_move_up` and `sidebar_move_down` move the focused row instead. |
 | `move_tab_to_pane` | Window | `pane` and `side`; `tab` defaults to the active tab. Moves the whole tab beside a pane of another tab, keeping its layout. A binding may set `side`; the palette prompts for the pane, and for the side when the binding omits it. |
 | `arrange_panes` | Window | `layout`: `columns`, `rows`, `main_left`, `main_top`, `main_centered`, `tiled`, or a name from `[panes.layouts]` (see [pane layouts](#pane-layouts)). Rearranges the active tab's panes into that layout, keeping every terminal and the pane order. A binding may set `layout`; the palette and the Arrange Panes… menu items prompt for it. A split tab's terminal menu lists every layout under Arrange Panes, disabling those that cannot hold its panes. |
 | `next_pane_layout` / `previous_pane_layout` | Window | Arranges the active tab's panes into the next or previous layout of the cycle, skipping a layout that does not fit the window or would change nothing. `previous_pane_layout` has no default binding. |
@@ -364,6 +367,7 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `sidebar_show` | Window | Bound only while `Sidebar`. Shows the focused workspace or session in the window, or opens the session list from the sidebar's session row. |
 | `sidebar_rename` | Window | Bound only while `Sidebar`. Renames the focused workspace through the palette prompt. |
 | `sidebar_menu` | Window | Bound only while `Sidebar`. Opens the focused workspace's context menu. |
+| `sidebar_move_up` / `sidebar_move_down` | Window | Bound only while `Sidebar`. Moves the focused workspace, or the focused row of the session list, one place up or down its list, keeping focus on it; does nothing at the list's end. |
 | `sidebar_exit` | Window | Bound only while `Sidebar`. Returns focus to the terminal. |
 | `notice_next` | Window | Bound only while `notices`. Scrolls a notice taller than the stack down first, then moves to the next notice. |
 | `notice_previous` | Window | Bound only while `notices`. Scrolls a notice taller than the stack up first, then moves to the previous notice. |
@@ -622,8 +626,9 @@ or clicking elsewhere closes the menu and returns focus to the terminal.
 
 The session list is no menu: its rows take the [Sidebar](#sidebar) keys, so
 the arrows, Home, and End walk them, Enter switches the window to the focused
-session, F2 renames it, the menu key or Shift-F10 opens its menu, with Open in
-New Window, and Escape closes the list.
+session, F2 renames it, Option-Up and Option-Down (Alt on Linux) reorder it,
+the menu key or Shift-F10 opens its menu, with Open in New Window and Move
+Session Up and Down, and Escape closes the list.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
@@ -673,7 +678,8 @@ the top; Return or Space shows the focused workspace or opens the session
 menu. A click on a row shows its workspace, a double-click renames it in the
 docked sidebar, a right press opens its context menu, which acts on that
 row's workspace, and a drag reorders the workspaces, or moves one to a new
-or another window; Escape cancels a drag.
+or another window; Escape cancels a drag. Option-Up and Option-Down (Alt on
+Linux) move the focused row instead, keeping its focus.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
@@ -684,6 +690,7 @@ or another window; Escape cancels a drag.
 | `sidebar_show` | `enter`, `space` | `enter`, `space` |
 | `sidebar_rename` | `f2` | `f2` |
 | `sidebar_menu` | `shift-f10`, `menu` | `shift-f10`, `menu` |
+| `sidebar_move_up` / `sidebar_move_down` | `alt-up` / `alt-down` | `alt-up` / `alt-down` |
 | `sidebar_exit` | `escape` | `escape` |
 
 ### Notices

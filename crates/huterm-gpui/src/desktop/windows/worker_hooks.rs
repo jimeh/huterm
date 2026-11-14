@@ -53,10 +53,13 @@ pub(super) enum Stage {
     /// The session list's read of exited sessions, before it takes the Mux
     /// lock.
     ExitedRead,
+    /// A tab or workspace move a command or a drop within the window
+    /// commits, before it takes the Mux lock.
+    Move,
 }
 
 #[derive(Default)]
-pub(super) struct WorkerHooks(Mutex<[StageHooks; 17]>);
+pub(super) struct WorkerHooks(Mutex<[StageHooks; 18]>);
 
 #[derive(Default)]
 struct StageHooks {

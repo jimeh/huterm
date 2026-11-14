@@ -496,6 +496,13 @@ impl WorkspaceView {
             ids::SIDEBAR_RENAME => {
                 self.run_session_row(focused, RowAction::Rename, window, cx);
             }
+            ids::SIDEBAR_MOVE_UP | ids::SIDEBAR_MOVE_DOWN => {
+                let up = command == ids::SIDEBAR_MOVE_UP;
+                return Some(
+                    self.move_session_step(focused, up, window, cx)
+                        .or(Ok(CommandOutcome::Completed)),
+                );
+            }
             ids::SIDEBAR_MENU => {
                 let anchor = self
                     .session_row_bounds
@@ -538,7 +545,11 @@ impl WorkspaceView {
             RowAction::ClearName => ids::CLEAR_SESSION_NAME,
             RowAction::Close => ids::CLOSE_SESSION,
             // Sessions have no pin; their menu never offers one.
-            RowAction::TogglePin | RowAction::NewWindow => return,
+            RowAction::TogglePin
+            | RowAction::NewWindow
+            | RowAction::MoveUp
+            | RowAction::MoveDown
+            | RowAction::ToSession => return,
         };
         self.run_recorded(
             &CommandInvocation::new(
@@ -596,10 +607,9 @@ impl WorkspaceView {
         session: SessionId,
         cx: &App,
     ) -> Option<MenuSpec> {
-        self.session_rows(cx)
-            .iter()
-            .find(|row| row.session == session)
-            .map(row_menu)
+        let rows = self.session_rows(cx);
+        let index = rows.iter().position(|row| row.session == session)?;
+        Some(row_menu(&rows[index], index, rows.len()))
     }
 
     /// Whether a dismissed row menu of `kind` returns focus to its row: a
@@ -666,6 +676,8 @@ impl WorkspaceView {
             SessionPick::Rename(raw)
             | SessionPick::ClearName(raw)
             | SessionPick::OpenInNewWindow(raw)
+            | SessionPick::MoveUp(raw)
+            | SessionPick::MoveDown(raw)
             | SessionPick::Close(raw) => raw,
         };
         let Some(session) =
@@ -682,6 +694,19 @@ impl WorkspaceView {
             SessionPick::Rename(_) => RowAction::Rename,
             SessionPick::ClearName(_) => RowAction::ClearName,
             SessionPick::Close(_) => RowAction::Close,
+            SessionPick::MoveUp(_) | SessionPick::MoveDown(_) => {
+                let up = matches!(pick, SessionPick::MoveUp(_));
+                if let Err(error) =
+                    self.move_session_step(session, up, window, cx)
+                {
+                    self.report_failure(
+                        "Command failed",
+                        error.to_string(),
+                        cx,
+                    );
+                }
+                return;
+            }
             SessionPick::OpenInNewWindow(_) => {
                 self.close_session_list(window, cx);
                 self.run_recorded(
@@ -717,14 +742,24 @@ impl WorkspaceView {
             let Committed { result, seq } = task.await;
             projected(&app, seq).await;
             let _ = view.update(cx, |view, cx| {
-                if let Err(error) = result
-                    && !terminating(cx)
-                {
-                    view.report_failure(
+                match result {
+                    Err(error) if !terminating(cx) => view.report_failure(
                         "Reorder sessions",
                         format!("Cannot reorder sessions: {error}"),
                         cx,
-                    );
+                    ),
+                    // The moved row stays in view, as one moved by key.
+                    Ok(()) => {
+                        if let Some(index) = view
+                            .session_rows(cx)
+                            .iter()
+                            .position(|row| row.session == session)
+                        {
+                            view.session_list_scroll.scroll_to_item(index);
+                            cx.notify();
+                        }
+                    }
+                    Err(_) => {}
                 }
             });
         })

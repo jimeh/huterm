@@ -67,6 +67,9 @@ const RENAME_PREFIX: &str = "workspace-rename:";
 const CLEAR_PREFIX: &str = "workspace-clear:";
 const PIN_PREFIX: &str = "workspace-pin:";
 const WINDOW_PREFIX: &str = "workspace-window:";
+const UP_PREFIX: &str = "workspace-up:";
+const DOWN_PREFIX: &str = "workspace-down:";
+const SESSION_PREFIX: &str = "workspace-session:";
 const CLOSE_PREFIX: &str = "workspace-close:";
 
 /// What a row menu pick runs.
@@ -79,6 +82,11 @@ pub(super) enum WorkspacePick {
     TogglePin(u64),
     /// Moves the workspace into a new window and session.
     NewWindow(u64),
+    /// Moves the workspace one place up or down its session.
+    MoveUp(u64),
+    MoveDown(u64),
+    /// Moves the workspace to another session, which the palette asks for.
+    ToSession(u64),
     Close(u64),
 }
 
@@ -97,6 +105,15 @@ pub(super) fn parse_pick(id: &str) -> Option<WorkspacePick> {
     if let Some(raw) = raw(WINDOW_PREFIX) {
         return Some(WorkspacePick::NewWindow(raw));
     }
+    if let Some(raw) = raw(UP_PREFIX) {
+        return Some(WorkspacePick::MoveUp(raw));
+    }
+    if let Some(raw) = raw(DOWN_PREFIX) {
+        return Some(WorkspacePick::MoveDown(raw));
+    }
+    if let Some(raw) = raw(SESSION_PREFIX) {
+        return Some(WorkspacePick::ToSession(raw));
+    }
     raw(CLOSE_PREFIX).map(WorkspacePick::Close)
 }
 
@@ -111,15 +128,30 @@ pub(super) fn resolve(state: &HierarchyState, raw: u64) -> Option<WorkspaceId> {
         .find(|workspace| workspace.get() == raw)
 }
 
+/// Where a row sits for its menu: its index among `count` workspace rows,
+/// and whether another session exists to move it to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RowPlace {
+    pub(super) index: usize,
+    pub(super) count: usize,
+    pub(super) other_session: bool,
+}
+
 /// A row's context menu, acting on that row's workspace: Rename…,
-/// Clear Name for a custom name, Pin Workspace or Unpin Workspace, and
-/// Move to New Window and Close Workspace… while the session has another
-/// workspace, as the session rows' menu has them.
-pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
+/// Clear Name for a custom name, Pin Workspace or Unpin Workspace, Move
+/// Workspace to Session… while another session exists, and, while the
+/// session has another workspace, Move Workspace Up and Down (disabled at
+/// their ends), Move to New Window, and Close Workspace…, as the session
+/// rows' menu has them.
+pub(super) fn row_menu(row: &WorkspaceRow, place: RowPlace) -> MenuSpec {
     let raw = row.workspace.get();
-    let item = |id: String, label: &str, icon: Icon| {
-        MenuRow::Item(MenuItem::new(id, label).icon(icon.asset_path()))
+    let entry = |id: String, label: &str, icon: Icon| {
+        MenuItem::new(id, label).icon(icon.asset_path())
     };
+    let item = |id: String, label: &str, icon: Icon| {
+        MenuRow::Item(entry(id, label, icon))
+    };
+    let workspaces = place.count;
     let mut rows = vec![item(
         format!("{RENAME_PREFIX}{raw}"),
         "Rename Workspace…",
@@ -141,7 +173,34 @@ pub(super) fn row_menu(row: &WorkspaceRow, workspaces: usize) -> MenuSpec {
     } else {
         item(format!("{PIN_PREFIX}{raw}"), "Pin Workspace", Icon::Pin)
     });
+    if place.other_session {
+        rows.push(item(
+            format!("{SESSION_PREFIX}{raw}"),
+            "Move Workspace to Session…",
+            Icon::Layers,
+        ));
+    }
     if workspaces > 1 {
+        let up = entry(
+            format!("{UP_PREFIX}{raw}"),
+            "Move Workspace Up",
+            Icon::ArrowUp,
+        );
+        rows.push(MenuRow::Item(if place.index == 0 {
+            up.disabled(None)
+        } else {
+            up
+        }));
+        let down = entry(
+            format!("{DOWN_PREFIX}{raw}"),
+            "Move Workspace Down",
+            Icon::ArrowDown,
+        );
+        rows.push(MenuRow::Item(if place.index + 1 >= workspaces {
+            down.disabled(None)
+        } else {
+            down
+        }));
         rows.push(item(
             format!("{WINDOW_PREFIX}{raw}"),
             "Move Workspace to New Window",

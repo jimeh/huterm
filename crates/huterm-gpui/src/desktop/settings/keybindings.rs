@@ -31,6 +31,7 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::OPEN_TAB_DIRECTORY,
             ids::MOVE_TAB_TO_PANE,
             ids::MOVE_TAB_TO_NEW_WINDOW,
+            ids::MOVE_TAB_TO_WORKSPACE,
         ],
     ),
     (
@@ -117,6 +118,9 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::PREVIOUS_WORKSPACE,
             ids::CLEAR_WORKSPACE_NAME,
             ids::TOGGLE_WORKSPACE_PIN,
+            ids::MOVE_WORKSPACE_UP,
+            ids::MOVE_WORKSPACE_DOWN,
+            ids::MOVE_WORKSPACE_TO_SESSION,
             ids::MOVE_WORKSPACE_TO_NEW_WINDOW,
             ids::CLOSE_WORKSPACE,
         ],

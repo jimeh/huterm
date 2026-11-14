@@ -1217,6 +1217,8 @@ fn sidebar_defaults() -> Vec<BindingEntry> {
         default("enter", ids::SIDEBAR_SHOW, "Open"),
         default("space", ids::SIDEBAR_SHOW, "Open"),
         default("f2", ids::SIDEBAR_RENAME, "Rename"),
+        default("alt-up", ids::SIDEBAR_MOVE_UP, "Move Up"),
+        default("alt-down", ids::SIDEBAR_MOVE_DOWN, "Move Down"),
         default("shift-f10", ids::SIDEBAR_MENU, "Open Menu"),
         default("menu", ids::SIDEBAR_MENU, "Open Menu"),
         default("escape", ids::SIDEBAR_EXIT, "Return to Terminal"),

@@ -243,6 +243,7 @@ mod window_menu;
 mod worker_hooks;
 mod workspace_chrome;
 mod workspace_menu;
+mod workspace_moves;
 mod workspace_panel;
 mod workspace_status;
 mod workspace_switch;
@@ -3275,6 +3276,7 @@ fn open_window_with_profile(
                     narrow: false,
                 }),
                 workspace_revealed: None,
+                reveal_pending: None,
                 workspace_label: session_control::SessionLabel::default(),
                 workspace_trigger_bounds: Rc::new(Cell::new(None)),
                 workspace_scroll: workspace_scroll.clone(),
@@ -3656,6 +3658,7 @@ impl refresh::Animated for WorkspaceView {
                 .as_ref()
                 .is_some_and(|drag| drag.scrolls(self.tab_scroll))
             || self.drag_list_scrolls()
+            || self.incoming_list_scrolls()
         {
             next = next.merge(AnimationSchedule::FRAME);
         }
@@ -3738,7 +3741,9 @@ impl refresh::Animated for WorkspaceView {
             }
             cx.notify();
         }
-        if self.advance_drag_list(now, window, cx) {
+        if self.advance_drag_list(now, window, cx)
+            | self.advance_incoming_list(now, window, cx)
+        {
             cx.notify();
         }
         if self.panel_scrollbar.advance(now)
@@ -4852,6 +4857,10 @@ struct WorkspaceView {
     workspace_chrome_now: Cell<WorkspaceChrome>,
     /// The shown workspace whose row the sidebar last scrolled to.
     workspace_revealed: Option<WorkspaceId>,
+    /// A row to scroll into view once its list has laid out, as GPUI drops
+    /// a scroll request a list takes before its first layout, and whether
+    /// render already asked for the frame that lays it out.
+    reveal_pending: Option<(WorkspaceId, bool)>,
     /// The shown workspace's name the switcher last measured.
     workspace_label: session_control::SessionLabel,
     /// The workspace switcher's painted bounds, for its popover's anchor.
@@ -5860,7 +5869,8 @@ impl WorkspaceView {
         cx: &mut Context<'_, Self>,
     ) -> WindowChange {
         let had_tabs = !self.tabs.is_empty();
-        let adopted = self.adopt_moved_tabs(terminating, cx);
+        let adopted = self.adopt_moved_tabs(terminating, cx)
+            | self.adopt_moved_panes(terminating, cx);
         let mut change = reconcile_window(
             &mut WindowReconcile { view: self, cx },
             touched,
@@ -5868,8 +5878,8 @@ impl WorkspaceView {
         );
         self.reconcile_hidden(touched, terminating, cx);
         if adopted {
-            // A tab that moved to or from a hidden workspace kept its
-            // view; the window reapplies which views show.
+            // A tab or pane that moved to or from a hidden workspace kept
+            // its view; the window reapplies which views show.
             change.changed = true;
             change.titles = true;
             change.adopted = true;
@@ -7090,20 +7100,34 @@ impl WorkspaceView {
         to: TabId,
         cx: &mut App,
     ) {
-        let Some(source) = self.tabs.iter_mut().find(|view| view.id == from)
-        else {
+        let Some((moved, emptied)) = self.take_pane_view(pane, from, cx) else {
             return;
         };
-        let Some(index) =
-            source.panes.iter().position(|view| view.pane == pane)
-        else {
-            return;
-        };
+        self.put_pane_view(moved, to, cx);
+        if emptied {
+            // The tab that took the last pane takes over as active.
+            if self.tabs_shown() && self.active_tab(cx) == Some(from) {
+                cx.global_mut::<Desktop>().windows.select(self.window, to);
+            }
+            self.drop_tab_views(&[from], cx);
+        }
+    }
+
+    /// Takes the view of `pane` out of tab `from`, keeping its terminal
+    /// view and state, and reports whether `from` is left without a pane
+    /// view, which the caller then drops. Focus in a tab that keeps panes
+    /// falls back as for a closed pane.
+    fn take_pane_view(
+        &mut self,
+        pane: PaneId,
+        from: TabId,
+        cx: &mut App,
+    ) -> Option<(PaneView, bool)> {
+        let source = self.tabs.iter_mut().find(|view| view.id == from)?;
+        let index = source.panes.iter().position(|view| view.pane == pane)?;
         let moved = source.panes.remove(index);
-        let committed = moved.committed;
         let emptied = source.panes.is_empty();
         if !emptied {
-            // The pane left, so focus falls back as for a closed pane.
             source.remove_panes(&[pane]);
             let titles = source.pane_titles(self.config.tabs, cx);
             let title = source.title(self.config.tabs, cx);
@@ -7114,6 +7138,14 @@ impl WorkspaceView {
                 mark_titles_changed(self.window, cx);
             }
         }
+        Some((moved, emptied))
+    }
+
+    /// Puts a pane view taken from another tab into tab `to`: at the end
+    /// of its focus history and in its traversal order, or as the first
+    /// pane of a view this window builds for `to`.
+    fn put_pane_view(&mut self, moved: PaneView, to: TabId, cx: &mut App) {
+        let pane = moved.pane;
         if let Some(target) = self.tabs.iter_mut().find(|view| view.id == to) {
             target.panes.push(moved);
             target.focus_history.push(pane);
@@ -7127,6 +7159,7 @@ impl WorkspaceView {
                 mark_titles_changed(self.window, cx);
             }
         } else {
+            let committed = moved.committed;
             let names = cx
                 .global::<Desktop>()
                 .hierarchy
@@ -7139,13 +7172,6 @@ impl WorkspaceView {
                 false,
                 cx,
             );
-        }
-        if emptied {
-            // The tab that took the last pane takes over as active.
-            if self.tabs_shown() && self.active_tab(cx) == Some(from) {
-                cx.global_mut::<Desktop>().windows.select(self.window, to);
-            }
-            self.drop_tab_views(&[from], cx);
         }
     }
 
@@ -10082,6 +10108,23 @@ impl WorkspaceView {
                 ids::MOVE_WORKSPACE_TO_NEW_WINDOW => self
                     .check_workspace_tear_off_available(target.workspace, cx)
                     .map(|_| ()),
+                ids::MOVE_TAB_TO_WORKSPACE => self
+                    .check_tab_to_workspace_available(target.tab, None, cx)
+                    .map(|_| ()),
+                ids::MOVE_WORKSPACE_TO_SESSION => self
+                    .check_workspace_to_session_available(
+                        target.workspace,
+                        None,
+                        cx,
+                    )
+                    .map(|_| ()),
+                ids::MOVE_WORKSPACE_UP | ids::MOVE_WORKSPACE_DOWN => self
+                    .check_workspace_step_available(
+                        target.workspace,
+                        command == ids::MOVE_WORKSPACE_UP,
+                        cx,
+                    )
+                    .map(|_| ()),
                 ids::NEW_TAB => self.check_new_tab_available(cx),
                 ids::NEW_SESSION
                 | ids::SELECT_SESSION
@@ -10139,6 +10182,8 @@ impl WorkspaceView {
                 | ids::SIDEBAR_SHOW
                 | ids::SIDEBAR_RENAME
                 | ids::SIDEBAR_MENU
+                | ids::SIDEBAR_MOVE_UP
+                | ids::SIDEBAR_MOVE_DOWN
                 | ids::SIDEBAR_EXIT => Ok(()),
                 ids::WINDOW_TRANSPARENCY => {
                     if self.panel.is_some() {
@@ -10920,6 +10965,19 @@ impl WorkspaceView {
                     window,
                     cx,
                 ),
+            ids::MOVE_TAB_TO_WORKSPACE => {
+                self.move_tab_to_workspace(invocation, window, cx)
+            }
+            ids::MOVE_WORKSPACE_TO_SESSION => {
+                self.move_workspace_to_session(invocation, window, cx)
+            }
+            ids::MOVE_WORKSPACE_UP | ids::MOVE_WORKSPACE_DOWN => self
+                .move_workspace_step(
+                    invocation.workspace("workspace"),
+                    invocation.id == ids::MOVE_WORKSPACE_UP,
+                    window,
+                    cx,
+                ),
             ids::NEW_TAB => self.new_tab(window, cx),
             ids::OPEN_MENU => self.open_menu(true, window, cx),
             ids::OPEN_SESSION_MENU => self.open_session_menu(window, cx),
@@ -10947,6 +11005,8 @@ impl WorkspaceView {
             | ids::SIDEBAR_SHOW
             | ids::SIDEBAR_RENAME
             | ids::SIDEBAR_MENU
+            | ids::SIDEBAR_MOVE_UP
+            | ids::SIDEBAR_MOVE_DOWN
             | ids::SIDEBAR_EXIT => self
                 .run_sidebar_command(invocation.id, window, cx)
                 .unwrap_or_else(|| {
@@ -16847,6 +16907,12 @@ impl WorkspaceView {
             directory_known,
             panes: view.panes.len(),
             input_sync: input_sync::syncs_input(tab, cx),
+            other_workspace: {
+                let state = cx.global::<Desktop>().hierarchy.state();
+                state.tab_workspace(tab).is_some_and(|workspace| {
+                    workspace_moves::other_workspace(state, workspace)
+                })
+            },
         };
         Some(tab_menu(&input, &cx.global::<Desktop>().keymap, contexts))
     }

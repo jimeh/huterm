@@ -42,7 +42,9 @@ window holds, such as the activity drain or a notification's Show Tab, uses
 `all_tab_views`. Reconcile runs every hidden workspace through the same
 rules as the shown one, drops the views of a workspace that left the
 session, and first moves the view of a tab that moved between two held
-workspaces (`adopt_moved_tabs`), so it keeps its viewer. Install
+workspaces (`adopt_moved_tabs`), so it keeps its viewer, then the view of a
+pane that moved into a tab of another held workspace (`adopt_moved_panes`),
+after putting its source tab's panes in projected order. Install
 completions route each tab to the workspace the projection places it in.
 
 Each `TabView` holds one `PaneView` per pane of its layout, with the

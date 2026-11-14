@@ -851,6 +851,19 @@ pub mod ids {
     /// without restarting its terminals.
     pub const MOVE_WORKSPACE_TO_NEW_WINDOW: CommandId =
         CommandId::new("move_workspace_to_new_window");
+    /// Moves a whole tab, keeping its layout, to the end of another
+    /// workspace.
+    pub const MOVE_TAB_TO_WORKSPACE: CommandId =
+        CommandId::new("move_tab_to_workspace");
+    /// Moves a workspace to the end of another existing session.
+    pub const MOVE_WORKSPACE_TO_SESSION: CommandId =
+        CommandId::new("move_workspace_to_session");
+    /// Moves a workspace one place up in its session.
+    pub const MOVE_WORKSPACE_UP: CommandId =
+        CommandId::new("move_workspace_up");
+    /// Moves a workspace one place down in its session.
+    pub const MOVE_WORKSPACE_DOWN: CommandId =
+        CommandId::new("move_workspace_down");
     /// Arranges the active tab's panes into a named layout.
     pub const ARRANGE_PANES: CommandId = CommandId::new("arrange_panes");
     /// Arranges the active tab's panes into the next layout of the cycle.
@@ -963,6 +976,11 @@ pub mod ids {
     pub const SIDEBAR_RENAME: CommandId = CommandId::new("sidebar_rename");
     /// Opens the focused row's context menu.
     pub const SIDEBAR_MENU: CommandId = CommandId::new("sidebar_menu");
+    /// Moves the focused row one place up in its list.
+    pub const SIDEBAR_MOVE_UP: CommandId = CommandId::new("sidebar_move_up");
+    /// Moves the focused row one place down in its list.
+    pub const SIDEBAR_MOVE_DOWN: CommandId =
+        CommandId::new("sidebar_move_down");
     /// Returns focus from the sidebar to the terminal.
     pub const SIDEBAR_EXIT: CommandId = CommandId::new("sidebar_exit");
     /// Moves the notice selection down.
@@ -1906,6 +1924,41 @@ const CATALOG: &[CommandSpec] = &[
         OWN_WORKSPACE,
     ),
     spec(
+        ids::MOVE_WORKSPACE_TO_SESSION,
+        CommandScope::Window,
+        "Move Workspace to Session",
+        "Move a workspace to the end of another session, keeping its \
+         terminals running.",
+        &[
+            ArgumentSpec {
+                name: "workspace",
+                kind: ArgumentKind::Workspace,
+                required: Requirement::Optional,
+                prompt: false,
+            },
+            ArgumentSpec {
+                name: "session",
+                kind: ArgumentKind::Session,
+                required: Requirement::Always,
+                prompt: true,
+            },
+        ],
+    ),
+    spec(
+        ids::MOVE_WORKSPACE_UP,
+        CommandScope::Window,
+        "Move Workspace Up",
+        "Move a workspace one place up in its session.",
+        OWN_WORKSPACE,
+    ),
+    spec(
+        ids::MOVE_WORKSPACE_DOWN,
+        CommandScope::Window,
+        "Move Workspace Down",
+        "Move a workspace one place down in its session.",
+        OWN_WORKSPACE,
+    ),
+    spec(
         ids::MOVE_TAB_TO_NEW_WINDOW,
         CommandScope::Window,
         "Move Tab to New Window",
@@ -1916,6 +1969,27 @@ const CATALOG: &[CommandSpec] = &[
             required: Requirement::Optional,
             prompt: false,
         }],
+    ),
+    spec(
+        ids::MOVE_TAB_TO_WORKSPACE,
+        CommandScope::Window,
+        "Move Tab to Workspace",
+        "Move a whole tab to the end of another workspace, keeping its \
+         layout and terminals.",
+        &[
+            ArgumentSpec {
+                name: "tab",
+                kind: ArgumentKind::Tab,
+                required: Requirement::Optional,
+                prompt: false,
+            },
+            ArgumentSpec {
+                name: "workspace",
+                kind: ArgumentKind::Workspace,
+                required: Requirement::Always,
+                prompt: true,
+            },
+        ],
     ),
     spec(
         ids::MOVE_TAB_TO_PANE,
@@ -2320,6 +2394,22 @@ const CATALOG: &[CommandSpec] = &[
         CommandScope::Window,
         "Sidebar: Open Menu",
         "Open the focused workspace's context menu.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_MOVE_UP,
+        CommandScope::Window,
+        "Sidebar: Move Up",
+        "Move the focused workspace or session one place up in its list.",
+        &[],
+    ),
+    spec_in(
+        "Sidebar",
+        ids::SIDEBAR_MOVE_DOWN,
+        CommandScope::Window,
+        "Sidebar: Move Down",
+        "Move the focused workspace or session one place down in its list.",
         &[],
     ),
     spec_in(

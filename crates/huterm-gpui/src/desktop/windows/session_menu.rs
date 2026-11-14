@@ -142,6 +142,8 @@ pub(super) fn windows_text(count: usize) -> String {
 const RENAME_PREFIX: &str = "session-rename:";
 const CLEAR_PREFIX: &str = "session-clear:";
 const WINDOW_PREFIX: &str = "session-window:";
+const UP_PREFIX: &str = "session-up:";
+const DOWN_PREFIX: &str = "session-down:";
 const CLOSE_PREFIX: &str = "session-close:";
 
 /// What a row menu pick runs, on the session with this raw identity: a row
@@ -151,6 +153,9 @@ pub(super) enum SessionPick {
     Rename(u64),
     ClearName(u64),
     OpenInNewWindow(u64),
+    /// Moves the session one place up or down the session order.
+    MoveUp(u64),
+    MoveDown(u64),
     Close(u64),
 }
 
@@ -166,6 +171,12 @@ pub(super) fn parse_pick(id: &str) -> Option<SessionPick> {
     if let Some(raw) = raw(WINDOW_PREFIX) {
         return Some(SessionPick::OpenInNewWindow(raw));
     }
+    if let Some(raw) = raw(UP_PREFIX) {
+        return Some(SessionPick::MoveUp(raw));
+    }
+    if let Some(raw) = raw(DOWN_PREFIX) {
+        return Some(SessionPick::MoveDown(raw));
+    }
     raw(CLOSE_PREFIX).map(SessionPick::Close)
 }
 
@@ -179,12 +190,21 @@ pub(super) fn resolve(state: &HierarchyState, raw: u64) -> Option<SessionId> {
 }
 
 /// A row's context menu, acting on that row's session: Rename…, Clear
-/// Name for a custom name, Open in New Window, and Close Session…, as the
-/// workspace rows' menu has them.
-pub(super) fn row_menu(row: &SessionRow) -> MenuSpec {
+/// Name for a custom name, Open in New Window, Move Session Up and Down
+/// while there is another session (disabled at their ends; the row is at
+/// `index` of `count`), and Close Session…, as the workspace rows' menu has
+/// them.
+pub(super) fn row_menu(
+    row: &SessionRow,
+    index: usize,
+    count: usize,
+) -> MenuSpec {
     let raw = row.session.get();
+    let entry = |id: String, label: &str, icon: Icon| {
+        MenuItem::new(id, label).icon(icon.asset_path())
+    };
     let item = |id: String, label: &str, icon: Icon| {
-        MenuRow::Item(MenuItem::new(id, label).icon(icon.asset_path()))
+        MenuRow::Item(entry(id, label, icon))
     };
     let mut rows = vec![item(
         format!("{RENAME_PREFIX}{raw}"),
@@ -203,6 +223,28 @@ pub(super) fn row_menu(row: &SessionRow) -> MenuSpec {
         "Open in New Window",
         Icon::ExternalLink,
     ));
+    if count > 1 {
+        let up = entry(
+            format!("{UP_PREFIX}{raw}"),
+            "Move Session Up",
+            Icon::ArrowUp,
+        );
+        rows.push(MenuRow::Item(if index == 0 {
+            up.disabled(None)
+        } else {
+            up
+        }));
+        let down = entry(
+            format!("{DOWN_PREFIX}{raw}"),
+            "Move Session Down",
+            Icon::ArrowDown,
+        );
+        rows.push(MenuRow::Item(if index + 1 >= count {
+            down.disabled(None)
+        } else {
+            down
+        }));
+    }
     rows.push(MenuRow::Separator);
     rows.push(item(
         format!("{CLOSE_PREFIX}{raw}"),

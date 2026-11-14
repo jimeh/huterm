@@ -17,7 +17,7 @@
 //! operations apply to it while the model writes stay with the shown
 //! workspace. A tab that moves between two workspaces the window holds
 //! keeps its view (`adopt_moved_tabs`), so a later drop onto a hidden
-//! workspace needs no install.
+//! workspace needs no install, and so does a pane (`adopt_moved_panes`).
 //!
 //! A workspace switch within the session (`show_workspace`) runs in one
 //! update: the shown views move to `hidden`, the target's come out, the
@@ -224,6 +224,111 @@ impl WorkspaceView {
             // A shown workspace that had no tab activates the first that
             // arrived, as an install does (`show_pushed_panes`); the
             // reconcile caller sees the new active tab and shows it.
+            if self.active_tab(cx).is_none()
+                && let Some(first) = self.tabs.first().map(|view| view.id)
+            {
+                cx.global_mut::<Desktop>()
+                    .windows
+                    .select(self.window, first);
+            }
+        }
+        shown_changed
+    }
+
+    /// Runs `f` on `workspace`'s views: the shown ones in place, a hidden
+    /// workspace's through `with_hidden`.
+    fn in_workspace<R>(
+        &mut self,
+        shown: WorkspaceId,
+        workspace: WorkspaceId,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        if workspace == shown {
+            f(self)
+        } else {
+            self.with_hidden(workspace, f)
+        }
+    }
+
+    /// Moves the views of panes that moved into a tab of another workspace
+    /// this window holds, once the projection caught up with each view,
+    /// keeping each view's viewer, scroll, and selection, as pane adoption
+    /// within a workspace does. A tab left without a pane view goes; the
+    /// tab the pane joins gets a view when the window had none. A pane
+    /// leaving the shown workspace hides. Never in a busy window, whose own
+    /// completion reconciles once it ends. Returns whether the shown
+    /// workspace's tabs changed.
+    pub(super) fn adopt_moved_panes(
+        &mut self,
+        terminating: bool,
+        cx: &mut Context<'_, Self>,
+    ) -> bool {
+        if terminating || self.reconcile_busy() {
+            return false;
+        }
+        let Some(shown) = self.workspace_id(cx) else {
+            return false;
+        };
+        let state = cx.global::<Desktop>().hierarchy.state();
+        let held = |workspace: WorkspaceId| {
+            workspace == shown || self.hidden.contains_key(&workspace)
+        };
+        let moved: Vec<(PaneId, WorkspaceId, TabId, WorkspaceId, TabId)> = self
+            .tabs
+            .iter()
+            .map(|view| (shown, view))
+            .chain(self.hidden.iter().flat_map(|(workspace, tabs)| {
+                tabs.iter().map(move |view| (*workspace, view))
+            }))
+            .flat_map(|(from, view)| {
+                view.panes.iter().map(move |pane| (from, view.id, pane))
+            })
+            .filter_map(|(from, tab, pane)| {
+                let into = state.pane_tab(pane.pane)?;
+                let to = state.tab_workspace(into)?;
+                (pane.committed <= state.seq() && to != from && held(to))
+                    .then_some((pane.pane, from, tab, to, into))
+            })
+            .collect();
+        let mut shown_changed = false;
+        for (pane, from, tab, to, into) in moved {
+            let Some(view) = self.in_workspace(shown, from, |view| {
+                // The tab's panes take the projected order first, as
+                // reconcile orders them before adoption, so focus falls
+                // back along the current layout.
+                if let Some(source) =
+                    view.tabs.iter_mut().find(|view| view.id == tab)
+                {
+                    super::view_install::in_layout_order(
+                        &mut source.panes,
+                        tab,
+                        cx,
+                    );
+                }
+                let (moved, emptied) = view.take_pane_view(pane, tab, cx)?;
+                if emptied {
+                    view.drop_tab_views(&[tab], cx);
+                }
+                Some(moved)
+            }) else {
+                continue;
+            };
+            if from == shown {
+                view.view.update(cx, |view, cx| {
+                    if view.visible {
+                        view.hide(cx);
+                        cx.notify();
+                    }
+                });
+            }
+            shown_changed |= from == shown || to == shown;
+            self.in_workspace(shown, to, |target| {
+                target.put_pane_view(view, into, cx);
+            });
+        }
+        if shown_changed {
+            self.debug_assert_tabs_aligned(cx);
+            self.sync_tab_order(cx);
             if self.active_tab(cx).is_none()
                 && let Some(first) = self.tabs.first().map(|view| view.id)
             {

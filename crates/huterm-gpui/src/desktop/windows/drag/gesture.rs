@@ -860,6 +860,12 @@ impl WorkspaceView {
         {
             return;
         }
+        // A workspace row drop commits as Move Workspace Up or Down does,
+        // which a busy window refuses: its move would end the other
+        // operation's `busy` and share its Quit and checkpoint holds.
+        if matches!(payload, Payload::Workspace { .. }) && self.busy {
+            return;
+        }
         let change = drag.target().and_then(|target| {
             self.drop_operation(payload, target, Side::Source, cx)
         });
@@ -922,7 +928,11 @@ impl WorkspaceView {
                 workspace,
                 before,
                 ..
-            } => Self::move_workspace(session, workspace, before, cx),
+            } => {
+                self.move_workspace(
+                    session, workspace, session, before, window, cx,
+                );
+            }
             Operation::MoveSession { session, before } => {
                 Self::move_session(session, before, cx);
             }
@@ -931,7 +941,7 @@ impl WorkspaceView {
 
     /// Commits a tab reorder or move on a worker; a refused move that
     /// spring-loaded switches `back`.
-    fn commit_tab_move(
+    pub(in super::super) fn commit_tab_move(
         &mut self,
         change: Operation,
         back: Option<SpringBack>,
@@ -940,9 +950,22 @@ impl WorkspaceView {
     ) {
         let runtime = Arc::clone(&cx.global::<Desktop>().runtime);
         self.busy = true;
-        let task = cx
-            .background_executor()
-            .spawn(async move { runtime.commit_drop(change) });
+        // A move between workspaces holds Quit and checkpoints until it
+        // settles; a reorder within one changes no membership.
+        let holds = matches!(change, Operation::MoveTab { .. });
+        if holds {
+            super::super::workspace_moves::hold_move(cx, self.window);
+        }
+        let task = cx.background_executor().spawn(async move {
+            #[cfg(all(test, feature = "test-support"))]
+            if runtime.worker_hooks.enter(worker_hooks::Stage::Move).await {
+                return Committed {
+                    result: Err(RuntimeError::Stopped.into()),
+                    seq: runtime.lock().hierarchy_seq(),
+                };
+            }
+            runtime.commit_drop(change)
+        });
         let app = cx.to_async();
         let (title, verb) = match change {
             Operation::MoveTab { .. } => ("Move tab", "move"),
@@ -970,6 +993,12 @@ impl WorkspaceView {
                     view.settle_moved(change, window, cx);
                 } else if let Some(back) = back {
                     view.switch_back(back, window, cx);
+                }
+                if holds {
+                    super::super::workspace_moves::release_move(
+                        cx,
+                        view.window,
+                    );
                 }
                 view.restore_tab_focus(window, cx);
                 view.resume_close(window, cx);

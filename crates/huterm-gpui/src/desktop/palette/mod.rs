@@ -457,6 +457,51 @@ struct DomainView<'a> {
     /// The workspace picker lists only the target session's workspaces, as
     /// Switch Workspace needs; other commands may name any workspace.
     own_session_workspaces: bool,
+    /// The destination a move picker leaves out: the workspace a tab
+    /// already sits in, or the session a workspace already belongs to.
+    exclusion: Exclusion,
+}
+
+/// The workspace or session a move's destination picker leaves out.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Exclusion {
+    workspace: Option<WorkspaceId>,
+    session: Option<SessionId>,
+}
+
+/// The destination `command`'s picker leaves out: Move Tab to
+/// Workspace's tab's own workspace, from its `tab` argument, else the
+/// target's; Move Workspace to Session's workspace's own session, from its
+/// `workspace` argument, else the target's; nothing otherwise.
+fn exclusion(
+    command: CommandId,
+    hierarchy: &PaletteHierarchy,
+    target: &PaletteTarget,
+    tab: Option<TabId>,
+    workspace: Option<WorkspaceId>,
+) -> Exclusion {
+    let owner = |rows: &[IdentityRow], value: CommandValue| {
+        rows.iter()
+            .find(|row| row.value == value)
+            .map(|row| (row.workspace, row.session))
+    };
+    match command {
+        ids::MOVE_TAB_TO_WORKSPACE => Exclusion {
+            workspace: tab.map_or(target.workspace, |tab| {
+                owner(&hierarchy.tabs, CommandValue::Tab(tab))
+                    .and_then(|(workspace, _)| workspace)
+            }),
+            session: None,
+        },
+        ids::MOVE_WORKSPACE_TO_SESSION => Exclusion {
+            workspace: None,
+            session: workspace.map_or(target.session, |workspace| {
+                owner(&hierarchy.workspaces, CommandValue::Workspace(workspace))
+                    .and_then(|(_, session)| session)
+            }),
+        },
+        _ => Exclusion::default(),
+    }
 }
 
 /// Which panes a pane picker leaves out.
@@ -505,6 +550,19 @@ impl DomainView<'_> {
                     !(self.own_session_workspaces
                         && kind == ArgumentKind::Workspace)
                         || row.session == self.target.session
+                })
+                .filter(|row| {
+                    let excluded = match kind {
+                        ArgumentKind::Workspace => self
+                            .exclusion
+                            .workspace
+                            .map(CommandValue::Workspace),
+                        ArgumentKind::Session => {
+                            self.exclusion.session.map(CommandValue::Session)
+                        }
+                        _ => None,
+                    };
+                    excluded.as_ref() != Some(&row.value)
                 })
                 .collect(),
             ArgumentKind::Bool
@@ -893,6 +951,12 @@ impl CommandPalette {
             CommandValue::Tab(tab) if arg.name == "tab" => Some(tab),
             _ => None,
         });
+        let workspace = args.iter().find_map(|arg| match arg.value {
+            CommandValue::Workspace(workspace) if arg.name == "workspace" => {
+                Some(workspace)
+            }
+            _ => None,
+        });
         DomainView {
             hierarchy: &self.hierarchy,
             profiles: &self.profiles,
@@ -901,6 +965,13 @@ impl CommandPalette {
             window_only: spec.scope == CommandScope::Window,
             pane_exclusion: self.pane_exclusion(spec, tab),
             own_session_workspaces: spec.id == ids::SELECT_WORKSPACE,
+            exclusion: exclusion(
+                spec.id,
+                &self.hierarchy,
+                &self.target,
+                tab,
+                workspace,
+            ),
         }
     }
 
@@ -931,7 +1002,7 @@ impl CommandPalette {
 
     /// The domain for the slot stage's command.
     fn domain(&self) -> DomainView<'_> {
-        let pane_exclusion = match &self.stage {
+        let (pane_exclusion, exclusion) = match &self.stage {
             Stage::Slots(editor) => {
                 let tab =
                     editor.slots().iter().find_map(|slot| match slot.value {
@@ -942,9 +1013,27 @@ impl CommandPalette {
                         }
                         _ => None,
                     });
-                self.pane_exclusion(editor.spec(), tab)
+                let workspace =
+                    editor.slots().iter().find_map(|slot| match slot.value {
+                        Some(CommandValue::Workspace(workspace))
+                            if slot.spec.name == "workspace" =>
+                        {
+                            Some(workspace)
+                        }
+                        _ => None,
+                    });
+                (
+                    self.pane_exclusion(editor.spec(), tab),
+                    exclusion(
+                        editor.spec().id,
+                        &self.hierarchy,
+                        &self.target,
+                        tab,
+                        workspace,
+                    ),
+                )
             }
-            Stage::Search(_) => PaneExclusion::OwnPane,
+            Stage::Search(_) => (PaneExclusion::OwnPane, Exclusion::default()),
         };
         DomainView {
             hierarchy: &self.hierarchy,
@@ -957,6 +1046,7 @@ impl CommandPalette {
                 &self.stage,
                 Stage::Slots(editor) if editor.spec().id == ids::SELECT_WORKSPACE
             ),
+            exclusion,
         }
     }
 
