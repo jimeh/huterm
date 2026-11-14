@@ -220,3 +220,52 @@ fn the_label_names_the_action_the_command_and_its_state() {
     );
     assert_eq!(label(&header, None), "Scroll to prompt: $ make");
 }
+
+/// A row of `columns` cells holding `text` from the left.
+fn padded(text: &str, columns: usize) -> TerminalRow {
+    let mut row = (*row(text)).clone();
+    while row.cells.len() < columns {
+        row.cells.push(Cell {
+            text: CellText::EMPTY,
+            foreground: CellColor::DefaultForeground,
+            background: CellColor::DefaultBackground,
+            style: CellStyle::default(),
+        });
+    }
+    row
+}
+
+fn fitted(text: &str, width: usize, columns: usize) -> Option<String> {
+    fit_row(&padded(text, width), columns).map(|row| row_text(&row))
+}
+
+#[test]
+fn the_command_row_makes_room_for_the_status() {
+    // A short command fits, its right prompt is dropped either way.
+    assert_eq!(fitted("$ ls", 30, 20), None);
+    assert_eq!(
+        fitted("$ ls                     12:04:31 ", 34, 30).as_deref(),
+        Some("$ ls")
+    );
+    assert_eq!(
+        fitted("$ ls          me@box [12:04:31] ", 32, 30).as_deref(),
+        Some("$ ls")
+    );
+    // A long command line is cut after its last whole word, with an
+    // ellipsis, never leaving a fragment.
+    assert_eq!(
+        fitted("$ make build --release --locked", 40, 20).as_deref(),
+        Some("$ make build\u{2026}")
+    );
+    // One word that fills the room is cut mid-word.
+    assert_eq!(
+        fitted("$ abcdefghijklmnopqrstuvwxyz", 30, 10).as_deref(),
+        Some("$ abcdefg\u{2026}")
+    );
+    // Text that ends at the edge with no gap before it is the command
+    // itself, not a right prompt.
+    assert_eq!(
+        fitted("$ echo one two three four five", 31, 20).as_deref(),
+        Some("$ echo one two\u{2026}")
+    );
+}

@@ -305,6 +305,89 @@ fn duration(took: Duration) -> String {
     }
 }
 
+/// The header's command row cut to `columns` cells, so the status beside
+/// it covers nothing: `None` when the row already fits.
+///
+/// A group of text at the row's right edge after a gap of two or more
+/// blanks, such as a shell's right prompt, is dropped first. A command line
+/// still too long is cut after the last word that fits, or mid-word when
+/// that would drop more than half the space, and ends in an ellipsis.
+pub(super) fn fit_row(
+    row: &TerminalRow,
+    columns: usize,
+) -> Option<TerminalRow> {
+    let cells = &row.cells;
+    let blank = |index: usize| {
+        cells
+            .get(index)
+            .is_none_or(|cell| matches!(cell.text.displayed(), "" | " "))
+    };
+    let last = (0..cells.len()).rev().find(|&index| !blank(index))?;
+    // Text up to `end` is the command line; a right prompt ends within two
+    // cells of the edge, as zsh's indent leaves one.
+    let mut end = last + 1;
+    if last + 3 > cells.len() {
+        let mut start = last;
+        while start > 0 && !(blank(start - 1) && start >= 2 && blank(start - 2))
+        {
+            start -= 1;
+        }
+        if start > 0 && (0..start).any(|index| !blank(index)) {
+            end = start;
+            while end > 0 && blank(end - 1) {
+                end -= 1;
+            }
+        }
+    }
+    if end <= columns {
+        return (end <= last).then(|| keep(row, end, None));
+    }
+    // One cell goes to the ellipsis.
+    let room = columns.checked_sub(1)?;
+    let mut cut = room;
+    if !blank(cut) && cut > 0 && !blank(cut - 1) {
+        let word = (0..cut)
+            .rev()
+            .find(|&index| blank(index))
+            .map_or(0, |index| index + 1);
+        // Cut a word that fills most of the room rather than dropping it.
+        if word > room / 2 {
+            cut = word;
+        }
+    }
+    while cut > 0 && blank(cut - 1) {
+        cut -= 1;
+    }
+    if cells.get(cut).is_some_and(|cell| cell.style.wide_spacer) {
+        cut = cut.saturating_sub(1);
+    }
+    Some(keep(row, cut, Some(cut)))
+}
+
+/// `row` with its cells from `end` on emptied, and an ellipsis at `at`.
+fn keep(row: &TerminalRow, end: usize, ellipsis: Option<usize>) -> TerminalRow {
+    let mut fitted = row.clone();
+    let foreground = end
+        .checked_sub(1)
+        .and_then(|index| row.cells.get(index))
+        .map(|cell| cell.foreground);
+    for (index, cell) in fitted.cells.iter_mut().enumerate().skip(end) {
+        cell.text = if Some(index) == ellipsis {
+            huterm_protocol::CellText::from("\u{2026}")
+        } else {
+            huterm_protocol::CellText::EMPTY
+        };
+        cell.style = huterm_protocol::CellStyle::default();
+        if let Some(foreground) = foreground.filter(|_| Some(index) == ellipsis)
+        {
+            cell.foreground = foreground;
+        }
+        cell.background = huterm_protocol::CellColor::DefaultBackground;
+    }
+    fitted.wrapped = false;
+    fitted
+}
+
 /// The text of a row, without trailing blanks.
 pub(super) fn row_text(row: &TerminalRow) -> String {
     row.cells

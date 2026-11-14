@@ -324,8 +324,8 @@ suggestions; bind it to `text_next`, `text_previous`, `text_page_down`, or
 | `scroll_to_bottom` | Terminal | |
 | `previous_command` | Terminal | Scrolls to the shell prompt above the pane's top row and puts it at the top. Needs shell integration's prompt marks. Scrolls every view of the terminal, as other scrolling does. |
 | `next_command` | Terminal | Scrolls to the next shell prompt below the pane's top row, or to live output when that prompt is on the live screen. |
-| `select_command_output` | Terminal | Selects the output of the command whose rows fill the pane's top row while scrolled back, or of the newest command at live output. Does nothing when that command has no output or Huterm holds no record of it. |
-| `select_command` | Terminal | Selects that command's prompt, command line, and output. No default binding. |
+| `select_command_output` | Terminal | Selects the output of the command whose rows fill the pane's top row while scrolled back, or of the newest command at live output. Unavailable when Huterm holds no record of a command there, or the command printed nothing. |
+| `select_command` | Terminal | Selects that command's prompt, command line, and output; unavailable without a command there. No default binding. |
 | `rename_tab` | Runtime | `name`; `tab` defaults to the active tab. |
 | `rename_workspace` | Runtime | `name`; `workspace` defaults to the window's workspace. |
 | `rename_session` | Runtime | `name`; `session` defaults to the window's session. |

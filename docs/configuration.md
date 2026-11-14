@@ -601,7 +601,9 @@ While a command's output fills a pane and its prompt has scrolled above the
 pane, `sticky_prompt` shows that prompt across the pane's top:
 
 - `status` shows the row with the command line, and at the right whether
-  the command is running, how long it ran, and its exit status.
+  the command is running, how long it ran, and its exit status. A right
+  prompt on that row gives way to the status, and a command line too long
+  to fit beside it ends in an ellipsis.
 - `command` shows only the row with the command line.
 - `prompt` shows every row of the prompt, up to three.
 
