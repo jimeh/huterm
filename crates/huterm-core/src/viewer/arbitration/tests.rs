@@ -859,16 +859,22 @@ fn presentation_follows_the_latest_viewer_under_every_policy() {
         },
         ..TerminalPresentation::default()
     };
-    let mut fixture = Fixture::new();
-    let first = fixture.sized(100);
-    let second = fixture.sized(120);
-    set_policy(&mut fixture, &first, SizingPolicy::Smallest);
-    fixture.arbiter.presentation(&first, presentation(1));
-    let effects = fixture.arbiter.presentation(&second, presentation(2));
-    assert_eq!(effects.presentation, Some(presentation(2)));
-    let effects = fixture.arbiter.report(&first, Report::Focus(true));
-    assert_eq!(effects.presentation, Some(presentation(1)));
-    assert_eq!(effects.resize, None);
+    for policy in [
+        SizingPolicy::Latest,
+        SizingPolicy::Smallest,
+        SizingPolicy::Largest,
+        SizingPolicy::Manual,
+    ] {
+        let mut fixture = Fixture::new();
+        let first = fixture.sized(100);
+        let second = fixture.sized(120);
+        set_policy(&mut fixture, &first, policy);
+        fixture.arbiter.presentation(&first, presentation(1));
+        let effects = fixture.arbiter.presentation(&second, presentation(2));
+        assert_eq!(effects.presentation, Some(presentation(2)), "{policy:?}");
+        let effects = fixture.arbiter.report(&first, Report::Focus(true));
+        assert_eq!(effects.presentation, Some(presentation(1)), "{policy:?}");
+    }
 }
 
 #[test]
@@ -876,6 +882,10 @@ fn the_manual_policy_keeps_the_size_until_one_is_set() {
     let mut fixture = Fixture::new();
     let first = fixture.sized(100);
     let second = fixture.sized(120);
+    // A viewer has laid the terminal out, so its size is no estimate.
+    fixture
+        .arbiter
+        .report(&second, Report::Geometry(grid(120), cell()));
     let effects = set_policy(&mut fixture, &first, SizingPolicy::Manual);
     assert_eq!(effects.resize, None, "the current size stays");
     for effects in [
@@ -951,4 +961,23 @@ fn a_manual_size_from_a_viewer_without_geometry_keeps_the_canonical_rest() {
         })),
     );
     assert_eq!(effects.resize, Some((GridSize::clamped(80, 5), cell())));
+}
+
+#[test]
+fn the_manual_policy_takes_the_first_layout_after_a_spawn_estimate() {
+    let mut fixture = Fixture::new();
+    // The view that spawned the terminal starts with an estimate, as a new
+    // tab opened from one pane of a split does, and the policy reaches the
+    // runtime before the view's first layout.
+    let view = fixture.sized(60);
+    let effects = set_policy(&mut fixture, &view, SizingPolicy::Manual);
+    assert_eq!(effects.resize, None);
+    let effects = fixture
+        .arbiter
+        .report(&view, Report::Geometry(grid(120), cell()));
+    assert_eq!(effects.resize, Some((grid(120), cell())));
+    let effects = fixture
+        .arbiter
+        .report(&view, Report::Geometry(grid(90), cell()));
+    assert_eq!(effects.resize, None, "the first layout is kept");
 }

@@ -137,6 +137,10 @@ pub(crate) struct Arbiter {
     policy: SizingPolicy,
     /// The manual size, which overrides the policy while it is set.
     manual: Option<(GridSize, CellSize)>,
+    /// Whether any viewer has reported geometry. Until one has, the size is
+    /// the estimate the terminal was spawned with, which the `manual`
+    /// policy must not keep.
+    laid_out: bool,
     geometry_revision: u64,
     presentation: TerminalPresentation,
     /// Focused viewers with the `input` capability.
@@ -156,6 +160,7 @@ impl Arbiter {
             canonical: (grid, cell),
             policy: SizingPolicy::default(),
             manual: None,
+            laid_out: false,
             geometry_revision: 0,
             presentation,
             focused: 0,
@@ -338,6 +343,10 @@ impl Arbiter {
             }
         };
         effects.merge(self.recompute());
+        // After the recompute, so the first layout itself still applies.
+        if matches!(report, Report::Geometry(..)) {
+            self.laid_out = true;
+        }
         effects
     }
 
@@ -401,6 +410,16 @@ impl Arbiter {
         mouse.untracked.append(&mut mouse.held);
     }
 
+    /// The policy that decides the size now: `manual` follows `latest`
+    /// until a viewer first lays the terminal out, so a terminal keeps the
+    /// size its first view gives it rather than its spawn estimate.
+    fn effective_policy(&self) -> SizingPolicy {
+        match self.policy {
+            SizingPolicy::Manual if !self.laid_out => SizingPolicy::Latest,
+            policy => policy,
+        }
+    }
+
     /// Chooses the size and the controller, and returns the resize and
     /// presentation changes they require.
     fn recompute(&mut self) -> Effects {
@@ -424,7 +443,7 @@ impl Arbiter {
             .collect();
         if let Some(geometry) = self
             .manual
-            .or_else(|| select_size(self.policy, &candidates))
+            .or_else(|| select_size(self.effective_policy(), &candidates))
             && geometry != self.canonical
         {
             self.canonical = geometry;

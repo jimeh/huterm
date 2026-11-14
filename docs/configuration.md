@@ -859,8 +859,8 @@ sizing = "latest" # latest, smallest, largest, or manual
 - `"largest"` takes the most columns and the most rows of any view. Smaller
   views show the part of the terminal that fits.
 - `"manual"` lets no view resize a terminal. Each keeps the size it has when
-  the setting takes effect, or the size it started with, until **Set
-  Terminal Size** changes it.
+  the setting takes effect, or for a new terminal the size its first view
+  lays it out at, until **Set Terminal Size** changes it.
 
 Every view that shows a terminal counts, including one on a tab its window
 is not showing, so switching tabs, focusing a window, and typing never
