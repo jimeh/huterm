@@ -2823,6 +2823,11 @@ socket pair slice 3b measured, as expected for the same kind of stream.
   desktop's `DesktopRuntime` operations behind an interface with an
   embedded and a `huterm-client` implementation. It also adds the server
   half of [#21][issue-21].
+  The viewer requests that [#207][issue-207] added after slice 5,
+  `set_sizing_policy`, `set_manual_size`, and `clear_manual_size`, have no
+  wire request yet. The desktop moving behind `huterm-client` needs them as
+  additive requests; while minor version 0 is unreleased they can join it
+  directly.
 - [#46][issue-46] builds the CLI on `huterm-client`, with read-only and
   bounded-output behavior.
 - [#133][issue-133] carries `huterm-wire` messages in WebSocket binary
@@ -2950,4 +2955,5 @@ each slice may tune with evidence, recorded in this plan when they change.
 [issue-131]: https://github.com/jimeh/huterm/issues/131
 [issue-132]: https://github.com/jimeh/huterm/issues/132
 [issue-133]: https://github.com/jimeh/huterm/issues/133
+[issue-207]: https://github.com/jimeh/huterm/issues/207
 [issue-134]: https://github.com/jimeh/huterm/issues/134

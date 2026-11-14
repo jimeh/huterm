@@ -81,6 +81,11 @@ links = true
 # Right-click: "menu", "paste", "copy_or_paste", or "ignore". While a
 # terminal application takes the mouse, Shift+right-click applies it.
 right_click = "menu"
+# Which views size a terminal shown in several windows: "latest" (the view
+# last focused or typed in), "smallest", "largest", or "manual" (views stop
+# resizing it once you type in it). Set Terminal Size pins one terminal
+# whatever this says.
+sizing = "latest"
 
 [terminal.bell]
 # Flash active terminals and mark inactive tabs when a bell rings.
@@ -725,6 +730,7 @@ fn parse_consumed(
             link_modifiers: raw.terminal.link_modifiers,
             macos_option_as_alt: raw.terminal.macos_option_as_alt,
             right_click: raw.terminal.right_click,
+            sizing: raw.terminal.sizing,
             scrollback: raw.terminal.scrollback()?,
             scrollback_compression: raw.terminal.scrollback_compression,
         },

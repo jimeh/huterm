@@ -17,11 +17,12 @@ use std::time::Instant;
 use huterm_protocol::{
     AttachmentId, BufferPoint, BufferRange, CellSize, ExitStatus, GridSize,
     InputStamp, MousePosition, RuntimeId, ScrollCommand, ScrollbackLimit,
-    SelectionUnit, StatusBaseline, StatusChanges, TerminalFailure, TerminalId,
-    TerminalInput, TerminalPresentation, TerminalSnapshot, TerminalStatus,
-    ViewerCapabilities, ViewerId,
+    SelectionUnit, SizingPolicy, StatusBaseline, StatusChanges,
+    TerminalFailure, TerminalId, TerminalInput, TerminalPresentation,
+    TerminalSnapshot, TerminalStatus, ViewerCapabilities, ViewerId,
 };
 
+pub use arbitration::ManualSize;
 pub(crate) use arbitration::{Arbiter, Effects, Report};
 pub(crate) use status::StatusPublisher;
 
@@ -764,13 +765,57 @@ impl TerminalViewer {
         grid: GridSize,
         cell: CellSize,
     ) -> Result<(), RuntimeError> {
+        self.send_report(Report::Geometry(
+            GridSize::clamped(grid.columns, grid.rows),
+            cell,
+        ))
+    }
+
+    /// Sets how the terminal chooses its size among its viewers, in order
+    /// with this viewer's other reports. The policy belongs to the
+    /// terminal, not this viewer: the latest request from any viewer that
+    /// may report geometry applies, and it takes effect at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::Busy`] when the runtime cannot accept it yet.
+    pub fn set_sizing_policy(
+        &self,
+        policy: SizingPolicy,
+    ) -> Result<(), RuntimeError> {
+        self.send_report(Report::Policy(policy))
+    }
+
+    /// Fixes the terminal at a manual size, which overrides the sizing
+    /// policy and every viewer's geometry until it is cleared. An omitted
+    /// dimension, and the cell size, come from this viewer's latest
+    /// geometry report.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::Busy`] when the runtime cannot accept it yet.
+    pub fn set_manual_size(
+        &self,
+        size: ManualSize,
+    ) -> Result<(), RuntimeError> {
+        self.send_report(Report::Manual(Some(size)))
+    }
+
+    /// Clears the terminal's manual size, returning it to its sizing
+    /// policy. Clearing when none is set does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::Busy`] when the runtime cannot accept it yet.
+    pub fn clear_manual_size(&self) -> Result<(), RuntimeError> {
+        self.send_report(Report::Manual(None))
+    }
+
+    fn send_report(&self, report: Report) -> Result<(), RuntimeError> {
         self.check(self.slot.capabilities.size)?;
         self.send_counted(RuntimeMessage::Arbitration {
             slot: Arc::clone(&self.slot),
-            report: Report::Geometry(
-                GridSize::clamped(grid.columns, grid.rows),
-                cell,
-            ),
+            report,
         })
     }
 

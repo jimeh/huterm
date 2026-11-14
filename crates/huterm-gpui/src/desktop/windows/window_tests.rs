@@ -1981,7 +1981,7 @@ fn a_replacement_started_before_a_scrollback_change_takes_the_current_limit(
     harness.cx.update(|cx| {
         terminal(cx, window, tab).unwrap().update(cx, |view, _| {
             view.scrollback = scrollback(1000);
-            view.publish_scrollback();
+            view.publish_terminal_settings();
         });
     });
     hooks.release(Stage::Subscribe);
@@ -2014,7 +2014,7 @@ fn a_limit_refused_before_a_replacement_starts_reaches_the_replacement(
             assert_eq!(view.viewer.compression_stats().steps, 0);
             view.scrollback = scrollback(1000);
             view.scrollback_compression = true;
-            view.publish_scrollback();
+            view.publish_terminal_settings();
         });
     });
     harness.hold_replacements(window, false);
@@ -5498,6 +5498,7 @@ mod settings_weights;
 mod synced_input;
 mod system_appearance;
 mod terminal_notifications;
+mod terminal_sizing;
 
 mod transparency;
 mod transparency_panel;

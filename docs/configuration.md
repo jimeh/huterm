@@ -839,6 +839,52 @@ size_indicator = "full" # full, compact, or off
 size_indicator_linger_ms = 100 # 0 to 10000
 ```
 
+## Shared terminal size
+
+A terminal shown in more than one window, such as a session open in two
+windows, has one size: one grid of rows and columns that every view shows.
+`sizing` chooses which views decide it:
+
+```toml
+[terminal]
+sizing = "latest" # latest, smallest, largest, or manual
+```
+
+- `"latest"`, the default, follows the view that last gained focus or was
+  typed in. Moving between two differently sized windows resizes the
+  terminal each time.
+- `"smallest"` takes the fewest columns and, separately, the fewest rows of
+  any view, so every view shows the whole terminal and larger views show
+  background around it.
+- `"largest"` takes the most columns and the most rows of any view. Smaller
+  views show the part of the terminal that fits.
+- `"manual"` stops views resizing a terminal once you have typed in it.
+  Each keeps the size it has from then on, until **Set Terminal Size**
+  changes it. Until you first type in a terminal, such as a new tab, pane,
+  or Quake window's shell, it follows its view like `"latest"`, so it starts
+  at the size its window settles at. Typing while a window is still
+  changing size, such as during a switch to fullscreen, keeps the size at
+  that moment.
+
+Every view that shows a terminal counts, including one on a tab its window
+is not showing, so switching tabs, focusing a window, and typing never
+resize a terminal under `"smallest"` or `"largest"`, or under `"manual"`
+once it has been typed in. Under `"smallest"` and `"largest"`, a view's own
+size changes, such as a window resize, font change, or pane zoom, still
+count. Under `"smallest"` and `"largest"`, the pixel size programs see uses
+the largest cell any view reports, which suits the sharpest display when
+windows sit on displays with different scales. The theme a terminal reports
+to programs always follows the most recently used view. Reload applies a
+change to open terminals at once.
+
+The **Set Terminal Size** command fixes the focused terminal at a size
+whatever `sizing` says, and **Clear Terminal Size** returns it to `sizing`.
+Under `"manual"`, a terminal already typed in then keeps the fixed size,
+since no view resizes it. See [Commands](keybindings.md#commands). A fixed
+size lasts until it is cleared or the terminal ends; it is not saved with
+the session. Views larger or smaller than a fixed size show background
+around it or part of it.
+
 ## Dragging between windows
 
 A tab or pane dragged onto another Huterm window drops into its tab bar, its

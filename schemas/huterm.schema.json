@@ -1518,6 +1518,8 @@
                 "select_all",
                 "clear_scrollback",
                 "reset_terminal",
+                "set_terminal_size",
+                "clear_terminal_size",
                 "open_tab_directory",
                 "open_context_menu",
                 "dialog_confirm",
@@ -7145,6 +7147,119 @@
           "if": {
             "properties": {
               "command": {
+                "const": "set_terminal_size"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Pin the terminal's size; Enter keeps the size this view shows.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {
+                  "columns": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "rows": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "set_terminal_size",
+                "description": "Pin the terminal's size; Enter keeps the size this view shows.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
+                "const": "clear_terminal_size"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "additionalProperties": false,
+            "description": "Return the terminal to the sizing setting after Set Terminal Size.",
+            "properties": {
+              "args": {
+                "additionalProperties": false,
+                "properties": {},
+                "required": [],
+                "type": "object"
+              },
+              "command": {
+                "const": "clear_terminal_size",
+                "description": "Return the terminal to the sizing setting after Set Terminal Size.",
+                "type": "string"
+              },
+              "description": {
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "disabled": {
+                "description": "Remove earlier bindings with the same key, command, `when`, and any\ngiven `args`, and bind nothing.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "GPUI keystroke or space-separated chord sequence. Keystroke syntax is checked at runtime.",
+                "pattern": "\\S",
+                "type": "string"
+              },
+              "when": {
+                "description": "GPUI key-context predicate, parsed at runtime.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "command"
+            ],
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "command": {
                 "const": "open_tab_directory"
               }
             },
@@ -11787,6 +11902,20 @@
           "x-huterm-section": "scrollback",
           "x-huterm-unit": "rows"
         },
+        "sizing": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TerminalSizing"
+            }
+          ],
+          "default": "latest",
+          "description": "Which views decide a terminal's rows and columns when more than one\nwindow shows it; under Manual, none do once you type in it. Set\nTerminal Size pins one terminal whatever this says.",
+          "x-huterm-apply": "live",
+          "x-huterm-group": "Size",
+          "x-huterm-label": "Size of a terminal shown in several views",
+          "x-huterm-order": 25,
+          "x-huterm-section": "terminal"
+        },
         "term": {
           "allOf": [
             {
@@ -12712,6 +12841,35 @@
           "description": "Use the widely installed compatibility entry.",
           "type": "string",
           "x-huterm-label": "xterm-256color"
+        }
+      ]
+    },
+    "TerminalSizing": {
+      "description": "Which views decide a terminal's rows and columns when more than one\nwindow shows it.",
+      "oneOf": [
+        {
+          "const": "latest",
+          "description": "The view that last gained focus or was typed in. Moving between\ndifferently sized windows resizes the terminal.",
+          "type": "string",
+          "x-huterm-label": "Most recently used view"
+        },
+        {
+          "const": "smallest",
+          "description": "The fewest columns and the fewest rows any view has, so every view\nshows the whole terminal. Larger views show background around it.",
+          "type": "string",
+          "x-huterm-label": "Smallest view"
+        },
+        {
+          "const": "largest",
+          "description": "The most columns and the most rows any view has. Smaller views show\npart of the terminal.",
+          "type": "string",
+          "x-huterm-label": "Largest view"
+        },
+        {
+          "const": "manual",
+          "description": "Views stop resizing a terminal once you type in it. It keeps that\nsize until Set Terminal Size changes it.",
+          "type": "string",
+          "x-huterm-label": "Manual"
         }
       ]
     },

@@ -433,6 +433,34 @@ pub struct CellSize {
     pub height: u16,
 }
 
+/// How a terminal shown by several viewers chooses its size. Viewers that
+/// take part are those with the `size` capability that have reported
+/// geometry, shown or hidden. A manual size set on the terminal overrides
+/// every policy until it is cleared.
+///
+/// Under [`Self::Smallest`] and [`Self::Largest`] the cell size is the
+/// widest and the tallest cell any viewer reports, so the PTY's pixel size
+/// suits the densest display and moving focus between viewers never
+/// changes it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SizingPolicy {
+    /// The grid and cell size of the viewer that most recently gained focus
+    /// or typed.
+    #[default]
+    Latest,
+    /// The fewest columns and the fewest rows any viewer reports, each
+    /// taken separately, so every viewer shows the whole grid.
+    Smallest,
+    /// The most columns and the most rows any viewer reports, each taken
+    /// separately.
+    Largest,
+    /// Once any viewer has typed in the terminal, viewers never resize it:
+    /// it keeps its size until a manual size is set. Until then it follows
+    /// `Latest`, so it keeps the size its window settled at rather than the
+    /// estimate it was spawned with.
+    Manual,
+}
+
 /// Whether the presented terminal background is predominantly light or dark.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalAppearance {

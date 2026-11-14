@@ -1,12 +1,13 @@
 //! Owner-thread arbitration between one terminal's viewers: the controlling
-//! viewer, aggregated focus reports, and mouse gesture ownership.
+//! viewer, the canonical size under the terminal's sizing policy, aggregated
+//! focus reports, and mouse gesture ownership.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use huterm_protocol::{
     CellSize, GridSize, InputStamp, Modifiers, MouseAction, MouseButton,
-    MouseInput, MousePosition, TerminalPresentation, ViewerId,
+    MouseInput, MousePosition, SizingPolicy, TerminalPresentation, ViewerId,
 };
 
 use super::{Registry, Slot};
@@ -18,6 +19,22 @@ pub(crate) enum Report {
     Focus(bool),
     /// The grid and cell size the viewer would display.
     Geometry(GridSize, CellSize),
+    /// The terminal's sizing policy. It belongs to the terminal, so the
+    /// latest one from any viewer applies.
+    Policy(SizingPolicy),
+    /// Sets the terminal's manual size, or clears it with `None`.
+    Manual(Option<ManualSize>),
+}
+
+/// A manual size request. An omitted dimension, and the cell size, come
+/// from the requesting viewer's reported geometry, or from the canonical
+/// size when it has reported none.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ManualSize {
+    /// Columns, or `None` for the viewer's own.
+    pub columns: Option<u16>,
+    /// Rows, or `None` for the viewer's own.
+    pub rows: Option<u16>,
 }
 
 /// What the runtime must do after an arbitration change, in this order:
@@ -61,24 +78,55 @@ struct Entry {
     activity: u64,
 }
 
-/// A viewer that may control the terminal.
+/// A viewer that takes part in control: it has the `size` capability and
+/// reported geometry, and is neither dropped nor revoked.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Candidate {
     pub(crate) id: ViewerId,
     pub(crate) activity: u64,
     pub(crate) order: u64,
+    pub(crate) geometry: (GridSize, CellSize),
 }
 
-/// The `latest` policy: the candidate that most recently gained focus or
+/// The controlling viewer: the candidate that most recently gained focus or
 /// typed, ties going to the latest registration. Whether a viewer is shown
-/// does not matter, as with tmux's `latest`.
-pub(crate) fn select_controller(
-    candidates: impl IntoIterator<Item = Candidate>,
-) -> Option<ViewerId> {
+/// does not matter, as with tmux's `latest`. It decides the presentation
+/// under every policy, and the size under [`SizingPolicy::Latest`] and
+/// under [`SizingPolicy::Manual`] until the terminal is first typed in.
+pub(crate) fn select_controller(candidates: &[Candidate]) -> Option<Candidate> {
     candidates
-        .into_iter()
+        .iter()
         .max_by_key(|candidate| (candidate.activity, candidate.order))
-        .map(|candidate| candidate.id)
+        .copied()
+}
+
+/// The size `policy` gives the terminal, or `None` to keep its size: under
+/// [`SizingPolicy::Manual`], or with no candidate. A manual size set on the
+/// terminal overrides this.
+pub(crate) fn select_size(
+    policy: SizingPolicy,
+    candidates: &[Candidate],
+) -> Option<(GridSize, CellSize)> {
+    let pick: fn(u16, u16) -> u16 = match policy {
+        SizingPolicy::Latest => {
+            return select_controller(candidates)
+                .map(|controller| controller.geometry);
+        }
+        SizingPolicy::Manual => return None,
+        SizingPolicy::Smallest => u16::min,
+        SizingPolicy::Largest => u16::max,
+    };
+    let mut geometries = candidates.iter().map(|candidate| candidate.geometry);
+    let (mut grid, mut cell) = geometries.next()?;
+    for (other_grid, other_cell) in geometries {
+        grid.columns = pick(grid.columns, other_grid.columns);
+        grid.rows = pick(grid.rows, other_grid.rows);
+        cell.width = cell.width.max(other_cell.width);
+        cell.height = cell.height.max(other_cell.height);
+    }
+    // The widest grid and the tallest one together can exceed the cell
+    // limit that each one meets.
+    Some((GridSize::clamped(grid.columns, grid.rows), cell))
 }
 
 /// The owner thread's view of every live viewer.
@@ -87,6 +135,14 @@ pub(crate) struct Arbiter {
     entries: Vec<Entry>,
     next_activity: u64,
     canonical: (GridSize, CellSize),
+    policy: SizingPolicy,
+    /// The manual size, which overrides the policy while it is set.
+    manual: Option<(GridSize, CellSize)>,
+    /// Whether any viewer has typed in the terminal. Until one has, its
+    /// window may still be settling from the estimate it was spawned with,
+    /// such as a Quake window that lays out at the regular size before its
+    /// frame, so the `manual` policy still follows its views.
+    typed_in: bool,
     geometry_revision: u64,
     presentation: TerminalPresentation,
     /// Focused viewers with the `input` capability.
@@ -104,6 +160,9 @@ impl Arbiter {
             entries: Vec::new(),
             next_activity: 0,
             canonical: (grid, cell),
+            policy: SizingPolicy::default(),
+            manual: None,
+            typed_in: false,
             geometry_revision: 0,
             presentation,
             focused: 0,
@@ -268,6 +327,22 @@ impl Arbiter {
                 self.entries[index].geometry = Some((grid, cell));
                 Effects::default()
             }
+            Report::Policy(policy) => {
+                self.policy = policy;
+                Effects::default()
+            }
+            Report::Manual(request) => {
+                self.manual = request.map(|request| {
+                    let (grid, cell) =
+                        self.entries[index].geometry.unwrap_or(self.canonical);
+                    let grid = GridSize::clamped(
+                        request.columns.unwrap_or(grid.columns),
+                        request.rows.unwrap_or(grid.rows),
+                    );
+                    (grid, cell)
+                });
+                Effects::default()
+            }
         };
         effects.merge(self.recompute());
         effects
@@ -292,7 +367,11 @@ impl Arbiter {
             return Effects::default();
         };
         self.touch(index);
-        self.recompute()
+        let effects = self.recompute();
+        // After the recompute, so a terminal under `manual` takes the size
+        // of the view first typed in before it keeps it.
+        self.typed_in = true;
+        effects
     }
 
     /// Whether a mouse report from this viewer reaches the application,
@@ -333,38 +412,54 @@ impl Arbiter {
         mouse.untracked.append(&mut mouse.held);
     }
 
-    /// Chooses the controller and returns the resize and presentation
-    /// changes its state requires.
+    /// The policy that decides the size now: `manual` follows `latest`
+    /// until the terminal is first typed in, so it keeps the size its
+    /// window settled at rather than its spawn estimate.
+    fn effective_policy(&self) -> SizingPolicy {
+        match self.policy {
+            SizingPolicy::Manual if !self.typed_in => SizingPolicy::Latest,
+            policy => policy,
+        }
+    }
+
+    /// Chooses the size and the controller, and returns the resize and
+    /// presentation changes they require.
     fn recompute(&mut self) -> Effects {
         let mut effects = Effects::default();
-        let controller = select_controller(
-            self.entries
-                .iter()
-                .filter(|entry| {
-                    entry.slot.capabilities.size
-                        && entry.geometry.is_some()
-                        && !entry.slot.is_dropped()
-                        && !entry.slot.is_revoked()
-                })
-                .map(|entry| Candidate {
+        let candidates: Vec<Candidate> = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.slot.capabilities.size
+                    && !entry.slot.is_dropped()
+                    && !entry.slot.is_revoked()
+            })
+            .filter_map(|entry| {
+                Some(Candidate {
                     id: entry.slot.id,
                     activity: entry.activity,
                     order: entry.slot.order,
-                }),
-        );
-        let Some(entry) = controller.and_then(|id| {
-            self.entries.iter().find(|entry| entry.slot.id == id)
-        }) else {
-            return effects;
-        };
-        if let Some(geometry) = entry.geometry
+                    geometry: entry.geometry?,
+                })
+            })
+            .collect();
+        if let Some(geometry) = self
+            .manual
+            .or_else(|| select_size(self.effective_policy(), &candidates))
             && geometry != self.canonical
         {
             self.canonical = geometry;
             self.geometry_revision += 1;
             effects.resize = Some(geometry);
         }
-        if let Some(presentation) = &entry.presentation
+        let presentation = select_controller(&candidates)
+            .and_then(|controller| {
+                self.entries
+                    .iter()
+                    .find(|entry| entry.slot.id == controller.id)
+            })
+            .and_then(|entry| entry.presentation.as_ref());
+        if let Some(presentation) = presentation
             && *presentation != self.presentation
         {
             self.presentation = presentation.clone();
