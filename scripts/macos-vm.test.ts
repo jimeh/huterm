@@ -99,7 +99,7 @@ describe("macOS VM runner", () => {
     expect(argumentsFor(["smoke"]).command).toEqual(["mise", "run", "ci:smoke:run"]);
     expect(argumentsFor(["smoke", "--", "macos-quake"]).command).toEqual(["env", "HUTERM_CI_SMOKE_STEP=macos-quake", "mise", "run", "ci:smoke:run"]);
     expect(argumentsFor(["exec", "--", "bun", "--version"]).command).toEqual(["bun", "--version"]);
-    expect(argumentsFor(["dev"])).toEqual({ mode: "dev", graphics: true, command: ["target/debug/huterm"] });
+    expect(argumentsFor(["dev"])).toEqual({ mode: "dev", graphics: true, command: ["target/debug/huterm-gui"] });
     expect(() => argumentsFor(["smoke", "renderer", "macos-input"])).toThrow("at most one");
     expect(() => argumentsFor(["exec"])).toThrow("requires a command");
     expect(() => argumentsFor(["clean", "extra"])).toThrow("takes no arguments");
@@ -207,7 +207,7 @@ describe("macOS VM runner", () => {
     const fake = fixture({ TART_TEST_APP_HANGS: "1" });
     fake.seed(image, vm);
     const runner = fake.spawn("dev");
-    const launched = () => fake.calls().some((args) => args.at(-1) === "target/debug/huterm");
+    const launched = () => fake.calls().some((args) => args.at(-1) === "target/debug/huterm-gui");
     const deadline = Date.now() + 20_000;
     while (!launched() && Date.now() < deadline) await Bun.sleep(50);
     // Signalling before the launch would fail somewhere unrelated.

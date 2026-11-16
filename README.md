@@ -61,8 +61,8 @@ for bash, zsh, fish, and nushell, with an opt-in Elvish module.
 These are not available yet:
 
 - Pane layout presets, and undoing a layout change.
-- A background server, local IPC, a command-line client, a TUI, or a browser
-  client.
+- A background server, local IPC, command-line control of a running app, a
+  TUI, or a browser client.
 - Saving and restoring sessions or terminal history across restarts.
 - Shell integration and inline graphics.
 
@@ -98,12 +98,43 @@ Each release has two packages for x86_64 and for aarch64:
   first. If FUSE is unavailable, run it with `--appimage-extract-and-run` or
   use the tarball.
 - `Huterm-<version>-Linux-<arch>.tar.gz` holds the same payload for manual
-  installation: `bin/huterm`, a desktop entry, AppStream metadata, an icon,
-  and license notices. It has no AppImage runtime.
+  installation: the `bin/huterm` command, the `bin/huterm-gui` desktop
+  executable, a desktop entry, AppStream metadata, an icon, and license
+  notices. It has no AppImage runtime.
 
 The packages need glibc 2.35 or newer (Ubuntu 22.04 or later), X11 or
 XWayland, and a working Vulkan driver. GNOME on Wayland runs Huterm through
 XWayland. Linux builds do not update themselves.
+
+### Running `huterm` from a shell
+
+`huterm` is Huterm's command. Run without arguments, it opens the desktop app.
+`huterm --help` lists its commands and options, and `huterm --version` prints
+the version. Neither starts the app or needs a display. An unknown command or
+option prints a usage error and exits with status 2.
+
+Inside Huterm, bash, zsh, fish, nushell, and Elvish (after its `use` line) find
+`huterm` on `PATH` through [shell integration](docs/configuration.md#shell-integration).
+Elsewhere, link it into a directory on your `PATH`:
+
+```sh
+# macOS
+ln -s /Applications/Huterm.app/Contents/MacOS/huterm /usr/local/bin/huterm
+# Linux tarball
+ln -s /path/to/Huterm-<version>-Linux-<arch>/bin/huterm ~/.local/bin/huterm
+# Linux AppImage: the AppImage runs huterm
+ln -s /path/to/Huterm-<version>-Linux-<arch>.AppImage ~/.local/bin/huterm
+```
+
+A linked `huterm` still finds the app it came with. On a machine without the
+app, such as a server, download the command alone:
+`Huterm-CLI-<version>-macOS-universal.zip`, or
+`Huterm-CLI-<version>-Linux-<arch>.tar.gz` for glibc 2.35 or newer. Each holds
+`huterm` and its license notices. The macOS command is signed with a Developer
+ID and notarized; Apple cannot staple a ticket to a bare executable, so
+Gatekeeper checks it online the first time it runs. Without the app beside it,
+`huterm` with no arguments reports that the app is not installed and exits
+with status 1.
 
 ## Configuration
 

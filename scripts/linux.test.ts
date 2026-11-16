@@ -38,6 +38,7 @@ if (args[0] === 'cp') {
   mkdirSync(join(output, 'package-evidence'), { recursive: true });
   writeFileSync(join(output, \`Huterm-0.4.0-Linux-\${packageArch}.AppImage\`), 'appimage');
   writeFileSync(join(output, \`Huterm-0.4.0-Linux-\${packageArch}.tar.gz\`), 'tarball');
+  writeFileSync(join(output, \`Huterm-CLI-0.4.0-Linux-\${packageArch}.tar.gz\`), 'cli tarball');
 }
 `);
   chmodSync(docker, 0o755);
@@ -108,6 +109,7 @@ describe("Linux container runner", () => {
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     expect(readFileSync(join(f.output, "linux/x86_64/Huterm-0.4.0-Linux-x86_64.AppImage"), "utf8")).toBe("appimage");
     expect(readFileSync(join(f.output, "linux/x86_64/Huterm-0.4.0-Linux-x86_64.tar.gz"), "utf8")).toBe("tarball");
+    expect(readFileSync(join(f.output, "linux/x86_64/Huterm-CLI-0.4.0-Linux-x86_64.tar.gz"), "utf8")).toBe("cli tarball");
     const calls = f.calls();
     const create = calls.find(args => args[0] === "create")!;
     expect(create.slice(-3)).toEqual(["mise", "run", "package:linux"]);

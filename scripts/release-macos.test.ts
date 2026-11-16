@@ -62,6 +62,7 @@ test("package verification checks static linkage without rg and rejects failed i
       join(sparkleVersion, "Sparkle"),
       join(sparkleVersion, "Autoupdate"),
       join(sparkleVersion, "Updater.app/Contents/MacOS/Updater"),
+      join(bundle, "Contents/MacOS/huterm-gui"),
       join(bundle, "Contents/MacOS/huterm"),
     ]) await writeFile(file, "universal fixture");
     await writeFile(join(bundle, "Contents/Resources/Sparkle-LICENSE"), await readFile(join(repoRoot, "third-party/sparkle/LICENSE")));
@@ -90,7 +91,7 @@ test("package verification checks static linkage without rg and rejects failed i
     const lipo = join(directory, "lipo");
     await writeFile(lipo, "#!/bin/bash\nexit 0\n");
     await chmod(lipo, 0o755);
-    const absoluteHeader = `${repoRoot}/target/release/bundle/Huterm.app/Contents/MacOS/huterm`;
+    const absoluteHeader = `${repoRoot}/target/release/bundle/Huterm.app/Contents/MacOS/huterm-gui`;
     for (const [linkage, code, expected] of [
       [`${absoluteHeader} (architecture x86_64):\n @rpath/Sparkle.framework/Versions/B/Sparkle\n /usr/lib/libSystem.B.dylib\n`, "0", 0],
       [`${absoluteHeader}:\n @rpath/Sparkle.framework/Versions/B/Sparkle\n ${repoRoot}/.native/sparkle/Sparkle.framework/Versions/B/Sparkle\n`, "0", 1],
@@ -243,7 +244,8 @@ test("nested signing plan is explicit, inside-out, and isolates helper entitleme
     { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app", entitlements: "none" },
     { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle", entitlements: "none" },
     { path: "/tmp/Huterm.app/Contents/Frameworks/Sparkle.framework", entitlements: "none" },
-    { path: "/tmp/Huterm.app/Contents/MacOS/huterm", entitlements: "huterm" },
+    { path: "/tmp/Huterm.app/Contents/MacOS/huterm", entitlements: "none", identifier: "app.huterm.dev.cli" },
+    { path: "/tmp/Huterm.app/Contents/MacOS/huterm-gui", entitlements: "huterm" },
     { path: "/tmp/Huterm.app", entitlements: "huterm" },
   ]);
 });
@@ -392,10 +394,10 @@ test("release-please can update explicit package versions and centralized exact 
   expect(rootVersion).toMatch(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   expect(rootManifest).toContain('[package]\nname = "huterm"');
   expect(rootManifest).not.toMatch(/^version\.workspace = true$/m);
-  for (const dependency of ["huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol", "huterm-state", "huterm-ui"]) {
+  for (const dependency of ["huterm-cli", "huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol", "huterm-state", "huterm-ui"]) {
     expect(rootManifest).toContain(`${dependency} = { path = "crates/${dependency}", version = "=${rootVersion}" } # x-release-please-version`);
   }
-  for (const manifestPath of ["crates/huterm-config/Cargo.toml", "crates/huterm-core/Cargo.toml", "crates/huterm-gpui/Cargo.toml", "crates/huterm-procinfo/Cargo.toml", "crates/huterm-protocol/Cargo.toml", "crates/huterm-state/Cargo.toml", "crates/huterm-ui/Cargo.toml"]) {
+  for (const manifestPath of ["crates/huterm-cli/Cargo.toml", "crates/huterm-config/Cargo.toml", "crates/huterm-core/Cargo.toml", "crates/huterm-gpui/Cargo.toml", "crates/huterm-procinfo/Cargo.toml", "crates/huterm-protocol/Cargo.toml", "crates/huterm-state/Cargo.toml", "crates/huterm-ui/Cargo.toml"]) {
     const manifest = await readFile(resolve(repoRoot, manifestPath), "utf8");
     expect(manifest).toContain(`version = "${rootVersion}"`);
     expect(manifest).not.toMatch(/^version\.workspace = true$/m);

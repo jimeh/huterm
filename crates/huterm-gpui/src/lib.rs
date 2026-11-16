@@ -241,8 +241,14 @@ mod package_tests {
             Some(env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(packager["icons"][0].as_str(), Some("assets/Huterm.icns"));
-        assert_eq!(packager["binaries"][0]["path"].as_str(), Some("huterm"));
-        assert_eq!(packager["binaries"][0]["main"].as_bool(), Some(true));
+        // The desktop executable is the bundle's main binary; the `huterm`
+        // command line rides beside it.
+        let binaries = packager["binaries"].as_array().unwrap();
+        assert_eq!(binaries.len(), 2);
+        assert_eq!(binaries[0]["path"].as_str(), Some("huterm-gui"));
+        assert_eq!(binaries[0]["main"].as_bool(), Some(true));
+        assert_eq!(binaries[1]["path"].as_str(), Some("huterm"));
+        assert!(binaries[1].get("main").is_none());
         assert_eq!(
             packager["macos"]["minimumSystemVersion"].as_str(),
             Some("14.0")

@@ -143,13 +143,15 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
+      cargoPackage("huterm-cli", "0.4.0"),
       cargoPackage("gpui-pre", "0.3.11"),
       cargoPackage("gpui-pre-macos", "0.3.11"),
     ],
     documentDescribes: ["SPDXRef-huterm"],
   };
   const result = await augmentSpdx(application, {
-    arm64: { packages: [cargoPackage("anyhow", "1.0.104"), cargoPackage("arm-only", "1.0.0")] },
+    // anyhow appears twice in the arm64 slice, once per executable.
+    arm64: { packages: [cargoPackage("anyhow", "1.0.104"), cargoPackage("arm-only", "1.0.0"), cargoPackage("anyhow", "1.0.104")] },
     x86_64: { packages: [cargoPackage("anyhow", "1.0.104"), cargoPackage("x86-only", "1.0.0")] },
   });
   const packages = result.packages as Record<string, unknown>[];
@@ -160,7 +162,8 @@ test("SPDX augmentation unions architecture metadata and records pinned native p
     expect(described).not.toContain(`SPDXRef-Package-${name}`);
   }
   expect(() => validateRuntimeSpdx(result, "0.4.0")).not.toThrow();
-  expect(packages.find(pkg => pkg.name === "anyhow")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64 and x86_64") })]);
+  expect(() => validateRuntimeSpdx({ ...result, packages: packages.filter(pkg => pkg.name !== "huterm-cli") }, "0.4.0")).toThrow("huterm-cli@0.4.0");
+  expect(packages.find(pkg => pkg.name === "anyhow")?.annotations).toEqual([expect.objectContaining({ comment: "Recovered from cargo-auditable metadata in arm64 and x86_64 Mach-O slices." })]);
   expect(packages.find(pkg => pkg.name === "arm-only")?.annotations).toEqual([expect.objectContaining({ comment: expect.stringContaining("arm64") })]);
   expect(packages.find(pkg => pkg.name === "gpui-pre")?.sourceInfo).toContain("Locally patched runtime crate");
   // The Linux backend is vendored but absent from the macOS binaries.
@@ -197,6 +200,7 @@ test("SPDX augmentation preserves packages without optional version metadata", a
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
     packages: [
       cargoPackage("huterm", "0.4.0"),
+      cargoPackage("huterm-cli", "0.4.0"),
       cargoPackage("gpui-pre", "0.3.11"),
       cargoPackage("gpui-pre-macos", "0.3.11"),
       unversioned,
@@ -240,7 +244,8 @@ test("Ghostty SPDX source names the reviewed native patches", async () => {
     SPDXID: "SPDXRef-DOCUMENT",
     spdxVersion: "SPDX-2.3",
     creationInfo: { created: "2026-09-10T00:00:00Z", creators: ["Tool: Syft"] },
-    packages: [cargoPackage("huterm", "0.4.0"), cargoPackage("gpui-pre", "0.3.11"), cargoPackage("gpui-pre-macos", "0.3.11")],
+    packages: [cargoPackage("huterm", "0.4.0"),
+      cargoPackage("huterm-cli", "0.4.0"), cargoPackage("gpui-pre", "0.3.11"), cargoPackage("gpui-pre-macos", "0.3.11")],
     documentDescribes: ["SPDXRef-huterm"],
   }, {
     arm64: { packages: [] },

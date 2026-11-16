@@ -1,3 +1,4 @@
+import { cliArchiveEntries, cliArchiveName, cliArchiveRoot, stageCliDirectory, verifyCliDirectory, verifyCliRuns } from "./cli-package.ts";
 import { copyShellIntegration, verifyShellIntegration } from "./shell-integration.ts";
 /** Build and verify relocatable Linux tarballs and AppImages. */
 import { createHash } from "node:crypto";
@@ -11,6 +12,10 @@ const linuxAssets = join(repoRoot, "assets/linux");
 const toolManifestPath = join(linuxAssets, "appimage-tools.json");
 const policyPath = join(linuxAssets, "package-policy.json");
 const maximumGlibc = "2.35";
+/** The command line, which opens the desktop app, and the desktop app itself. */
+const cliExecutable = "bin/huterm";
+const guiExecutable = "bin/huterm-gui";
+const bundleExecutables = [cliExecutable, guiExecutable] as const;
 
 export type LinuxArchitecture = "x86_64" | "aarch64";
 interface ToolAsset { url: string; sha256: string }
@@ -20,7 +25,7 @@ interface PrivateLibraryPolicy { licenseSource: string; licenseFile: string }
 interface NoticePolicy { source: string; target: string }
 interface AppImageNoticePolicy extends NoticePolicy { sourceUrl: string; sha256: string }
 interface AppImageEnvelopePolicy { noticeDirectory: string; symlinks: Record<string, string>; files: Record<string, string>; notices: AppImageNoticePolicy[] }
-interface PackagePolicy { version: number; privateLibraries: Record<string, PrivateLibraryPolicy>; hostLibraries: string[]; notices: NoticePolicy[]; appImageEnvelope: AppImageEnvelopePolicy }
+interface PackagePolicy { version: number; privateLibraries: Record<string, PrivateLibraryPolicy>; hostLibraries: string[]; commandLineLibraries: string[]; notices: NoticePolicy[]; appImageEnvelope: AppImageEnvelopePolicy }
 interface PrivateLibraryRecord { file: string; soname: string; sha256: string; binaryPackage: string; sourcePackage: string; packageVersion: string; licenseFile: string }
 interface PackageManifest { version: number; architecture: LinuxArchitecture; releaseCommit: string; sourceDateEpoch: number; tools: { appimagetool: string; runtime: string }; privateLibraries: PrivateLibraryRecord[] }
 interface CommandResult { stdout: string; stderr: string; exitCode: number }
@@ -303,6 +308,9 @@ async function readPackagePolicy(): Promise<PackagePolicy> {
     privateLibraries[name] = { licenseSource: stringField(fields, "licenseSource", `privateLibraries.${name}`), licenseFile: stringField(fields, "licenseFile", `privateLibraries.${name}`) };
   }
   if (!Array.isArray(value.hostLibraries) || value.hostLibraries.some(item => typeof item !== "string" || item.length === 0)) throw new Error("hostLibraries must contain library names");
+  if (!Array.isArray(value.commandLineLibraries) || value.commandLineLibraries.some(item => typeof item !== "string" || !(value.hostLibraries as string[]).includes(item))) {
+    throw new Error("commandLineLibraries must name host libraries");
+  }
   if (!Array.isArray(value.notices)) throw new Error("notices must be an array");
   const notices = value.notices.map((item, index) => {
     const fields = record(item, `notices[${index}]`);
@@ -342,7 +350,7 @@ async function readPackagePolicy(): Promise<PackagePolicy> {
   });
   if (new Set(envelopeNotices.map(notice => notice.target)).size !== envelopeNotices.length) throw new Error("AppImage notice targets must be unique");
   validateDependencyPolicy(Object.keys(privateLibraries), value.hostLibraries as string[], []);
-  return { version: 1, privateLibraries, hostLibraries: value.hostLibraries as string[], notices, appImageEnvelope: { noticeDirectory, symlinks, files, notices: envelopeNotices } };
+  return { version: 1, privateLibraries, hostLibraries: value.hostLibraries as string[], commandLineLibraries: value.commandLineLibraries as string[], notices, appImageEnvelope: { noticeDirectory, symlinks, files, notices: envelopeNotices } };
 }
 
 async function readToolManifest(): Promise<ToolManifest> { return validateToolManifest(JSON.parse(await readFile(toolManifestPath, "utf8"))); }
@@ -400,7 +408,7 @@ async function copyMetadata(bundle: string): Promise<void> {
   await copyFile(join(linuxAssets, "README.md"), join(bundle, "README.md"));
 }
 
-export async function normalizeTreeMetadata(root: string, sourceDateEpoch: number): Promise<void> {
+export async function normalizeTreeMetadata(root: string, sourceDateEpoch: number, executables: readonly string[] = bundleExecutables): Promise<void> {
   const timestamp = new Date(sourceDateEpoch * 1_000);
   const directories: string[] = [];
   async function visit(directory: string): Promise<void> {
@@ -410,7 +418,7 @@ export async function normalizeTreeMetadata(root: string, sourceDateEpoch: numbe
       const file = join(directory, entry.name);
       if (entry.isDirectory()) await visit(file);
       else if (entry.isFile()) {
-        await chmod(file, relative(root, file) === "bin/huterm" ? 0o755 : 0o644);
+        await chmod(file, executables.includes(relative(root, file)) ? 0o755 : 0o644);
         await utimes(file, timestamp, timestamp);
       }
     }
@@ -419,13 +427,16 @@ export async function normalizeTreeMetadata(root: string, sourceDateEpoch: numbe
   for (const directory of directories.reverse()) await utimes(directory, timestamp, timestamp);
 }
 
-async function stageBundle(bundle: string, executable: string, architecture: LinuxArchitecture, sourceDateEpoch: number, releaseCommit: string, tools: ToolManifest, policy: PackagePolicy): Promise<void> {
-  const binary = join(bundle, "bin/huterm");
+async function stageBundle(bundle: string, executables: { gui: string; cli: string }, architecture: LinuxArchitecture, sourceDateEpoch: number, releaseCommit: string, tools: ToolManifest, policy: PackagePolicy): Promise<void> {
+  const binary = join(bundle, guiExecutable);
   const libraryDirectory = join(bundle, "lib/huterm");
   await Promise.all([mkdir(dirname(binary), { recursive: true }), mkdir(libraryDirectory, { recursive: true })]);
-  await copyFile(executable, binary);
+  await copyFile(executables.gui, binary);
   await chmod(binary, 0o755);
   assertElfArchitecture(await readFile(binary), architecture);
+  // The command line uses only host libraries, so it needs no runpath.
+  await copyFile(executables.cli, join(bundle, cliExecutable));
+  await chmod(join(bundle, cliExecutable), 0o755);
   await runInherited("patchelf", ["--set-rpath", "$ORIGIN/../lib/huterm", binary]);
   const resolved = await resolvePrivateLibraries(binary, policy);
   const privateLibraries: PrivateLibraryRecord[] = [];
@@ -498,22 +509,60 @@ async function walkTreeEntries(root: string): Promise<TreeEntry[]> {
   return entries.sort((left, right) => left.file.localeCompare(right.file));
 }
 
+/**
+ * Whether `bytes` holds `root` as an absolute path: followed by `/` and not
+ * preceded by a path character. A bare substring test misfires when the
+ * container builds in `/workspace` and a relative source path such as
+ * `src/desktop/windows/workspace_panel.rs` is embedded.
+ */
+export function containsBuildPath(bytes: Uint8Array, root: string): boolean {
+  const buffer = Buffer.from(bytes);
+  const needle = Buffer.from(`${root.replace(/\/+$/, "")}/`);
+  for (let index = buffer.indexOf(needle); index >= 0; index = buffer.indexOf(needle, index + 1)) {
+    const before = index === 0 ? undefined : String.fromCharCode(buffer[index - 1]!);
+    if (before === undefined || !/[A-Za-z0-9._~/-]/.test(before)) return true;
+  }
+  return false;
+}
+
+/** The command line's only dynamic dependencies are the C runtime's. */
+export function validateCommandLineDynamic(dynamic: string, allowed: string[], file: string): void {
+  if (/\((?:RUNPATH|RPATH)\)/.test(dynamic)) throw new Error(`${file} must not carry a runpath`);
+  const unexpected = neededLibraries(dynamic).filter(name => !allowed.includes(name));
+  if (unexpected.length > 0) throw new Error(`${file} needs libraries a headless host may lack: ${unexpected.join(", ")}`);
+}
+
+async function verifyLinuxCli(file: string, label: string, version: string, architecture: LinuxArchitecture, policy: PackagePolicy): Promise<void> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || (metadata.mode & 0o111) === 0) throw new Error(`${label} is missing or not executable`);
+    assertElfArchitecture(await handle.readFile(), architecture);
+  } finally { await handle.close(); }
+  validateCommandLineDynamic(await readDynamic(file), policy.commandLineLibraries, label);
+  const glibc = highestRequiredGlibc((await runCaptured("objdump", ["-T", file])).stdout);
+  validateGlibcVersionInfo((await runCaptured("readelf", ["-VW", file])).stdout, glibc.weak);
+  const ldd = (await runCaptured("ldd", [file])).stdout;
+  if (ldd.includes("not found")) throw new Error(`unresolved dependency for ${label}: ${ldd}`);
+  await verifyCliRuns(file, version, label);
+}
+
 async function verifyBundle(bundle: string, expectedVersion: string, expectedArchitecture: LinuxArchitecture): Promise<PackageManifest> {
   const policy = await readPackagePolicy();
   const tools = await readToolManifest();
-  const binary = join(bundle, "bin/huterm");
+  const binary = join(bundle, guiExecutable);
   await verifyShellIntegration(join(repoRoot, "assets/shell-integration"), join(bundle, "share/huterm/shell-integration"));
   await runInherited("bun", ["scripts/terminfo.ts", "check", join(bundle, "share/huterm/terminfo")]);
   const binaryHandle = await open(binary, constants.O_RDONLY | constants.O_NOFOLLOW);
   let binaryBytes: Buffer;
   try {
     const executable = await binaryHandle.stat();
-    if (!executable.isFile() || (executable.mode & 0o111) === 0) throw new Error("bin/huterm is missing or not executable");
+    if (!executable.isFile() || (executable.mode & 0o111) === 0) throw new Error(`${guiExecutable} is missing or not executable`);
     binaryBytes = await binaryHandle.readFile();
   } finally { await binaryHandle.close(); }
   assertElfArchitecture(binaryBytes, expectedArchitecture);
   const dynamic = await readDynamic(binary);
-  validateRunpath(dynamicRunpath(dynamic), "bin/huterm");
+  validateRunpath(dynamicRunpath(dynamic), guiExecutable);
   const needed = neededLibraries(dynamic);
   validateDependencyPolicy(Object.keys(policy.privateLibraries), policy.hostLibraries, needed);
   if (needed.includes("libfreetype.so.6")) throw new Error("libfreetype.so.6 must not be a dynamic dependency");
@@ -533,10 +582,10 @@ async function verifyBundle(bundle: string, expectedVersion: string, expectedArc
       if (!metadata.isFile()) throw new Error(`neutral payload contains a non-regular file: ${relative(bundle, file)}`);
       bytes = await handle.readFile();
     } finally { await handle.close(); }
-    const expectedMode = relative(bundle, file) === "bin/huterm" ? 0o755 : 0o644;
+    const expectedMode = (bundleExecutables as readonly string[]).includes(relative(bundle, file)) ? 0o755 : 0o644;
     if ((metadata.mode & 0o777) !== expectedMode) throw new Error(`${relative(bundle, file)} mode is not ${expectedMode.toString(8)}`);
     if (metadata.mtimeMs !== normalizedTimestamp) throw new Error(`${relative(bundle, file)} timestamp is not SOURCE_DATE_EPOCH`);
-    if (bytes.includes(Buffer.from(repoRoot))) throw new Error(`${relative(bundle, file)} contains the build path`);
+    if (containsBuildPath(bytes, repoRoot)) throw new Error(`${relative(bundle, file)} contains the build path`);
   }
   if (!/^\d+\.\d+\.\d+$/.test(expectedVersion)) throw new Error(`invalid expected version ${expectedVersion}`);
   const recordedFiles = new Set(manifest.privateLibraries.map(library => library.file));
@@ -559,6 +608,7 @@ async function verifyBundle(bundle: string, expectedVersion: string, expectedArc
   for (const banned of [...Object.keys(policy.appImageEnvelope.symlinks), ...Object.keys(policy.appImageEnvelope.files), policy.appImageEnvelope.noticeDirectory]) if (await Bun.file(join(bundle, banned)).exists()) throw new Error(`neutral bundle contains AppImage-only file: ${banned}`);
   await validateMetadata(bundle);
   await validateResolvedLibraries(bundle, binary, policy);
+  await verifyLinuxCli(join(bundle, cliExecutable), cliExecutable, expectedVersion, expectedArchitecture, policy);
   console.log(`verified neutral Linux bundle ${basename(bundle)} (${expectedVersion}, ${expectedArchitecture}, GLIBC_${glibc.required})`);
   return manifest;
 }
@@ -579,6 +629,33 @@ async function createTarball(parent: string, bundleName: string, sourceDateEpoch
     await runInherited("tar", ["--sort=name", `--mtime=@${sourceDateEpoch}`, "--owner=0", "--group=0", "--numeric-owner", "--format=gnu", "-C", parent, "-cf", plainTar, bundleName]);
     await runToFile("gzip", ["-n", "-9", "-c", plainTar], tarball);
   } finally { await rm(plainTar, { force: true }); }
+}
+
+/** Archives the command line with its notices, reproducibly like the app tarball. */
+async function createCliTarball(executable: string, version: string, architecture: LinuxArchitecture, sourceDateEpoch: number, tarball: string): Promise<void> {
+  const root = cliArchiveRoot(version, `Linux-${architecture}`);
+  const parent = await mkdtemp(join(tmpdir(), "huterm-cli-tarball-"));
+  try {
+    const directory = await stageCliDirectory(parent, root, executable);
+    await normalizeTreeMetadata(directory, sourceDateEpoch, ["huterm"]);
+    await createTarball(parent, root, sourceDateEpoch, tarball);
+  } finally { await rm(parent, { recursive: true, force: true }); }
+}
+
+/** Checks the standalone command line; `bundled` is the packages' `bin/huterm`, which it must equal. */
+async function verifyCliTarball(tarball: string, version: string, architecture: LinuxArchitecture, bundled: string): Promise<void> {
+  const root = cliArchiveRoot(version, `Linux-${architecture}`);
+  const entries = (await runCaptured("tar", ["-tzf", tarball])).stdout.split(/\r?\n/).filter(Boolean).sort();
+  if (entries.join("\n") !== cliArchiveEntries(root).join("\n")) throw new Error(`${basename(tarball)} has unexpected entries: ${entries.join(", ")}`);
+  const extracted = await mkdtemp(join(tmpdir(), "huterm-cli-verify-"));
+  try {
+    await runInherited("tar", ["-xzf", tarball, "-C", extracted]);
+    const directory = join(extracted, root);
+    const bytes = await verifyCliDirectory(directory);
+    if (!bytes.equals(await readRegularFile(bundled))) throw new Error(`${basename(tarball)} does not carry the packages' ${cliExecutable}`);
+    await verifyLinuxCli(join(directory, "huterm"), basename(tarball), version, architecture, await readPackagePolicy());
+  } finally { await rm(extracted, { recursive: true, force: true }); }
+  console.log(`verified ${basename(tarball)}`);
 }
 
 async function cachedTool(name: "appimagetool" | "runtime", architecture: LinuxArchitecture, manifest: ToolManifest): Promise<string> {
@@ -733,7 +810,7 @@ async function runPackageSmoke(executable: string, evidenceDirectory?: string, e
   }
 }
 
-async function verifyArtifacts(appImage: string, tarball: string, version: string, architecture: LinuxArchitecture, smoke = false): Promise<void> {
+async function verifyArtifacts(appImage: string, tarball: string, cliTarball: string, version: string, architecture: LinuxArchitecture, smoke = false): Promise<void> {
   const expectedRoot = `Huterm-${version}-Linux-${architecture}`;
   const policy = await readPackagePolicy();
   assertElfArchitecture(await readRegularFile(appImage), architecture);
@@ -745,14 +822,16 @@ async function verifyArtifacts(appImage: string, tarball: string, version: strin
     await verifyBundle(join(image.appDir, "usr"), version, architecture);
     await validateAppImageEnvelope(image.appDir, version, policy.appImageEnvelope);
     await compareTrees(tar.bundle, join(image.appDir, "usr"));
+    await verifyCliTarball(cliTarball, version, architecture, join(tar.bundle, cliExecutable));
     if (smoke) {
+      // Both launches go through the command line, which opens bin/huterm-gui.
       const evidence = process.env.HUTERM_PACKAGE_EVIDENCE_DIR;
-      await runPackageSmoke(join(tar.bundle, "bin/huterm"), evidence ? join(evidence, "tarball") : undefined);
+      await runPackageSmoke(join(tar.bundle, cliExecutable), evidence ? join(evidence, "tarball") : undefined);
       await withPrivateExecutableCopy(appImage, executable =>
         runPackageSmoke(executable, evidence ? join(evidence, "appimage") : undefined, { APPIMAGE_EXTRACT_AND_RUN: "1" }));
     }
   } finally { await Promise.all([rm(tar.root, { recursive: true, force: true }), rm(image.root, { recursive: true, force: true })]); }
-  console.log(`verified ${basename(appImage)} and ${basename(tarball)} share the same neutral payload`);
+  console.log(`verified ${basename(appImage)} and ${basename(tarball)} share the same neutral payload, and ${basename(cliTarball)}`);
 }
 
 async function currentVersion(): Promise<string> {
@@ -779,35 +858,39 @@ async function build(version: string, architecture: LinuxArchitecture): Promise<
   const tools = await readToolManifest();
   const policy = await readPackagePolicy();
   const identity = await sourceIdentity();
-  await runInherited("bash", ["scripts/build-exec.sh", "cargo", "build", "--release", "--locked", "-p", "huterm"], {
+  await runInherited("bash", ["scripts/build-exec.sh", "cargo", "build", "--release", "--locked", "-p", "huterm", "-p", "huterm-cli"], {
     env: { SOURCE_DATE_EPOCH: String(identity.sourceDateEpoch) },
   });
-  const executable = join(repoRoot, "target/release/huterm");
-  assertElfArchitecture(await readFile(executable), architecture);
+  const executables = { gui: join(repoRoot, "target/release/huterm-gui"), cli: join(repoRoot, "target/release/huterm") };
+  for (const executable of Object.values(executables)) assertElfArchitecture(await readFile(executable), architecture);
   const outputDirectory = join(repoRoot, "dist/linux", architecture);
   const staging = join(outputDirectory, `.staging-${process.pid}-${crypto.randomUUID()}`);
   const bundleName = `Huterm-${version}-Linux-${architecture}`;
   const appImageName = `${bundleName}.AppImage`;
   const tarballName = `${bundleName}.tar.gz`;
+  const cliTarballName = cliArchiveName(version, `Linux-${architecture}`);
   const stagedAppImage = join(staging, appImageName);
   const stagedTarball = join(staging, tarballName);
+  const stagedCliTarball = join(staging, cliTarballName);
   const finalAppImage = join(outputDirectory, appImageName);
   const finalTarball = join(outputDirectory, tarballName);
+  const finalCliTarball = join(outputDirectory, cliTarballName);
   await mkdir(staging, { recursive: true });
-  await Promise.all([rm(finalAppImage, { force: true }), rm(finalTarball, { force: true })]);
+  await Promise.all([rm(finalAppImage, { force: true }), rm(finalTarball, { force: true }), rm(finalCliTarball, { force: true })]);
   try {
     const bundle = join(staging, bundleName);
-    await stageBundle(bundle, executable, architecture, identity.sourceDateEpoch, identity.releaseCommit, tools, policy);
+    await stageBundle(bundle, executables, architecture, identity.sourceDateEpoch, identity.releaseCommit, tools, policy);
     await verifyBundle(bundle, version, architecture);
     await createTarball(staging, bundleName, identity.sourceDateEpoch, stagedTarball);
     await createAppImage(bundle, version, architecture, identity.sourceDateEpoch, stagedAppImage, tools, policy);
+    await createCliTarball(join(bundle, cliExecutable), version, architecture, identity.sourceDateEpoch, stagedCliTarball);
     const evidence = join(outputDirectory, "package-evidence");
     await rm(evidence, { recursive: true, force: true });
     await mkdir(evidence, { recursive: true });
     process.env.HUTERM_PACKAGE_EVIDENCE_DIR = evidence;
-    await verifyArtifacts(stagedAppImage, stagedTarball, version, architecture, true);
-    await Promise.all([rename(stagedAppImage, finalAppImage), rename(stagedTarball, finalTarball)]);
-    console.log(`created ${relative(repoRoot, finalAppImage)} and ${relative(repoRoot, finalTarball)}`);
+    await verifyArtifacts(stagedAppImage, stagedTarball, stagedCliTarball, version, architecture, true);
+    await Promise.all([rename(stagedAppImage, finalAppImage), rename(stagedTarball, finalTarball), rename(stagedCliTarball, finalCliTarball)]);
+    console.log(`created ${relative(repoRoot, finalAppImage)}, ${relative(repoRoot, finalTarball)}, and ${relative(repoRoot, finalCliTarball)}`);
   } finally { await rm(staging, { recursive: true, force: true }); }
 }
 
@@ -833,7 +916,7 @@ async function main(): Promise<void> {
   switch (options.command) {
     case "build": if (options.paths.length !== 0) throw new Error("build takes no paths"); await build(version, architecture); break;
     case "verify-bundle": if (options.paths.length !== 1) throw new Error("verify-bundle requires one bundle path"); await verifyBundle(resolve(options.paths[0]!), version, architecture); break;
-    case "verify-artifacts": if (options.paths.length !== 2) throw new Error("verify-artifacts requires an AppImage and tarball path"); await verifyArtifacts(resolve(options.paths[0]!), resolve(options.paths[1]!), version, architecture, process.env.HUTERM_PACKAGE_SMOKE === "1"); break;
+    case "verify-artifacts": if (options.paths.length !== 3) throw new Error("verify-artifacts requires the AppImage, app tarball, and CLI tarball paths"); await verifyArtifacts(resolve(options.paths[0]!), resolve(options.paths[1]!), resolve(options.paths[2]!), version, architecture, process.env.HUTERM_PACKAGE_SMOKE === "1"); break;
     default: throw new Error("expected build, verify-bundle, or verify-artifacts");
   }
 }

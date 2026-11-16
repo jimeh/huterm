@@ -16,10 +16,10 @@ fn main() {
         "cargo:rustc-link-search=framework={}",
         root.join(".native/sparkle/distribution").display()
     );
-    println!("cargo:rustc-link-arg-bin=huterm=-Wl,-weak_framework,Sparkle");
+    println!("cargo:rustc-link-arg-bin=huterm-gui=-Wl,-weak_framework,Sparkle");
     println!("cargo:rustc-link-arg-examples=-Wl,-weak_framework,Sparkle");
     println!(
-        "cargo:rustc-link-arg-bin=huterm=-Wl,-rpath,@executable_path/../Frameworks"
+        "cargo:rustc-link-arg-bin=huterm-gui=-Wl,-rpath,@executable_path/../Frameworks"
     );
     println!(
         "cargo:rustc-link-arg-examples=-Wl,-rpath,@executable_path/../Frameworks"

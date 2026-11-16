@@ -1,6 +1,7 @@
 /** Shared release inventory, assembly, draft validation, and publication. */
 import { appendFile, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { cliArchiveName } from "./cli-package.ts";
 import { renderReleaseNotesFile } from "./release-notes.ts";
 
 const repoRoot = resolve(import.meta.dir, "..");
@@ -8,7 +9,7 @@ export const schemaAssets = ["huterm.schema.json", "huterm-theme.schema.json"] a
 type JsonObject = Record<string, unknown>;
 export interface BuildInputs { sha: string; version: string }
 export interface ReleaseInputs extends BuildInputs { tag: string }
-interface ReleaseRecord { id: number; draft: boolean; prerelease: boolean; tag_name: string; target_commitish: string }
+interface ReleaseRecord { id: number; draft: boolean; prerelease: boolean; tag_name: string; target_commitish: string; body?: string | null }
 interface ReleaseAsset { name: string; size: number; state: string; digest: string | null }
 export interface LocalAsset { name: string; path: string; size: number; digest: string }
 interface CommandResult { stdout: string; stderr: string }
@@ -61,7 +62,7 @@ export function validateDraftRelease(value: unknown, inputs: ReleaseInputs, expe
 export function validateWorkspaceVersions(value: unknown, expectedVersion: string): void {
   const metadata = objectValue(value, "Cargo metadata");
   if (!Array.isArray(metadata.packages)) throw new Error("Cargo metadata is missing packages");
-  for (const name of ["huterm", "huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol", "huterm-state", "huterm-ui"]) {
+  for (const name of ["huterm", "huterm-cli", "huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol", "huterm-state", "huterm-ui"]) {
     const matching = metadata.packages.filter(item => objectValue(item, "Cargo package").name === name);
     if (matching.length !== 1) throw new Error(`expected one Cargo package named ${name}, found ${matching.length}`);
     if (objectValue(matching[0], name).version !== expectedVersion) throw new Error(`${name} version does not match ${expectedVersion}`);
@@ -76,16 +77,46 @@ export function releaseAssetNames(version: string) {
   validateBuildInputs("0".repeat(40), version);
   const macos = `Huterm-${version}-macOS-universal.zip`;
   const macosSbom = `Huterm-${version}-macOS-universal.spdx.json`;
+  const macosCli = cliArchiveName(version, "macOS-universal");
   const appcast = "appcast.xml";
-  const linuxX86 = [`Huterm-${version}-Linux-x86_64.AppImage`, `Huterm-${version}-Linux-x86_64.tar.gz`];
-  const linuxArm = [`Huterm-${version}-Linux-aarch64.AppImage`, `Huterm-${version}-Linux-aarch64.tar.gz`];
+  const linuxX86 = [`Huterm-${version}-Linux-x86_64.AppImage`, `Huterm-${version}-Linux-x86_64.tar.gz`, cliArchiveName(version, "Linux-x86_64")] as const;
+  const linuxArm = [`Huterm-${version}-Linux-aarch64.AppImage`, `Huterm-${version}-Linux-aarch64.tar.gz`, cliArchiveName(version, "Linux-aarch64")] as const;
   const platforms = [
-    { id: "macos", payloads: [macos, macosSbom, appcast], manifest: "macos-SHA256SUMS" },
+    { id: "macos", payloads: [macos, macosSbom, appcast, macosCli], manifest: "macos-SHA256SUMS" },
     { id: "linux-x86_64", payloads: linuxX86, manifest: "linux-x86_64-SHA256SUMS" },
     { id: "linux-aarch64", payloads: linuxArm, manifest: "linux-aarch64-SHA256SUMS" },
   ] as const;
-  const payloads = [macos, macosSbom, appcast, ...linuxX86, ...linuxArm, ...schemaAssets];
-  return { appcast, macos, macosSbom, platforms, payloads, checksums: "SHA256SUMS", all: [...payloads, "SHA256SUMS"] };
+  const payloads = [macos, macosSbom, appcast, macosCli, ...linuxX86, ...linuxArm, ...schemaAssets];
+  return { appcast, macos, macosSbom, macosCli, platforms, payloads, checksums: "SHA256SUMS", all: [...payloads, "SHA256SUMS"] };
+}
+
+const downloadsMarker = "<!-- huterm-release-downloads -->";
+
+/**
+ * Appends a section naming the app and command-line downloads to the notes
+ * Release Please wrote, replacing an earlier copy so a recovery run does not
+ * repeat it.
+ */
+export function releaseBodyWithDownloads(body: string | null | undefined, inputs: ReleaseInputs): string {
+  const names = releaseAssetNames(inputs.version);
+  const link = (name: string) => `[\`${name}\`](https://github.com/jimeh/huterm/releases/download/${inputs.tag}/${name})`;
+  const [x86App, x86Tarball, x86Cli] = names.platforms[1].payloads;
+  const [armApp, armTarball, armCli] = names.platforms[2].payloads;
+  const section = [
+    downloadsMarker,
+    "## Downloads",
+    "",
+    "| Platform | Desktop app | Command line only |",
+    "| --- | --- | --- |",
+    `| macOS 14 or later | ${link(names.macos)} | ${link(names.macosCli)} |`,
+    `| Linux x86_64 | ${link(x86App)} or ${link(x86Tarball)} | ${link(x86Cli)} |`,
+    `| Linux aarch64 | ${link(armApp)} or ${link(armTarball)} | ${link(armCli)} |`,
+    "",
+    "The desktop app includes the `huterm` command. The command-line downloads hold only `huterm`, for machines without the app; see [Running huterm from a shell](https://github.com/jimeh/huterm#running-huterm-from-a-shell).",
+    "",
+  ].join("\n");
+  const notes = (typeof body === "string" ? body : "").split(downloadsMarker)[0]!.trimEnd();
+  return notes ? `${notes}\n\n${section}` : section;
 }
 
 async function sha256(file: string): Promise<string> {
@@ -253,9 +284,10 @@ async function publishRelease(): Promise<void> {
   const inputs = currentReleaseInputs();
   const releaseId = Number(requiredEnv("RELEASE_ID"));
   if (!Number.isSafeInteger(releaseId)) throw new Error("RELEASE_ID must be an integer");
-  await validateRepositoryRelease(inputs, releaseId);
+  const release = await validateRepositoryRelease(inputs, releaseId);
   validateReleaseAssets(await assetList(releaseId), await verifyLocalAssets(inputs));
-  const published = objectValue(JSON.parse((await runCaptured("gh", ["api", "--method", "PATCH", `repos/${repository()}/releases/${releaseId}`, "-F", "draft=false", "-f", "make_latest=true"])).stdout), "published release");
+  const body = releaseBodyWithDownloads(release.body, inputs);
+  const published = objectValue(JSON.parse((await runCaptured("gh", ["api", "--method", "PATCH", `repos/${repository()}/releases/${releaseId}`, "-F", "draft=false", "-f", "make_latest=true", "-f", `body=${body}`])).stdout), "published release");
   if (published.id !== releaseId || published.tag_name !== inputs.tag || published.target_commitish !== inputs.sha || published.draft !== false) throw new Error("GitHub returned an unexpected published release");
   console.log(`published ${inputs.tag} at ${inputs.sha}`);
 }

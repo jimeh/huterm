@@ -6,6 +6,7 @@ import {
   assembleReleaseArtifacts,
   isDispatchedBranchBuild,
   releaseAssetNames,
+  releaseBodyWithDownloads,
   validateBuildInputs,
   validateDraftRelease,
   validateReleaseAssets,
@@ -25,10 +26,54 @@ test("release inputs and workspace packages bind to one exact version", () => {
   expect(validateReleaseInputs(inputs.sha, inputs.tag, inputs.version)).toEqual(inputs);
   expect(() => validateReleaseInputs(inputs.sha, "v0.5.0", inputs.version)).toThrow("does not match");
   expect(() => validateReleaseInputs(inputs.sha, "v0.4.0-beta.1", "0.4.0-beta.1")).toThrow("invalid release version");
-  const packages = ["huterm", "huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol", "huterm-state", "huterm-ui"].map(name => ({ name, version: inputs.version }));
+  const packages = ["huterm", "huterm-cli", "huterm-config", "huterm-core", "huterm-gpui", "huterm-procinfo", "huterm-protocol", "huterm-state", "huterm-ui"].map(name => ({ name, version: inputs.version }));
   expect(() => validateWorkspaceVersions({ packages }, inputs.version)).not.toThrow();
   expect(() => validateWorkspaceVersions({ packages: packages.slice(1) }, inputs.version)).toThrow("huterm");
   expect(() => validateWorkspaceVersions({ packages: packages.map(item => item.name === "huterm-core" ? { ...item, version: "0.5.0" } : item) }, inputs.version)).toThrow("huterm-core version");
+});
+
+test("release assets name each platform's app and command-line downloads", () => {
+  const names = releaseAssetNames(inputs.version);
+  expect(names.all).toHaveLength(13);
+  expect(names.platforms.map(platform => [platform.id, [...platform.payloads]])).toEqual([
+    ["macos", ["Huterm-0.4.0-macOS-universal.zip", "Huterm-0.4.0-macOS-universal.spdx.json", "appcast.xml", "Huterm-CLI-0.4.0-macOS-universal.zip"]],
+    ["linux-x86_64", ["Huterm-0.4.0-Linux-x86_64.AppImage", "Huterm-0.4.0-Linux-x86_64.tar.gz", "Huterm-CLI-0.4.0-Linux-x86_64.tar.gz"]],
+    ["linux-aarch64", ["Huterm-0.4.0-Linux-aarch64.AppImage", "Huterm-0.4.0-Linux-aarch64.tar.gz", "Huterm-CLI-0.4.0-Linux-aarch64.tar.gz"]],
+  ]);
+});
+
+test("published notes gain one downloads section that names every app and CLI asset", () => {
+  const releaseInputs = { sha: inputs.sha, tag: inputs.tag, version: inputs.version };
+  const notes = "## [0.4.0](https://github.com/jimeh/huterm/compare/v0.3.0...v0.4.0)\n\n### Features\n\n* a feature\n";
+  const body = releaseBodyWithDownloads(notes, releaseInputs);
+  expect(body.startsWith(`${notes.trimEnd()}\n\n`)).toBe(true);
+  const names = releaseAssetNames(inputs.version);
+  for (const name of [names.macos, names.macosCli, ...names.platforms[1].payloads, ...names.platforms[2].payloads]) {
+    expect(body).toContain(`(https://github.com/jimeh/huterm/releases/download/v0.4.0/${name})`);
+  }
+  expect(releaseBodyWithDownloads(body, releaseInputs)).toBe(body);
+  expect(releaseBodyWithDownloads(null, releaseInputs)).toBe(body.slice(notes.trimEnd().length + 2));
+});
+
+test("release workflow stages exactly each platform's payloads", async () => {
+  type Step = { name?: string; run?: string; with?: Record<string, unknown> };
+  const workflow = Bun.YAML.parse(await readFile(join(repository, ".github/workflows/release.yml"), "utf8")) as { jobs: Record<string, { steps: Step[] }> };
+  const names = releaseAssetNames("9.8.7");
+  const fileNames = (text: string, version: string) => [...text.replaceAll(version, "9.8.7").replaceAll("$RELEASE_ARCH", "ARCH").matchAll(/((?:Huterm|appcast)[^\s"/]*)"?(?:\s|$)/g)]
+    .map(match => match[1]!);
+  const macos = workflow.jobs.macos!.steps;
+  const manifest = macos.find(step => step.name === "Record macOS payload digest")!.run!;
+  const upload = String(macos.find(step => step.name === "Upload verified macOS payloads")!.with!.path);
+  const expected = [...names.platforms[0].payloads].sort();
+  expect(fileNames(manifest, "$RELEASE_VERSION").sort()).toEqual(expected);
+  expect(fileNames(upload, "${{ inputs.version }}").filter(name => name !== "macos-SHA256SUMS").sort()).toEqual(expected);
+  for (const job of ["linux_x86_64", "linux_aarch64"]) {
+    const stage = workflow.jobs[job]!.steps.find(step => step.name === "Stage Linux payloads and digest")!.run!;
+    const manifestPart = stage.slice(stage.indexOf("write-platform-manifest"));
+    const generic = names.platforms[1].payloads.map(name => name.replaceAll("x86_64", "ARCH")).sort();
+    expect(fileNames(manifestPart, "$RELEASE_VERSION").sort()).toEqual(generic);
+    expect(fileNames(stage.slice(0, stage.indexOf("bun scripts")), "$RELEASE_VERSION").sort()).toEqual(generic);
+  }
 });
 
 test("branch verification is limited to the exact non-publishing dispatch commit", () => {
@@ -179,7 +224,7 @@ test("candidate CLI rejects altered assets before native signing without requiri
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("assembly verifies platform digests and creates the exact ten-file release", async () => {
+test("assembly verifies platform digests and creates the exact thirteen-file release", async () => {
   const root = await mkdtemp(join(tmpdir(), "huterm-release-assembly-"));
   const incoming = join(root, "incoming");
   const dist = join(root, "dist");
@@ -216,7 +261,7 @@ test("local release verification rejects missing, extra, empty, and changed sche
       else await writeFile(join(root, name), name);
     }
     await writePlatformManifest(join(root, "SHA256SUMS"), names.payloads.map(name => join(root, name)));
-    await expect(verifyLocalAssets({ sha: inputs.sha, version: inputs.version }, root)).resolves.toHaveLength(10);
+    await expect(verifyLocalAssets({ sha: inputs.sha, version: inputs.version }, root)).resolves.toHaveLength(13);
     await writeFile(join(root, "extra"), "extra");
     await expect(verifyLocalAssets({ sha: inputs.sha, version: inputs.version }, root)).rejects.toThrow("missing or unexpected");
     await rm(join(root, "extra"));

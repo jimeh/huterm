@@ -334,14 +334,17 @@ These directory reports also feed **Copy Directory Path** and the existing
 ```toml
 [shell_integration]
 mode = "detect" # detect or off; default: detect
-features = []   # opt in with ["path"]
+features = ["path"] # default; [] turns path off
 ```
 
 `mode` is available in Settings under Terminal. Edit `features` in the file.
 Unknown features are errors, and duplicate names collapse. Reload changes only
-terminals started afterwards. The `path` feature appends `HUTERM_BIN_DIR` to
-`PATH` after startup files have run, only if that directory is missing. It does
-not add a command-line interface.
+terminals started afterwards. The `path` feature, on by default, appends
+`HUTERM_BIN_DIR` to `PATH` after startup files have run, only if that
+directory is missing. That directory holds the
+[`huterm` command](../README.md#running-huterm-from-a-shell), so shells in
+Huterm can run it. Because the directory goes last, a `huterm` that is
+already on your `PATH` takes precedence.
 
 | Shell | Loading and startup order |
 | --- | --- |

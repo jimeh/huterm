@@ -93,8 +93,10 @@ function exportPackageArtifacts(root: string, container: string, arch: Architect
     const files = readdirSync(staging, { withFileTypes: true });
     const appImages = files.filter(entry => entry.isFile() && entry.name.endsWith(`-Linux-${packageArch}.AppImage`));
     const tarballs = files.filter(entry => entry.isFile() && entry.name.endsWith(`-Linux-${packageArch}.tar.gz`));
-    if (appImages.length !== 1 || tarballs.length !== 1) {
-      throw new Error(`package export expected one ${packageArch} AppImage and tarball, found ${appImages.length} and ${tarballs.length}`);
+    const cliTarballs = tarballs.filter(entry => entry.name.startsWith("Huterm-CLI-"));
+    const appTarballs = tarballs.length - cliTarballs.length;
+    if (appImages.length !== 1 || appTarballs !== 1 || cliTarballs.length !== 1) {
+      throw new Error(`package export expected one ${packageArch} AppImage, app tarball, and CLI tarball, found ${appImages.length}, ${appTarballs}, and ${cliTarballs.length}`);
     }
     if (existsSync(destination)) {
       previous = `${destination}.previous-${process.pid}-${crypto.randomUUID()}`;

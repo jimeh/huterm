@@ -181,8 +181,8 @@ mise run vm:macos:clean
 `vm:macos:exec` runs a command against whatever host outputs already exist and
 does not build. Use `mise exec --` inside the guest command for managed tools
 such as Bun; raw `exec` does not activate their paths. `vm:macos:dev` builds
-`target/debug/huterm`, opens a Tart window, and streams the app's output to the
-host terminal.
+`target/debug/huterm-gui`, opens a Tart window, and streams the app's output
+to the host terminal.
 
 `dev` then stays in charge of that instance so an edit costs a rebuild instead
 of another boot. Press `r` to rebuild and replace the running app, `w` to
@@ -576,7 +576,7 @@ SHA-256-pinned manifest in `assets/linux/appimage-tools.json`.
 
 The binary tarball is deliberately AppImage-neutral. For manual installation,
 extract it wherever desired, keep its relative directory layout intact, and run
-`bin/huterm`. Copy `share/applications/app.huterm.dev.desktop`,
+`bin/huterm`, which opens `bin/huterm-gui`. Copy `share/applications/app.huterm.dev.desktop`,
 `share/metainfo/app.huterm.dev.metainfo.xml`, and the icon below
 `share/icons/hicolor/512x512/apps/` into matching `$XDG_DATA_HOME` directories
 for desktop integration. If an AppImage cannot use FUSE, launch it with

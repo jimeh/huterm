@@ -36,6 +36,7 @@ its guide; most of its rules record a failure that already happened once.
 | The Ghostty pin, `huterm-ghostty`, native builds, OSC color and mouse state | [Ghostty engine](docs/agents/terminal-engines.md) |
 | Workflows, local actions, CI caches, toolchain bootstrap | [CI](docs/agents/ci.md) |
 | Rust toolchain, GPUI and other pinned crates, vendored patches | [Dependencies](docs/agents/dependencies.md) |
+| The `huterm` command line, its subcommands, `huterm-gui` launches | [Command line](docs/agents/cli.md) |
 | Packaging, signing, notarization, the release workflow | [Releases](docs/agents/releases.md) |
 | Setup, Docker and Tart runs, repository scripts, icons, test layout, the validation ladder | [Development](docs/agents/development.md) |
 | An intermittent red check | [Known flakes](docs/agents/known-flakes.md) |
@@ -67,6 +68,9 @@ when this file exceeds its line budget or a guide link breaks.
   application or PTY event loop. Keep engine selection out of runtime and
   protocol APIs. Do not copy or depend on GPL-covered Zed application or
   terminal-view code.
+- `huterm-cli` builds the `huterm` command, which opens the `huterm-gui`
+  desktop executable when run without arguments. It must run without a
+  display and never depend on GPUI (`mise run architecture` checks this).
 - `huterm-procinfo` reports operating-system process facts and depends on no
   Huterm crate (`mise run architecture` checks this).
 - `huterm-socket` owns IPC socket paths, directory checks, and peer

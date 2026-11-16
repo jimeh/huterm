@@ -455,7 +455,8 @@ function shippedPackages(): { packages: Map<string, CargoPackage>; targets: Map<
   const targets = new Map<string, Target[]>();
   for (const target of TARGETS) {
     const features = RELEASE_FEATURES[target];
-    const output = run(["cargo", "tree", "--locked", "-p", "huterm", "-e", "normal,no-proc-macro", "--target", target, ...(features.length ? ["--features", features.join(",")] : []), "--prefix", "none", "--format", "{p}"]);
+    // The app ships both the desktop executable and the `huterm` command line.
+    const output = run(["cargo", "tree", "--locked", "-p", "huterm", "-p", "huterm-cli", "-e", "normal,no-proc-macro", "--target", target, ...(features.length ? ["--features", features.map(feature => `huterm/${feature}`).join(",")] : []), "--prefix", "none", "--format", "{p}"]);
     for (const line of new Set(output.split("\n").map(item => item.replace(/ \(\*\)$/, "").trim()).filter(Boolean))) {
       const [name, version] = line.split(" ");
       if (!name || !version?.startsWith("v")) throw new Error(`unexpected cargo tree line: ${line}`);

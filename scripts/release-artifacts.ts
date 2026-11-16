@@ -432,7 +432,9 @@ export async function augmentSpdx(
     for (const packageValue of slice.packages) {
       if (!isCargoPackage(packageValue)) continue;
       const key = packageKey(packageValue);
-      architectureByKey.set(key, [...(architectureByKey.get(key) ?? []), architecture]);
+      const architectures = architectureByKey.get(key) ?? [];
+      // A crate in both executables of one slice counts once.
+      if (!architectures.includes(architecture)) architectureByKey.set(key, [...architectures, architecture]);
       if (!byKey.has(key)) {
         const copied = structuredClone(objectValue(packageValue, "Cargo SPDX package"));
         packages.push(copied);
@@ -510,6 +512,7 @@ export function validateRuntimeSpdx(value: unknown, version: string, ghosttyPatc
   }
   for (const [name, expectedVersion] of [
     ["huterm", version],
+    ["huterm-cli", version],
     ["Sparkle", "2.10.1"],
     ["ghostty", "83fb95624b0439ee660c2679b43b38c8b63769cd"],
     ["uucode", "0.2.0"],
@@ -548,8 +551,16 @@ export async function generateSbom(dist: string, appPath: string, version: strin
   const temporary = await mkdtemp(join(tmpdir(), "huterm-sbom-"));
   try {
     const application = await syftDocument(`dir:${appPath}`, join(temporary, "application.json"));
-    const arm64 = await syftDocument(join(repoRoot, "target/aarch64-apple-darwin/release/huterm"), join(temporary, "arm64.json"));
-    const x86_64 = await syftDocument(join(repoRoot, "target/x86_64-apple-darwin/release/huterm"), join(temporary, "x86_64.json"));
+    // Each slice merges the desktop executable's and the command line's crates.
+    const slice = async (target: string, architecture: string) => {
+      const documents = [];
+      for (const executable of ["huterm-gui", "huterm"]) {
+        documents.push(await syftDocument(join(repoRoot, `target/${target}/release/${executable}`), join(temporary, `${architecture}-${executable}.json`)));
+      }
+      return { packages: documents.flatMap(document => Array.isArray(document.packages) ? document.packages : []) };
+    };
+    const arm64 = await slice("aarch64-apple-darwin", "arm64");
+    const x86_64 = await slice("x86_64-apple-darwin", "x86_64");
     const document = await augmentSpdx(application, { arm64, x86_64 });
     validateRuntimeSpdx(document, version);
     const destination = join(dist, `Huterm-${version}-macOS-universal.spdx.json`);
