@@ -16,15 +16,15 @@ use gpui::{
     prelude::*, px, size, svg,
 };
 use huterm_core::{
-    HostEffectPermissions, HostEffectRecipient, Mux, RuntimeError,
+    HostEffectPermissions, HostEffectRecipient, ManualSize, Mux, RuntimeError,
     TerminalViewer, ViewerWake,
 };
 use huterm_protocol::{
     BufferPoint, BufferRange, CellSize, CommandBlock, CommandError,
     CommandInvocation, CommandOutcome, CommandValue, GridSize, HostEffect,
-    HostEffectKind, Modifiers, ScrollbackLimit, TabId, TerminalCommand,
-    TerminalId, TerminalInput, TerminalLifecycle, TerminalMetadata,
-    TerminalPresentation, TerminalRow, TerminalSnapshot, ids,
+    HostEffectKind, Modifiers, ScrollbackLimit, SizingPolicy, TabId,
+    TerminalCommand, TerminalId, TerminalInput, TerminalLifecycle,
+    TerminalMetadata, TerminalPresentation, TerminalRow, TerminalSnapshot, ids,
 };
 
 use crate::APP_ID;
@@ -437,10 +437,13 @@ struct TerminalView {
     scrollback: ScrollbackLimit,
     /// Whether the runtime compresses idle history, sent with `scrollback`.
     scrollback_compression: bool,
-    /// `scrollback` or `scrollback_compression` still waits for room in the
-    /// runtime's queue. Both are resent together; the runtime ignores values
-    /// it already applies.
-    pending_scrollback: bool,
+    /// The configured sizing policy, which every viewer sends like
+    /// `scrollback`.
+    sizing: SizingPolicy,
+    /// `scrollback`, `scrollback_compression`, or `sizing` still waits for
+    /// room in the runtime's queue. All three are resent together; the
+    /// runtime ignores values it already applies.
+    pending_settings: bool,
     title: String,
     metadata: TerminalMetadata,
     metadata_revision: u64,
@@ -753,12 +756,17 @@ impl TerminalView {
         // The terminal may have started under an older configuration.
         let scrollback = config.terminal.scrollback;
         let scrollback_compression = config.terminal.scrollback_compression;
-        let (pending_scrollback, scrollback_failure) =
-            match send_history(&viewer, scrollback, scrollback_compression) {
-                Ok(()) => (false, None),
-                Err(RuntimeError::Busy) => (true, None),
-                Err(error) => (false, Some(error)),
-            };
+        let sizing = config.terminal.sizing.to_protocol();
+        let (pending_settings, settings_failure) = match send_terminal_settings(
+            &viewer,
+            scrollback,
+            scrollback_compression,
+            sizing,
+        ) {
+            Ok(()) => (false, None),
+            Err(RuntimeError::Busy) => (true, None),
+            Err(error) => (false, Some(error)),
+        };
         let (failure_wake, failure_wakes) = async_channel::bounded(1);
         let focus_subscription = cx.on_focus(
             &focus,
@@ -866,7 +874,8 @@ impl TerminalView {
             pending_presentation,
             scrollback,
             scrollback_compression,
-            pending_scrollback,
+            sizing,
+            pending_settings,
             input_queue: InputQueue::default(),
             pending_work,
             _pending_work_task: pending_work_task,
@@ -968,7 +977,7 @@ impl TerminalView {
             a11y_label: String::new(),
             a11y_shows: 0,
         };
-        if let Some(error) = presentation_failure.or(scrollback_failure) {
+        if let Some(error) = presentation_failure.or(settings_failure) {
             view.report_viewer_failure(&error);
         }
         view.wake_pending_work();
@@ -1368,10 +1377,10 @@ impl TerminalView {
         self.pending_presentation = (current.presentation
             != start.presentation)
             .then_some(current.presentation);
-        // The runtime may never have applied this view's limit: the revoked
-        // viewer's queued requests were discarded, and a subscription does
-        // not carry the limit. The runtime ignores one it already applies.
-        self.pending_scrollback = true;
+        // The runtime may never have applied this view's settings: the
+        // revoked viewer's queued requests were discarded, and a subscription
+        // does not carry them. The runtime ignores values it already applies.
+        self.pending_settings = true;
         self.mouse = MouseState::default();
         self.context_lookup = None;
         self.links.invalidate();
@@ -1457,7 +1466,7 @@ impl TerminalView {
         !self.input_queue.is_empty()
             || self.pending_resize.is_some()
             || self.pending_presentation.is_some()
-            || self.pending_scrollback
+            || self.pending_settings
             || self.scroll_benchmark.is_some()
     }
 
@@ -1498,7 +1507,8 @@ impl TerminalView {
         self.refresh_mode = terminal.refresh;
         self.scrollback = terminal.scrollback;
         self.scrollback_compression = terminal.scrollback_compression;
-        self.publish_scrollback();
+        self.sizing = terminal.sizing.to_protocol();
+        self.publish_terminal_settings();
         self.start_snapshot_if_needed(cx);
         self.links.disable();
         self.links_enabled = terminal.links;
@@ -1525,16 +1535,17 @@ impl TerminalView {
         }
     }
 
-    fn publish_scrollback(&mut self) {
-        match send_history(
+    fn publish_terminal_settings(&mut self) {
+        match send_terminal_settings(
             &self.viewer,
             self.scrollback,
             self.scrollback_compression,
+            self.sizing,
         ) {
-            Ok(()) => self.pending_scrollback = false,
-            Err(RuntimeError::Busy) => self.pending_scrollback = true,
+            Ok(()) => self.pending_settings = false,
+            Err(RuntimeError::Busy) => self.pending_settings = true,
             Err(error) => {
-                self.pending_scrollback = false;
+                self.pending_settings = false;
                 self.report_viewer_failure(&error);
             }
         }
@@ -1862,7 +1873,9 @@ impl TerminalView {
             | ids::NEXT_COMMAND
             | ids::SELECT_ALL
             | ids::CLEAR_SCROLLBACK
-            | ids::RESET_TERMINAL => Ok(()),
+            | ids::RESET_TERMINAL
+            | ids::SET_TERMINAL_SIZE
+            | ids::CLEAR_TERMINAL_SIZE => Ok(()),
             ids::SELECT_COMMAND_OUTPUT | ids::SELECT_COMMAND => {
                 let block = self.snapshot.as_deref().and_then(target_block);
                 match block {
@@ -1928,6 +1941,9 @@ impl TerminalView {
                 (None, None) => {}
             },
             ids::SELECT_ALL => self.select_all(cx),
+            ids::SET_TERMINAL_SIZE | ids::CLEAR_TERMINAL_SIZE => {
+                return self.run_sizing_command(invocation);
+            }
             ids::CLEAR_SCROLLBACK | ids::RESET_TERMINAL => {
                 let edited = if invocation.id == ids::CLEAR_SCROLLBACK {
                     self.viewer.clear_history()
@@ -1996,6 +2012,37 @@ impl TerminalView {
             other => return Err(CommandError::UnknownCommand(other)),
         }
         Ok(CommandOutcome::Completed)
+    }
+
+    /// Sets or clears the terminal's manual size, as Set Terminal Size and
+    /// Clear Terminal Size do.
+    fn run_sizing_command(
+        &self,
+        invocation: &CommandInvocation,
+    ) -> Result<CommandOutcome, CommandError> {
+        // The catalog validates both to 1..=1000.
+        let dimension = |name| {
+            invocation
+                .integer(name)
+                .and_then(|value| u16::try_from(value).ok())
+        };
+        let sized = if invocation.id == ids::SET_TERMINAL_SIZE {
+            self.viewer.set_manual_size(ManualSize {
+                columns: dimension("columns"),
+                rows: dimension("rows"),
+            })
+        } else {
+            self.viewer.clear_manual_size()
+        };
+        match sized {
+            Ok(()) => Ok(CommandOutcome::Completed),
+            // The tab is closing, and its pane leaves with the window's
+            // next hierarchy drain.
+            Err(RuntimeError::Stopped) if self.viewer.close_requested() => {
+                Ok(CommandOutcome::Completed)
+            }
+            Err(error) => Err(CommandError::Runtime(error.to_string())),
+        }
     }
 
     fn scroll_command(
@@ -3413,16 +3460,17 @@ impl TerminalView {
                 }
             }
         }
-        if self.pending_scrollback {
-            match send_history(
+        if self.pending_settings {
+            match send_terminal_settings(
                 &self.viewer,
                 self.scrollback,
                 self.scrollback_compression,
+                self.sizing,
             ) {
-                Ok(()) => self.pending_scrollback = false,
+                Ok(()) => self.pending_settings = false,
                 Err(RuntimeError::Busy) => {}
                 Err(error) => {
-                    self.pending_scrollback = false;
+                    self.pending_settings = false;
                     return self.report_viewer_failure(&error);
                 }
             }
@@ -4750,14 +4798,17 @@ fn shell_command(
     })
 }
 
-/// Sends the history limit, then whether to compress history.
-fn send_history(
+/// Sends the terminal-wide settings every viewer carries: the history
+/// limit, whether to compress history, and the sizing policy.
+fn send_terminal_settings(
     viewer: &TerminalViewer,
     scrollback: ScrollbackLimit,
     compression: bool,
+    sizing: SizingPolicy,
 ) -> Result<(), RuntimeError> {
     viewer.set_scrollback(scrollback)?;
-    viewer.set_scrollback_compression(compression)
+    viewer.set_scrollback_compression(compression)?;
+    viewer.set_sizing_policy(sizing)
 }
 
 fn terminal_presentation(theme: &Theme) -> TerminalPresentation {

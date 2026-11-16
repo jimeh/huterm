@@ -133,6 +133,8 @@ pub(crate) const GROUPS: &[(&str, &[CommandId])] = &[
             ids::SELECT_ALL,
             ids::CLEAR_SCROLLBACK,
             ids::RESET_TERMINAL,
+            ids::SET_TERMINAL_SIZE,
+            ids::CLEAR_TERMINAL_SIZE,
             ids::SCROLL_PAGE_UP,
             ids::SCROLL_PAGE_DOWN,
             ids::SCROLL_TO_BOTTOM,

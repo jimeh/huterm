@@ -2389,7 +2389,16 @@ impl CommandPalette {
         if !is_identity(slot.spec.kind) {
             let note = match slot.spec.kind {
                 ArgumentKind::Integer { min, max } => {
-                    Some(format!("Whole number from {min} to {max}."))
+                    let range = format!("Whole number from {min} to {max}.");
+                    Some(if editor.spec().id == ids::SET_TERMINAL_SIZE {
+                        format!(
+                            "{range} Leave empty to keep the {} this view \
+                             shows.",
+                            slot.spec.name
+                        )
+                    } else {
+                        range
+                    })
                 }
                 _ => match self.rename_target(editor) {
                     Some((label, name)) => Some(format!(
