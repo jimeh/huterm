@@ -95,12 +95,9 @@ pub(crate) fn plan(command: &TerminalCommand, host: &Host<'_>) -> LaunchPlan {
         return result;
     };
     result.set("HUTERM_SHELL_INTEGRATION", shell);
-    if command
-        .shell_integration
-        .features
-        .contains(ShellFeature::Path)
-    {
-        result.set("HUTERM_SHELL_FEATURES", "path");
+    let features = feature_names(command);
+    if !features.is_empty() {
+        result.set("HUTERM_SHELL_FEATURES", features);
     }
     match shell {
         "zsh" => {
@@ -134,6 +131,23 @@ pub(crate) fn plan(command: &TerminalCommand, host: &Host<'_>) -> LaunchPlan {
         _ => {}
     }
     result
+}
+
+/// The enabled features as the scripts read them: comma-separated, in a
+/// fixed order.
+fn feature_names(command: &TerminalCommand) -> String {
+    let features = &command.shell_integration.features;
+    [
+        (ShellFeature::Path, "path"),
+        (ShellFeature::SshEnv, "ssh_env"),
+        (ShellFeature::SshTerminfo, "ssh_terminfo"),
+        (ShellFeature::Sudo, "sudo"),
+    ]
+    .into_iter()
+    .filter(|(feature, _)| features.contains(*feature))
+    .map(|(_, name)| name)
+    .collect::<Vec<_>>()
+    .join(",")
 }
 
 fn noninteractive(shell: &str, arguments: &[String]) -> bool {

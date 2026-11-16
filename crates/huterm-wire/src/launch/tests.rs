@@ -103,11 +103,34 @@ fn unknown_shell_features_and_history_past_its_maximum_are_rejected() {
         .unwrap();
         w.into_bytes()
     };
-    assert!(decode_shell_integration(&mut Reader::new(&shell(1))).is_ok());
-    assert_eq!(
-        decode_shell_integration(&mut Reader::new(&shell(2))),
-        Err(DecodeError::Invalid("shell features"))
-    );
+    for (bits, features) in [
+        (1, &[ShellFeature::Path][..]),
+        (2, &[ShellFeature::SshEnv]),
+        (4, &[ShellFeature::SshTerminfo]),
+        (8, &[ShellFeature::Sudo]),
+        (
+            15,
+            &[
+                ShellFeature::Path,
+                ShellFeature::SshEnv,
+                ShellFeature::SshTerminfo,
+                ShellFeature::Sudo,
+            ],
+        ),
+    ] {
+        let decoded =
+            decode_shell_integration(&mut Reader::new(&shell(bits))).unwrap();
+        assert_eq!(decoded.features.iter().collect::<Vec<_>>(), features);
+        let mut w = Writer::new();
+        encode_shell_integration(&mut w, &decoded).unwrap();
+        assert_eq!(w.into_bytes(), shell(bits), "{bits}");
+    }
+    for bits in [16, 1 << 63] {
+        assert_eq!(
+            decode_shell_integration(&mut Reader::new(&shell(bits))),
+            Err(DecodeError::Invalid("shell features"))
+        );
+    }
     let history = |rows: u32, bytes: Option<u64>| {
         let mut w = Writer::new();
         w.record(|w| {

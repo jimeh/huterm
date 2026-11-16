@@ -27,16 +27,17 @@ without `engine` clears the migration warning. Huterm never rewrites the file.
 
 Terminal identity remains a client launch concern. The desktop resolves
 `terminal.term` before constructing `TerminalCommand`, and core applies the
-resolved environment before spawning the child. The default is
-`xterm-256color`, because SSH forwards `TERM` to hosts that rarely have
-`xterm-huterm`; zsh then silently loses cursor movement and line clearing, and
-its line editor and plugins such as zsh-autosuggestions garble input.
-`COLORTERM=truecolor` keeps 24-bit color in tmux and Emacs under that default.
-The opt-in `auto` selects `TERM=xterm-huterm` only when the entry exists in the
-inherited ncurses search paths or Huterm's private resources; otherwise it uses
-`TERM=xterm-256color`. The explicit values force either identity for new
-terminals. Do not make `auto` the default again without SSH handling, such as
-the shell integration wrapper tracked in #37.
+resolved environment before spawning the child. `auto`, the default again
+since #351, selects `TERM=xterm-huterm` only when the entry exists in the
+inherited ncurses search paths or Huterm's private resources; otherwise it
+uses `TERM=xterm-256color`. The explicit values force either identity for new
+terminals. SSH forwards `TERM` to hosts that rarely have `xterm-huterm`, and
+sudo drops `TERMINFO_DIRS`; zsh then silently loses cursor movement and line
+clearing, and its line editor and plugins such as zsh-autosuggestions garble
+input. Shell integration's `ssh` and `sudo` wrappers (`huterm ssh`, `huterm
+sudo`) handle both, so keep them working before changing the default again.
+PR #346 made `xterm-256color` the default until those wrappers existed.
+`COLORTERM=truecolor` keeps 24-bit color in tmux and Emacs either way.
 
 The private entry inherits the indexed `xterm-256color` capabilities that Huterm
 previously advertised, and adds only `Tc` for truecolor-aware consumers. It

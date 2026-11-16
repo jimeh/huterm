@@ -17,8 +17,13 @@ pub struct ShellIntegrationConfig {
         "x-huterm-apply" = "new_terminals",
     )))]
     pub mode: ShellIntegrationMode,
-    /// Optional capabilities. `path`, on by default, appends the directory
-    /// holding the `huterm` command to PATH.
+    /// Optional capabilities. `path` appends the directory holding the
+    /// `huterm` command to PATH. `ssh_env` wraps `ssh` to forward
+    /// `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION`.
+    /// `ssh_terminfo` wraps `ssh` to install the `xterm-huterm` terminfo
+    /// entry in `~/.terminfo` on remote hosts. `sudo` wraps `sudo` to use
+    /// `TERM=xterm-256color` when the system lacks `xterm-huterm`. The
+    /// default is `["path", "ssh_env", "sudo"]`.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Shell integration",
@@ -49,7 +54,11 @@ impl Default for ShellIntegrationConfig {
     fn default() -> Self {
         Self {
             mode: ShellIntegrationMode::default(),
-            features: BTreeSet::from([ShellFeature::Path]),
+            features: BTreeSet::from([
+                ShellFeature::Path,
+                ShellFeature::SshEnv,
+                ShellFeature::Sudo,
+            ]),
         }
     }
 }
@@ -63,6 +72,16 @@ impl Default for ShellIntegrationConfig {
 pub enum ShellFeature {
     /// Append the directory holding the `huterm` command to PATH once.
     Path,
+    /// Wrap `ssh` to forward `COLORTERM`, `TERM_PROGRAM`, and
+    /// `TERM_PROGRAM_VERSION`, and to use `TERM=xterm-256color` on hosts
+    /// without the `xterm-huterm` entry.
+    SshEnv,
+    /// Wrap `ssh` to install the `xterm-huterm` terminfo entry on remote
+    /// hosts, in `~/.terminfo`.
+    SshTerminfo,
+    /// Wrap `sudo` to use `TERM=xterm-256color` when the system terminfo
+    /// lacks `xterm-huterm`.
+    Sudo,
 }
 
 impl ShellIntegrationConfig {
@@ -83,6 +102,13 @@ impl ShellIntegrationConfig {
                 .iter()
                 .map(|feature| match feature {
                     ShellFeature::Path => huterm_protocol::ShellFeature::Path,
+                    ShellFeature::SshEnv => {
+                        huterm_protocol::ShellFeature::SshEnv
+                    }
+                    ShellFeature::SshTerminfo => {
+                        huterm_protocol::ShellFeature::SshTerminfo
+                    }
+                    ShellFeature::Sudo => huterm_protocol::ShellFeature::Sudo,
                 })
                 .collect(),
         }
@@ -97,11 +123,32 @@ mod tests {
     fn shell_integration_defaults_and_known_features() {
         let raw: crate::RawConfig = toml::from_str("").unwrap();
         assert_eq!(raw.shell_integration, ShellIntegrationConfig::default());
-        let path = BTreeSet::from([ShellFeature::Path]);
-        assert_eq!(raw.shell_integration.features, path, "on by default");
+        let defaults = BTreeSet::from([
+            ShellFeature::Path,
+            ShellFeature::SshEnv,
+            ShellFeature::Sudo,
+        ]);
+        assert_eq!(raw.shell_integration.features, defaults, "on by default");
         let raw: crate::RawConfig =
             toml::from_str("[shell_integration]\nmode='detect'").unwrap();
-        assert_eq!(raw.shell_integration.features, path, "an omitted list");
+        assert_eq!(raw.shell_integration.features, defaults, "an omitted list");
+        let raw: crate::RawConfig = toml::from_str(
+            "[shell_integration]\nfeatures=['sudo','ssh_terminfo','ssh_env']",
+        )
+        .unwrap();
+        assert_eq!(
+            raw.shell_integration
+                .to_protocol()
+                .features
+                .iter()
+                .collect::<Vec<_>>(),
+            [
+                huterm_protocol::ShellFeature::SshEnv,
+                huterm_protocol::ShellFeature::SshTerminfo,
+                huterm_protocol::ShellFeature::Sudo,
+            ],
+            "every feature maps to the protocol"
+        );
         let raw: crate::RawConfig =
             toml::from_str("[shell_integration]\nfeatures=[]").unwrap();
         assert!(raw.shell_integration.features.is_empty(), "opted out");
@@ -121,7 +168,13 @@ mod tests {
 
     #[test]
     fn shell_integration_rejects_unknown_values_and_fields() {
-        for field in ["mode='auto'", "features=['title']", "extra=true"] {
+        for field in [
+            "mode='auto'",
+            "features=['title']",
+            "features=['ssh-env']",
+            "features=['sshEnv']",
+            "extra=true",
+        ] {
             assert!(
                 toml::from_str::<crate::RawConfig>(&format!(
                     "[shell_integration]\n{field}"

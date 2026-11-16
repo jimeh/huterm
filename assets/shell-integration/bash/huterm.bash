@@ -156,6 +156,37 @@ _huterm_bash_cwd() {
     esac
     printf '\e]7;kitty-shell-cwd://%s%s\a' "${HOSTNAME-}" "$PWD"
 }
+# Features: ssh_env, ssh_terminfo, sudo. Runs `huterm ssh` or `huterm sudo`
+# when the huterm command is available, and the program itself otherwise.
+_huterm_bash_run() {
+    local tool=$1 features=,${HUTERM_SHELL_FEATURES-},
+    shift
+    local -a flags=()
+    if [[ -n ${HUTERM_BIN_DIR-} && -x $HUTERM_BIN_DIR/huterm ]]; then
+        if [[ $tool == ssh ]]; then
+            if [[ $features == *,ssh_env,* ]]; then flags+=(--forward-env); fi
+            if [[ $features == *,ssh_terminfo,* ]]; then flags+=(--terminfo); fi
+        fi
+        "$HUTERM_BIN_DIR/huterm" "$tool" ${flags[@]+"${flags[@]}"} "$@"
+    else
+        command "$tool" "$@"
+    fi
+}
+# Defines the wrappers once, after every startup file, unless the user has
+# a function of that name. The `function name {` form keeps an alias such as
+# ssh='ssh -A' from expanding inside the definition, and the alias still
+# expands into the wrapper.
+_huterm_bash_wrappers=0
+_huterm_bash_wrap() {
+    _huterm_bash_wrappers=1
+    if [[ $_huterm_bash_features == *,ssh_env,* || $_huterm_bash_features == *,ssh_terminfo,* ]] &&
+        ! declare -F ssh >/dev/null; then
+        function ssh { _huterm_bash_run ssh "$@"; }
+    fi
+    if [[ $_huterm_bash_features == *,sudo,* ]] && ! declare -F sudo >/dev/null; then
+        function sudo { _huterm_bash_run sudo "$@"; }
+    fi
+}
 # The first prompt-command entry on Bash 3.2, and when promptvars is off. It
 # restores $? and $_ for the entries after it.
 _huterm_bash_capture() {
@@ -385,6 +416,9 @@ _huterm_bash_prompt() {
             *:"$HUTERM_BIN_DIR":*) ;;
             *) export PATH=$PATH:$HUTERM_BIN_DIR ;;
         esac
+    fi
+    if [[ $_huterm_bash_wrappers == 0 ]]; then
+        _huterm_bash_wrap
     fi
     _huterm_bash_flagged=0
     if [[ $_huterm_bash_marked == 1 ]]; then

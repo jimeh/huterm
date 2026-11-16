@@ -168,7 +168,7 @@ pub struct TerminalConfig {
 impl Default for TerminalConfig {
     fn default() -> Self {
         Self {
-            term: TerminalIdentity::Xterm256Color,
+            term: TerminalIdentity::Auto,
             close_on_exit: true,
             refresh: RefreshMode::default(),
             new_tab_directory: NewTabDirectory::Inherit,
@@ -546,8 +546,10 @@ impl BellSound {
 )]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum TerminalIdentity {
-    /// Use `xterm-huterm` when its terminfo entry is available locally. SSH
-    /// hosts without the entry can garble line editing.
+    /// Use `xterm-huterm` when its terminfo entry is available locally.
+    /// Shell integration's `ssh` and `sudo` wrappers fall back to
+    /// `xterm-256color` where the entry is missing.
+    #[default]
     #[serde(rename = "auto")]
     #[cfg_attr(
         feature = "schema",
@@ -562,7 +564,6 @@ pub enum TerminalIdentity {
     )]
     XtermHuterm,
     /// Use the widely installed compatibility entry.
-    #[default]
     #[serde(rename = "xterm-256color")]
     #[cfg_attr(
         feature = "schema",
@@ -3168,7 +3169,8 @@ pub struct RawTerminal {
         "deprecated" = true,
     )))]
     pub engine: Option<LegacyTerminalEngine>,
-    /// The `TERM` new shells see.
+    /// The `TERM` new shells see. `auto`, the default, uses `xterm-huterm`
+    /// when its terminfo entry is available and `xterm-256color` otherwise.
     #[cfg_attr(feature = "schema", schemars(extend(
         "x-huterm-section" = "terminal",
         "x-huterm-group" = "Compatibility",
@@ -3343,7 +3345,7 @@ impl Default for RawTerminal {
     fn default() -> Self {
         Self {
             engine: None,
-            term: TerminalIdentity::Xterm256Color,
+            term: TerminalIdentity::Auto,
             clipboard_write: ClipboardWritePolicy::Allow,
             notifications: NotificationPolicy::Allow,
             progress_bar: true,

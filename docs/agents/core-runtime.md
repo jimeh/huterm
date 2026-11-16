@@ -134,6 +134,25 @@ Development resource discovery searches up to six executable-directory
 ancestors for `assets/shell-integration`, after packaged layouts, to cover
 custom Cargo target directories within the checkout.
 
+Core exports `HUTERM_SHELL_FEATURES` as the enabled features in the order
+`path,ssh_env,ssh_terminfo,sudo`, and every terminal gets
+`TERM_PROGRAM_VERSION` beside `COLORTERM` and `TERM_PROGRAM`. The `ssh` and
+`sudo` wrappers hold no logic: bash, zsh, and fish define them once at the
+first prompt, only where no function of that name exists, with `function name
+{` so an alias of the same name neither breaks the definition nor stops
+expanding into it. Nushell exports them from the `huterm` module, where they
+read the features at each call. The decisions, `ssh -G` resolution, the cache,
+and the remote install live in `huterm-cli` (`huterm ssh`, `huterm sudo`).
+`native_tests/wrappers.rs` covers the wrappers with stand-in executables.
+`native_tests/ssh_server.rs` runs a real `sshd` on loopback that logs in the
+current account, so it runs only with `HUTERM_SSH_TESTS=1` on Linux, where
+that home is disposable (Docker and CI); with the gate set, a missing `sshd`,
+`sftp-server`, zsh-autosuggestions, or built `huterm` fails the test. Run it
+with `mise run linux:exec -- bash -c 'mise run ghostty:prepare && mise run
+build:exec -- cargo build -p huterm-cli && env HUTERM_SSH_TESTS=1 mise run
+build:exec -- cargo test -p huterm-core --lib native_ssh'`. Never run it on a
+host whose home matters.
+
 ## PTY I/O and descriptor limits
 
 - On Unix, configure the PTY master as nonblocking before cloning reader and

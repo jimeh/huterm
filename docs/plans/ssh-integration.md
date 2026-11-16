@@ -1,6 +1,6 @@
 # SSH and sudo with Huterm's terminal identity (#351)
 
-Status: approved, after a Codex plan review. Plans [issue #351][issue-351]
+Status: implemented, after a Codex plan review. Plans [issue #351][issue-351]
 (parent [#37][issue-37]), on top of shell integration ([#349][issue-349])
 and the `huterm` command ([#350][issue-350]).
 

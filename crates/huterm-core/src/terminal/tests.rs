@@ -1866,7 +1866,7 @@ fn pty_runtime_should_round_trip_input_and_observe_exit() {
 #[test]
 fn pty_runtime_applies_explicit_terminal_environment() {
     let mut command = command(
-        "printf '%s|%s|%s|%s' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"$TERMINFO_DIRS\"",
+        "printf '%s|%s|%s|%s|%s' \"$TERM\" \"$COLORTERM\" \"$TERM_PROGRAM\" \"$TERM_PROGRAM_VERSION\" \"$TERMINFO_DIRS\"",
     );
     command.environment = vec![
         ("TERM".into(), "xterm-huterm".into()),
@@ -1876,7 +1876,10 @@ fn pty_runtime_applies_explicit_terminal_environment() {
         .expect("runtime should start");
     wait_for_text(
         &test_client(&runtime),
-        "xterm-huterm|truecolor|Huterm|/private/terminfo:",
+        &format!(
+            "xterm-huterm|truecolor|Huterm|{}|/private/terminfo:",
+            env!("CARGO_PKG_VERSION")
+        ),
     );
     runtime.shutdown().unwrap();
 }

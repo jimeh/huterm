@@ -225,6 +225,28 @@ fn planner_path_is_opt_in_and_resources_are_executable_relative() {
         value(&planned(&command, &[], true), "HUTERM_SHELL_FEATURES"),
         Some(OsStr::new("path"))
     );
+    for (features, expected) in [
+        (
+            vec![
+                ShellFeature::Sudo,
+                ShellFeature::SshTerminfo,
+                ShellFeature::SshEnv,
+                ShellFeature::Path,
+            ],
+            "path,ssh_env,ssh_terminfo,sudo",
+        ),
+        (
+            vec![ShellFeature::Sudo, ShellFeature::SshEnv],
+            "ssh_env,sudo",
+        ),
+        (vec![ShellFeature::SshTerminfo], "ssh_terminfo"),
+    ] {
+        command.shell_integration.features = features.into_iter().collect();
+        assert_eq!(
+            value(&planned(&command, &[], true), "HUTERM_SHELL_FEATURES"),
+            Some(OsStr::new(expected))
+        );
+    }
     for binary in [
         "/repo/target/debug/huterm",
         "/repo/target/release/huterm",

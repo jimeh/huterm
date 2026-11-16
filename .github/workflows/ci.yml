@@ -137,7 +137,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends \
-            libxkbcommon-dev libxkbcommon-x11-dev zsh
+            libxkbcommon-dev libxkbcommon-x11-dev zsh \
+            openssh-server zsh-autosuggestions
 
       - name: Record Linux check evidence
         if: runner.os == 'Linux'
@@ -235,6 +236,8 @@ jobs:
       - name: Run Rust tests
         env:
           HUTERM_REQUIRE_SHELLS: "1"
+          # The sshd tests log in the runner's own account; never on macOS.
+          HUTERM_SSH_TESTS: ${{ runner.os == 'Linux' && '1' || '' }}
         if: ${{ !cancelled() && steps.checks-setup.outcome == 'success' }}
         run: mise run ci:test
 

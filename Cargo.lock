@@ -2645,6 +2645,9 @@ version = "0.35.0"
 dependencies = [
  "anyhow",
  "clap",
+ "huterm-socket",
+ "huterm-state",
+ "nix 0.29.0",
 ]
 
 [[package]]

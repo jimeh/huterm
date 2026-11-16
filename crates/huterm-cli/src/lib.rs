@@ -14,6 +14,15 @@
 //!   a variant holding its own `#[derive(Subcommand)]` enum.
 //! - Dispatch it in [`run`].
 //!
+//! # Wrapper subcommands
+//!
+//! `huterm ssh` and `huterm sudo` stand in for another program. They are
+//! dispatched before clap parses anything, so every argument after
+//! Huterm's own leading options reaches that program byte for byte,
+//! including `--`, `-h`, `--help`, `-V`, and bytes that are not UTF-8.
+//! They have no help flag; `huterm help ssh` and `huterm help sudo`
+//! describe them. Their clap definitions exist only for that help.
+//!
 //! # Output and exit codes
 //!
 //! - Help and `--version` print to standard output and exit 0.
@@ -27,6 +36,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod commands;
 mod launch;
 
 /// Exit status for a subcommand that parsed but failed.
@@ -47,7 +57,42 @@ struct Cli {
 
 /// Every `huterm` subcommand.
 #[derive(Debug, Subcommand)]
-enum Command {}
+enum Command {
+    /// Run ssh with a TERM the remote host knows
+    #[command(
+        disable_help_flag = true,
+        long_about = "Run ssh with a TERM the remote host knows.\n\n\
+                      When TERM is xterm-huterm and the destination is not \
+                      in the SSH cache, the session uses \
+                      TERM=xterm-256color. Huterm's options must come \
+                      first; every argument after them reaches ssh \
+                      unchanged, so `huterm ssh --help` is ssh's own help."
+    )]
+    Ssh(commands::ssh::Help),
+    /// List or change the SSH destinations known to have xterm-huterm
+    #[command(subcommand)]
+    SshCache(commands::ssh_cache::Action),
+    /// Run sudo with a TERM the system knows
+    #[command(
+        disable_help_flag = true,
+        long_about = "Run sudo with a TERM the system knows.\n\n\
+                      When TERM is xterm-huterm and the system terminfo \
+                      directories lack that entry, sudo runs with \
+                      TERM=xterm-256color, because sudo removes TERMINFO \
+                      and TERMINFO_DIRS. Every argument reaches sudo \
+                      unchanged, so `huterm sudo --help` is sudo's own help."
+    )]
+    Sudo(commands::sudo::Help),
+}
+
+/// The wrapper subcommands, which take their arguments raw.
+fn wrapper(name: &OsString) -> Option<fn(&[OsString]) -> anyhow::Error> {
+    match name.to_str()? {
+        "ssh" => Some(commands::ssh::run),
+        "sudo" => Some(commands::sudo::run),
+        _ => None,
+    }
+}
 
 /// Runs the command line for `args`, whose first item is the program name.
 #[must_use]
@@ -56,13 +101,23 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
-        Err(error) => return usage(&error),
-    };
-    let result = match cli.command {
-        None => Err(launch::desktop_app()),
-        Some(command) => match command {},
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let result = if let Some(run) = args.get(1).and_then(wrapper) {
+        Err(run(&args[2..]))
+    } else {
+        let cli = match Cli::try_parse_from(&args) {
+            Ok(cli) => cli,
+            Err(error) => return usage(&error),
+        };
+        match cli.command {
+            None => Err(launch::desktop_app()),
+            Some(Command::SshCache(action)) => commands::ssh_cache::run(action),
+            Some(Command::Ssh(_) | Command::Sudo(_)) => {
+                unreachable!(
+                    "wrapper subcommands are dispatched before parsing"
+                )
+            }
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

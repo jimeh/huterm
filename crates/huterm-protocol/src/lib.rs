@@ -830,6 +830,12 @@ pub enum ShellIntegrationMode {
 pub enum ShellFeature {
     /// Append Huterm's executable directory to the shell's search path.
     Path,
+    /// Wrap `ssh` so it forwards Huterm's terminal identity variables.
+    SshEnv,
+    /// Wrap `ssh` so it installs Huterm's terminfo entry on remote hosts.
+    SshTerminfo,
+    /// Wrap `sudo` so it keeps a `TERM` the target user's system knows.
+    Sudo,
 }
 
 /// A set of optional shell integration capabilities.

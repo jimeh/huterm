@@ -19,7 +19,9 @@ Rules for `crates/huterm-cli`, the `huterm` command. The decision record is
 - `huterm` must run on a host without a display. It must not depend on
   `gpui-pre`, `huterm-gpui`, or `huterm-ui` (`mise run architecture`), must
   link only `libSystem` on macOS, and needs only the C runtime libraries in
-  `commandLineLibraries` on Linux. Packaging checks both.
+  `commandLineLibraries` on Linux. Packaging checks both. The `libc` crate
+  asks for `libiconv` on Apple targets, so `build.rs` links the executable
+  with `-dead_strip_dylibs`; check `otool -L` after adding a dependency.
 
 ## Adding a subcommand
 
@@ -30,6 +32,15 @@ errors from clap on standard error with status 2, and failures as
 `huterm: <message>` with status 1.
 
 - A subcommand never starts the desktop app as a side effect.
+- A wrapper subcommand (`huterm ssh`, `huterm sudo`) stands in for another
+  program. `run` dispatches it before clap parses, so its arguments reach
+  that program byte for byte, `--` and `--help` included, and it has no help
+  flag; its clap definition exists only for `huterm help <name>`. It replaces
+  itself with the program, as the desktop launch does.
+- Tests of `huterm ssh` use a stand-in `ssh` first on `PATH` and scratch
+  `HUTERM_STATE_DIR`, `XDG_RUNTIME_DIR`, and `TMPDIR`; never a real host. The
+  real-`sshd` tests live in core's native shell tests behind
+  `HUTERM_SSH_TESTS=1`, Linux only (see the core runtime guide).
 - Test a subcommand's parsing in the crate's unit tests and its behavior as a
   process in `crates/huterm-cli/tests/`, with `DISPLAY` and `WAYLAND_DISPLAY`
   removed.
