@@ -351,7 +351,7 @@ already on your `PATH` takes precedence.
 | zsh | A static `ZDOTDIR` stub in Huterm resources restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
 | bash | Every bash, Apple's `/bin/bash` 3.2 included, starts as `bash --rcfile <bootstrap> -i` with the other options it was given. For a login shell (`-l`, `--login`, or `l` in combined flags such as `-il`), the bootstrap emulates the login sequence: `/etc/profile`, then the first readable `.bash_profile`, `.bash_login`, or `.profile`. Other shells read `.bashrc` or the requested `--rcfile` as bash does. `--noprofile` is honored. `--norc` starts bash without integration, because an rcfile start cannot skip a distribution's system bashrc. Bash keeps its own `ENV`, `HISTFILE`, and option defaults. |
 | fish | A vendor `conf.d` bootstrap runs after user `conf.d` snippets and before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
-| nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.116.1 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
+| nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.117.0 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
 | elvish | Huterm adds a module directory. Add the guarded `use` below to `rc.elv`; Elvish has no automatic loading hook. |
 
 For elvish, add this to `rc.elv`:
@@ -470,9 +470,10 @@ file, and `$env` is not a parse-time constant. Nushell's native OSC 133 remains
 controlled by `$env.config.shell_integration.osc133`. If
 `$env.config.shell_integration.osc7` is true when Huterm's module loads, Huterm
 turns it off and reports `kitty-shell-cwd://<host><path>` at each prompt and on
-PWD changes. This preserves spaces, `#`, `?`, and `%` that nushell 0.116.1 puts
-unencoded in `file://` reports. Reports are skipped when the host or path
-contains a control character. If `osc7` is false at load, Huterm emits no OSC 7.
+PWD changes. This preserves spaces, `#`, `?`, and `%` that nushell before
+0.117.0 puts unencoded in `file://` reports. Reports are skipped when the host
+or path contains a control character. If `osc7` is false at load, Huterm emits
+no OSC 7.
 
 Limitations:
 

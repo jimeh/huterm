@@ -5,8 +5,9 @@ let loaded = ($env.config.hooks.pre_prompt | any {|hook|
     try { $hook.code == '# huterm-loaded' } catch { false }
 })
 if not $loaded {
-    # Native OSC 7 does not encode URL delimiters. Replace it only when enabled
-    # at load, preserving the user's opt-out and leaving native OSC 133 alone.
+    # Native OSC 7 before nushell 0.117.0 does not encode URL delimiters.
+    # Replace it only when enabled at load, preserving the user's opt-out and
+    # leaving native OSC 133 alone.
     if $env.config.shell_integration.osc7 {
         $env.config.shell_integration.osc7 = false
         let failure = $'huterm: shell integration failed to load: ($env.HUTERM_RESOURCES_DIR? | default "")/shell-integration/nushell/huterm.nu'

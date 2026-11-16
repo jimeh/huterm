@@ -70,10 +70,10 @@ Every injected bash, Apple's 3.2 included, starts as `bash --rcfile
 whose names are not POSIX names. Bash accepts long options only before `-i`.
 Preserve unset versus empty environment values, startup order, and the
 admission token's consumption. Each XDG shell gets a separate resource root.
-Fish 4.9.3 provides its full marker stream natively. Nushell 0.116.1 provides
+Fish 4.9.3 provides its full marker stream natively. Nushell 0.117.0 provides
 native OSC 133; Huterm replaces enabled native OSC 7 with literal reports
-because its unencoded `file://` paths lose directories containing URL
-delimiters. Preserve its opt-out.
+because nushell before 0.117.0 sends unencoded `file://` paths, which lose
+directories containing URL delimiters. Preserve its opt-out.
 
 Huterm writes its own shell scripts. Never consult or copy Kitty's, Ghostty's
 bash/zsh, or iTerm2's integration scripts, which are GPL. Since 2026-11-04,
