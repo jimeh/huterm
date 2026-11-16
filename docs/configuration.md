@@ -296,7 +296,7 @@ switcher_style = "full"             # full (icon and name) or icon
   Huterm's style even with `macos_native_menus`, with a + for New Session.
 
 Showing or hiding the sidebar resizes the window's terminals as a window
-resize does, so a selection survives only when the grid size stays the same.
+resize does, and a selection keeps covering the same text.
 
 ## Shells
 
@@ -1772,8 +1772,8 @@ alternate screen. Narrowing a window or enlarging its font rewraps long lines
 onto more rows, and widening it makes each row larger, so either can also
 discard the oldest rows. When history shrinks, a view scrolled into history
 stays on the same rows if they remain and otherwise moves to the oldest row
-left, and any selection is cleared. **Clear Scrollback** and **Reset Terminal**
-keep the limits.
+left, and a selection loses the discarded rows, clearing when none of it
+remains. **Clear Scrollback** and **Reset Terminal** keep the limits.
 
 These settings cover only the history a running terminal holds in memory.
 Huterm does not save history across restarts; saved history will have its own

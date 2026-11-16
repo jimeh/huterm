@@ -2,7 +2,8 @@
 //! A double-click selects words and a triple-click selects lines; the
 //! runtime expands those against canonical scrollback, so the view tracks
 //! one expansion request at a time and applies only the replies that still
-//! belong to the gesture.
+//! belong to the gesture. Once settled, the runtime keeps the selection on
+//! its text and places it in each snapshot.
 
 use huterm_protocol::{BufferPoint, BufferRange, SelectionUnit};
 
@@ -13,7 +14,8 @@ pub(super) struct Selection {
     pub(super) head: BufferPoint,
     /// The unit a multi-click selection grows by; `None` selects cells.
     pub(super) unit: Option<SelectionUnit>,
-    /// The range the runtime last expanded a unit selection to.
+    /// The range the runtime last expanded a unit selection to, or placed
+    /// a settled selection at.
     expanded: Option<BufferRange>,
 }
 
@@ -46,7 +48,7 @@ impl Selection {
     }
 
     pub(super) fn range(self) -> Option<BufferRange> {
-        if self.unit.is_some() {
+        if self.unit.is_some() || self.expanded.is_some() {
             return self.expanded;
         }
         // Buffer ranges include both endpoints, so equal cells would select
@@ -66,6 +68,21 @@ impl Selection {
             }
             _ => false,
         }
+    }
+
+    /// Moves a settled selection to where the runtime placed it in the
+    /// snapshot of `generation`, and reports whether the range changed.
+    pub(super) fn place(
+        &mut self,
+        generation: u64,
+        range: BufferRange,
+    ) -> bool {
+        let changed = self.range() != Some(range);
+        self.generation = generation;
+        self.anchor = range.start;
+        self.head = range.end;
+        self.expanded = Some(range);
+        changed
     }
 }
 

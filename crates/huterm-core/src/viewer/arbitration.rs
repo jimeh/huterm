@@ -38,9 +38,12 @@ pub struct ManualSize {
 }
 
 /// What the runtime must do after an arbitration change, in this order:
-/// resize, apply presentation, write mouse releases, then report focus.
+/// forget finalized viewers' selections, resize, apply presentation, write
+/// mouse releases, then report focus.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Effects {
+    /// Viewers removed from the table, whose tracked selections go too.
+    pub(crate) finalized: Vec<ViewerId>,
     pub(crate) resize: Option<(GridSize, CellSize)>,
     pub(crate) presentation: Option<TerminalPresentation>,
     pub(crate) releases: Vec<MouseInput>,
@@ -53,6 +56,7 @@ impl Effects {
     }
 
     pub(crate) fn merge(&mut self, later: Self) {
+        self.finalized.extend(later.finalized);
         if later.resize.is_some() {
             self.resize = later.resize;
         }
@@ -228,6 +232,7 @@ impl Arbiter {
                 // anyway keeps a gesture from outliving its viewer if a
                 // request ever does run first.
                 effects.releases.extend(self.mouse.finalize(slot.id));
+                effects.finalized.push(slot.id);
                 registry.remove(slot.id);
             }
         }
@@ -250,6 +255,7 @@ impl Arbiter {
         let mut effects = self.set_focus(index, false);
         let entry = self.entries.remove(index);
         effects.releases.extend(self.mouse.finalize(entry.slot.id));
+        effects.finalized.push(entry.slot.id);
         registry.remove(entry.slot.id);
         effects
     }

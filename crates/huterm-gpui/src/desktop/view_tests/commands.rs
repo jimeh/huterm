@@ -62,10 +62,15 @@ fn top_block(view: &TerminalView) -> Option<u64> {
 }
 
 fn wait_for_selection(harness: &mut ViewHarness, expected: &str) {
-    harness
-        .wait_for(&format!("the selection to read {expected:?}"), |view, _| {
-            view.selected_text.as_deref() == Some(expected)
-        });
+    harness.wait_for(
+        &format!("the selection to read {expected:?}"),
+        |view, _| {
+            view.selected_text
+                .as_ref()
+                .map(|cached| cached.text.as_str())
+                == Some(expected)
+        },
+    );
 }
 
 #[gpui::test]
