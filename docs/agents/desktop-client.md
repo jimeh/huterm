@@ -759,6 +759,20 @@ Run `mise run smoke:renderer` for production preparation/paint coverage and
 inspect the held fixture when changing geometry. Keep its license notice in
 the packaged resources independently of the Ghostty VT engine notice.
 
+The sticky prompt (`desktop/command_status.rs`) is an element over the
+pane's top rows whose prompt rows the terminal renderer paints
+(`prepare_sticky`, `paint_sticky`). The canvas clips the grid's paint to the
+rows below it, so a covered row never shows through a translucent pane.
+Failure marks paint in the canvas before the grid and outside its content
+mask, across the pane and its padding: ANSI cell backgrounds then cover the
+tint and the selection paints over it. Marks come from the snapshot's blocks
+and the status's command records matched by sequence; the two arrive
+separately, so the view repaints when the records change even when no row
+does, and a block without a record is unknown, never succeeded. A press on
+the header stops propagation, so it starts no selection and reports nothing
+to a mouse-tracking program, and sends `ScrollCommand::Prompt(-1)` rather
+than an offset from the painted snapshot.
+
 ## Keymap, commands, and menus
 
 GPUI normalizes shifted punctuation to its resulting symbol and clears Shift.

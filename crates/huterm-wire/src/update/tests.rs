@@ -448,13 +448,14 @@ fn first_row(update: &mut TerminalUpdate) -> &mut FullRow {
 #[test]
 fn malformed_rows_and_references_are_rejected() {
     let complete = uniform_update(3, "x");
-    // A kept row in a complete snapshot, or past the grid in a delta.
+    // A kept row in a complete snapshot, or in a delta past the most rows
+    // a baseline holds: the one-row grid's and one sticky prompt row.
     let mut keep = complete.clone();
     keep.rows[0] = RowOp::Keep(0);
     rejected(&keep, "keep index", "keep index");
     keep.seq = 2;
     keep.baseline = Some(1);
-    keep.rows[0] = RowOp::Keep(1);
+    keep.rows[0] = RowOp::Keep(2);
     rejected(&keep, "keep index", "keep index");
     // A style index past the table.
     let mut style = complete.clone();
@@ -715,6 +716,8 @@ fn widest_metadata(size: GridSize) -> ViewMetadata {
             green: 2,
             blue: 3,
         }),
+        commands: Arc::new([]),
+        sticky: None,
     }
 }
 
@@ -724,7 +727,9 @@ fn a_worst_case_update_at_a_mid_size_grid_fits_its_cap() {
         columns: 80,
         rows: 24,
     };
-    let rows = (0..24)
+    // The grid's rows, then the most sticky prompt rows, every cell in a
+    // style of its own, and the most command blocks.
+    let rows = (0..24 + STICKY_PROMPT_ROWS)
         .map(|row| {
             Arc::new(TerminalRow {
                 cells: (0..80)
@@ -738,9 +743,29 @@ fn a_worst_case_update_at_a_mid_size_grid_fits_its_cap() {
             })
         })
         .collect();
-    let snapshot = Arc::new(widest_metadata(size).snapshot(terminal(), rows));
+    let mut metadata = widest_metadata(size);
+    metadata.commands = vec![
+        huterm_protocol::CommandBlock {
+            sequence: u64::MAX,
+            prompt: usize::MAX,
+            output: Some(usize::MAX - 1),
+            end: usize::MAX - 2,
+        };
+        command_blocks_limit(size.rows)
+    ]
+    .into();
+    metadata.sticky = Some(StickyHeader {
+        sequence: u64::MAX,
+        rows: sticky_rows_limit(size.rows),
+        input: sticky_rows_limit(size.rows) - 1,
+    });
+    let snapshot = Arc::new(metadata.snapshot(terminal(), rows));
     let mut update = encoder().next(&snapshot, true).unwrap();
-    assert_eq!(update.styles.len(), size.cells(), "a style per cell");
+    assert_eq!(
+        update.styles.len(),
+        style_table_limit(size),
+        "a style per cell"
+    );
     update.seq = u64::MAX;
     update.baseline = Some(u64::MAX - 1);
     let message = Message::TerminalUpdate(update);
@@ -1270,7 +1295,8 @@ fn malformed_fills_and_keep_ranges_are_rejected() {
     assert!(edited(&[]).is_ok());
     // No kept rows, rows past the baseline, and more rows than the grid.
     assert_eq!(edited(&[(3, 0)]), Err(DecodeError::Invalid("keep index")));
-    assert_eq!(edited(&[(2, 2)]), Err(DecodeError::Invalid("keep index")));
+    // A baseline holds the grid's three rows and up to three sticky rows.
+    assert_eq!(edited(&[(2, 5)]), Err(DecodeError::Invalid("keep index")));
     assert_eq!(
         edited(&[(2, 0), (3, 3)]),
         Err(DecodeError::TooLong { field: "rows" })
@@ -1471,4 +1497,183 @@ fn a_streamed_update_keeps_only_the_rest_of_one_row_between_frames() {
     // bytes; the whole message is far larger.
     assert!(held < 64, "held {held} bytes between frames");
     assert!(frames.len() > 64 * 10);
+}
+
+/// `snapshot` with `blocks` and a sticky prompt of `lines`.
+fn with_commands(
+    snapshot: &Arc<TerminalSnapshot>,
+    blocks: &[huterm_protocol::CommandBlock],
+    lines: &[&str],
+) -> Arc<TerminalSnapshot> {
+    publish(snapshot, |next| {
+        next.commands = blocks.into();
+        next.sticky_prompt =
+            (!lines.is_empty()).then(|| huterm_protocol::StickyPrompt {
+                sequence: 7,
+                rows: lines
+                    .iter()
+                    .map(|line| text_row(line, usize::from(next.size.columns)))
+                    .collect(),
+                input: lines.len() - 1,
+            });
+    })
+}
+
+/// Encodes `snapshot`'s update both as a value and streamed, checks they
+/// agree, and returns the value.
+fn both_ways(
+    values: &mut UpdateEncoder,
+    streams: &mut UpdateEncoder,
+    snapshot: &Arc<TerminalSnapshot>,
+) -> TerminalUpdate {
+    let update = values.next(snapshot, false).unwrap();
+    let expected = encode_message(
+        &Message::TerminalUpdate(update.clone()),
+        vectors::scope(),
+        CAPS,
+    )
+    .unwrap();
+    let mut frames = streams
+        .plan(snapshot, false)
+        .unwrap()
+        .frames(vectors::scope())
+        .unwrap();
+    let mut streamed = Vec::new();
+    while frames.remaining() > 0 {
+        frames.fill(&mut streamed, 7).unwrap();
+    }
+    assert_eq!(streamed, expected);
+    update
+}
+
+#[test]
+fn command_blocks_and_sticky_prompt_rows_reach_the_client_and_keep_in_deltas() {
+    let block = huterm_protocol::CommandBlock {
+        sequence: 7,
+        prompt: 9,
+        output: Some(8),
+        end: 1,
+    };
+    let base = screen(&["a", "b", "c"], 4);
+    let first = with_commands(&base, &[block], &["~/src", "$ ls"]);
+    let mut values = encoder();
+    let mut streams = encoder();
+    let mut client: ViewerView = ViewerView::new(0);
+    applied(&mut client, &both_ways(&mut values, &mut streams, &first));
+    assert!(shows(&client, &first));
+
+    // The viewport scrolls under an unchanged header: its rows stay kept.
+    let second = publish(&first, |next| {
+        next.rows.rotate_left(1);
+        next.rows[2] = text_row("d", 4);
+    });
+    let delta = both_ways(&mut values, &mut streams, &second);
+    assert_eq!(&delta.rows[3..], [RowOp::Keep(3), RowOp::Keep(4)]);
+    applied(&mut client, &delta);
+    assert!(shows(&client, &second));
+
+    // The header leaves, and its rows with it.
+    let third = with_commands(&second, &[], &[]);
+    let delta = both_ways(&mut values, &mut streams, &third);
+    assert_eq!(delta.rows.len(), 3);
+    applied(&mut client, &delta);
+    assert!(shows(&client, &third));
+}
+
+#[test]
+fn malformed_command_blocks_and_sticky_prompts_are_rejected() {
+    let block = huterm_protocol::CommandBlock {
+        sequence: 7,
+        prompt: 9,
+        output: Some(8),
+        end: 1,
+    };
+    let valid = encoder()
+        .next(&with_commands(&screen(&["a"], 3), &[block], &["$"]), false)
+        .unwrap();
+    assert!(decode(&update_bytes(&valid)).is_ok());
+
+    // A block whose output lies outside it, or that ends above its prompt.
+    for bad in [
+        huterm_protocol::CommandBlock {
+            output: Some(9),
+            ..block
+        },
+        huterm_protocol::CommandBlock { end: 10, ..block },
+    ] {
+        let mut update = valid.clone();
+        update.metadata.commands = Arc::new([bad]);
+        rejected(&update, "command block", "command block");
+    }
+    // More blocks than a one-row grid has rows, plus one. The writer
+    // refuses the count, as the decoder's sequence limit would.
+    let mut many = valid.clone();
+    many.metadata.commands = Arc::new([block; 3]);
+    assert_eq!(
+        encode_update(&mut Writer::new(), vectors::scope(), &many, STYLE_FLAGS),
+        Err(EncodeError::Invalid("command blocks"))
+    );
+    // A sticky prompt with more rows than the grid, or its input row past
+    // its rows.
+    for sticky in [
+        StickyHeader {
+            sequence: 7,
+            rows: 2,
+            input: 0,
+        },
+        StickyHeader {
+            sequence: 7,
+            rows: 1,
+            input: 1,
+        },
+    ] {
+        let mut update = valid.clone();
+        update.metadata.sticky = Some(sticky);
+        rejected(&update, "sticky prompt", "sticky prompt");
+    }
+}
+
+#[test]
+fn sticky_rows_past_sixteen_bit_positions_travel_in_full() {
+    // The tallest grid: its sticky rows sit past the positions a kept
+    // range can name, so a delta sends them in full.
+    let rows = usize::from(u16::MAX);
+    let base = screen(&vec![""; rows], 1);
+    let first = with_commands(&base, &[], &["a", "b", "c"]);
+    let mut server = encoder();
+    let mut client: ViewerView = ViewerView::new(0);
+    applied(&mut client, &server.next(&first, false).unwrap());
+    let second = publish(&first, |_| {});
+    let delta = server.next(&second, false).unwrap();
+    assert_eq!(delta.rows[rows], RowOp::Keep(u16::MAX));
+    assert!(
+        delta.rows[rows + 1..]
+            .iter()
+            .all(|op| matches!(op, RowOp::Full(_))),
+        "{:?}",
+        &delta.rows[rows..]
+    );
+    // The streamed encoder makes the same message.
+    let mut streams = encoder();
+    let mut streamed = Vec::new();
+    for snapshot in [&first, &second] {
+        streamed.clear();
+        let mut frames = streams
+            .plan(snapshot, false)
+            .unwrap()
+            .frames(vectors::scope())
+            .unwrap();
+        while frames.remaining() > 0 {
+            frames.fill(&mut streamed, usize::MAX).unwrap();
+        }
+    }
+    let expected = encode_message(
+        &Message::TerminalUpdate(delta.clone()),
+        vectors::scope(),
+        CAPS,
+    )
+    .unwrap();
+    assert_eq!(streamed, expected);
+    applied(&mut client, &delta);
+    assert!(shows(&client, &second));
 }

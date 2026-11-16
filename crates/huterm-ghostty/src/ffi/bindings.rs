@@ -16,6 +16,7 @@ pub type GhosttyCell = u64;
 pub type GhosttyRow = u64;
 pub type GhosttyCellContentTag = ::core::ffi::c_int;
 pub type GhosttyCellWide = ::core::ffi::c_int;
+pub type GhosttyCellSemanticContent = ::core::ffi::c_int;
 pub type GhosttyCellData = ::core::ffi::c_int;
 pub type GhosttyRowSemanticPrompt = ::core::ffi::c_int;
 pub type GhosttyRowData = ::core::ffi::c_int;
@@ -575,6 +576,11 @@ pub const GHOSTTY_CELL_WIDE_WIDE: GhosttyCellWide = 1;
 pub const GHOSTTY_CELL_WIDE_SPACER_TAIL: GhosttyCellWide = 2;
 pub const GHOSTTY_CELL_WIDE_SPACER_HEAD: GhosttyCellWide = 3;
 pub const GHOSTTY_CELL_WIDE_MAX_VALUE: GhosttyCellWide = 2147483647;
+pub const GHOSTTY_CELL_SEMANTIC_OUTPUT: GhosttyCellSemanticContent = 0;
+pub const GHOSTTY_CELL_SEMANTIC_INPUT: GhosttyCellSemanticContent = 1;
+pub const GHOSTTY_CELL_SEMANTIC_PROMPT: GhosttyCellSemanticContent = 2;
+pub const GHOSTTY_CELL_SEMANTIC_MAX_VALUE: GhosttyCellSemanticContent =
+    2147483647;
 pub const GHOSTTY_CELL_DATA_INVALID: GhosttyCellData = 0;
 pub const GHOSTTY_CELL_DATA_CODEPOINT: GhosttyCellData = 1;
 pub const GHOSTTY_CELL_DATA_CONTENT_TAG: GhosttyCellData = 2;
@@ -1454,6 +1460,10 @@ unsafe extern "C" {
         buf: *mut u8,
         buf_len: usize,
         out_len: *mut usize,
+    ) -> GhosttyResult;
+    pub fn ghostty_grid_ref_style(
+        ref_: *const GhosttyGridRef,
+        out_style: *mut GhosttyStyle,
     ) -> GhosttyResult;
     pub fn ghostty_terminal_select_word_between(
         terminal: GhosttyTerminal,

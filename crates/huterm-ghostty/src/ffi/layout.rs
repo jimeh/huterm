@@ -905,6 +905,29 @@ pub(crate) const ENUMS: &[Enum] = &[
         ],
     },
     Enum {
+        name: "GhosttyCellSemanticContent",
+        size: size_of::<ffi::GhosttyCellSemanticContent>(),
+        align: align_of::<ffi::GhosttyCellSemanticContent>(),
+        values: &[
+            (
+                "GHOSTTY_CELL_SEMANTIC_OUTPUT",
+                ffi::GHOSTTY_CELL_SEMANTIC_OUTPUT as i64,
+            ),
+            (
+                "GHOSTTY_CELL_SEMANTIC_INPUT",
+                ffi::GHOSTTY_CELL_SEMANTIC_INPUT as i64,
+            ),
+            (
+                "GHOSTTY_CELL_SEMANTIC_PROMPT",
+                ffi::GHOSTTY_CELL_SEMANTIC_PROMPT as i64,
+            ),
+            (
+                "GHOSTTY_CELL_SEMANTIC_MAX_VALUE",
+                ffi::GHOSTTY_CELL_SEMANTIC_MAX_VALUE as i64,
+            ),
+        ],
+    },
+    Enum {
         name: "GhosttyCellData",
         size: size_of::<ffi::GhosttyCellData>(),
         align: align_of::<ffi::GhosttyCellData>(),

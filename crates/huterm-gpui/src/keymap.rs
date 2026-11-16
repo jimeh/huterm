@@ -1013,6 +1013,22 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("cmd-v", ids::PASTE, "Paste from the clipboard"),
             default("cmd-a", ids::SELECT_ALL, "Select the whole terminal"),
             default("cmd-k", ids::CLEAR_SCROLLBACK, "Clear the scrollback"),
+            // iTerm2's keys for marks and the last command's output.
+            default(
+                "cmd-shift-up",
+                ids::PREVIOUS_COMMAND,
+                "Scroll to the previous command",
+            ),
+            default(
+                "cmd-shift-down",
+                ids::NEXT_COMMAND,
+                "Scroll to the next command",
+            ),
+            default(
+                "cmd-shift-a",
+                ids::SELECT_COMMAND_OUTPUT,
+                "Select the command's output",
+            ),
             default("cmd-,", ids::OPEN_SETTINGS, "Open Settings"),
             // GPUI folds Shift+comma into '<' and clears Shift on both
             // backends, so the binding names the resulting symbol.
@@ -1033,6 +1049,16 @@ pub(crate) fn defaults(platform: Platform) -> Vec<BindingEntry> {
             default("f11", ids::TOGGLE_FULLSCREEN, "Toggle fullscreen"),
             default("ctrl-shift-c", ids::COPY, "Copy the selection"),
             default("ctrl-shift-v", ids::PASTE, "Paste from the clipboard"),
+            default(
+                "ctrl-shift-up",
+                ids::PREVIOUS_COMMAND,
+                "Scroll to the previous command",
+            ),
+            default(
+                "ctrl-shift-down",
+                ids::NEXT_COMMAND,
+                "Scroll to the next command",
+            ),
             default(
                 "ctrl-shift-a",
                 ids::SELECT_ALL,

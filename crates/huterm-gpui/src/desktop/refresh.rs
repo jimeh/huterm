@@ -123,6 +123,16 @@ impl FrameClock {
         self.frame_callbacks.get()
     }
 
+    /// The wake the view `id` has scheduled, if any.
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn deadline_of(&self, id: gpui::EntityId) -> Option<Instant> {
+        self.animations
+            .borrow()
+            .iter()
+            .find(|entry| entry.id == id)
+            .and_then(|entry| entry.schedule.deadline)
+    }
+
     /// Entity notifications arm animation work even when its window cannot paint.
     pub(super) fn observe<V: Animated>(
         self: &Rc<Self>,

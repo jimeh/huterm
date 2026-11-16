@@ -14,7 +14,8 @@ use gpui::{
     WindowTextSystem, fill, outline, point, px, rgba, size,
 };
 use huterm_protocol::{
-    BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalSnapshot,
+    BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalRow,
+    TerminalSnapshot,
 };
 
 use crate::config::Theme;
@@ -111,6 +112,9 @@ impl GridMetrics {
 pub(super) struct TerminalRenderer {
     snapshot: Option<Arc<TerminalSnapshot>>,
     rows: Vec<PreparedRow>,
+    /// The sticky prompt rows the header shows, prepared like grid rows and
+    /// kept while the same rows show.
+    sticky: Vec<(Arc<TerminalRow>, PreparedRow)>,
     layouts: GlyphLayoutCache<GlyphContent>,
     graphics: builtin::GeometryCache,
     metrics: GridMetrics,
@@ -177,6 +181,7 @@ impl TerminalRenderer {
         }
         self.snapshot = None;
         self.rows.clear();
+        self.sticky.clear();
         self.terminal_font = terminal_font;
         self.theme = theme;
         self.metrics = metrics;
@@ -199,6 +204,7 @@ impl TerminalRenderer {
         Self {
             snapshot: None,
             rows: Vec::new(),
+            sticky: Vec::new(),
             layouts: GlyphLayoutCache::default(),
             graphics: builtin::GeometryCache::default(),
             metrics,
@@ -480,6 +486,96 @@ impl TerminalRenderer {
 
         self.snapshot = Some(Arc::clone(snapshot));
         self.record_prepare(started, rebuilt_rows, cache_activity);
+    }
+
+    /// Prepares the sticky prompt rows the header shows, reusing each row
+    /// that showed last time.
+    pub(super) fn prepare_sticky(
+        &mut self,
+        rows: &[Arc<TerminalRow>],
+        window: &mut Window,
+    ) {
+        let mut previous = std::mem::take(&mut self.sticky);
+        let mut activity = CacheActivity::default();
+        for row in rows {
+            let prepared = match previous
+                .iter()
+                .position(|(shown, _)| Arc::ptr_eq(shown, row))
+            {
+                Some(index) => previous.swap_remove(index).1,
+                None => prepare_row(
+                    &row.cells,
+                    &mut self.layouts,
+                    &mut self.graphics,
+                    window,
+                    &mut activity,
+                    (&self.terminal_font, self.metrics),
+                    &self.theme,
+                ),
+            };
+            self.sticky.push((Arc::clone(row), prepared));
+        }
+    }
+
+    /// Paints the prepared sticky rows from `origin`, one row per cell
+    /// height, with their own cell backgrounds over the header's.
+    pub(super) fn paint_sticky(
+        &self,
+        origin: Point<Pixels>,
+        window: &mut Window,
+    ) {
+        let default_background = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.default_background);
+        window.paint_layer(
+            Bounds::new(
+                origin,
+                size(
+                    self.metrics.cell_width
+                        * f32::from(
+                            self.snapshot
+                                .as_ref()
+                                .map_or(0, |snapshot| snapshot.size.columns),
+                        ),
+                    self.metrics.cell_height
+                        * f32::from(
+                            u16::try_from(self.sticky.len())
+                                .unwrap_or(u16::MAX),
+                        ),
+                ),
+            ),
+            |window| {
+                for (index, (_, row)) in self.sticky.iter().enumerate() {
+                    for background in &row.backgrounds {
+                        if background.is_default(default_background) {
+                            continue;
+                        }
+                        window.paint_quad(fill(
+                            cell_bounds(
+                                origin,
+                                background.start,
+                                index,
+                                background.columns,
+                                self.metrics,
+                            ),
+                            self.solid_color(background.color),
+                        ));
+                    }
+                }
+            },
+        );
+        for (index, (_, row)) in self.sticky.iter().enumerate() {
+            paint_row(
+                row,
+                index,
+                origin,
+                self.metrics,
+                window,
+                |_, color| self.foreground(color),
+                |color| self.foreground(color),
+            );
+        }
     }
 
     pub(super) fn paint(

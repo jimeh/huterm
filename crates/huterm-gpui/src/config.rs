@@ -81,6 +81,14 @@ links = true
 # Right-click: "menu", "paste", "copy_or_paste", or "ignore". While a
 # terminal application takes the mouse, Shift+right-click applies it.
 right_click = "menu"
+# While a command's output fills a pane and its prompt has scrolled above it,
+# show the prompt at the top: "status" (the command row and how it stands),
+# "command" (the command row), "prompt" (every prompt row), or "off".
+sticky_prompt = "status"
+# Mark commands that exit nonzero: "tint" (a faint red background),
+# "tint_marks" (the tint and a mark beside every prompt), "bar" (a red bar in
+# the left margin), or "off". Both need shell integration.
+command_status = "tint"
 
 [terminal.bell]
 # Flash active terminals and mark inactive tabs when a bell rings.
@@ -727,6 +735,8 @@ fn parse_consumed(
             right_click: raw.terminal.right_click,
             scrollback: raw.terminal.scrollback()?,
             scrollback_compression: raw.terminal.scrollback_compression,
+            sticky_prompt: raw.terminal.sticky_prompt,
+            command_status: raw.terminal.command_status,
         },
         font: FontConfig {
             weight: raw.font.weight,

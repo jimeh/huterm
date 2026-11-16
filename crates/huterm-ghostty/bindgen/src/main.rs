@@ -86,6 +86,7 @@ const FUNCTIONS: &[&str] = &[
     "ghostty_grid_ref_row",
     "ghostty_grid_ref_graphemes",
     "ghostty_grid_ref_hyperlink_uri",
+    "ghostty_grid_ref_style",
     "ghostty_mouse_encoder_new",
     "ghostty_mouse_encoder_free",
     "ghostty_mouse_encoder_setopt",
@@ -108,6 +109,7 @@ const TYPES: &[&str] = &[
     "GhosttyAllocatorVtable",
     "GhosttyBuffer",
     "GhosttyCellContentTag",
+    "GhosttyCellSemanticContent",
     "GhosttyCellWide",
     "GhosttyClipboardContent",
     "GhosttyClipboardLocation",
@@ -353,6 +355,7 @@ const KEY_SETS: &[KeySet] = &[
             "HAS_HYPERLINK",
             "COLOR_PALETTE",
             "COLOR_RGB",
+            "SEMANTIC_CONTENT",
         ],
     },
     KeySet {
