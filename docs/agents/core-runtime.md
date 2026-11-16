@@ -720,6 +720,13 @@ Nothing in the desktop calls either until #45.
   `Connection::start` and in `runtime::execute` (usually `plain`); without
   one it answers `Unsupported`. Add the operation to the contract tests in
   `crates/huterm-server/src/contract_tests.rs`.
+- The viewer contract scenarios in `crates/huterm-server/src/viewer_tests.rs`
+  compare the screens both paths recorded, so each wait must name the
+  screen once every writer has finished, not the first sighting of some
+  text. A tty's echo of typed input and the program's own copy of it are
+  separate writers: waiting for `typed here` once caught the echo alone on
+  one path and both copies on the other, about once in 140 runs on Linux
+  arm64.
 - `Mux::hierarchy_digest(profile)` walks the `Mux`'s own structure under the
   caller's lock without building a `HierarchyState`.
   `subscribe_hierarchy_with_digests` returns a subscription whose events

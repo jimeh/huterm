@@ -455,7 +455,15 @@ fn contract_snapshots_and_input_agree_in_process_and_over_ipc() {
     contract("printf 'ready\\n'; exec cat", |path| {
         let mut seen = vec![seen_until(path, shows("ready"))];
         path.type_text("typed here\r");
-        seen.push(seen_until(path, shows("typed here")));
+        // The tty echoes the line before `cat` prints its copy, and either
+        // path can first see the echo alone, so wait for both.
+        seen.push(seen_until(path, |view| {
+            screen_text(view)
+                .iter()
+                .filter(|line| *line == "typed here")
+                .count()
+                == 2
+        }));
         seen
     });
 }
