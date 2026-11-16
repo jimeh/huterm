@@ -471,7 +471,11 @@ fn contract_snapshots_and_input_agree_in_process_and_over_ipc() {
 #[test]
 fn contract_scrolling_agrees_in_process_and_over_ipc() {
     contract("seq 1 40; printf 'end\\n'; exec cat", |path| {
-        let mut seen = vec![seen_until(path, shows("end"))];
+        // The tty writes `end` and its newline separately, and the newline
+        // scrolls the screen, so wait for the row it opens.
+        let mut seen = vec![seen_until(path, |view| {
+            screen_text(view).ends_with(&["end".to_owned(), String::new()])
+        })];
         seen.push(Seen::Outcome(path.scroll(ScrollCommand::Relative(5))));
         seen.push(seen_until(path, |view| view.viewport.bottom_offset == 5));
         seen.push(Seen::Outcome(path.scroll(ScrollCommand::Live)));
