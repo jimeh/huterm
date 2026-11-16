@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.35.0](https://github.com/jimeh/huterm/compare/v0.34.0...v0.35.0) (2026-11-16)
+
+
+### Features
+
+* add the huterm command line, also published on its own ([#475](https://github.com/jimeh/huterm/issues/475)) ([3c3efea](https://github.com/jimeh/huterm/commit/3c3efeae5fa8f7d4f752a273137cafcd0eb8c094))
+* choose how a terminal shown in several windows is sized, or pin its size ([#476](https://github.com/jimeh/huterm/issues/476)) ([321900f](https://github.com/jimeh/huterm/commit/321900fff1fae781818d483be69bce16f1b70ae9))
+* jump between shell commands, select their output, mark failed commands, and pin a long command's prompt ([#477](https://github.com/jimeh/huterm/issues/477)) ([9a2a194](https://github.com/jimeh/huterm/commit/9a2a194f6d83546b02393d671353e61104d4ce20))
+* keep terminal selections on their text through resizes and output ([#478](https://github.com/jimeh/huterm/issues/478)) ([1bd0f61](https://github.com/jimeh/huterm/commit/1bd0f61115c29a5c57b91ddb0b67498f3f3e1c4f))
+* move tabs and workspaces between workspaces and sessions from menus, the palette, and the keyboard ([#465](https://github.com/jimeh/huterm/issues/465)) ([5b8b1dd](https://github.com/jimeh/huterm/commit/5b8b1dd19b9d05e1e4675f901e3e72e291044fcc))
+
+
+### Bug Fixes
+
+* keep fullscreen tabs beside the sidebar and leave no gap above the terminal on notched displays ([#468](https://github.com/jimeh/huterm/issues/468)) ([ba75c3f](https://github.com/jimeh/huterm/commit/ba75c3f08849a724a71698bce2478860082b62c7))
+
 ## [0.34.0](https://github.com/jimeh/huterm/compare/v0.33.1...v0.34.0) (2026-11-10)
 
 
