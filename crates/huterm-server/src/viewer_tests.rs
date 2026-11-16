@@ -455,7 +455,15 @@ fn contract_snapshots_and_input_agree_in_process_and_over_ipc() {
     contract("printf 'ready\\n'; exec cat", |path| {
         let mut seen = vec![seen_until(path, shows("ready"))];
         path.type_text("typed here\r");
-        seen.push(seen_until(path, shows("typed here")));
+        // The tty echoes the line before `cat` prints its copy, and either
+        // path can first see the echo alone, so wait for both.
+        seen.push(seen_until(path, |view| {
+            screen_text(view)
+                .iter()
+                .filter(|line| *line == "typed here")
+                .count()
+                == 2
+        }));
         seen
     });
 }
@@ -463,7 +471,11 @@ fn contract_snapshots_and_input_agree_in_process_and_over_ipc() {
 #[test]
 fn contract_scrolling_agrees_in_process_and_over_ipc() {
     contract("seq 1 40; printf 'end\\n'; exec cat", |path| {
-        let mut seen = vec![seen_until(path, shows("end"))];
+        // The tty writes `end` and its newline separately, and the newline
+        // scrolls the screen, so wait for the row it opens.
+        let mut seen = vec![seen_until(path, |view| {
+            screen_text(view).ends_with(&["end".to_owned(), String::new()])
+        })];
         seen.push(Seen::Outcome(path.scroll(ScrollCommand::Relative(5))));
         seen.push(seen_until(path, |view| view.viewport.bottom_offset == 5));
         seen.push(Seen::Outcome(path.scroll(ScrollCommand::Live)));
