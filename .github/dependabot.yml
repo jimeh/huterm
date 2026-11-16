@@ -36,6 +36,10 @@ updates:
       # pin would stop sharing swash's copy and compile another.
       - dependency-name: skrifa
         versions: [">= 0.45"]
+      # Its 4.19 line moves to zbus 6 on Linux, while GPUI's AccessKit, ashpd,
+      # and oo7 use zbus 5, so a bump would compile a second zbus.
+      - dependency-name: notify-rust
+        versions: [">= 4.19"]
     groups:
       cargo:
         patterns: ["*"]
