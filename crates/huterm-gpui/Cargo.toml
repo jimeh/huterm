@@ -34,7 +34,7 @@ serde.workspace = true
 serde_json = "=1.0.154"
 async-channel.workspace = true
 nix.workspace = true
-notify = "=8.2.1"
+notify = "=8.2.2"
 # Reads the bundled fonts' glyph bounds; GPUI's Linux text system reports
 # advances instead. The version GPUI's Linux text stack already resolves.
 skrifa = { version = "=0.44.0", default-features = false, features = ["std"] }

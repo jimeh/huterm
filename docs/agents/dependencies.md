@@ -94,7 +94,10 @@ need AccessKit 0.25, while GPUI and the vendored `accesskit_macos` use 0.24 and
 the accessibility tests feed GPUI's tree into the consumer; it moves with a
 GPUI upgrade. `skrifa` 0.45 and newer exceed swash's cap under GPUI's Linux
 text stack, so a bump would stop sharing swash's copy and compile another;
-move it when swash accepts the newer release.
+move it when swash accepts the newer release. `notify-rust` 4.19 and newer
+use zbus 6 on Linux, while GPUI's AccessKit, ashpd, and oo7 dependencies use
+zbus 5, so a bump would compile a second zbus for no Linux change; move it
+when those crates reach zbus 6.
 Dependabot ignores the vendored `gpui-pre*`, `global-hotkey`, and
 `portable-pty` crates entirely: a version bump would leave the
 `[patch.crates-io]` override unused, which Cargo only warns about, and silently
