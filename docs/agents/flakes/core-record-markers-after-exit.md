@@ -51,9 +51,10 @@ retried = false
   so the runtime would observe the exit before parsing the queued markers.
   The runtime reads the exit from the root's waiter thread in
   `child_wait.rs`, which records it only after its own `wait` returns. When
-  that thread lagged under load, the runtime treated the writer report as a
-  failure with the root alive and stopped. It never parsed the queued
-  markers, and its teardown abandoned record 1 without publishing the exit.
+  that thread lagged under load, the runtime handled the writer report
+  before it saw the exit, treated it as a failure, and stopped. It never
+  parsed the queued markers, and its teardown abandoned record 1 without
+  publishing the exit.
   The timeout message hid the `"probe"` failure. When the reader's real end
   of output arrived first, it parsed the markers and the test failed at
   the lifecycle assertion instead. Real hangups reach the runtime as
@@ -65,8 +66,9 @@ retried = false
   busy loops on 16 CPUs.
 - **Fix (2026-11-17):** the test waits until the waiter has recorded the
   exit, through a test-only probe on `JobContext`, and the timeout message
-  lists failures. Afterwards the delays above passed 20 of 20 at every
-  setting from 5 to 300 ms, alone and together, and 300 of 300 runs passed
-  under the same busy loops at load averages up to 77.
+  lists failures. Afterwards 20 of 20 runs passed at each delay setting:
+  the waiter alone at 50 and 300 ms, the reader alone at 300 ms, and both
+  at 5, 10, 20, 50, and 300 ms. 300 of 300 runs passed under the same busy
+  loops at load averages up to 77.
 - **Triage:** a failure after the fix is new. Read the failures the
   timeout message now prints, and check `uptime`.

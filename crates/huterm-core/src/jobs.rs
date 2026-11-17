@@ -13,9 +13,8 @@ pub(crate) struct JobContext {
     pub exited: bool,
     #[cfg(test)]
     pub pty_eof: bool,
-    /// The root's waiter, which the runtime reads the exit from; `None`
-    /// where the runtime has no waiter.
-    #[cfg(test)]
+    /// The root's waiter, which the runtime reads the exit from.
+    #[cfg(all(test, unix))]
     pub exit_probe: Option<crate::child_wait::ExitProbe>,
     /// Device number of the terminal's PTY.
     pub tty: Option<u64>,
@@ -338,6 +337,7 @@ mod tests {
                     foreground: Some(10),
                     exited: false,
                     pty_eof: false,
+                    #[cfg(unix)]
                     exit_probe: None,
                     tty: None
                 }),

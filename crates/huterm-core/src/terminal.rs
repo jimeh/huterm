@@ -1495,12 +1495,8 @@ fn run_terminal(
         mut child,
         mut killer,
     } = parts;
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     let exit_probe;
-    #[cfg(all(test, not(unix)))]
-    {
-        exit_probe = None;
-    }
     #[cfg(unix)]
     {
         child = match crate::child_wait::observe(child, Arc::clone(&wake)) {
@@ -1847,7 +1843,7 @@ fn run_terminal(
                             exited: owner.child_exited,
                             #[cfg(test)]
                             pty_eof,
-                            #[cfg(test)]
+                            #[cfg(all(test, unix))]
                             exit_probe: exit_probe.clone(),
                             tty: owner.master.tty_name().and_then(|name| {
                                 huterm_procinfo::tty_device(&name)
