@@ -72,12 +72,26 @@ fn read_to_end(stream: &mut UnixStream) -> Vec<u8> {
     bytes
 }
 
+/// Fails a read on `stream` that waits past [`PROMPT`] rather than hanging
+/// the test.
+fn with_read_timeout(stream: UnixStream) -> UnixStream {
+    match stream.set_read_timeout(Some(PROMPT)) {
+        Ok(()) => {}
+        // macOS refuses every socket option once the socket has shut down
+        // in both directions, as it has when the server already closed it.
+        // A read then returns at once, so it needs no timeout.
+        Err(error)
+            if cfg!(target_vendor = "apple")
+                && error.raw_os_error() == Some(Errno::EINVAL as i32) => {}
+        Err(error) => panic!("setting the read timeout failed: {error}"),
+    }
+    stream
+}
+
 /// Connects to `socket`, failing a read that waits past [`PROMPT`] rather
 /// than hanging the test.
 fn connected(socket: &SocketPath) -> UnixStream {
-    let stream = huterm_socket::connect(socket).unwrap();
-    stream.set_read_timeout(Some(PROMPT)).unwrap();
-    stream
+    with_read_timeout(huterm_socket::connect(socket).unwrap())
 }
 
 /// Connects a raw peer to `socket` and completes its handshake.
@@ -385,8 +399,7 @@ fn a_second_user_is_closed_before_the_preamble() {
     assert_eq!(listener.refused_peers(), 1);
 
     // The listener's own user is served.
-    let mut stream = UnixStream::connect(&path).unwrap();
-    stream.set_read_timeout(Some(PROMPT)).unwrap();
+    let mut stream = with_read_timeout(UnixStream::connect(&path).unwrap());
     let mut peer = TestPeer::new(server.runtime());
     stream.write_all(&peer.opening()).unwrap();
     read_until(&mut stream, &mut peer, |message| {
@@ -404,8 +417,7 @@ fn second_user_peer() {
     let path = std::env::var_os(PEER_SOCKET_VARIABLE)
         .expect("started by a_second_user_is_closed_before_the_preamble");
     assert_ne!(huterm_socket::effective_uid(), 0);
-    let mut stream = UnixStream::connect(path).unwrap();
-    stream.set_read_timeout(Some(PROMPT)).unwrap();
+    let mut stream = with_read_timeout(UnixStream::connect(path).unwrap());
     let _ = stream.write_all(&preamble());
     assert_eq!(read_to_end(&mut stream), Vec::<u8>::new());
 }
