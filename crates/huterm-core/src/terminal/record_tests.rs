@@ -98,9 +98,15 @@ fn wait_for_status(
         }
         assert!(
             Instant::now() < deadline,
-            "{what}: last status had lifecycle {:?} and records {:?}",
+            "{what}: last status had lifecycle {:?} and records {:?}; \
+             failures {:?}",
             status.lifecycle,
-            states(&status)
+            states(&status),
+            status
+                .failures
+                .iter()
+                .map(|failure| &failure.message)
+                .collect::<Vec<_>>()
         );
         thread::sleep(Duration::from_millis(5));
     }
@@ -168,15 +174,20 @@ fn markers_queued_behind_the_exit_and_end_of_output_still_apply() {
     wait_for_ready(&client);
     output(&client, "\x1b]133;A\x07$ \x1b]133;C\x07");
     wait_for_states(&client, &[(1, CommandState::Running)]);
-    let root = client.job_context().unwrap().shell.unwrap();
+    let exit = client.job_context().unwrap().exit_probe.unwrap();
 
     let resume = pause(&client);
     gates.release("root");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while huterm_procinfo::process(root).is_some_and(|root| !root.zombie) {
-        assert!(Instant::now() < deadline, "the root did not exit");
-        thread::sleep(Duration::from_millis(5));
-    }
+    // The runtime reads the exit from the root's waiter, which records it
+    // only after the kernel shows a zombie. A writer report handled before
+    // then would stop the runtime as a failure.
+    crate::test_support::wait_until("the waiter to record the exit", || {
+        if exit.recorded() {
+            Ok(())
+        } else {
+            Err("no exit recorded")
+        }
+    });
     // Output the reader queued before the end of output: a D, a C and D,
     // and a C whose D never comes.
     output(&client, "\x1b]133;D;0\x07");
