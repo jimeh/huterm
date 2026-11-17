@@ -1,7 +1,7 @@
 /** Run the renderer smoke with the same portable process checks as native smokes. */
 import { closeSync, fstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { runSmokeProcess, type ProgressWatchdog } from "./smoke-process.ts";
 
 export type RendererOutcome = {
@@ -59,15 +59,22 @@ export function lddPaths(output: string): string[] {
 }
 
 function linkedLibraries(file: string): string[] {
-  const result = Bun.spawnSync(["ldd", file], { timeout: 10_000, stderr: "ignore" });
-  return result.exitCode === 0 ? lddPaths(result.stdout.toString()) : [];
+  try {
+    const result = Bun.spawnSync(["ldd", file], { timeout: 10_000, stderr: "ignore" });
+    return result.exitCode === 0 ? lddPaths(result.stdout.toString()) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
- * Mesa's software Vulkan driver and the libraries it links, which the first
- * Linux draw loads. Runner images carry several LLVM versions, and Mesa links
- * one, so `ldd` picks it. When `ldd` names no LLVM, every `libLLVM` and
- * `libgallium` file is returned instead, so the warm-up never covers less.
+ * The Mesa libraries the first Linux draw loads, and the libraries they
+ * link. wgpu starts both its Vulkan and GL backends, so the first launch
+ * loads llvmpipe's Vulkan driver and, through glvnd's `libEGL`, Mesa's EGL,
+ * which links `libgallium`. Runner images carry several LLVM versions and
+ * Mesa links one, so `ldd` picks it. Unless `ldd` names both an LLVM and a
+ * `libgallium`, every `libLLVM` and `libgallium` file is added, so the
+ * warm-up never covers less than reading them all by name did.
  */
 export function mesaLibraries(roots = ["/usr/lib", "/usr/lib64"], linked = linkedLibraries): string[] {
   const list = (directory: string) => {
@@ -77,10 +84,11 @@ export function mesaLibraries(roots = ["/usr/lib", "/usr/lib64"], linked = linke
   const named = (pattern: RegExp) => directories.flatMap((directory) => list(directory)
     .filter((name) => pattern.test(name))
     .map((name) => join(directory, name)));
-  const drivers = named(/^libvulkan_lvp\.so$/);
-  const dependencies = drivers.flatMap((driver) => linked(driver));
-  if (dependencies.some((path) => /\/libLLVM[^/]*$/.test(path))) return [...drivers, ...dependencies];
-  return [...drivers, ...named(/^(libLLVM|libgallium)[.-].*\.so/)];
+  const entries = named(/^(libvulkan_lvp\.so|libEGL\.so\.1|libEGL_mesa\.so\.0)$/);
+  const found = [...entries, ...entries.flatMap((entry) => linked(entry))];
+  const links = (pattern: RegExp) => found.some((path) => pattern.test(basename(path)));
+  if (links(/^libLLVM/) && links(/^libgallium/)) return found;
+  return [...found, ...named(/^(libLLVM|libgallium)[.-].*\.so/)];
 }
 
 const PT_LOAD = 1;
