@@ -465,6 +465,11 @@ Quake close/Quit cancellation fixtures need a live child, not just an idle shell
 macOS correctly closes idle shells without confirmation. Keep the fixture child
 alive through the matrix and require the prompt plus a post-cancel shell ACK.
 
+The hosted macOS runner's work area is 1024x686, so the quarter-height quake
+grid has only 8 rows. A new `check-quake.ts` step that prints rows before the
+geometry section scrolls `READY:` out of view and fails "resize replaced
+retained window or shell" only in CI.
+
 `smoke:macos-updater` assembles a disposable app with a fixture-only Sparkle
 key and feed, isolates its user defaults, and exercises the production updater
 command without requiring production signing material. Sparkle uses the
@@ -488,6 +493,9 @@ liveness checks; an empty search is pending, but process or X11 errors must fail
 Each harness's `run()` kills a command after 5 seconds, so any `--sync` wait
 that outlasts it fails with empty stderr: activate without `--sync` and wait
 for the focus change in the app's own state, as `check-quake.ts` does.
+Openbox sets the root's `_NET_ACTIVE_WINDOW` to None for a moment while focus
+moves, and `xdotool getactivewindow` then exits 1. Treat that one failure as
+pending while polling, as `check-quake.ts` does.
 Keep stderr and bounded PID-window/map/parent diagnostics on discovery failure.
 Finish fixture pointer positioning with a PTY ACK before enabling AllMotion;
 keep reporting enabled through the entire native drag assertion.
