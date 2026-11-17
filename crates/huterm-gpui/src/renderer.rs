@@ -14,8 +14,8 @@ use gpui::{
     WindowTextSystem, fill, outline, point, px, rgba, size,
 };
 use huterm_protocol::{
-    BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, TerminalRow,
-    TerminalSnapshot,
+    BufferRange, Cell, CellColor, Cursor, CursorShape, Rgb, SelectionUnit,
+    TerminalRow, TerminalSnapshot,
 };
 
 use crate::config::Theme;
@@ -121,6 +121,8 @@ pub(super) struct TerminalRenderer {
     terminal_font: TerminalFont,
     theme: Theme,
     selection: Option<BufferRange>,
+    /// The unit the selection was made by; `None` for cells.
+    selection_unit: Option<SelectionUnit>,
     /// Draw a block cursor as an outline: the pane has no keyboard focus
     /// in a split tab. Presentation only; no prepared row depends on it.
     cursor_outline: bool,
@@ -211,6 +213,7 @@ impl TerminalRenderer {
             terminal_font,
             theme,
             selection: None,
+            selection_unit: None,
             cursor_outline: false,
             background_opacity: 1.0,
             foreground_opacity: 1.0,
@@ -403,8 +406,16 @@ impl TerminalRenderer {
         }
     }
 
-    pub(super) fn set_selection(&mut self, selection: Option<BufferRange>) {
+    /// Sets the selection to paint and the unit it was made by. A line
+    /// selection paints its last row to the right edge when only blank
+    /// cells follow it there, as iTerm2 does.
+    pub(super) fn set_selection(
+        &mut self,
+        selection: Option<BufferRange>,
+        unit: Option<SelectionUnit>,
+    ) {
         self.selection = selection;
+        self.selection_unit = unit;
     }
 
     pub(super) fn set_cursor_outline(&mut self, outline: bool) {
@@ -715,6 +726,7 @@ impl TerminalRenderer {
             paint_selection(
                 snapshot,
                 selection,
+                self.selection_unit == Some(SelectionUnit::Line),
                 origin,
                 self.metrics,
                 if TINT { self.tint_color(color) } else { color },
@@ -1578,6 +1590,7 @@ fn selected_foreground(
 fn paint_selection(
     snapshot: &TerminalSnapshot,
     selection: BufferRange,
+    to_line_end: bool,
     origin: Point<Pixels>,
     metrics: GridMetrics,
     color: Hsla,
@@ -1589,24 +1602,17 @@ fn paint_selection(
             .viewport
             .bottom_offset
             .saturating_add(rows.saturating_sub(1).saturating_sub(row));
-        let mut start = None;
-        let mut end = 0_u16;
         let row_cells = snapshot
             .rows
             .get(row)
             .map_or(&[][..], |row| row.cells.as_slice());
-        for column in 0..snapshot.size.columns {
-            if selection_covers_column(
-                selection,
-                rows_from_live_bottom,
-                column,
-                row_cells,
-            ) {
-                start.get_or_insert(column);
-                end = column.saturating_add(1);
-            }
-        }
-        if let Some(start) = start {
+        if let Some((start, end)) = selection_span(
+            selection,
+            to_line_end,
+            rows_from_live_bottom,
+            snapshot.size.columns,
+            row_cells,
+        ) {
             window.paint_quad(fill(
                 cell_bounds(
                     origin,
@@ -1619,6 +1625,45 @@ fn paint_selection(
             ));
         }
     }
+}
+
+/// The columns `selection` paints on a row, as a start and an exclusive end.
+/// With `to_line_end`, the row the selection ends on paints to the right
+/// edge when only blank cells follow the selection there, so a selected line
+/// shows its line break as selected. Text after the end, such as a right
+/// prompt past a semantic prompt boundary, keeps the paint on what Copy
+/// copies.
+fn selection_span(
+    selection: BufferRange,
+    to_line_end: bool,
+    rows_from_live_bottom: usize,
+    columns: u16,
+    row: &[Cell],
+) -> Option<(u16, u16)> {
+    let mut start = None;
+    let mut end = 0_u16;
+    for column in 0..columns {
+        if selection_covers_column(
+            selection,
+            rows_from_live_bottom,
+            column,
+            row,
+        ) {
+            start.get_or_insert(column);
+            end = column.saturating_add(1);
+        }
+    }
+    let start = start?;
+    if to_line_end
+        && rows_from_live_bottom == selection.end.rows_from_live_bottom
+        && row
+            .iter()
+            .skip(usize::from(end))
+            .all(|cell| cell.text.chars().all(char::is_whitespace))
+    {
+        end = columns;
+    }
+    Some((start, end))
 }
 
 fn selection_covers_column(

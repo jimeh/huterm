@@ -311,16 +311,19 @@ fn check(panel: &mut Panel, window: &mut Window) {
         original_metrics,
     );
     renderer.prepare(Some(&panel.snapshot), window);
-    renderer.set_selection(Some(BufferRange {
-        start: BufferPoint {
-            rows_from_live_bottom: 6,
-            column: 0,
-        },
-        end: BufferPoint {
-            rows_from_live_bottom: 6,
-            column: 31,
-        },
-    }));
+    renderer.set_selection(
+        Some(BufferRange {
+            start: BufferPoint {
+                rows_from_live_bottom: 6,
+                column: 0,
+            },
+            end: BufferPoint {
+                rows_from_live_bottom: 6,
+                column: 31,
+            },
+        }),
+        None,
+    );
     println!(
         "RENDERER_SMOKE prepared size={} scale={} builtin=186",
         f32::from(renderer.metrics.font_size),
