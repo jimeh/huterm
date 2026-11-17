@@ -407,7 +407,8 @@ impl TerminalRenderer {
     }
 
     /// Sets the selection to paint and the unit it was made by. A line
-    /// selection paints its last row to the right edge, as iTerm2 does.
+    /// selection paints its last row to the right edge when only blank
+    /// cells follow it there, as iTerm2 does.
     pub(super) fn set_selection(
         &mut self,
         selection: Option<BufferRange>,

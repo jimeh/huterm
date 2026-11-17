@@ -1090,3 +1090,50 @@ fn paint_dispatches_translucent_text_and_decoration_path(
         "paint must apply text alpha through the translucent branch: {underlines:?}"
     );
 }
+
+#[cfg(feature = "test-support")]
+#[gpui::test]
+fn paint_fills_a_line_selection_to_the_edge_and_bounds_a_cell_selection(
+    cx: &mut gpui::TestAppContext,
+) {
+    let mut selection_width = |unit| {
+        let theme = Theme::default();
+        let mut renderer = TerminalRenderer::new(
+            "Menlo".into(),
+            theme.clone(),
+            GridMetrics::fixed(8.0, 16.0),
+        );
+        renderer.snapshot =
+            Some(Arc::new(snapshot(4, 1, &["a", " ", " ", " "])));
+        renderer.rows.push(PreparedRow::default());
+        renderer.set_selection(
+            Some(BufferRange::ordered(
+                selection_point(0, 0),
+                selection_point(0, 0),
+            )),
+            unit,
+        );
+        let handle: gpui::AnyWindowHandle = cx
+            .open_window(size(px(100.0), px(40.0)), |_, _| {
+                PaintFixture(renderer)
+            })
+            .into();
+        let quads = handle
+            .update(cx, |_, window, cx| {
+                let _ = window.draw(cx);
+                window.painted_quads()
+            })
+            .unwrap();
+        let selection = rgb_color(theme.selection);
+        let painted: Vec<_> = quads
+            .iter()
+            .filter(|quad| quad.background.as_solid() == Some(selection))
+            .collect();
+        assert_eq!(painted.len(), 1, "one selection quad: {quads:?}");
+        painted[0].bounds.size.width.0
+    };
+    let cell = selection_width(None);
+    assert!(cell > 0.0);
+    assert_eq!(selection_width(Some(SelectionUnit::Word)), cell);
+    assert_eq!(selection_width(Some(SelectionUnit::Line)), 4.0 * cell);
+}
