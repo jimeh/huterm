@@ -348,6 +348,9 @@ fn cross_window_spring_load_and_back_keep_source_focus(
     h.wait_for("second destination tab", |cx| {
         terminal(cx, destination, sprung).is_some()
     });
+    // A Fit tab that widens as its label settles moves this centre out of
+    // the label's spring-loading middle.
+    h.wait_labels_settled(destination);
     let label = h.update_view(destination, |view, window, _| {
         view.tab_strip(window).label(1).center()
     });
@@ -960,6 +963,9 @@ fn cross_window_failed_drop_restores_destination_spring_preview(
     h.wait_for("second destination tab", |cx| {
         terminal(cx, destination, sprung).is_some()
     });
+    // A Fit tab that widens as its label settles moves this centre out of
+    // the label's spring-loading middle.
+    h.wait_labels_settled(destination);
     let label = h.update_view(destination, |view, window, _| {
         view.tab_strip(window).label(1).center()
     });
@@ -1515,6 +1521,9 @@ fn cross_window_navigation_interrupt_ends_the_pane_gesture(
     h.wait_for("second destination tab", |cx| {
         terminal(cx, destination, sprung).is_some()
     });
+    // A Fit tab that widens as its label settles moves this centre out of
+    // the label's spring-loading middle.
+    h.wait_labels_settled(destination);
     let label = h.update_view(destination, |view, window, _| {
         view.tab_strip(window).label(1).center()
     });
