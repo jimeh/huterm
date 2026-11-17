@@ -486,12 +486,14 @@ fn spawn_planned(
     gate: &PtyGate,
     cancelled: &AtomicBool,
 ) -> Result<PtyProcess, RuntimeError> {
-    // A caller that already gave up must not risk a fresh `openpty`, which
-    // could wedge and hold the gate for a spawn nobody waits for.
+    let serial = gate.enter()?;
+    // A caller that gave up before or while this waited for the gate must
+    // not risk a fresh `openpty`, which could wedge and hold the gate for a
+    // spawn nobody waits for.
     if cancelled.load(Ordering::Acquire) {
         return Err(RuntimeError::Pty(TIMED_OUT.to_owned()));
     }
-    let serial = gate.enter()?;
+    // Tests park here to model a call stuck inside `openpty`.
     #[cfg(test)]
     serial.block_if_paused();
     // A test's private gate parks its holder without blocking other tests,
