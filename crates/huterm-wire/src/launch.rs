@@ -32,7 +32,15 @@ pub const MAX_LAUNCH_ENVIRONMENT: usize = 1024;
 pub const LAUNCH_PAYLOAD_LIMIT: usize = 256 << 10;
 
 /// The shell feature bits minor version 0 defines.
-const SHELL_FEATURE_PATH: u64 = 1;
+const SHELL_FEATURES: [(ShellFeature, u64); 4] = [
+    (ShellFeature::Path, 1),
+    (ShellFeature::SshEnv, 2),
+    (ShellFeature::SshTerminfo, 4),
+    (ShellFeature::Sudo, 8),
+];
+
+/// Every bit in [`SHELL_FEATURES`].
+const SHELL_FEATURE_BITS: u64 = 1 | 2 | 4 | 8;
 
 /// Counts a launch's argument and environment bytes against
 /// [`LAUNCH_PAYLOAD_LIMIT`].
@@ -216,11 +224,12 @@ fn encode_shell_integration(
     let ShellIntegration { mode, features } = integration;
     let mut bits = 0;
     for feature in features.iter() {
-        bits |= match feature {
-            ShellFeature::Path => SHELL_FEATURE_PATH,
-            // A feature added to the protocol without a wire bit.
-            _ => return Err(EncodeError::Unsupported),
-        };
+        // A feature added to the protocol without a wire bit is refused.
+        bits |= SHELL_FEATURES
+            .iter()
+            .find(|(known, _)| *known == feature)
+            .map(|(_, bit)| *bit)
+            .ok_or(EncodeError::Unsupported)?;
     }
     w.record(|w| {
         w.tag(match mode {
@@ -247,12 +256,13 @@ fn decode_shell_integration(
             }
         };
         let bits = r.u64()?;
-        if bits & !SHELL_FEATURE_PATH != 0 {
+        if bits & !SHELL_FEATURE_BITS != 0 {
             return Err(DecodeError::Invalid("shell features"));
         }
-        let features: ShellFeatures = (bits & SHELL_FEATURE_PATH != 0)
-            .then_some(ShellFeature::Path)
-            .into_iter()
+        let features: ShellFeatures = SHELL_FEATURES
+            .iter()
+            .filter(|(_, bit)| bits & bit != 0)
+            .map(|(feature, _)| *feature)
             .collect();
         Ok(ShellIntegration { mode, features })
     })

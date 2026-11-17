@@ -225,6 +225,28 @@ fn planner_path_is_opt_in_and_resources_are_executable_relative() {
         value(&planned(&command, &[], true), "HUTERM_SHELL_FEATURES"),
         Some(OsStr::new("path"))
     );
+    for (features, expected) in [
+        (
+            vec![
+                ShellFeature::Sudo,
+                ShellFeature::SshTerminfo,
+                ShellFeature::SshEnv,
+                ShellFeature::Path,
+            ],
+            "path,ssh_env,ssh_terminfo,sudo",
+        ),
+        (
+            vec![ShellFeature::Sudo, ShellFeature::SshEnv],
+            "ssh_env,sudo",
+        ),
+        (vec![ShellFeature::SshTerminfo], "ssh_terminfo"),
+    ] {
+        command.shell_integration.features = features.into_iter().collect();
+        assert_eq!(
+            value(&planned(&command, &[], true), "HUTERM_SHELL_FEATURES"),
+            Some(OsStr::new(expected))
+        );
+    }
     for binary in [
         "/repo/target/debug/huterm",
         "/repo/target/release/huterm",
@@ -245,6 +267,33 @@ fn planner_path_is_opt_in_and_resources_are_executable_relative() {
         resource_candidates(Path::new("/app/bin/huterm"), false)
             .contains(&PathBuf::from("/app/share/huterm"))
     );
+}
+
+#[test]
+fn planner_imports_only_the_nushell_wrappers_whose_features_are_on() {
+    use ShellFeature::{Path as PathFeature, SshEnv, SshTerminfo, Sudo};
+    for (features, import) in [
+        (
+            vec![PathFeature, SshEnv, SshTerminfo, Sudo],
+            "use huterm [ssh sudo]",
+        ),
+        (vec![SshTerminfo], "use huterm [ssh]"),
+        (vec![SshEnv, Sudo], "use huterm [ssh sudo]"),
+        (vec![Sudo], "use huterm [sudo]"),
+        // An empty list still runs the module's environment setup, and
+        // never brings a `huterm` namespace over the huterm command.
+        (vec![PathFeature], "use huterm []"),
+        (vec![], "use huterm []"),
+    ] {
+        let mut command = command("nu");
+        command.arguments = vec!["--config".into(), "config.nu".into()];
+        command.shell_integration.features = features.iter().copied().collect();
+        assert_eq!(
+            planned(&command, &[], true).arguments,
+            ["--config", "config.nu", "--execute", import],
+            "{features:?}"
+        );
+    }
 }
 
 #[test]

@@ -1,5 +1,40 @@
 # Huterm Nushell bootstrap. Vendor autoload runs after the user's startup files.
 module huterm {
+    # Features: ssh_env, ssh_terminfo, sudo. Huterm's `--execute` imports
+    # `ssh` when ssh_env or ssh_terminfo is on and `sudo` when sudo is on,
+    # after the user's startup files, so they replace a user's own `ssh` or
+    # `sudo`. Each call reads the features again and runs the program itself
+    # when they are off or the huterm command is missing.
+    def huterm-command [] {
+        let bin = ($env.HUTERM_BIN_DIR? | default '')
+        if $bin == '' { return null }
+        let file = ($bin | path join 'huterm')
+        if (which $file | is-empty) { null } else { $file }
+    }
+    def features [] {
+        $env.HUTERM_SHELL_FEATURES? | default '' | split row ','
+    }
+    # `huterm ssh` with the enabled features' flags, or ssh itself.
+    def ssh-command [] {
+        let flags = [[feature flag]; [ssh_env --forward-env] [ssh_terminfo --terminfo]]
+            | where feature in (features) | get flag
+        let huterm = (huterm-command)
+        if ($huterm == null) or ($flags | is-empty) { [ssh] } else { [$huterm ssh ...$flags] }
+    }
+    # `huterm sudo` when the feature is on, or sudo itself.
+    def sudo-command [] {
+        let huterm = (huterm-command)
+        if ($huterm == null) or ('sudo' not-in (features)) { [sudo] } else { [$huterm sudo] }
+    }
+    # Only a body's first pipeline receives the command's input, so the
+    # external runs there: piped data reaches it, and without a pipe it
+    # reads the terminal.
+    export def --wrapped ssh [...arguments] {
+        run-external ...(ssh-command) ...$arguments
+    }
+    export def --wrapped sudo [...arguments] {
+        run-external ...(sudo-command) ...$arguments
+    }
     export-env {
         if ($env.HUTERM_SHELL_INTEGRATION? | default '') == 'nu' {
             hide-env HUTERM_SHELL_INTEGRATION

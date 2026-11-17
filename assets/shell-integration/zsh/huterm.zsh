@@ -94,6 +94,39 @@ _huterm_zsh_report() {
     if [[ $_huterm_zsh_features == *,path,* && -n ${HUTERM_BIN_DIR-} ]] && (( ! ${path[(Ie)$HUTERM_BIN_DIR]} )); then
         export PATH=$PATH:$HUTERM_BIN_DIR
     fi
+    (( _huterm_zsh_wrappers )) || _huterm_zsh_wrap
+}
+# Features: ssh_env, ssh_terminfo, sudo. Runs `huterm ssh` or `huterm sudo`
+# when the huterm command is available, and the program itself otherwise.
+_huterm_zsh_run() {
+    emulate -L zsh
+    local tool=$1 features=,${HUTERM_SHELL_FEATURES-},
+    shift
+    local -a flags
+    if [[ -n ${HUTERM_BIN_DIR-} && -x $HUTERM_BIN_DIR/huterm ]]; then
+        if [[ $tool == ssh ]]; then
+            [[ $features == *,ssh_env,* ]] && flags+=(--forward-env)
+            [[ $features == *,ssh_terminfo,* ]] && flags+=(--terminfo)
+        fi
+        "$HUTERM_BIN_DIR/huterm" $tool $flags "$@"
+    else
+        command $tool "$@"
+    fi
+}
+# Defines the wrappers once, after every startup file, unless the user has
+# a function of that name. The `function name {` form keeps an alias such as
+# ssh='ssh -A' from expanding inside the definition, and the alias still
+# expands into the wrapper.
+typeset -g _huterm_zsh_wrappers=0
+_huterm_zsh_wrap() {
+    _huterm_zsh_wrappers=1
+    if [[ $_huterm_zsh_features == *,ssh_env,* || $_huterm_zsh_features == *,ssh_terminfo,* ]] &&
+        (( ! $+functions[ssh] )); then
+        function ssh { _huterm_zsh_run ssh "$@" }
+    fi
+    if [[ $_huterm_zsh_features == *,sudo,* ]] && (( ! $+functions[sudo] )); then
+        function sudo { _huterm_zsh_run sudo "$@" }
+    fi
 }
 _huterm_zsh_status() {
     local code=$?

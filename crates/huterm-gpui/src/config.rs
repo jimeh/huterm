@@ -41,11 +41,11 @@ restore_sessions = true
 session_numbering = "lowest_unused"
 
 [terminal]
-# Terminal identity for new shells: "xterm-256color", "auto", or
+# Terminal identity for new shells: "auto", "xterm-256color", or
 # "xterm-huterm". Auto uses xterm-huterm when any local terminfo entry for
-# it exists, including Huterm's packaged one. SSH hosts need that entry too,
-# or line editing there may break.
-term = "xterm-256color"
+# it exists, including Huterm's packaged one. Shell integration's ssh and
+# sudo wrappers use xterm-256color where that entry is missing.
+term = "auto"
 # Close tabs quietly when their root shell exits.
 # Set false to retain read-only history after exit.
 close_on_exit = true

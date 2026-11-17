@@ -12187,8 +12187,8 @@
               "$ref": "#/definitions/TerminalIdentity"
             }
           ],
-          "default": "xterm-256color",
-          "description": "The `TERM` new shells see.",
+          "default": "auto",
+          "description": "The `TERM` new shells see. `auto`, the default, uses `xterm-huterm`\nwhen its terminfo entry is available and `xterm-256color` otherwise.",
           "x-huterm-advanced": true,
           "x-huterm-apply": "new_terminals",
           "x-huterm-group": "Compatibility",
@@ -12451,6 +12451,21 @@
           "const": "path",
           "description": "Append the directory holding the `huterm` command to PATH once.",
           "type": "string"
+        },
+        {
+          "const": "ssh_env",
+          "description": "Wrap `ssh` to forward `COLORTERM`, `TERM_PROGRAM`, and\n`TERM_PROGRAM_VERSION`, and to use `TERM=xterm-256color` on hosts\nwithout the `xterm-huterm` entry.",
+          "type": "string"
+        },
+        {
+          "const": "ssh_terminfo",
+          "description": "Wrap `ssh` to install the `xterm-huterm` terminfo entry on remote\nhosts, in `~/.terminfo`.",
+          "type": "string"
+        },
+        {
+          "const": "sudo",
+          "description": "Wrap `sudo` to use `TERM=xterm-256color` when the system terminfo\nlacks `xterm-huterm`.",
+          "type": "string"
         }
       ]
     },
@@ -12460,9 +12475,11 @@
       "properties": {
         "features": {
           "default": [
-            "path"
+            "path",
+            "ssh_env",
+            "sudo"
           ],
-          "description": "Optional capabilities. `path`, on by default, appends the directory\nholding the `huterm` command to PATH.",
+          "description": "Optional capabilities. `path` appends the directory holding the\n`huterm` command to PATH. `ssh_env` wraps `ssh` to forward\n`COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION`.\n`ssh_terminfo` wraps `ssh` to install the `xterm-huterm` terminfo\nentry in `~/.terminfo` on remote hosts. `sudo` wraps `sudo` to use\n`TERM=xterm-256color` when the system lacks `xterm-huterm`. The\ndefault is `[\"path\", \"ssh_env\", \"sudo\"]`.",
           "items": {
             "$ref": "#/definitions/ShellFeature"
           },
@@ -13122,7 +13139,7 @@
       "oneOf": [
         {
           "const": "auto",
-          "description": "Use `xterm-huterm` when its terminfo entry is available locally. SSH\nhosts without the entry can garble line editing.",
+          "description": "Use `xterm-huterm` when its terminfo entry is available locally.\nShell integration's `ssh` and `sudo` wrappers fall back to\n`xterm-256color` where the entry is missing.",
           "type": "string",
           "x-huterm-label": "Automatic"
         },

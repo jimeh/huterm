@@ -334,24 +334,34 @@ These directory reports also feed **Copy Directory Path** and the existing
 ```toml
 [shell_integration]
 mode = "detect" # detect or off; default: detect
-features = ["path"] # default; [] turns path off
+features = ["path", "ssh_env", "sudo"] # default; also "ssh_terminfo"
 ```
 
 `mode` is available in Settings under Terminal. Edit `features` in the file.
 Unknown features are errors, and duplicate names collapse. Reload changes only
-terminals started afterwards. The `path` feature, on by default, appends
-`HUTERM_BIN_DIR` to `PATH` after startup files have run, only if that
-directory is missing. That directory holds the
-[`huterm` command](../README.md#running-huterm-from-a-shell), so shells in
-Huterm can run it. Because the directory goes last, a `huterm` that is
-already on your `PATH` takes precedence.
+terminals started afterwards. Listing `features` replaces the default list, so
+`features = []` turns every feature off.
+
+| Feature | Default | What it does |
+| --- | --- | --- |
+| `path` | on | Appends `HUTERM_BIN_DIR` to `PATH` after startup files have run, only if that directory is missing. |
+| `ssh_env` | on | Wraps `ssh` so it keeps a `TERM` the remote host knows and forwards `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION`. |
+| `ssh_terminfo` | off | Wraps `ssh` so it installs the `xterm-huterm` entry in `~/.terminfo` on a remote host before the first interactive session there. It writes to remote hosts, so it is opt-in. |
+| `sudo` | on | Wraps `sudo` so it keeps a `TERM` the system knows. |
+
+`HUTERM_BIN_DIR` holds the
+[`huterm` command](../README.md#running-huterm-from-a-shell), so with `path`
+shells in Huterm can run it. Because the directory goes last, a `huterm` that
+is already on your `PATH` takes precedence. The `ssh` and `sudo` wrappers run
+`$HUTERM_BIN_DIR/huterm` directly; [SSH and sudo](#ssh-and-sudo) describes
+them.
 
 | Shell | Loading and startup order |
 | --- | --- |
 | zsh | A static `ZDOTDIR` stub in Huterm resources restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
 | bash | Every bash, Apple's `/bin/bash` 3.2 included, starts as `bash --rcfile <bootstrap> -i` with the other options it was given. For a login shell (`-l`, `--login`, or `l` in combined flags such as `-il`), the bootstrap emulates the login sequence: `/etc/profile`, then the first readable `.bash_profile`, `.bash_login`, or `.profile`. Other shells read `.bashrc` or the requested `--rcfile` as bash does. `--noprofile` is honored. `--norc` starts bash without integration, because an rcfile start cannot skip a distribution's system bashrc. Bash keeps its own `ENV`, `HISTFILE`, and option defaults. |
 | fish | A vendor `conf.d` bootstrap runs after user `conf.d` snippets and before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
-| nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.117.0 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
+| nushell | A vendor autoload module and `--execute 'use huterm [...]'` preserve native startup order; the list names the `ssh` and `sudo` wrappers whose features are on. Nushell 0.117.0 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
 | elvish | Huterm adds a module directory. Add the guarded `use` below to `rc.elv`; Elvish has no automatic loading hook. |
 
 For elvish, add this to `rc.elv`:
@@ -583,6 +593,127 @@ Limitations:
 Huterm's own directory reports use `kitty-shell-cwd://host/literal path`.
 Spaces, `#`, `?`, and `%` stay literal. Reports containing control characters
 are skipped rather than changed. Native fish and nushell may use `file://`.
+
+### SSH and sudo
+
+With the default `terminal.term = "auto"`, shells use `TERM=xterm-huterm`
+when its terminfo entry is available locally. SSH passes `TERM` to the remote
+host, and sudo removes `TERMINFO` and `TERMINFO_DIRS`, so the program at the
+other end often cannot find that entry. zsh's line editor then loses cursor
+movement, as described under
+[Terminal identity, tmux, and SSH](#terminal-identity-tmux-and-ssh). The
+`ssh_env`, `ssh_terminfo`, and `sudo` features wrap `ssh` and `sudo` in bash,
+zsh, fish, and nushell to avoid that:
+
+- `ssh` runs `huterm ssh`. When `TERM` is `xterm-huterm` and the destination
+  is not in the SSH cache, the session uses `TERM=xterm-256color`. With
+  `ssh_env`, it adds `-o SendEnv=COLORTERM`, `-o SendEnv=TERM_PROGRAM`, and
+  `-o SendEnv=TERM_PROGRAM_VERSION`. With `ssh_terminfo`, it first installs
+  the entry on a host that is not in the cache, then keeps `xterm-huterm`.
+- `sudo` runs `huterm sudo`. When `TERM` is `xterm-huterm` and none of
+  `/etc/terminfo`, `/lib/terminfo`, `/usr/share/terminfo`, or
+  `/usr/lib/terminfo` has the entry, sudo runs with `TERM=xterm-256color`.
+  That loses only the entry's `Tc` and larger `pairs`.
+
+`command ssh` and `command sudo` (`^ssh` and `^sudo` in nushell) bypass the
+wrappers. When `$HUTERM_BIN_DIR/huterm` is missing, the wrappers run the
+program itself.
+
+Bash, zsh, and fish decide once, at the first prompt, after every startup
+file. A shell where `ssh` or `sudo` is already a function at that point keeps
+its own function and gets no wrapper for that name. Fish counts autoloaded
+function files and aliases, which fish defines as functions. In bash and zsh,
+an existing alias such as `alias ssh='ssh -A'` keeps working: it expands into
+the wrapper. Removing or replacing a wrapper later, with `unset -f ssh`,
+`unfunction ssh`, `functions -e ssh`, or a new definition, sticks for the rest
+of that shell. Nushell imports Huterm's `ssh` wrapper when `ssh_env` or
+`ssh_terminfo` is on, and its `sudo` wrapper when `sudo` is on, after
+`config.nu` and the autoload directories. An imported wrapper replaces your
+own `def ssh` or `def sudo`; turn off its features to keep yours. Elvish gets
+no automatic wrappers. To add them, put this in `rc.elv`; outside Huterm, the
+functions run the programs themselves:
+
+```elvish
+fn ssh {|@args|
+  if (has-env HUTERM_BIN_DIR) {
+    $E:HUTERM_BIN_DIR/huterm ssh --forward-env $@args
+  } else {
+    e:ssh $@args
+  }
+}
+fn sudo {|@args|
+  if (has-env HUTERM_BIN_DIR) {
+    $E:HUTERM_BIN_DIR/huterm sudo $@args
+  } else {
+    e:sudo $@args
+  }
+}
+```
+
+Add `--terminfo` after `--forward-env` to install the entry as well.
+
+The wrappers cover commands typed at the prompt. `scp`, `sftp`, `rsync`, Git,
+`mosh`, scripts, and other programs that start `ssh` themselves use the
+system `ssh` with your `TERM` unchanged. Most of them never allocate a
+terminal on the remote host.
+
+#### Remote requirements
+
+- Forwarding needs the server to accept the variables, for example with
+  `AcceptEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION` in `sshd_config`.
+  `SendEnv` adds to your own `SendEnv` lines. OpenSSH sends values from your
+  `SetEnv` configuration after the forwarded ones, so your `SetEnv` of the
+  same name wins.
+- An install needs OpenSSH 8.7 or later on your machine, which reports the
+  session settings Huterm checks. With an older `ssh`, `huterm ssh` prints
+  `huterm: ssh_terminfo needs OpenSSH 8.7 or later; using xterm-256color`
+  and connects with that `TERM`.
+- An install needs `sh`, `tic`, `mktemp`, a writable `~/.terminfo`, and an
+  `xterm-256color` entry on the remote host, which the definition builds on.
+  It runs only before an interactive session: not with a remote command,
+  `-N`, `-f`, `-n`, `-s`, `-T`, `-W`, `-O`, `-G`, `-V`, `-Q`, or
+  `RequestTTY no`, and not with `-S` or `-M`, which would override Huterm's
+  control socket. Standard input must be a terminal, as it is at a prompt,
+  unless `-tt` or `RequestTTY force` asks for a remote terminal anyway, so
+  `ssh host < script.sh` installs nothing.
+  A host whose `infocmp` already knows the entry gets no new files.
+
+#### How an install connects once
+
+`huterm ssh` prints `huterm: installing the xterm-huterm terminfo entry on
+user@host`, then connects with its own `ControlMaster` and `ControlPath`, which
+take precedence over your configuration. The session that follows uses the
+same `ControlPath`, so it reuses that connection and you authenticate once; if
+the shared connection has already closed, the session connects on its own and
+may prompt again. Neither the install nor that session uses or becomes your
+own shared connection; later sessions to a host in the cache use your
+configuration as usual. The control socket lives in
+a private directory under `$XDG_RUNTIME_DIR`, your temporary directory, or
+`/tmp`. Ctrl-C during the install stops it and starts no session.
+
+Any failure, such as a refused connection, a forced command on a Git host, or
+a missing `tic`, prints `huterm: could not install the xterm-huterm terminfo
+entry on user@host; using xterm-256color` and continues with that `TERM`. That
+session authenticates again.
+
+#### The SSH cache
+
+`huterm ssh` keys destinations as `user@host`, after your configuration's
+`User` and `HostName` apply: `ssh -G` resolves them. A destination in the
+cache keeps `xterm-huterm` without an install. The cache is
+`ssh-cache` in Huterm's state directory (`$HUTERM_STATE_DIR`,
+`$XDG_STATE_HOME/huterm`, or `~/.local/state/huterm`).
+
+```sh
+huterm ssh-cache list               # user@host and install time, in UTC
+huterm ssh-cache add me@example.org # for a host you set up yourself
+huterm ssh-cache remove me@example.org
+huterm ssh-cache prune 30d          # older than 30 days; s, m, h, d, or w
+huterm ssh-cache clear
+```
+
+Remove a host from the cache when it loses the entry, for example after a
+reinstall.
 
 ### Commands and their output
 
@@ -2031,27 +2162,29 @@ it answers.
 
 ### Terminal identity, tmux, and SSH
 
-New shells use `TERM=xterm-256color` by default. Nearly every system,
-including remote hosts reached over SSH, has that terminfo entry. Huterm also
-sets `COLORTERM=truecolor`, which tools such as tmux and Emacs use to enable
-24-bit color without a dedicated terminfo entry. SSH does not forward
-`COLORTERM` unless the client's `SendEnv` and the server's `AcceptEnv` allow
-it, so remote programs may fall back to 256 colors.
-
-Huterm also carries a private `xterm-huterm` terminfo entry. Development tasks
+Huterm carries a private `xterm-huterm` terminfo entry. Development tasks
 compile it into `target/terminfo`, and the macOS and Linux packages carry the
-compiled entry. Opt into it with `auto`, which uses `xterm-huterm` when the
-entry is available locally and `xterm-256color` otherwise, or with
-`xterm-huterm`, which always uses it:
+compiled entry. New shells use `auto` by default, which uses `xterm-huterm`
+when the entry is available locally and `xterm-256color` otherwise.
+`xterm-huterm` always uses it, and `xterm-256color` never does:
 
 ```toml
 [terminal]
-term = "xterm-256color" # Or "auto" / "xterm-huterm" for new shells.
+term = "auto" # Or "xterm-256color" / "xterm-huterm" for new shells.
 ```
 
-Huterm 0.10 through 0.25 wrote `term = "auto"` into the configuration files
-they created. Remove that line, or set it to `xterm-256color`, to use the new
-default.
+Huterm also sets `COLORTERM=truecolor`, `TERM_PROGRAM=Huterm`, and
+`TERM_PROGRAM_VERSION`. Tools such as tmux and Emacs read `COLORTERM` to
+enable 24-bit color without a dedicated terminfo entry. SSH forwards these
+only when the client's `SendEnv` and the server's `AcceptEnv` allow it; shell
+integration's `ssh_env` feature adds the `SendEnv` side.
+
+`auto` is the default because shell integration's `ssh` and `sudo` wrappers
+fall back to `xterm-256color` where the entry is missing
+(see [SSH and sudo](#ssh-and-sudo)). Versions 0.26 through 0.35 defaulted to
+`xterm-256color`; a configuration that sets `term` keeps its value. To keep
+`xterm-256color` everywhere, for example when you run `ssh` from scripts or
+with shell integration off, set `term = "xterm-256color"`.
 
 `xterm-huterm` inherits the standard 256-color capabilities and advertises
 `Tc`, for terminfo consumers that read 24-bit color support only from
@@ -2059,8 +2192,8 @@ terminfo. If you choose `xterm-huterm`, making the entry available is your
 responsibility. A missing entry usually appears as an "unknown terminal type"
 error in curses applications.
 
-With `auto` or `xterm-huterm`, SSH passes `xterm-huterm` to the server, and
-local discovery cannot tell whether the server has the entry. zsh does not warn
+Without the wrappers, SSH passes `xterm-huterm` to the server, and local
+discovery cannot tell whether the server has the entry. zsh does not warn
 about a missing entry. Its line editor loses cursor movement and line clearing,
 so redrawn input piles up on the line: zsh-autosuggestions text stays behind
 and later keystrokes land after it, often with doubled characters. Check on the
@@ -2073,7 +2206,8 @@ command:
 TERM=xterm-256color ssh host
 ```
 
-Or install the local definition into your account on a trusted remote host:
+Or install the local definition into your account on a trusted remote host,
+which the `ssh_terminfo` feature also does:
 
 ```sh
 infocmp -x xterm-huterm | ssh host 'tic -x -'
@@ -2095,8 +2229,9 @@ installing is not appropriate, set `TERM` for the single command:
 sudo env TERM=xterm-256color command
 ```
 
-Replace `command` with the program to run as root. Huterm does not wrap SSH,
-install files remotely, or change Mosh's terminal capability handling.
+Replace `command` with the program to run as root. The `sudo` feature does
+this for `sudo` typed at an integrated shell's prompt. Huterm does not change
+Mosh's terminal capability handling.
 
 ### Color, size, and appearance queries
 

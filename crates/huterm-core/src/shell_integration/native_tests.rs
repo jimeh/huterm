@@ -79,55 +79,57 @@ impl Shell {
     fn send(&mut self, text: &str) {
         self.writer.write_all(text.as_bytes()).unwrap();
     }
+    #[track_caller]
     fn until(&mut self, condition: impl Fn(&[u8]) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut buffer = [0; 16384];
         while !condition(&self.transcript) {
             assert!(
                 Instant::now() < deadline,
                 "shell timeout: {:?}",
                 String::from_utf8_lossy(&self.transcript)
             );
-            match self.reader.read(&mut buffer) {
-                Ok(0) => panic!(
-                    "shell exited: {:?}",
-                    String::from_utf8_lossy(&self.transcript)
-                ),
-                Ok(count) => {
-                    let chunk = &buffer[..count];
-                    self.transcript.extend_from_slice(chunk);
-                    for effect in self.engine.process(chunk).unwrap() {
-                        match effect {
-                            crate::engine::EngineEffect::PtyWrite(reply) => {
-                                self.writer.write_all(&reply).unwrap();
-                            }
-                            crate::engine::EngineEffect::Directory(
-                                directory,
-                            ) => {
-                                self.reports.report_directory(
-                                    directory.clone(),
-                                    self.process.groups().0,
-                                );
-                                self.directory = directory;
-                            }
-                            _ => {}
+            self.pump(deadline);
+        }
+    }
+    /// Reads what the shell has written, or waits for output until
+    /// `deadline`, and feeds it to the engine.
+    fn pump(&mut self, deadline: Instant) {
+        let mut buffer = [0; 16384];
+        match self.reader.read(&mut buffer) {
+            Ok(0) => panic!(
+                "shell exited: {:?}",
+                String::from_utf8_lossy(&self.transcript)
+            ),
+            Ok(count) => {
+                let chunk = &buffer[..count];
+                self.transcript.extend_from_slice(chunk);
+                for effect in self.engine.process(chunk).unwrap() {
+                    match effect {
+                        crate::engine::EngineEffect::PtyWrite(reply) => {
+                            self.writer.write_all(&reply).unwrap();
                         }
+                        crate::engine::EngineEffect::Directory(directory) => {
+                            self.reports.report_directory(
+                                directory.clone(),
+                                self.process.groups().0,
+                            );
+                            self.directory = directory;
+                        }
+                        _ => {}
                     }
                 }
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock =>
-                {
-                    self.waiter
-                        .wait(Some(
-                            deadline.saturating_duration_since(Instant::now()),
-                        ))
-                        .unwrap();
-                }
-                Err(error) => panic!(
-                    "read: {error}: {:?}",
-                    String::from_utf8_lossy(&self.transcript)
-                ),
             }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                self.waiter
+                    .wait(Some(
+                        deadline.saturating_duration_since(Instant::now()),
+                    ))
+                    .unwrap();
+            }
+            Err(error) => panic!(
+                "read: {error}: {:?}",
+                String::from_utf8_lossy(&self.transcript)
+            ),
         }
     }
     fn prompt(&mut self) {
@@ -251,6 +253,19 @@ fn environment_diagnostics(environment: &str) -> String {
 }
 
 fn launch_plan(command: &TerminalCommand, root: Option<PathBuf>) -> LaunchPlan {
+    launch_plan_in(
+        command,
+        root,
+        std::env::current_exe().unwrap().parent().unwrap().into(),
+    )
+}
+
+/// A launch plan whose `HUTERM_BIN_DIR` is `bin`.
+fn launch_plan_in(
+    command: &TerminalCommand,
+    root: Option<PathBuf>,
+    bin: PathBuf,
+) -> LaunchPlan {
     plan(
         command,
         &Host {
@@ -260,9 +275,7 @@ fn launch_plan(command: &TerminalCommand, root: Option<PathBuf>) -> LaunchPlan {
                     cfg!(target_os = "macos"),
                 )
             }),
-            bin: Some(
-                std::env::current_exe().unwrap().parent().unwrap().into(),
-            ),
+            bin: Some(bin),
             environment: &|key| {
                 command
                     .environment
@@ -2927,3 +2940,5 @@ PROMPT_COMMAND=$'fixture_theme\n__bp_install "$_"'
 }
 
 mod records;
+mod ssh_server;
+mod wrappers;

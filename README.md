@@ -29,7 +29,9 @@ long command's prompt pinned above its output.
   Kitty keyboard protocol's disambiguation and alternate-key flags, an audible
   bell on macOS, an optional visual bell, attention requests from inactive
   windows, program notifications (OSC 9 and OSC 777) and progress (OSC 9;4),
-  and an opt-in private `xterm-huterm` terminfo entry.
+  and a private `xterm-huterm` terminfo entry, used by default where it is
+  installed, with `ssh` and `sudo` wrappers that fall back to
+  `xterm-256color` where it is not.
 - **Windows and tabs:** several windows, each with ordered tabs in a top,
   bottom, left, or right bar or merged into the title bar. Tabs can be
   reordered by dragging, renamed, and labelled by program, title, or working
@@ -115,6 +117,17 @@ XWayland. Linux builds do not update themselves.
 `huterm --help` lists its commands and options, and `huterm --version` prints
 the version. Neither starts the app or needs a display. An unknown command or
 option prints a usage error and exits with status 2.
+
+| Command | What it does |
+| --- | --- |
+| `huterm ssh [--forward-env] [--terminfo] <ssh arguments>` | Runs `ssh`. When `TERM` is `xterm-huterm` and the host is not known to have that entry, the session uses `TERM=xterm-256color`. `--forward-env` sends `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION`; `--terminfo` installs the entry on the host first. |
+| `huterm ssh-cache list\|add\|remove\|prune\|clear` | Shows or changes the hosts known to have the entry. |
+| `huterm sudo <sudo arguments>` | Runs `sudo`, with `TERM=xterm-256color` when `TERM` is `xterm-huterm` and the system lacks that entry. |
+
+Shell integration's `ssh` and `sudo` wrappers run these for you; see
+[SSH and sudo](docs/configuration.md#ssh-and-sudo). Every argument after
+`huterm ssh`'s own options, and every argument to `huterm sudo`, reaches the
+program unchanged, so `huterm help ssh` and `huterm help sudo` describe them.
 
 Inside Huterm, bash, zsh, fish, nushell, and Elvish (after its `use` line) find
 `huterm` on `PATH` through [shell integration](docs/configuration.md#shell-integration).

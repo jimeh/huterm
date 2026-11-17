@@ -372,6 +372,7 @@ fn spawn_planned(
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
     builder.env("TERM_PROGRAM", "Huterm");
+    builder.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
     for (key, value) in &command.environment {
         builder.env(key, value);
     }
