@@ -1,11 +1,11 @@
 +++
 id = "gpui-inactive-tab-close-button"
 title = "huterm-gpui inactive tab close button"
-status = "open"
+status = "fixed"
 kind = "rust"
 platforms = ["macos-arm64", "linux-x86_64", "linux-aarch64"]
-retries = 2
-review_by = "2026-12-06"
+retries = 0
+review_by = "2026-12-17"
 
 [selector]
 binary = "huterm-gpui"
@@ -74,7 +74,28 @@ platform = "macos-arm64"
 - **Mitigation (2026-11-06):** CI reruns this signature up to twice.
   Nextest's JUnit report records each test's own duration, which replaces
   the suite wall time as evidence.
-- **Triage:** read the test's duration in the `junit-*.xml` report inside the
-  `flake-report-*` artifact, or in the job log. If it recurs on a normal-speed
-  run, the harness wait or the close path needs a closer look. Record it with
-  `mise run flakes:record`.
+- **Cause (2026-11-17):** the click never fired. Tabs default to Fit
+  widths, and a tab shows its title (`sh`) until the first foreground probe
+  publishes its directory, about 50 ms after the child's first output (see
+  [the pane rename flake](gpui-pane-rename-title.md)). The test read the
+  close button's bounds while a tab still showed `sh`. The press's
+  `run_until_parked` then delivered the directory, the tab widened, and
+  the button moved from x=201 to x=234. GPUI fires a click only when the
+  release lands on the pressed hitbox, so the release at the old point did
+  nothing. Running the test binary 160 at a time on a 16-core arm64 Mac
+  failed about once per 1,000 to 2,000 runs. Each of four instrumented failures
+  read the bounds with one label still `sh` and found the button moved
+  after the press. In each, the close pipeline was idle: no assessment,
+  confirmation, or failure. Waiting for the closed tab's READY would not
+  have helped: in one failure the stale label was on the tab that had
+  already printed READY.
+- **Fix (2026-11-17):** the test waits until every tab labels itself with
+  its directory before reading the bounds, and asserts that the button did
+  not move under the press. 10,000 parallel runs passed. With the wait
+  removed, the assertion caught 2 of 4,000 runs. The harness's last state
+  now also prints each window's close pipeline: busy, current, pending,
+  confirmation, assessed jobs, close failures, and notices.
+- **Triage:** a failure after the fix is new. "The close button moved under
+  the press" means a label still changed after the wait. A timeout whose
+  last state shows a confirmation and `Running` or `Unknown` jobs means the
+  assessment saw the fresh tab as busy, which this fix does not address.

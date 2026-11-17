@@ -446,6 +446,29 @@ impl DesktopHarness {
         });
     }
 
+    /// Waits until every tab of `window` labels itself with its directory,
+    /// as an idle shell's tab settles. Until a terminal reports one, its
+    /// tab shows its title, so a pointer aimed from an earlier frame can
+    /// miss a control the relabelled tab moves.
+    fn wait_labels_settled(&mut self, window: AnyWindowHandle) {
+        self.wait_for("every tab to label itself with its directory", |cx| {
+            window
+                .update(cx, |root, _, cx| {
+                    let view = root.downcast::<WorkspaceView>().ok()?;
+                    Some(view.read(cx).tabs.iter().all(|tab| {
+                        tab.focused_view()
+                            .read(cx)
+                            .metadata
+                            .directory()
+                            .is_some()
+                    }))
+                })
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+        });
+    }
+
     /// Types `text` into `window`'s focused terminal, key by key, then
     /// Enter.
     fn type_line(&mut self, window: AnyWindowHandle, text: &str) {
@@ -650,15 +673,45 @@ fn describe(cx: &App) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ");
-    let views = cx
+    let workspaces = cx
         .windows()
         .into_iter()
         .filter_map(|handle| handle.downcast::<WorkspaceView>()?.read(cx).ok())
+        .collect::<Vec<_>>();
+    let closes = workspaces
+        .iter()
+        .map(|view| describe_close(view, cx))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let views = workspaces
+        .iter()
         .flat_map(|view| &view.tabs)
         .map(|tab| describe_view(tab.id, tab.focused_view().read(cx)))
         .collect::<Vec<_>>()
         .join("; ");
-    format!("{records}; views: {views}")
+    format!("{records}; closes: {closes}; views: {views}")
+}
+
+/// A window's close pipeline: a close that never finishes shows here
+/// whether it waits on an assessment, a confirmation, or nothing at all.
+fn describe_close(view: &WorkspaceView, cx: &App) -> String {
+    let close = &view.close;
+    let notices: Vec<_> = view
+        .notices
+        .contents()
+        .map(NoticeContent::smoke_line)
+        .collect();
+    format!(
+        "window {:?}: busy={} current={:?} pending={:?} confirmation={:?} \
+         jobs={:?} failures={} notices={notices:?}",
+        view.window,
+        view.busy,
+        close.current,
+        close.pending,
+        close.confirmation,
+        close.assessment.as_ref().map(CloseAssessment::jobs),
+        cx.global::<Desktop>().close_failures,
+    )
 }
 
 /// A view's viewer, polled status, and the end of its screen: output a

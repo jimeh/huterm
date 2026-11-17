@@ -538,13 +538,23 @@ fn a_press_on_an_inactive_tabs_close_button_neither_selects_nor_drags_it(
         view.select(tab, window, cx);
     });
     harness.activate(window, tab);
+    // Fit tabs resize when a label changes, which moves the button.
+    harness.wait_labels_settled(window);
     // GPUI looks debug selectors up by a static name.
     let selector = format!("close-tab-{}", other.get()).leak();
-    let close = VisualTestContext::from_window(window, &harness.cx)
-        .debug_bounds(selector)
-        .expect("the inactive tab draws its close button")
-        .center();
+    let bounds = |harness: &mut DesktopHarness| {
+        VisualTestContext::from_window(window, &harness.cx)
+            .debug_bounds(selector)
+            .expect("the inactive tab draws its close button")
+    };
+    let close = bounds(&mut harness).center();
     press_at(&mut harness, window, close, 1);
+    // GPUI clicks only when the release lands on the pressed button.
+    assert_eq!(
+        bounds(&mut harness).center(),
+        close,
+        "the close button moved under the press"
+    );
     harness.update_view(window, |view, _, cx| {
         assert!(!view.reordering(), "the press started a tab drag");
         assert_eq!(view.active_tab(cx), Some(tab));
