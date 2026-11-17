@@ -168,13 +168,14 @@ if ! command -v rg >/dev/null; then
 fi
 # reject LINES MESSAGE RG_ARGS...: fails the task with MESSAGE when rg selects
 # any of LINES, printing them. rg exits 1 when it selects nothing and 2 on an
-# error, so only 1 passes. A here-string, unlike a pipe, keeps an early rg exit
-# from failing the writer; --no-config keeps local rg settings out.
+# error, so only 1 passes. The status comes from rg itself, because an early rg
+# exit makes the writer fail under pipefail. A here-string would read a failed
+# redirection as status 1. --no-config keeps local rg settings out.
 reject() {
   local lines="$1" message="$2" status=0
   shift 2
   [ -n "$lines" ] || return 0
-  rg --no-config "$@" <<<"$lines" || status=$?
+  printf '%s\n' "$lines" | rg --no-config "$@" || status=${PIPESTATUS[1]}
   case "$status" in
     0) echo "$message" >&2; exit 1 ;;
     1) ;;
