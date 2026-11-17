@@ -4,7 +4,8 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{
-    self, Receiver, Sender, SyncSender, TryRecvError, TrySendError,
+    self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError,
+    TrySendError,
 };
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -485,6 +486,40 @@ impl Drop for CloseOnExit {
     }
 }
 
+/// How long a terminal spawn may take to start its runtime.
+const STARTUP_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How a spawn waits for its runtime to start.
+struct Startup {
+    deadline: Duration,
+    gate: Arc<pty::PtyGate>,
+    /// Receives the thread of each runtime the spawn gave up on.
+    #[cfg(test)]
+    abandoned: Option<Sender<JoinHandle<Result<(), RuntimeError>>>>,
+    /// Parks the runtime once its child has started, before it reports.
+    #[cfg(test)]
+    after_spawn: Option<Arc<crate::test_support::Pause>>,
+    /// Starts the deadline only once a thread has parked at this pause, so
+    /// a short deadline cannot expire before the runtime reaches it.
+    #[cfg(test)]
+    deadline_after: Option<Arc<crate::test_support::Pause>>,
+}
+
+impl Startup {
+    fn standard() -> Self {
+        Self {
+            deadline: STARTUP_DEADLINE,
+            gate: pty::openpty_gate(),
+            #[cfg(test)]
+            abandoned: None,
+            #[cfg(test)]
+            after_spawn: None,
+            #[cfg(test)]
+            deadline_after: None,
+        }
+    }
+}
+
 /// Owner of one terminal's runtime thread and cleanup path.
 #[derive(Debug)]
 pub struct TerminalRuntime {
@@ -526,6 +561,24 @@ impl TerminalRuntime {
         terminal_id: TerminalId,
         command: &TerminalCommand,
     ) -> Result<Self, RuntimeError> {
+        Self::spawn_with(runtime, terminal_id, command, &Startup::standard())
+    }
+
+    /// Starts a terminal, giving up once `startup.deadline` passes.
+    ///
+    /// Under PTY exhaustion, macOS's `openpty` can spin in the kernel and
+    /// never return, so the wait for the runtime thread must end on its
+    /// own. Callers such as Mux hold their lock across a spawn.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "startup wires every channel the runtime and its client share"
+    )]
+    fn spawn_with(
+        runtime: RuntimeId,
+        terminal_id: TerminalId,
+        command: &TerminalCommand,
+        startup: &Startup,
+    ) -> Result<Self, RuntimeError> {
         let command = bounded(command);
         let launch_directory = command.working_directory.clone();
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
@@ -555,6 +608,9 @@ impl TerminalRuntime {
         let runtime_input_budget = Arc::clone(&input_budget);
         let shutdown_groups = Arc::new(Mutex::new(Vec::new()));
         let runtime_groups = Arc::clone(&shutdown_groups);
+        let gate = Arc::clone(&startup.gate);
+        #[cfg(test)]
+        let after_spawn = startup.after_spawn.clone();
         let join = thread::Builder::new()
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
@@ -572,7 +628,12 @@ impl TerminalRuntime {
                     engine
                         .set_host_effect_sink(runtime_host_effect_sink.clone());
                     engine.set_scrollback(command.scrollback)?;
-                    let process = pty::spawn(&command)?;
+                    let process =
+                        pty::spawn(&command, &gate, &runtime_closing)?;
+                    #[cfg(test)]
+                    if let Some(pause) = &after_spawn {
+                        pause.block();
+                    }
                     run_terminal(
                         terminal_id,
                         engine,
@@ -603,13 +664,6 @@ impl TerminalRuntime {
             })
             .map_err(|error| RuntimeError::Thread(error.to_string()))?;
 
-        if let Err(error) = startup_receiver
-            .recv()
-            .unwrap_or(Err(RuntimeError::ThreadPanic))
-        {
-            let _ = join.join();
-            return Err(error);
-        }
         let client = RuntimeClient {
             terminal_id,
             messages: message_sender,
@@ -622,6 +676,34 @@ impl TerminalRuntime {
             host_effect_sink,
             registry,
         };
+        #[cfg(test)]
+        if let Some(pause) = &startup.deadline_after {
+            pause.wait_blocked(1);
+        }
+        match startup_receiver.recv_timeout(startup.deadline) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let _ = join.join();
+                return Err(error);
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                let _ = join.join();
+                return Err(RuntimeError::ThreadPanic);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                // Joining could wait forever, so the thread stays detached.
+                // Closing makes it stop before the child starts if its
+                // `openpty` ever returns, or tear down as any closed
+                // terminal does if it got further. Nothing else holds this
+                // runtime, so no viewer or Mux ever sees it.
+                let _ = client.close();
+                #[cfg(test)]
+                if let Some(abandoned) = &startup.abandoned {
+                    let _ = abandoned.send(join);
+                }
+                return Err(RuntimeError::Pty(pty::TIMED_OUT.to_owned()));
+            }
+        }
         Ok(Self {
             client,
             join: Some(join),
@@ -2772,6 +2854,9 @@ fn join_worker(worker: JoinHandle<()>) {
 
 #[cfg(test)]
 mod record_tests;
+
+#[cfg(test)]
+mod startup_tests;
 
 #[cfg(test)]
 mod tests;

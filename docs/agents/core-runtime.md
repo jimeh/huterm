@@ -180,7 +180,22 @@ host whose home matters.
   unit tests may only raise the soft limit and must release filler
   descriptors when they finish.
 - Concurrent `openpty` calls failed on macOS 27, so `pty::spawn` serializes PTY
-  creation.
+  creation through `PtyGate`. Under PTY exhaustion (`kern.tty.ptmx_max`, 511
+  on one Mac), most opens fail quickly with `ENXIO`, but some `openpty`
+  calls get a master from `posix_openpt` and then spin in `grantpt`'s
+  `ioctl(master, TIOCPTYGRANT)` at full CPU, never returning even after PTYs
+  free up. Nothing in user space can stop that thread. Every spawn therefore
+  stays bounded: `spawn_in` waits at most `STARTUP_DEADLINE` (10 s) for its
+  runtime, then closes and detaches it; a runtime that returns later sees
+  the close before it starts a child. A gate
+  waiter gives up once the current holder has held the gate for
+  `OPENPTY_STALL` (5 s), so later spawns fail at once instead of queueing
+  behind a stuck one. Both answer `RuntimeError::Pty`; the gate's message
+  differs. A spawn whose caller already gave up never calls `openpty`.
+  Tests park a spawn in a private `PtyGate::paused`, so other tests keep the
+  process-wide gate, though the real `openpty` still serializes through it.
+  Never test this by exhausting the host's PTYs, which other processes
+  share.
 
 ## Runtime queues and workers
 
