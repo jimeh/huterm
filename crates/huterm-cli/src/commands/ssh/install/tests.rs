@@ -255,7 +255,13 @@ fn remote(
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(input).unwrap();
+    // A script that fails or finds the entry installed exits without
+    // reading its input, so the write may meet a closed pipe; the exit
+    // status, output, and files still show what the script did.
+    match child.stdin.take().unwrap().write_all(input) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+        result => result.unwrap(),
+    }
     child.wait_with_output().unwrap()
 }
 
