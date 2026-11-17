@@ -1275,10 +1275,10 @@ impl Read for LoggedReader {
 }
 
 /// Runs the reader loop over `results` with a readiness wait that
-/// returns `wait`, collecting forwarded output and the control it ends with. The script
-/// blocks forever once exhausted, so the wait fails after a few calls:
-/// a loop that stops handling end-of-file or errors then ends with a
-/// budget failure instead of hanging the test run.
+/// returns `wait`, collecting forwarded output and the control it ends
+/// with. The script blocks forever once exhausted, so the wait fails after
+/// a few calls: a loop that stops handling end-of-file or errors then ends
+/// with a budget failure instead of hanging the test run.
 fn forward(
     results: Vec<io::Result<Vec<u8>>>,
     wait: fn() -> io::Result<()>,
