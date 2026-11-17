@@ -634,3 +634,65 @@ fn shell_integration_warning_is_gated_once() {
     assert!(!super::first_shell_warning(&printed));
     assert!(!super::first_shell_warning(&printed));
 }
+
+#[test]
+fn a_waiter_takes_the_pty_gate_once_a_live_holder_releases_it() {
+    let pause = Arc::new(crate::test_support::Pause::default());
+    let _release = pause.releasing();
+    let gate = Arc::new(PtyGate::paused(
+        crate::test_support::WAIT,
+        Arc::clone(&pause),
+    ));
+    let holder = thread::spawn({
+        let gate = Arc::clone(&gate);
+        move || {
+            let guard = gate.enter().unwrap();
+            guard.block_if_paused();
+        }
+    });
+    pause.wait_blocked(1);
+    let waiter = thread::spawn({
+        let gate = Arc::clone(&gate);
+        move || gate.enter().map(drop)
+    });
+    crate::test_support::wait_until("the waiter to park", || {
+        if gate.waiting() == 1 {
+            Ok(())
+        } else {
+            Err(gate.waiting())
+        }
+    });
+
+    pause.release();
+
+    holder.join().unwrap();
+    assert!(waiter.join().unwrap().is_ok());
+}
+
+#[test]
+fn a_waiter_gives_up_once_the_holder_has_held_the_pty_gate_too_long() {
+    let pause = Arc::new(crate::test_support::Pause::default());
+    let _release = pause.releasing();
+    let gate = Arc::new(PtyGate::paused(
+        Duration::from_millis(50),
+        Arc::clone(&pause),
+    ));
+    let holder = thread::spawn({
+        let gate = Arc::clone(&gate);
+        move || {
+            let guard = gate.enter().unwrap();
+            guard.block_if_paused();
+        }
+    });
+    pause.wait_blocked(1);
+
+    let refused = gate.enter().map(drop);
+
+    assert!(
+        matches!(&refused, Err(RuntimeError::Pty(message)) if message == STALLED),
+        "expected the stalled-gate error, got {refused:?}"
+    );
+    assert!(!holder.is_finished(), "the holder should still be parked");
+    pause.release();
+    holder.join().unwrap();
+}

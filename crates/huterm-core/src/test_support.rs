@@ -112,6 +112,72 @@ pub(crate) fn wait_until<T, Observed: Debug>(
     }
 }
 
+/// A test hook that parks every thread reaching it until the test releases
+/// it. Dropping the last handle does not release it, so a test releases it
+/// explicitly, or through [`Pause::releasing`] on every exit path.
+#[derive(Debug, Default)]
+pub(crate) struct Pause {
+    state: std::sync::Mutex<PauseState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Debug, Default)]
+struct PauseState {
+    blocked: usize,
+    released: bool,
+}
+
+impl Pause {
+    fn state(&self) -> std::sync::MutexGuard<'_, PauseState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Parks the calling thread until [`Pause::release`].
+    pub(crate) fn block(&self) {
+        let mut state = self.state();
+        state.blocked += 1;
+        self.changed.notify_all();
+        while !state.released {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Waits until `count` threads have reached the hook in all.
+    pub(crate) fn wait_blocked(&self, count: usize) {
+        wait_until("threads to reach the pause", || {
+            let blocked = self.state().blocked;
+            if blocked >= count {
+                Ok(())
+            } else {
+                Err(blocked)
+            }
+        });
+    }
+
+    /// Lets every parked thread, and every later one, through.
+    pub(crate) fn release(&self) {
+        self.state().released = true;
+        self.changed.notify_all();
+    }
+
+    /// Releases the pause when the returned guard drops, so a failing
+    /// assertion never leaves a thread parked.
+    pub(crate) fn releasing(self: &Arc<Self>) -> impl Drop + use<> {
+        struct Release(Arc<Pause>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.release();
+            }
+        }
+        Release(Arc::clone(self))
+    }
+}
+
 /// Waits until `viewer`'s screen contains `needle`.
 pub(crate) fn wait_for_text(
     viewer: &TerminalViewer,

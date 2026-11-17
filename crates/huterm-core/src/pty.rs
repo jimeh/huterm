@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::{fd::AsFd, unix::net::UnixStream};
-use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -293,13 +296,135 @@ fn poll_timeout(timeout: Option<Duration>) -> nix::poll::PollTimeout {
     })
 }
 
+/// The error message of a terminal creation that ran out of time.
+pub(crate) const TIMED_OUT: &str = "timed out creating the terminal";
+
+/// The error message of a creation that gave up waiting on a stuck one.
+pub(crate) const STALLED: &str =
+    "timed out creating the terminal: an earlier PTY creation has not returned";
+
+/// How long one PTY creation may hold the gate before later ones stop
+/// waiting for it. An `openpty` call takes microseconds when it returns.
+const OPENPTY_STALL: Duration = Duration::from_secs(5);
+
 /// Serializes PTY creation within the process. Concurrent `openpty` calls
 /// from parallel test threads failed on macOS 27 with errno -6; Huterm's own
 /// spawns already serialize under the Mux lock, so this costs nothing there.
-static OPENPTY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// Under PTY exhaustion, macOS's `openpty` can spin in the kernel and never
+/// return, even once PTYs free up, so its holder keeps the gate for good. A
+/// waiter therefore gives up once the current holder has held the gate for
+/// `stall`, instead of queueing behind it. Each holder starts its own
+/// allowance, so ordinary contention never comes close.
+pub(crate) struct PtyGate {
+    /// When the current holder entered, or `None` while the gate is free.
+    held_since: Mutex<Option<Instant>>,
+    released: Condvar,
+    stall: Duration,
+    /// Parks every holder inside the critical section until released.
+    #[cfg(test)]
+    pause: Option<Arc<crate::test_support::Pause>>,
+    #[cfg(test)]
+    waiting: AtomicUsize,
+}
 
+static OPENPTY: LazyLock<Arc<PtyGate>> =
+    LazyLock::new(|| Arc::new(PtyGate::new(OPENPTY_STALL)));
+
+/// The gate every terminal in the process creates its PTY through.
+pub(crate) fn openpty_gate() -> Arc<PtyGate> {
+    Arc::clone(&OPENPTY)
+}
+
+impl PtyGate {
+    fn new(stall: Duration) -> Self {
+        Self {
+            held_since: Mutex::new(None),
+            released: Condvar::new(),
+            stall,
+            #[cfg(test)]
+            pause: None,
+            #[cfg(test)]
+            waiting: AtomicUsize::new(0),
+        }
+    }
+
+    /// A private gate whose holders park at `pause` until it is released.
+    #[cfg(test)]
+    pub(crate) fn paused(
+        stall: Duration,
+        pause: Arc<crate::test_support::Pause>,
+    ) -> Self {
+        Self {
+            pause: Some(pause),
+            ..Self::new(stall)
+        }
+    }
+
+    /// Waiters currently parked behind a holder.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
+    }
+
+    /// Takes the gate, waiting while a holder that is not yet stalled has it.
+    fn enter(&self) -> Result<PtyGateGuard<'_>, RuntimeError> {
+        let mut held_since = self
+            .held_since
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let Some(since) = *held_since else {
+                *held_since = Some(Instant::now());
+                return Ok(PtyGateGuard(self));
+            };
+            let remaining =
+                (since + self.stall).saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(RuntimeError::Pty(STALLED.to_owned()));
+            }
+            #[cfg(test)]
+            self.waiting.fetch_add(1, Ordering::AcqRel);
+            held_since = self
+                .released
+                .wait_timeout(held_since, remaining)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+            #[cfg(test)]
+            self.waiting.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+struct PtyGateGuard<'gate>(&'gate PtyGate);
+
+impl PtyGateGuard<'_> {
+    #[cfg(test)]
+    fn block_if_paused(&self) {
+        if let Some(pause) = &self.0.pause {
+            pause.block();
+        }
+    }
+}
+
+impl Drop for PtyGateGuard<'_> {
+    fn drop(&mut self) {
+        *self
+            .0
+            .held_since
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        self.0.released.notify_all();
+    }
+}
+
+/// Creates a terminal's PTY and child. `cancelled` reports that the caller
+/// gave up waiting; it is checked once the PTY exists, so an abandoned
+/// creation closes it again instead of starting a shell only to stop it.
 pub(crate) fn spawn(
     command: &TerminalCommand,
+    gate: &PtyGate,
+    cancelled: &AtomicBool,
 ) -> Result<PtyProcess, RuntimeError> {
     let executable = std::env::current_exe().ok();
     let environment = |name: &str| {
@@ -322,14 +447,13 @@ pub(crate) fn spawn(
         environment: &environment,
         is_file: &std::path::Path::is_file,
     };
-    spawn_with_plan(command, crate::shell_integration::plan(command, &host))
-}
-
-pub(crate) fn spawn_with_plan(
-    command: &TerminalCommand,
-    plan: crate::shell_integration::LaunchPlan,
-) -> Result<PtyProcess, RuntimeError> {
-    spawn_planned(command, plan, true)
+    spawn_planned(
+        command,
+        crate::shell_integration::plan(command, &host),
+        true,
+        gate,
+        cancelled,
+    )
 }
 
 /// Native shell fixtures must not expose the test runner's secrets to shells.
@@ -338,29 +462,40 @@ pub(crate) fn spawn_with_plan_isolated(
     command: &TerminalCommand,
     plan: crate::shell_integration::LaunchPlan,
 ) -> Result<PtyProcess, RuntimeError> {
-    spawn_planned(command, plan, false)
+    spawn_planned(
+        command,
+        plan,
+        false,
+        &openpty_gate(),
+        &AtomicBool::new(false),
+    )
 }
 
 static SHELL_WARNING_PRINTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 fn first_shell_warning(printed: &std::sync::atomic::AtomicBool) -> bool {
-    !printed.swap(true, std::sync::atomic::Ordering::Relaxed)
+    !printed.swap(true, Ordering::Relaxed)
 }
 
 fn spawn_planned(
     command: &TerminalCommand,
     plan: crate::shell_integration::LaunchPlan,
     inherit_environment: bool,
+    gate: &PtyGate,
+    cancelled: &AtomicBool,
 ) -> Result<PtyProcess, RuntimeError> {
-    let pair = {
-        let _serial = OPENPTY
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        portable_pty::native_pty_system()
-            .openpty(pty_size(command.grid_size, command.cell_size))
-            .map_err(|error| RuntimeError::Pty(error.to_string()))?
-    };
+    let serial = gate.enter()?;
+    #[cfg(test)]
+    serial.block_if_paused();
+    let pair = portable_pty::native_pty_system()
+        .openpty(pty_size(command.grid_size, command.cell_size))
+        .map_err(|error| RuntimeError::Pty(error.to_string()));
+    drop(serial);
+    let pair = pair?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err(RuntimeError::Pty(TIMED_OUT.to_owned()));
+    }
     set_nonblocking(pair.master.as_ref())?;
 
     let mut builder = CommandBuilder::new(&plan.program);
