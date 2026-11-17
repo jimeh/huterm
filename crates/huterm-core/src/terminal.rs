@@ -496,6 +496,13 @@ struct Startup {
     /// Receives the thread of each runtime the spawn gave up on.
     #[cfg(test)]
     abandoned: Option<Sender<JoinHandle<Result<(), RuntimeError>>>>,
+    /// Parks the runtime once its child has started, before it reports.
+    #[cfg(test)]
+    after_spawn: Option<Arc<crate::test_support::Pause>>,
+    /// Starts the deadline only once a thread has parked at this pause, so
+    /// a short deadline cannot expire before the runtime reaches it.
+    #[cfg(test)]
+    deadline_after: Option<Arc<crate::test_support::Pause>>,
 }
 
 impl Startup {
@@ -505,6 +512,10 @@ impl Startup {
             gate: pty::openpty_gate(),
             #[cfg(test)]
             abandoned: None,
+            #[cfg(test)]
+            after_spawn: None,
+            #[cfg(test)]
+            deadline_after: None,
         }
     }
 }
@@ -598,6 +609,8 @@ impl TerminalRuntime {
         let shutdown_groups = Arc::new(Mutex::new(Vec::new()));
         let runtime_groups = Arc::clone(&shutdown_groups);
         let gate = Arc::clone(&startup.gate);
+        #[cfg(test)]
+        let after_spawn = startup.after_spawn.clone();
         let join = thread::Builder::new()
             .name(format!("huterm-runtime-{}", terminal_id.get()))
             .spawn(move || {
@@ -617,6 +630,10 @@ impl TerminalRuntime {
                     engine.set_scrollback(command.scrollback)?;
                     let process =
                         pty::spawn(&command, &gate, &runtime_closing)?;
+                    #[cfg(test)]
+                    if let Some(pause) = &after_spawn {
+                        pause.block();
+                    }
                     run_terminal(
                         terminal_id,
                         engine,
@@ -659,6 +676,10 @@ impl TerminalRuntime {
             host_effect_sink,
             registry,
         };
+        #[cfg(test)]
+        if let Some(pause) = &startup.deadline_after {
+            pause.wait_blocked(1);
+        }
         match startup_receiver.recv_timeout(startup.deadline) {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {

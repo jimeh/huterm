@@ -189,9 +189,11 @@ host whose home matters.
   waiter gives up once the current holder has held the gate for
   `OPENPTY_STALL` (5 s), so later spawns fail at once instead of queueing
   behind a stuck one. Both answer `RuntimeError::Pty`; the gate's message
-  differs. Tests exercise this with a private `PtyGate::paused`, never the
-  process-wide gate, and never by exhausting the host's PTYs, which other
-  processes share.
+  differs. A spawn whose caller already gave up never calls `openpty`.
+  Tests park a spawn in a private `PtyGate::paused`, so other tests keep the
+  process-wide gate, though the real `openpty` still serializes through it.
+  Never test this by exhausting the host's PTYs, which other processes
+  share.
 
 ## Runtime queues and workers
 

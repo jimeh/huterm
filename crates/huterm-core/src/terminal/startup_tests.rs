@@ -1,6 +1,6 @@
 //! Spawns whose PTY creation never returns, as macOS's `openpty` can under
 //! PTY exhaustion. A private gate parks its holder inside the critical
-//! section, so these tests never touch the process-wide gate other tests
+//! section, so these tests never block the process-wide gate other tests
 //! use, and never exhaust the host's PTYs.
 
 use std::path::PathBuf;
@@ -9,8 +9,11 @@ use super::*;
 use crate::pty::{PtyGate, STALLED, TIMED_OUT};
 use crate::test_support::{Pause, WAIT, wait_until};
 
-/// A startup deadline that expires while the runtime is parked.
+/// A startup deadline that expires while the runtime is parked. It starts
+/// counting only once the runtime reaches the pause.
 const SHORT: Duration = Duration::from_millis(50);
+
+type Abandoned = Sender<JoinHandle<Result<(), RuntimeError>>>;
 
 fn command() -> TerminalCommand {
     TerminalCommand {
@@ -31,22 +34,27 @@ fn command() -> TerminalCommand {
     }
 }
 
-fn spawn(
-    id: u64,
+fn startup(
     gate: &Arc<PtyGate>,
     deadline: Duration,
-    abandoned: &Sender<JoinHandle<Result<(), RuntimeError>>>,
-) -> Result<TerminalRuntime, RuntimeError> {
+    abandoned: &Abandoned,
+) -> Startup {
+    Startup {
+        deadline,
+        gate: Arc::clone(gate),
+        abandoned: Some(abandoned.clone()),
+        after_spawn: None,
+        deadline_after: None,
+    }
+}
+
+fn spawn(id: u64, startup: &Startup) -> Result<TerminalRuntime, RuntimeError> {
     let terminal_id = TerminalId::new(id);
     TerminalRuntime::spawn_with(
         terminal_id.runtime(),
         terminal_id,
         &command(),
-        &Startup {
-            deadline,
-            gate: Arc::clone(gate),
-            abandoned: Some(abandoned.clone()),
-        },
+        startup,
     )
 }
 
@@ -78,10 +86,15 @@ fn a_spawn_stuck_creating_its_pty_times_out_and_stops_once_it_returns() {
     let gate = Arc::new(PtyGate::paused(WAIT, Arc::clone(&pause)));
     let (abandoned, abandoned_runtimes) = mpsc::channel();
 
-    let result = spawn(201, &gate, SHORT, &abandoned);
+    let result = spawn(
+        201,
+        &Startup {
+            deadline_after: Some(Arc::clone(&pause)),
+            ..startup(&gate, SHORT, &abandoned)
+        },
+    );
 
     assert_eq!(pty_message(result), TIMED_OUT);
-    pause.wait_blocked(1);
     let join = abandoned_runtimes
         .try_recv()
         .expect("a timed-out spawn should hand over its runtime thread");
@@ -98,7 +111,7 @@ fn a_spawn_stuck_creating_its_pty_times_out_and_stops_once_it_returns() {
 
     // The abandoned runtime left the gate free, and an ordinary spawn
     // through it starts and stops.
-    let runtime = spawn(202, &gate, STARTUP_DEADLINE, &abandoned)
+    let runtime = spawn(202, &startup(&gate, STARTUP_DEADLINE, &abandoned))
         .expect("a spawn after the stuck one returned should start");
     runtime.shutdown().unwrap();
     assert!(abandoned_runtimes.try_recv().is_err());
@@ -112,13 +125,19 @@ fn a_later_spawn_fails_fast_while_an_earlier_one_is_stuck() {
     // not depend on how long the first spawn has held the gate.
     let gate = Arc::new(PtyGate::paused(Duration::ZERO, Arc::clone(&pause)));
     let (abandoned, abandoned_runtimes) = mpsc::channel();
-    assert_eq!(pty_message(spawn(203, &gate, SHORT, &abandoned)), TIMED_OUT);
-    pause.wait_blocked(1);
+    let first = spawn(
+        203,
+        &Startup {
+            deadline_after: Some(Arc::clone(&pause)),
+            ..startup(&gate, SHORT, &abandoned)
+        },
+    );
+    assert_eq!(pty_message(first), TIMED_OUT);
     let stuck = abandoned_runtimes.try_recv().unwrap();
 
     // The production deadline would let this spawn queue for ten seconds;
     // the gate's message shows the gate refused it instead.
-    let result = spawn(204, &gate, STARTUP_DEADLINE, &abandoned);
+    let result = spawn(204, &startup(&gate, STARTUP_DEADLINE, &abandoned));
 
     assert_eq!(pty_message(result), STALLED);
     assert!(
@@ -127,4 +146,33 @@ fn a_later_spawn_fails_fast_while_an_earlier_one_is_stuck() {
     );
     pause.release();
     assert!(finished(stuck).is_err());
+}
+
+#[test]
+fn a_spawn_that_times_out_after_its_child_started_tears_the_child_down() {
+    let pause = Arc::new(Pause::default());
+    let _release = pause.releasing();
+    let gate = Arc::new(PtyGate::new(WAIT));
+    let (abandoned, abandoned_runtimes) = mpsc::channel();
+
+    let result = spawn(
+        205,
+        &Startup {
+            after_spawn: Some(Arc::clone(&pause)),
+            deadline_after: Some(Arc::clone(&pause)),
+            ..startup(&gate, SHORT, &abandoned)
+        },
+    );
+
+    assert_eq!(pty_message(result), TIMED_OUT);
+    let join = abandoned_runtimes.try_recv().unwrap();
+    assert!(!join.is_finished(), "the runtime should still be parked");
+    pause.release();
+    // The runtime passed the cancellation check, so the close reaches its
+    // loop: an `Ok` means its teardown signalled and reaped the child and
+    // joined its reader and writer.
+    assert!(
+        finished(join).is_ok(),
+        "the abandoned runtime should reap its child"
+    );
 }

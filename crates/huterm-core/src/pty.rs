@@ -337,7 +337,7 @@ pub(crate) fn openpty_gate() -> Arc<PtyGate> {
 }
 
 impl PtyGate {
-    fn new(stall: Duration) -> Self {
+    pub(crate) fn new(stall: Duration) -> Self {
         Self {
             held_since: Mutex::new(None),
             released: Condvar::new(),
@@ -485,12 +485,26 @@ fn spawn_planned(
     gate: &PtyGate,
     cancelled: &AtomicBool,
 ) -> Result<PtyProcess, RuntimeError> {
+    // A caller that already gave up must not risk a fresh `openpty`, which
+    // could wedge and hold the gate for a spawn nobody waits for.
+    if cancelled.load(Ordering::Acquire) {
+        return Err(RuntimeError::Pty(TIMED_OUT.to_owned()));
+    }
     let serial = gate.enter()?;
     #[cfg(test)]
     serial.block_if_paused();
+    // A test's private gate parks its holder without blocking other tests,
+    // but the real call still serializes with every PTY creation in the
+    // process.
+    #[cfg(test)]
+    let shared = (!std::ptr::eq(gate, Arc::as_ptr(&OPENPTY)))
+        .then(|| OPENPTY.enter())
+        .transpose()?;
     let pair = portable_pty::native_pty_system()
         .openpty(pty_size(command.grid_size, command.cell_size))
         .map_err(|error| RuntimeError::Pty(error.to_string()));
+    #[cfg(test)]
+    drop(shared);
     drop(serial);
     let pair = pair?;
     if cancelled.load(Ordering::Acquire) {
