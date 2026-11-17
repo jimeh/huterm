@@ -1495,10 +1495,22 @@ fn run_terminal(
         mut child,
         mut killer,
     } = parts;
+    #[cfg(test)]
+    let exit_probe;
+    #[cfg(all(test, not(unix)))]
+    {
+        exit_probe = None;
+    }
     #[cfg(unix)]
     {
         child = match crate::child_wait::observe(child, Arc::clone(&wake)) {
-            Ok(child) => child,
+            Ok(observed) => {
+                #[cfg(test)]
+                {
+                    exit_probe = Some(observed.exit_probe());
+                }
+                Box::new(observed)
+            }
             Err((error, mut child)) => {
                 let mut groups = pty::process_groups(child.process_id());
                 pty::record_foreground_group(master.as_ref(), &mut groups);
@@ -1835,6 +1847,8 @@ fn run_terminal(
                             exited: owner.child_exited,
                             #[cfg(test)]
                             pty_eof,
+                            #[cfg(test)]
+                            exit_probe: exit_probe.clone(),
                             tty: owner.master.tty_name().and_then(|name| {
                                 huterm_procinfo::tty_device(&name)
                             }),

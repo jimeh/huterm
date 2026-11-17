@@ -22,7 +22,7 @@ struct WaitResult {
 }
 
 #[derive(Debug)]
-struct ObservedChild {
+pub(crate) struct ObservedChild {
     pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     state: Arc<State>,
@@ -32,7 +32,7 @@ struct ObservedChild {
 pub(crate) fn observe(
     child: OwnedChild,
     wake: Arc<Wake>,
-) -> Result<OwnedChild, (std::io::Error, OwnedChild)> {
+) -> Result<ObservedChild, (std::io::Error, OwnedChild)> {
     let pid = child.process_id();
     observe_with(child, wake, |task| {
         std::thread::Builder::new()
@@ -48,7 +48,7 @@ fn observe_with(
     child: OwnedChild,
     wake: Arc<Wake>,
     spawn: impl FnOnce(WaitTask) -> std::io::Result<()>,
-) -> Result<OwnedChild, (std::io::Error, OwnedChild)> {
+) -> Result<ObservedChild, (std::io::Error, OwnedChild)> {
     let pid = child.process_id();
     let killer = child.clone_killer();
     let state = Arc::new(State::default());
@@ -108,7 +108,32 @@ fn observe_with(
             .expect("failed spawn retains the original child");
         return Err((error, child));
     }
-    Ok(Box::new(ObservedChild { pid, killer, state }))
+    Ok(ObservedChild { pid, killer, state })
+}
+
+#[cfg(test)]
+impl ObservedChild {
+    pub(crate) fn exit_probe(&self) -> ExitProbe {
+        ExitProbe(Arc::clone(&self.state))
+    }
+}
+
+/// Reports whether the waiter has recorded the child's exit. The kernel
+/// shows a zombie before that, but [`Child::try_wait`] reads only this.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct ExitProbe(Arc<State>);
+
+#[cfg(test)]
+impl ExitProbe {
+    pub(crate) fn recorded(&self) -> bool {
+        self.0
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .status
+            .is_some()
+    }
 }
 
 impl ChildKiller for ObservedChild {
