@@ -3,7 +3,7 @@ import { closeSync, openSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkRenderer, loadedRanges, readLoadedSegments, writeFailureEvidence, type RendererOutcome } from "./check-renderer.ts";
+import { checkRenderer, lddPaths, loadedRanges, mesaLibraries, readLoadedSegments, writeFailureEvidence, type RendererOutcome } from "./check-renderer.ts";
 
 const outcome = (changes: Partial<RendererOutcome> = {}): RendererOutcome => ({
   exitCode: 0,
@@ -108,5 +108,33 @@ test("the warm-up reads a malformed ELF file whole and skips what it cannot read
     expect(readLoadedSegments(join(directory, "missing"))).toEqual({ size: 0, read: 0 });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ldd output yields every resolved library path and the dynamic loader", () => {
+  expect(lddPaths([
+    "\tlinux-vdso.so.1 (0x0000ffff9a1f0000)",
+    "\tlibLLVM.so.20.1 => /lib/aarch64-linux-gnu/libLLVM.so.20.1 (0x0000ffff8d000000)",
+    "\tlibmissing.so.1 => not found",
+    "\t/lib/ld-linux-aarch64.so.1 (0x0000ffff9a1b0000)",
+  ].join("\n"))).toEqual(["/lib/aarch64-linux-gnu/libLLVM.so.20.1", "/lib/ld-linux-aarch64.so.1"]);
+});
+
+test("the warm-up reads the LLVM that Mesa links, or every LLVM when ldd names none", async () => {
+  const root = await mkdtemp(join(tmpdir(), "huterm-renderer-mesa-"));
+  try {
+    const libraries = join(root, "x86_64-linux-gnu");
+    await mkdir(libraries);
+    for (const name of ["libvulkan_lvp.so", "libgallium-25.2.8.so", "libLLVM-20.so.1", "libLLVM-17.so.1", "libz.so.1"]) {
+      await writeFile(join(libraries, name), "");
+    }
+    const at = (name: string) => join(libraries, name);
+    const linked = () => [at("libgallium-25.2.8.so"), at("libLLVM-20.so.1"), at("libz.so.1")];
+    expect(mesaLibraries([root], linked)).toEqual([at("libvulkan_lvp.so"), ...linked()]);
+
+    const fallback = mesaLibraries([root], () => []).sort();
+    expect(fallback).toEqual([at("libLLVM-17.so.1"), at("libLLVM-20.so.1"), at("libgallium-25.2.8.so"), at("libvulkan_lvp.so")].sort());
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

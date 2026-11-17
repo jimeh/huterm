@@ -50,15 +50,37 @@ export async function writeFailureEvidence(directory: string, outcome: RendererO
   ]);
 }
 
-/** Mesa's software Vulkan driver and LLVM, which the first Linux draw loads. */
-export function mesaLibraries(roots = ["/usr/lib", "/usr/lib64"]): string[] {
+/** The absolute library paths in `ldd` output, including the dynamic loader. */
+export function lddPaths(output: string): string[] {
+  return output.split("\n").flatMap((line) => {
+    const path = line.match(/=>\s*(\/\S+)/)?.[1] ?? line.match(/^\s*(\/\S+)\s+\(0x/)?.[1];
+    return path ? [path] : [];
+  });
+}
+
+function linkedLibraries(file: string): string[] {
+  const result = Bun.spawnSync(["ldd", file], { timeout: 10_000, stderr: "ignore" });
+  return result.exitCode === 0 ? lddPaths(result.stdout.toString()) : [];
+}
+
+/**
+ * Mesa's software Vulkan driver and the libraries it links, which the first
+ * Linux draw loads. Runner images carry several LLVM versions, and Mesa links
+ * one, so `ldd` picks it. When `ldd` names no LLVM, every `libLLVM` and
+ * `libgallium` file is returned instead, so the warm-up never covers less.
+ */
+export function mesaLibraries(roots = ["/usr/lib", "/usr/lib64"], linked = linkedLibraries): string[] {
   const list = (directory: string) => {
     try { return readdirSync(directory); } catch { return []; }
   };
   const directories = roots.flatMap((root) => [root, ...list(root).filter((name) => name.endsWith("-linux-gnu")).map((name) => join(root, name))]);
-  return directories.flatMap((directory) => list(directory)
-    .filter((name) => /^(libvulkan_lvp|libLLVM|libgallium)[.-].*\.so/.test(name))
+  const named = (pattern: RegExp) => directories.flatMap((directory) => list(directory)
+    .filter((name) => pattern.test(name))
     .map((name) => join(directory, name)));
+  const drivers = named(/^libvulkan_lvp\.so$/);
+  const dependencies = drivers.flatMap((driver) => linked(driver));
+  if (dependencies.some((path) => /\/libLLVM[^/]*$/.test(path))) return [...drivers, ...dependencies];
+  return [...drivers, ...named(/^(libLLVM|libgallium)[.-].*\.so/)];
 }
 
 const PT_LOAD = 1;
@@ -124,13 +146,14 @@ export function readLoadedSegments(file: string, chunk = Buffer.alloc(CHUNK_BYTE
 
 /**
  * Before the timed smoke on Linux, flush dirty pages, then read the mapped
- * segments of the smoke binary and Mesa into the page cache. Five of six
- * thread dumps from hung runs showed a thread waiting on a page-cache folio
- * (`folio_wait_bit_common`), and the renderer is the first smoke after the
- * binaries are linked. The `sync` keeps the launch's page faults from
- * queueing behind writeback of the build output. The read skips sections
- * the loader never maps, which are most of the debug binary, and reads each
- * file once however many names link to it. The warm-up runs outside the
+ * segments of the smoke binary, Mesa's driver, and the libraries the driver
+ * links into the page cache. Five of six thread dumps from hung runs showed
+ * a thread waiting on a page-cache folio (`folio_wait_bit_common`), and the
+ * renderer is the first smoke after the binaries are linked. The `sync`
+ * keeps the launch's page faults from queueing behind writeback of the build
+ * output. The read skips sections the loader never maps and LLVM versions
+ * Mesa does not link, and reads each file once however many names link to
+ * it. The warm-up runs outside the
  * smoke's deadline and reports how long each part took, one line per file
  * and a summary line last.
  */
