@@ -181,11 +181,13 @@ host whose home matters.
   descriptors when they finish.
 - Concurrent `openpty` calls failed on macOS 27, so `pty::spawn` serializes PTY
   creation through `PtyGate`. Under PTY exhaustion (`kern.tty.ptmx_max`, 511
-  on one Mac), macOS's `openpty` ioctl can spin in the kernel at full CPU and
-  never return, even after PTYs free up, so nothing in user space can stop
-  that thread. Every spawn therefore stays bounded: `spawn_in` waits at most
-  `STARTUP_DEADLINE` (10 s) for its runtime, then closes and detaches it; a
-  runtime that returns later sees the close before it starts a child. A gate
+  on one Mac), most opens fail quickly with `ENXIO`, but some `openpty`
+  calls get a master from `posix_openpt` and then spin in `grantpt`'s
+  `ioctl(master, TIOCPTYGRANT)` at full CPU, never returning even after PTYs
+  free up. Nothing in user space can stop that thread. Every spawn therefore
+  stays bounded: `spawn_in` waits at most `STARTUP_DEADLINE` (10 s) for its
+  runtime, then closes and detaches it; a runtime that returns later sees
+  the close before it starts a child. A gate
   waiter gives up once the current holder has held the gate for
   `OPENPTY_STALL` (5 s), so later spawns fail at once instead of queueing
   behind a stuck one. Both answer `RuntimeError::Pty`; the gate's message

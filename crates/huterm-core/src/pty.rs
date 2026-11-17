@@ -311,8 +311,9 @@ const OPENPTY_STALL: Duration = Duration::from_secs(5);
 /// from parallel test threads failed on macOS 27 with errno -6; Huterm's own
 /// spawns already serialize under the Mux lock, so this costs nothing there.
 ///
-/// Under PTY exhaustion, macOS's `openpty` can spin in the kernel and never
-/// return, even once PTYs free up, so its holder keeps the gate for good. A
+/// Under PTY exhaustion, macOS's `openpty` can spin in the kernel, in
+/// `grantpt`'s `TIOCPTYGRANT` ioctl, and never return, even once PTYs free
+/// up, so its holder keeps the gate for good. A
 /// waiter therefore gives up once the current holder has held the gate for
 /// `stall`, instead of queueing behind it. Each holder starts its own
 /// allowance, so ordinary contention never comes close.
