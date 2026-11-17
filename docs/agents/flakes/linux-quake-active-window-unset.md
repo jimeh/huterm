@@ -36,6 +36,8 @@ url = "https://github.com/jimeh/huterm/actions/runs/42368662592/job/128392024324
 pr = 433
 sha = "64f082c6"
 platform = "linux-aarch64"
+retried = false
+note = "not retried: this entry did not exist yet"
 
 [[occurrences]]
 date = "2026-11-07"
@@ -43,6 +45,8 @@ url = "https://github.com/jimeh/huterm/actions/runs/42326484515/job/128262855197
 pr = 432
 sha = "c33a8541"
 platform = "linux-aarch64"
+retried = false
+note = "not retried: this entry did not exist yet"
 
 [[occurrences]]
 date = "2026-11-09"
@@ -50,6 +54,8 @@ url = "https://github.com/jimeh/huterm/actions/runs/42701070619/job/129445619487
 pr = 451
 sha = "165b64b7"
 platform = "linux-aarch64"
+retried = false
+note = "not retried: this entry did not exist yet"
 
 [[occurrences]]
 date = "2026-11-10"
@@ -104,7 +110,7 @@ retried = true
   "external focus before unchanged fullscreen toggle", "external focus below
   quake", and "external focus before show attempt 1", which follows the
   reporter checks. The three hard failures from 2026-11-07 to 2026-11-09
-  predate `linux-aarch64` in this entry's platforms and were recorded later.
+  predate this entry and were recorded later.
 - **Cause:** `xdotool getactivewindow` prints exactly this error, and exits
   1, when the root's `_NET_ACTIVE_WINDOW` is None or absent. Under Openbox,
   when `xdotool windowactivate` moves focus from a Huterm window to the
@@ -126,5 +132,6 @@ retried = true
   in 10 of roughly 350 Linux smoke jobs from 2026-11-07 to 2026-11-16.
 - **Triage:** a match now means a script reads `getactivewindow` through
   `run()` again, so the error is the old throw, not a focus problem. A
-  witness that never becomes active fails as `timed out waiting for
-  external ...` instead, which this signature does not match.
+  witness that never becomes active fails at its wait's timeout, and a
+  property that stays unset fails with `_NET_ACTIVE_WINDOW stayed unset`;
+  this signature matches neither.

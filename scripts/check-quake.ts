@@ -30,7 +30,7 @@ function run(args: string[]): string {
  */
 export function activeWindowFrom(result: { exitCode: number | null; stdout: string; stderr: string }): string | undefined {
   if (result.exitCode === 0) return result.stdout.trim();
-  if (result.exitCode === 1 && result.stderr.includes("XGetWindowProperty[_NET_ACTIVE_WINDOW] failed")) return undefined;
+  if (result.exitCode === 1 && result.stderr.includes("XGetWindowProperty[_NET_ACTIVE_WINDOW] failed (code=1)")) return undefined;
   throw new Error(`xdotool getactivewindow exited ${result.exitCode ?? "by timeout"}: ${result.stderr}`);
 }
 function x11ActiveWindow(): string | undefined {
