@@ -1,6 +1,6 @@
 /** Run the renderer smoke with the same portable process checks as native smokes. */
-import { readdirSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runSmokeProcess, type ProgressWatchdog } from "./smoke-process.ts";
 
@@ -61,30 +61,89 @@ export function mesaLibraries(roots = ["/usr/lib", "/usr/lib64"]): string[] {
     .map((name) => join(directory, name)));
 }
 
+const PT_LOAD = 1;
+const PN_XNUM = 0xffff;
+const CHUNK_BYTES = 8 * 1048576;
+
 /**
- * Before the timed smoke on Linux, flush dirty pages and read the smoke
- * binary and Mesa into the page cache. Five of six thread dumps from hung
- * runs showed a thread waiting on a page-cache folio (`folio_wait_bit_common`),
- * and the renderer is the first smoke after the binaries are linked. The
- * warm-up runs outside the smoke's deadline and reports how long it took.
+ * The file ranges of a 64-bit little-endian ELF file's `PT_LOAD` segments,
+ * which are the only parts the loader maps. Any other file, or one whose
+ * program headers cannot be read, counts as one range covering all of it.
  */
-export async function warmUp(executable: string): Promise<string> {
+export function loadedRanges(fd: number, size: number): Array<[offset: number, length: number]> {
+  const whole: Array<[number, number]> = [[0, size]];
+  const header = Buffer.alloc(64);
+  if (readSync(fd, header, 0, header.length, 0) < header.length) return whole;
+  if (header.readUInt32BE(0) !== 0x7f454c46 || header[4] !== 2 || header[5] !== 1) return whole;
+  const tableOffset = Number(header.readBigUInt64LE(0x20));
+  const entrySize = header.readUInt16LE(0x36);
+  const count = header.readUInt16LE(0x38);
+  if (entrySize < 56 || count === 0 || count === PN_XNUM) return whole;
+  const table = Buffer.alloc(entrySize * count);
+  if (readSync(fd, table, 0, table.length, tableOffset) < table.length) return whole;
+  const ranges: Array<[number, number]> = [];
+  for (let entry = 0; entry < table.length; entry += entrySize) {
+    if (table.readUInt32LE(entry) !== PT_LOAD) continue;
+    const offset = Number(table.readBigUInt64LE(entry + 8));
+    const length = Math.min(Number(table.readBigUInt64LE(entry + 32)), size - offset);
+    if (length > 0) ranges.push([offset, length]);
+  }
+  return ranges.length > 0 ? ranges : whole;
+}
+
+/** Read a file's mapped segments into the page cache; returns its size and the bytes read. */
+export function readLoadedSegments(file: string, chunk = Buffer.alloc(CHUNK_BYTES)): { size: number; read: number } {
+  let fd: number;
+  try { fd = openSync(file, "r"); } catch { return { size: 0, read: 0 }; }
+  try {
+    const size = fstatSync(fd).size;
+    let read = 0;
+    for (const [offset, length] of loadedRanges(fd, size)) {
+      for (let done = 0; done < length;) {
+        const count = readSync(fd, chunk, 0, Math.min(chunk.length, length - done), offset + done);
+        if (count === 0) break;
+        done += count;
+        read += count;
+      }
+    }
+    return { size, read };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Before the timed smoke on Linux, flush dirty pages, then read the mapped
+ * segments of the smoke binary and Mesa into the page cache. Five of six
+ * thread dumps from hung runs showed a thread waiting on a page-cache folio
+ * (`folio_wait_bit_common`), and the renderer is the first smoke after the
+ * binaries are linked. The `sync` keeps the launch's page faults from
+ * queueing behind writeback of the build output. The read skips sections
+ * the loader never maps, which are most of the debug binary. The warm-up
+ * runs outside the smoke's deadline and reports how long it took.
+ */
+export function warmUp(executable: string): string {
   const started = performance.now();
   const sync = Bun.spawnSync(["sync"], { timeout: 120_000 });
   const synced = Math.round(performance.now() - started);
-  let bytes = 0;
+  const chunk = Buffer.alloc(CHUNK_BYTES);
+  let size = 0;
+  let read = 0;
   for (const file of [executable, ...mesaLibraries()]) {
-    bytes += (await readFile(file).catch(() => Buffer.alloc(0))).length;
+    const segments = readLoadedSegments(file, chunk);
+    size += segments.size;
+    read += segments.read;
   }
   const total = Math.round(performance.now() - started);
-  return `RENDERER_WARMUP sync=${sync.exitCode ?? sync.signalCode} synced_ms=${synced} read_mib=${(bytes / 1048576).toFixed(1)} total_ms=${total}`;
+  const mib = (bytes: number) => (bytes / 1048576).toFixed(1);
+  return `RENDERER_WARMUP sync=${sync.exitCode ?? sync.signalCode} synced_ms=${synced} file_mib=${mib(size)} read_mib=${mib(read)} total_ms=${total}`;
 }
 
 if (import.meta.main) {
   const executable = Bun.argv[2];
   if (!executable) throw new Error("usage: check-renderer.ts <executable>");
   const evidence = process.env.HUTERM_SMOKE_EVIDENCE_DIR;
-  if (process.platform === "linux") console.error(await warmUp(executable));
+  if (process.platform === "linux") console.error(warmUp(executable));
   const outcome = await runSmokeProcess([executable], {
     timeoutMs: TOTAL_MS,
     progress: WATCHDOG,
