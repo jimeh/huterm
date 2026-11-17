@@ -174,7 +174,11 @@ fn markers_queued_behind_the_exit_and_end_of_output_still_apply() {
     wait_for_ready(&client);
     output(&client, "\x1b]133;A\x07$ \x1b]133;C\x07");
     wait_for_states(&client, &[(1, CommandState::Running)]);
-    let exit = client.job_context().unwrap().exit_probe.unwrap();
+    let context = client.job_context().unwrap();
+    let exit = context.exit_probe.unwrap();
+    // The real reader's end stays queued behind the injected controls
+    // below. Teardown releases it.
+    context.reader_end.hold();
 
     let resume = pause(&client);
     gates.release("root");
@@ -188,6 +192,13 @@ fn markers_queued_behind_the_exit_and_end_of_output_still_apply() {
             Err("no exit recorded")
         }
     });
+    crate::test_support::wait_until("the reader to reach its end", || {
+        if context.reader_end.waiting() {
+            Ok(())
+        } else {
+            Err("the reader has not ended")
+        }
+    });
     // Output the reader queued before the end of output: a D, a C and D,
     // and a C whose D never comes.
     output(&client, "\x1b]133;D;0\x07");
@@ -195,8 +206,7 @@ fn markers_queued_behind_the_exit_and_end_of_output_still_apply() {
     output(&client, "\x1b]133;C\x07");
     // Controls run ahead of queued output. A writer report makes the
     // runtime observe the exit before it parses that output, and the end
-    // of output follows; the real reader's end may come anywhere around
-    // them.
+    // of output follows.
     control(&client, RuntimeControl::WriterFailed("probe".into()));
     control(&client, RuntimeControl::PtyEof);
     resume.send(()).unwrap();

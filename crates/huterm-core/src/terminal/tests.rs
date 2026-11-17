@@ -1275,10 +1275,10 @@ impl Read for LoggedReader {
 }
 
 /// Runs the reader loop over `results` with a readiness wait that
-/// returns `wait`, collecting forwarded output and controls. The script
-/// blocks forever once exhausted, so the wait fails after a few calls:
-/// a loop that stops handling end-of-file or errors then ends with a
-/// budget failure instead of hanging the test run.
+/// returns `wait`, collecting forwarded output and the control it ends
+/// with. The script blocks forever once exhausted, so the wait fails after
+/// a few calls: a loop that stops handling end-of-file or errors then ends
+/// with a budget failure instead of hanging the test run.
 fn forward(
     results: Vec<io::Result<Vec<u8>>>,
     wait: fn() -> io::Result<()>,
@@ -1290,10 +1290,9 @@ fn forward(
     };
     let wake = Arc::new(crate::wake::Wake::default());
     let (output, outputs) = mpsc::sync_channel(OUTPUT_CAPACITY);
-    let (controls, received) = mpsc::channel();
     let wait_log = Rc::clone(&log);
     let mut waits = 0;
-    forward_output(
+    let end = forward_output(
         &mut reader,
         || {
             wait_log.borrow_mut().push("wait");
@@ -1303,12 +1302,11 @@ fn forward(
             }
             wait()
         },
-        &crate::wake::SyncSender::new(output, Arc::clone(&wake)),
-        &crate::wake::Sender::new(controls, wake),
+        &crate::wake::SyncSender::new(output, wake),
         &AtomicBool::new(false),
     );
     let log = log.borrow().clone();
-    let received: Vec<_> = received.try_iter().collect();
+    let received: Vec<_> = end.into_iter().collect();
     assert!(
         !received.iter().any(|control| matches!(
             control,
