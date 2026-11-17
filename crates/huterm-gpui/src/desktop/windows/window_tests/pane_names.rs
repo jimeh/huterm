@@ -77,7 +77,8 @@ fn a_right_press_on_a_pane_bar_opens_its_menu_and_renames_the_pane(
     harness.update_view(window, |view, window, cx| {
         view.focus_pane(tab, right, window, cx);
     });
-    // The label this test waits for again later is the settled one.
+    // `default_label` is the label the pane returns to once its name is
+    // cleared, which is its directory once the terminal reports one.
     harness.wait_labels_settled(window);
     let (default_label, _) = harness
         .cx

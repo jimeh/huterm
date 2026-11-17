@@ -1052,6 +1052,12 @@ fn a_lone_bar_drag_skips_own_pane_and_slots_but_nests_after_spring_loading(
     let window = harness.attach_window();
     harness.activate(window, tab);
     harness.show_drawn(window, tab);
+    // The drag aims at the other tab's spring-loading middle, which a tab
+    // widening as its label settles moves out from under the pointer.
+    harness.wait_for("the other tab to install", |cx| {
+        pane_view(cx, window, other, target).is_some()
+    });
+    harness.wait_labels_settled(window);
     let grab = harness.grab(window, pane);
     harness.press_at(window, grab);
     let frame = harness.frame(window, pane);
