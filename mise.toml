@@ -18,7 +18,7 @@ markdownlint-cli2 = "0.24.1"
 pinact = "5.0.2"
 # The architecture task's dependency checks match with rg.
 ripgrep = "15.2.0"
-rust ={ version = "1.99.1", components = ["clippy", "rustfmt"], profile = "minimal", targets = ["wasm32-unknown-unknown"] }
+rust = { version = "1.99.1", components = ["clippy", "rustfmt"], profile = "minimal", targets = ["wasm32-unknown-unknown"] }
 "pipx:spdx-tools" = "0.8.5"
 syft = "1.57.1"
 taplo = "0.10.0"
@@ -168,12 +168,13 @@ if ! command -v rg >/dev/null; then
 fi
 # reject LINES MESSAGE RG_ARGS...: fails the task with MESSAGE when rg selects
 # any of LINES, printing them. rg exits 1 when it selects nothing and 2 on an
-# error, so only 1 passes.
+# error, so only 1 passes. A here-string, unlike a pipe, keeps an early rg exit
+# from failing the writer; --no-config keeps local rg settings out.
 reject() {
   local lines="$1" message="$2" status=0
   shift 2
   [ -n "$lines" ] || return 0
-  printf '%s\n' "$lines" | rg "$@" || status=$?
+  rg --no-config "$@" <<<"$lines" || status=$?
   case "$status" in
     0) echo "$message" >&2; exit 1 ;;
     1) ;;
