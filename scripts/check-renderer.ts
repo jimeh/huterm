@@ -68,13 +68,14 @@ function linkedLibraries(file: string): string[] {
 }
 
 /**
- * The Mesa libraries the first Linux draw loads, and the libraries they
+ * The Mesa libraries the first Linux draw can load, and the libraries they
  * link. wgpu starts both its Vulkan and GL backends, so the first launch
- * loads llvmpipe's Vulkan driver and, through glvnd's `libEGL`, Mesa's EGL,
- * which links `libgallium`. Runner images carry several LLVM versions and
- * Mesa links one, so `ldd` picks it. Unless `ldd` names both an LLVM and a
- * `libgallium`, every `libLLVM` and `libgallium` file is added, so the
- * warm-up never covers less than reading them all by name did.
+ * loads llvmpipe's Vulkan driver and, where glvnd's `libEGL` and Mesa's EGL
+ * are installed, `libgallium` through them. `libgallium` is warmed whether
+ * or not EGL is installed. Runner images carry several LLVM versions and
+ * Mesa links one, so `ldd` picks it. When `ldd` names no LLVM, every
+ * `libLLVM` file is added, so the warm-up never covers less than reading
+ * them all by name did.
  */
 export function mesaLibraries(roots = ["/usr/lib", "/usr/lib64"], linked = linkedLibraries): string[] {
   const list = (directory: string) => {
@@ -84,11 +85,10 @@ export function mesaLibraries(roots = ["/usr/lib", "/usr/lib64"], linked = linke
   const named = (pattern: RegExp) => directories.flatMap((directory) => list(directory)
     .filter((name) => pattern.test(name))
     .map((name) => join(directory, name)));
-  const entries = named(/^(libvulkan_lvp\.so|libEGL\.so\.1|libEGL_mesa\.so\.0)$/);
+  const entries = named(/^(libvulkan_lvp\.so|libEGL\.so\.1|libEGL_mesa\.so\.0)$|^libgallium[.-].*\.so/);
   const found = [...entries, ...entries.flatMap((entry) => linked(entry))];
-  const links = (pattern: RegExp) => found.some((path) => pattern.test(basename(path)));
-  if (links(/^libLLVM/) && links(/^libgallium/)) return found;
-  return [...found, ...named(/^(libLLVM|libgallium)[.-].*\.so/)];
+  if (found.some((path) => basename(path).startsWith("libLLVM"))) return found;
+  return [...found, ...named(/^libLLVM[.-].*\.so/)];
 }
 
 const PT_LOAD = 1;

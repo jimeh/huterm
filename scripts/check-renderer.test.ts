@@ -120,30 +120,30 @@ test("ldd output yields every resolved library path and the dynamic loader", () 
   ].join("\n"))).toEqual(["/lib/aarch64-linux-gnu/libLLVM.so.20.1", "/lib/ld-linux-aarch64.so.1"]);
 });
 
-test("the warm-up reads the Mesa libraries ldd names, and every LLVM and Gallium library unless it names both", async () => {
+test("the warm-up reads the Mesa libraries and what ldd says they link, and every LLVM when ldd names none", async () => {
   const root = await mkdtemp(join(tmpdir(), "huterm-renderer-mesa-"));
   try {
     const libraries = join(root, "x86_64-linux-gnu");
     await mkdir(libraries);
-    const names = ["libvulkan_lvp.so", "libEGL.so.1", "libEGL_mesa.so.0", "libgallium-25.2.8.so", "libLLVM-20.so.1", "libLLVM-17.so.1", "libz.so.1", "libgbm.so.1"];
+    const names = ["libvulkan_lvp.so", "libEGL.so.1", "libEGL_mesa.so.0", "libgallium-25.2.8.so", "libLLVM-20.so.1", "libLLVM-19.so.1", "libLLVM-17.so.1", "libz.so.1", "libgbm.so.1"];
     for (const name of names) await writeFile(join(libraries, name), "");
     const at = (name: string) => join(libraries, name);
-    // As on Mesa 25.2, the Vulkan driver links LLVM but not libgallium; Mesa's EGL links both.
+    // As on Mesa 25.2, the Vulkan driver links LLVM but not libgallium. Here
+    // libgallium links a different LLVM, which must be warmed as well.
     const graph: Record<string, string[]> = {
       [at("libvulkan_lvp.so")]: [at("libLLVM-20.so.1"), at("libz.so.1")],
-      [at("libEGL_mesa.so.0")]: [at("libgallium-25.2.8.so"), at("libgbm.so.1"), at("libLLVM-20.so.1")],
+      [at("libEGL_mesa.so.0")]: [at("libgallium-25.2.8.so"), at("libgbm.so.1")],
+      [at("libgallium-25.2.8.so")]: [at("libLLVM-19.so.1"), at("libz.so.1")],
     };
     const sorted = (paths: string[]) => [...new Set(paths)].sort();
-    const entries = [at("libvulkan_lvp.so"), at("libEGL.so.1"), at("libEGL_mesa.so.0")];
-    const linked = [at("libLLVM-20.so.1"), at("libz.so.1"), at("libgallium-25.2.8.so"), at("libgbm.so.1")];
-    const byName = [at("libgallium-25.2.8.so"), at("libLLVM-20.so.1"), at("libLLVM-17.so.1")];
-    expect(sorted(mesaLibraries([root], (file) => graph[file] ?? []))).toEqual(sorted([...entries, ...linked]));
+    const entries = [at("libvulkan_lvp.so"), at("libEGL.so.1"), at("libEGL_mesa.so.0"), at("libgallium-25.2.8.so")];
+    expect(sorted(mesaLibraries([root], (file) => graph[file] ?? [])))
+      .toEqual(sorted([...entries, at("libLLVM-20.so.1"), at("libLLVM-19.so.1"), at("libz.so.1"), at("libgbm.so.1")]));
 
-    const vulkanOnly = (file: string) => file === at("libvulkan_lvp.so") ? graph[file]! : [];
-    expect(sorted(mesaLibraries([root], vulkanOnly))).toEqual(sorted([...entries, ...graph[at("libvulkan_lvp.so")]!, ...byName]));
-
+    const everyLlvm = [at("libLLVM-20.so.1"), at("libLLVM-19.so.1"), at("libLLVM-17.so.1")];
+    expect(sorted(mesaLibraries([root], () => []))).toEqual(sorted([...entries, ...everyLlvm]));
     // The real ldd fails on these empty files, or is missing on macOS, and either way the warm-up falls back.
-    expect(sorted(mesaLibraries([root]))).toEqual(sorted([...entries, ...byName]));
+    expect(sorted(mesaLibraries([root]))).toEqual(sorted([...entries, ...everyLlvm]));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
