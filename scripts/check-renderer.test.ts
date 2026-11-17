@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { closeSync, openSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkRenderer, readLoadedSegments, writeFailureEvidence, type RendererOutcome } from "./check-renderer.ts";
+import { checkRenderer, loadedRanges, readLoadedSegments, writeFailureEvidence, type RendererOutcome } from "./check-renderer.ts";
 
 const outcome = (changes: Partial<RendererOutcome> = {}): RendererOutcome => ({
   exitCode: 0,
@@ -40,12 +41,12 @@ test("renderer failures retain process evidence", async () => {
 });
 
 /** A 64-bit little-endian ELF image with the given program headers and `size` bytes in all. */
-function elf(size: number, segments: Array<{ type: number; offset: number; length: number }>): Buffer {
+function elf(size: number, segments: Array<{ type: number; offset: number; length: number }>, tableOffset = 64n): Buffer {
   const image = Buffer.alloc(size);
   image.writeUInt32BE(0x7f454c46, 0);
   image[4] = 2;
   image[5] = 1;
-  image.writeBigUInt64LE(64n, 0x20);
+  image.writeBigUInt64LE(tableOffset, 0x20);
   image.writeUInt16LE(56, 0x36);
   image.writeUInt16LE(segments.length, 0x38);
   segments.forEach(({ type, offset, length }, index) => {
@@ -55,6 +56,11 @@ function elf(size: number, segments: Array<{ type: number; offset: number; lengt
     image.writeBigUInt64LE(BigInt(length), entry + 32);
   });
   return image;
+}
+
+function rangesOf(file: string): Array<[number, number]> {
+  const fd = openSync(file, "r");
+  try { return loadedRanges(fd, Bun.file(file).size); } finally { closeSync(fd); }
 }
 
 test("the warm-up reads only an ELF file's loaded segments, and all of any other file", async () => {
@@ -67,12 +73,38 @@ test("the warm-up reads only an ELF file's loaded segments, and all of any other
       { type: 4, offset: 4096, length: 512 },
       { type: 1, offset: 90_000, length: 20_000 },
     ]));
+    expect(rangesOf(binary)).toEqual([[0, 4096], [90_000, 10_000]]);
     expect(readLoadedSegments(binary, Buffer.alloc(1000))).toEqual({ size: 100_000, read: 4096 + 10_000 });
 
     const script = join(directory, "script");
     await writeFile(script, "#!/bin/sh\n".repeat(500));
     expect(readLoadedSegments(script)).toEqual({ size: 5000, read: 5000 });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
+test("the warm-up reads a malformed ELF file whole and skips what it cannot read", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "huterm-renderer-warmup-"));
+  try {
+    const unsafeTable = join(directory, "unsafe-table");
+    await writeFile(unsafeTable, elf(1000, [{ type: 1, offset: 0, length: 10 }], 0xffff_ffff_ffff_ffffn));
+    expect(rangesOf(unsafeTable)).toEqual([[0, 1000]]);
+
+    const truncatedTable = join(directory, "truncated-table");
+    await writeFile(truncatedTable, elf(1000, [{ type: 1, offset: 0, length: 10 }], 990n));
+    expect(rangesOf(truncatedTable)).toEqual([[0, 1000]]);
+
+    const unsafeSegment = join(directory, "unsafe-segment");
+    const image = elf(1000, [{ type: 1, offset: 0, length: 10 }]);
+    image.writeBigUInt64LE(0xffff_ffff_ffff_ffffn, 64 + 8);
+    await writeFile(unsafeSegment, image);
+    expect(rangesOf(unsafeSegment)).toEqual([[0, 1000]]);
+    expect(readLoadedSegments(unsafeSegment)).toEqual({ size: 1000, read: 1000 });
+
+    const subdirectory = join(directory, "subdirectory");
+    await mkdir(subdirectory);
+    expect(readLoadedSegments(subdirectory).read).toBe(0);
     expect(readLoadedSegments(join(directory, "missing"))).toEqual({ size: 0, read: 0 });
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 /** Run the renderer smoke with the same portable process checks as native smokes. */
-import { closeSync, fstatSync, openSync, readdirSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runSmokeProcess, type ProgressWatchdog } from "./smoke-process.ts";
@@ -68,7 +68,8 @@ const CHUNK_BYTES = 8 * 1048576;
 /**
  * The file ranges of a 64-bit little-endian ELF file's `PT_LOAD` segments,
  * which are the only parts the loader maps. Any other file, or one whose
- * program headers cannot be read, counts as one range covering all of it.
+ * program headers are truncated or point outside the file, counts as one
+ * range covering all of it.
  */
 export function loadedRanges(fd: number, size: number): Array<[offset: number, length: number]> {
   const whole: Array<[number, number]> = [[0, size]];
@@ -79,25 +80,32 @@ export function loadedRanges(fd: number, size: number): Array<[offset: number, l
   const entrySize = header.readUInt16LE(0x36);
   const count = header.readUInt16LE(0x38);
   if (entrySize < 56 || count === 0 || count === PN_XNUM) return whole;
+  if (!Number.isSafeInteger(tableOffset) || tableOffset + entrySize * count > size) return whole;
   const table = Buffer.alloc(entrySize * count);
   if (readSync(fd, table, 0, table.length, tableOffset) < table.length) return whole;
   const ranges: Array<[number, number]> = [];
   for (let entry = 0; entry < table.length; entry += entrySize) {
     if (table.readUInt32LE(entry) !== PT_LOAD) continue;
     const offset = Number(table.readBigUInt64LE(entry + 8));
+    if (!Number.isSafeInteger(offset) || offset > size) return whole;
     const length = Math.min(Number(table.readBigUInt64LE(entry + 32)), size - offset);
     if (length > 0) ranges.push([offset, length]);
   }
   return ranges.length > 0 ? ranges : whole;
 }
 
-/** Read a file's mapped segments into the page cache; returns its size and the bytes read. */
+/**
+ * Read a file's mapped segments into the page cache and return its size and
+ * the bytes read. A file that cannot be opened or read counts only what was
+ * read before the failure: the warm-up is best effort.
+ */
 export function readLoadedSegments(file: string, chunk = Buffer.alloc(CHUNK_BYTES)): { size: number; read: number } {
+  let size = 0;
+  let read = 0;
   let fd: number;
-  try { fd = openSync(file, "r"); } catch { return { size: 0, read: 0 }; }
+  try { fd = openSync(file, "r"); } catch { return { size, read }; }
   try {
-    const size = fstatSync(fd).size;
-    let read = 0;
+    size = fstatSync(fd).size;
     for (const [offset, length] of loadedRanges(fd, size)) {
       for (let done = 0; done < length;) {
         const count = readSync(fd, chunk, 0, Math.min(chunk.length, length - done), offset + done);
@@ -106,10 +114,12 @@ export function readLoadedSegments(file: string, chunk = Buffer.alloc(CHUNK_BYTE
         read += count;
       }
     }
-    return { size, read };
+  } catch {
+    // Keep what was read; the timed smoke reports any real failure.
   } finally {
-    closeSync(fd);
+    try { closeSync(fd); } catch { /* already closed or invalid */ }
   }
+  return { size, read };
 }
 
 /**
@@ -119,24 +129,38 @@ export function readLoadedSegments(file: string, chunk = Buffer.alloc(CHUNK_BYTE
  * (`folio_wait_bit_common`), and the renderer is the first smoke after the
  * binaries are linked. The `sync` keeps the launch's page faults from
  * queueing behind writeback of the build output. The read skips sections
- * the loader never maps, which are most of the debug binary. The warm-up
- * runs outside the smoke's deadline and reports how long it took.
+ * the loader never maps, which are most of the debug binary, and reads each
+ * file once however many names link to it. The warm-up runs outside the
+ * smoke's deadline and reports how long each part took, one line per file
+ * and a summary line last.
  */
 export function warmUp(executable: string): string {
   const started = performance.now();
   const sync = Bun.spawnSync(["sync"], { timeout: 120_000 });
   const synced = Math.round(performance.now() - started);
   const chunk = Buffer.alloc(CHUNK_BYTES);
+  const mib = (bytes: number) => (bytes / 1048576).toFixed(1);
+  const lines: string[] = [];
   let size = 0;
   let read = 0;
-  for (const file of [executable, ...mesaLibraries()]) {
+  for (const file of uniqueFiles([executable, ...mesaLibraries()])) {
+    const fileStarted = performance.now();
     const segments = readLoadedSegments(file, chunk);
     size += segments.size;
     read += segments.read;
+    lines.push(`RENDERER_WARMUP file=${file} file_mib=${mib(segments.size)} read_mib=${mib(segments.read)} ms=${Math.round(performance.now() - fileStarted)}`);
   }
   const total = Math.round(performance.now() - started);
-  const mib = (bytes: number) => (bytes / 1048576).toFixed(1);
-  return `RENDERER_WARMUP sync=${sync.exitCode ?? sync.signalCode} synced_ms=${synced} file_mib=${mib(size)} read_mib=${mib(read)} total_ms=${total}`;
+  lines.push(`RENDERER_WARMUP sync=${sync.exitCode ?? sync.signalCode} synced_ms=${synced} file_mib=${mib(size)} read_mib=${mib(read)} total_ms=${total}`);
+  return lines.join("\n");
+}
+
+/** The files behind these paths, each named once by its resolved path. */
+function uniqueFiles(paths: string[]): string[] {
+  const resolve = (path: string) => {
+    try { return realpathSync(path); } catch { return path; }
+  };
+  return [...new Set(paths.map(resolve))];
 }
 
 if (import.meta.main) {
