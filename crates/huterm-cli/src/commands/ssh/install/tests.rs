@@ -62,6 +62,13 @@ fn candidates_prefer_an_absolute_runtime_directory() {
         [PathBuf::from("/tmp/huterm-ssh-501")],
         "a relative runtime directory is ignored, and repeats collapse"
     );
+    for temporary in ["", "relative/T", "/var/../T"] {
+        assert_eq!(
+            candidates(Some("/run/../user"), temporary),
+            [PathBuf::from("/tmp/huterm-ssh-501")],
+            "an empty, relative, or escaping {temporary:?} is ignored"
+        );
+    }
 }
 
 #[test]

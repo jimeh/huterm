@@ -31,15 +31,19 @@ pub(crate) fn candidates(
     temporary: PathBuf,
     uid: u32,
 ) -> Vec<PathBuf> {
+    // An empty or relative root would put the directory under the working
+    // directory, and `..` could leave the root.
+    let usable = |root: &PathBuf| {
+        root.is_absolute()
+            && !root
+                .components()
+                .any(|component| component == std::path::Component::ParentDir)
+    };
     let name = format!("huterm-ssh-{uid}");
     let mut roots = Vec::new();
-    if let Some(runtime) = environment("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|runtime| runtime.is_absolute())
-    {
-        roots.push(runtime);
-    }
+    roots.extend(environment("XDG_RUNTIME_DIR").map(PathBuf::from));
     roots.push(temporary);
+    roots.retain(usable);
     roots.push(PathBuf::from("/tmp"));
     let mut directories: Vec<PathBuf> = Vec::new();
     for root in roots {
