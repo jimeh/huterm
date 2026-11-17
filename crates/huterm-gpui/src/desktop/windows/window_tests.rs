@@ -455,13 +455,17 @@ impl DesktopHarness {
             window
                 .update(cx, |root, _, cx| {
                     let view = root.downcast::<WorkspaceView>().ok()?;
-                    Some(view.read(cx).tabs.iter().all(|tab| {
-                        tab.focused_view()
-                            .read(cx)
-                            .metadata
-                            .directory()
-                            .is_some()
-                    }))
+                    let tabs = &view.read(cx).tabs;
+                    Some(
+                        !tabs.is_empty()
+                            && tabs.iter().all(|tab| {
+                                tab.focused_view()
+                                    .read(cx)
+                                    .metadata
+                                    .directory()
+                                    .is_some()
+                            }),
+                    )
                 })
                 .ok()
                 .flatten()
@@ -680,7 +684,7 @@ fn describe(cx: &App) -> String {
         .collect::<Vec<_>>();
     let closes = workspaces
         .iter()
-        .map(|view| describe_close(view, cx))
+        .map(|view| describe_close(view))
         .collect::<Vec<_>>()
         .join("; ");
     let views = workspaces
@@ -689,12 +693,16 @@ fn describe(cx: &App) -> String {
         .map(|tab| describe_view(tab.id, tab.focused_view().read(cx)))
         .collect::<Vec<_>>()
         .join("; ");
-    format!("{records}; closes: {closes}; views: {views}")
+    let failures = cx.global::<Desktop>().close_failures;
+    format!(
+        "{records}; close_failures={failures}; closes: {closes}; \
+         views: {views}"
+    )
 }
 
 /// A window's close pipeline: a close that never finishes shows here
 /// whether it waits on an assessment, a confirmation, or nothing at all.
-fn describe_close(view: &WorkspaceView, cx: &App) -> String {
+fn describe_close(view: &WorkspaceView) -> String {
     let close = &view.close;
     let notices: Vec<_> = view
         .notices
@@ -703,14 +711,13 @@ fn describe_close(view: &WorkspaceView, cx: &App) -> String {
         .collect();
     format!(
         "window {:?}: busy={} current={:?} pending={:?} confirmation={:?} \
-         jobs={:?} failures={} notices={notices:?}",
+         jobs={:?} notices={notices:?}",
         view.window,
         view.busy,
         close.current,
         close.pending,
         close.confirmation,
         close.assessment.as_ref().map(CloseAssessment::jobs),
-        cx.global::<Desktop>().close_failures,
     )
 }
 
