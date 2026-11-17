@@ -30,9 +30,11 @@ requesttty auto
 /// The stand-in `ssh`. With `-G` it prints `resolved`, or with a `hang`
 /// file records its process ID and waits forever. With `ControlMaster=yes`
 /// it is an install: it records its arguments and input, then answers as
-/// `install-mode` says. Otherwise it is the session: it records its
-/// process ID, arguments, and environment, writes to both streams, and
-/// exits 42.
+/// `install-mode` says; `flood` acknowledges, then writes 1 MiB more and
+/// fails if its output is cut off.
+/// Otherwise it is the session: it records its process ID, arguments,
+/// environment, and, with a `read-stdin` file, its input, writes to both
+/// streams, and exits 42.
 const FAKE_SSH: &str = r#"#!/bin/sh
 dir=${0%/*}
 if [ "$1" = -G ]; then
@@ -55,6 +57,11 @@ for argument in "$@"; do
             wrong) echo "huterm-terminfo-$nonce" ;;
             echo) printf '%s\n' "$last" ;;
             fail) echo "ssh: connect to host failed" >&2; exit 255 ;;
+            flood)
+                echo "huterm-terminfo-$((nonce + 1))"
+                # Like ssh, fail when standard output closes early.
+                head -c 1048576 /dev/zero | tr '\0' x || exit 255
+                ;;
         esac
         exit 0
     fi
@@ -62,6 +69,9 @@ done
 echo "$$" > "$dir/session.pid"
 printf '%s\0' "$@" > "$dir/session.args"
 printf '%s\0' "TERM=$TERM" "COLORTERM=$COLORTERM" > "$dir/session.env"
+if [ -e "$dir/read-stdin" ]; then
+    cat > "$dir/session.stdin"
+fi
 echo session-out
 echo session-err >&2
 exit 42
@@ -193,6 +203,20 @@ fn eventually(what: &str, timeout: Duration, condition: impl Fn() -> bool) {
     }
 }
 
+/// Gives `command` a pseudo-terminal as standard input, as an interactive
+/// shell does. The returned primary end keeps the terminal open.
+fn terminal_stdin(command: &mut Command) -> std::os::fd::OwnedFd {
+    let pty = nix::pty::openpty(None, None).unwrap();
+    command.stdin(Stdio::from(pty.slave));
+    pty.master
+}
+
+/// Runs `command` with a pseudo-terminal as standard input.
+fn run_interactive(command: &mut Command) -> Output {
+    let _terminal = terminal_stdin(command);
+    run(command)
+}
+
 fn alive(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
 }
@@ -311,7 +335,7 @@ fn ssh_forwards_terminal_variables_only_when_asked() {
 #[test]
 fn ssh_install_success_caches_the_host_and_reuses_the_master() {
     let scratch = Scratch::new();
-    let output = run(scratch.huterm("xterm-huterm").args([
+    let output = run_interactive(scratch.huterm("xterm-huterm").args([
         "ssh",
         "--forward-env",
         "--terminfo",
@@ -402,7 +426,7 @@ fn ssh_install_failures_warn_and_downgrade() {
     for mode in ["wrong", "echo", "fail"] {
         let scratch = Scratch::new();
         scratch.write("bin/install-mode", mode);
-        let output = run(scratch.huterm("xterm-huterm").args([
+        let output = run_interactive(scratch.huterm("xterm-huterm").args([
             "ssh",
             "--terminfo",
             "work",
@@ -430,7 +454,7 @@ fn ssh_install_failures_warn_and_downgrade() {
 #[test]
 fn ssh_installs_only_before_an_interactive_session() {
     let scratch = Scratch::new();
-    run(scratch.huterm("xterm-huterm").args([
+    run_interactive(scratch.huterm("xterm-huterm").args([
         "ssh",
         "--terminfo",
         "work",
@@ -444,9 +468,11 @@ fn ssh_installs_only_before_an_interactive_session() {
         "bin/resolved",
         &RESOLVED.replace("stdinnull no", "stdinnull yes"),
     );
-    run(scratch
-        .huterm("xterm-huterm")
-        .args(["ssh", "--terminfo", "work"]));
+    run_interactive(scratch.huterm("xterm-huterm").args([
+        "ssh",
+        "--terminfo",
+        "work",
+    ]));
     assert!(
         scratch.recorded("install.args").is_none(),
         "an effective -n"
@@ -455,14 +481,135 @@ fn ssh_installs_only_before_an_interactive_session() {
 }
 
 #[test]
+fn ssh_installs_nothing_when_the_session_requests_no_terminal() {
+    // OpenSSH prints `requesttty false` for both `-T` and `RequestTTY=no`.
+    for arguments in [&["-T", "work"][..], &["-o", "RequestTTY=no", "work"]] {
+        let scratch = Scratch::new();
+        scratch.write(
+            "bin/resolved",
+            &RESOLVED.replace("requesttty auto", "requesttty false"),
+        );
+        let output = run_interactive(
+            scratch
+                .huterm("xterm-huterm")
+                .args(["ssh", "--terminfo"])
+                .args(arguments),
+        );
+        assert_eq!(output.status.code(), Some(42), "{arguments:?}");
+        assert!(
+            scratch.recorded("install.args").is_none(),
+            "{arguments:?}: {:?}",
+            text(&output.stderr)
+        );
+        assert_eq!(session_term(&scratch), "xterm-256color", "{arguments:?}");
+        assert_eq!(
+            scratch.arguments("session.args").unwrap(),
+            args(arguments),
+            "{arguments:?}"
+        );
+    }
+}
+
+#[test]
+fn ssh_passes_piped_input_to_the_session_without_an_install() {
+    let scratch = Scratch::new();
+    scratch.write("bin/read-stdin", "");
+    let input = b"echo one\n\0\xff two\n";
+    let mut child = scratch
+        .huterm("xterm-huterm")
+        .args(["ssh", "--terminfo", "work"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(input).unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(42));
+    assert_eq!(text(&output.stderr), "session-err\n", "no install");
+    assert!(scratch.recorded("install.args").is_none());
+    assert_eq!(scratch.recorded("session.stdin").unwrap(), input);
+    assert_eq!(session_term(&scratch), "xterm-256color");
+}
+
+#[test]
+fn ssh_terminfo_without_openssh_8_7_settings_says_so_and_downgrades() {
+    for missing in [
+        "sessiontype default\n",
+        "stdinnull no\n",
+        "forkafterauthentication no\n",
+    ] {
+        let scratch = Scratch::new();
+        scratch.write("bin/resolved", &RESOLVED.replace(missing, ""));
+        let output = run_interactive(scratch.huterm("xterm-huterm").args([
+            "ssh",
+            "--terminfo",
+            "work",
+        ]));
+        assert_eq!(output.status.code(), Some(42), "{missing:?}");
+        assert_eq!(
+            text(&output.stderr),
+            "huterm: ssh_terminfo needs OpenSSH 8.7 or later; using \
+             xterm-256color\nsession-err\n",
+            "{missing:?}"
+        );
+        assert!(scratch.recorded("install.args").is_none(), "{missing:?}");
+        assert_eq!(session_term(&scratch), "xterm-256color", "{missing:?}");
+    }
+}
+
+#[test]
+fn ssh_install_reads_past_large_output_without_hanging() {
+    let scratch = Scratch::new();
+    scratch.write("bin/install-mode", "flood");
+    let mut command = scratch.huterm("xterm-huterm");
+    command
+        .args(["ssh", "--terminfo", "work"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    let _terminal = terminal_stdin(&mut command);
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let group =
+                nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+            let _ = nix::sys::signal::killpg(
+                group,
+                nix::sys::signal::Signal::SIGKILL,
+            );
+            let _ = child.wait();
+            panic!(
+                "the install hung on its output; session started: {}",
+                scratch.recorded("session.args").is_some()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(42));
+    assert_eq!(session_term(&scratch), "xterm-huterm");
+    let cache = scratch.cache().unwrap();
+    assert!(cache.starts_with("alice@build.example.org\t"), "{cache}");
+}
+
+#[test]
 fn ssh_kills_a_hanging_resolution_and_downgrades() {
     let scratch = Scratch::new();
     scratch.write("bin/hang", "");
     let started = Instant::now();
-    let output =
-        run(scratch
-            .huterm("xterm-huterm")
-            .args(["ssh", "--terminfo", "work"]));
+    let output = run_interactive(scratch.huterm("xterm-huterm").args([
+        "ssh",
+        "--terminfo",
+        "work",
+    ]));
     assert_eq!(output.status.code(), Some(42));
     assert!(
         started.elapsed() >= Duration::from_secs(10),

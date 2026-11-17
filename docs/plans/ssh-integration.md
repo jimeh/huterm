@@ -91,9 +91,13 @@ cannot collide with an ssh argument.
    Install-eligible means: no command-line remote command; none of `-W`,
    `-O`, `-G`, `-V`, `-Q`, `-S`, `-M` (the last two would override Huterm's
    master options); and the effective `sessiontype default`,
-   `forkafterauthentication no`, `stdinnull no`, `remotecommand none`, and
-   `requesttty` other than `no` (read from `ssh -G`, which already applies
-   `-N`, `-f`, `-n`, `-s`, `-t`, and `-T` in their order).
+   `forkafterauthentication no`, `stdinnull no`, and `remotecommand none`
+   (read from `ssh -G`, which already applies `-N`, `-f`, `-n`, `-s`, `-t`,
+   and `-T` in their order). The session must also get a pty: `requesttty`
+   `force`, or `auto` or `true` with a terminal on standard input; `ssh -G`
+   prints `false` for `-T` and `RequestTTY no`. Without the OpenSSH 8.7 keys
+   (`sessiontype`, `stdinnull`, `forkafterauthentication`), `--terminfo`
+   prints that it needs OpenSSH 8.7 or later and downgrades.
 4. **Exec** `ssh` (found on `PATH`) with Huterm's options first, then the
    user's arguments unchanged, and the chosen `TERM` in its environment.
    `--forward-env` adds `-o SendEnv=COLORTERM`, `-o SendEnv=TERM_PROGRAM`,
@@ -214,13 +218,18 @@ unchanged.
   the arguments; otherwise `command ssh` (fish `command`, nushell `^ssh`).
   The `sudo` wrapper does the same with `huterm sudo`.
 - **Bypass:** `command ssh` and `command sudo` (nushell `^ssh`, `^sudo`).
-- **nushell:** the module that `use huterm *` imports (defined in
+- **nushell:** the module that `use huterm [ssh sudo]` imports (defined in
   `nushell/xdg/nushell/vendor/autoload/huterm.nu`, not the body sourced from
   the first-prompt hook, whose definitions would not persist) exports
   `def --wrapped ssh` and `sudo`, which check the features at call time and
-  run `^ssh` or `^sudo` when off. `use huterm *` runs after `config.nu` and
-  the autoload directories, so Huterm's definitions replace a user's own
-  `def ssh` or `def sudo`; the docs say to turn the feature off to keep one.
+  run `^ssh` or `^sudo` when off. Core lists `ssh` only when `ssh_env` or
+  `ssh_terminfo` is on and `sudo` only when `sudo` is on; `use huterm []`
+  still runs the module's environment setup, and a bare `use huterm` would
+  add a `huterm` namespace over the `huterm` command. The import runs after
+  `config.nu` and the autoload directories, so an imported wrapper replaces
+  a user's own `def ssh` or `def sudo`; the docs say to turn its features
+  off to keep one. Each wrapper runs the program in its body's first
+  pipeline, the only one that receives piped input.
 - **elvish:** documented one-liners only.
 - Scripts stay Huterm-authored; never consult Ghostty's or Kitty's bash or zsh
   integration (GPL), per the shell integration plan.

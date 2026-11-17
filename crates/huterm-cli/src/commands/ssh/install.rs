@@ -11,7 +11,8 @@ use std::process::{Command, Stdio};
 pub(crate) const SOURCE: &str =
     include_str!("../../../../../assets/terminfo/xterm-huterm.terminfo");
 
-/// The most standard output an install keeps.
+/// The most standard output an install keeps; it reads and discards the
+/// rest.
 const OUTPUT_LIMIT: u64 = 64 << 10;
 
 /// The size of `sockaddr_un.sun_path`, its terminating NUL included.
@@ -194,8 +195,11 @@ pub(crate) fn run(
         });
     }
     let mut output = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        let _ = stdout.take(OUTPUT_LIMIT).read_to_end(&mut output);
+    if let Some(mut stdout) = child.stdout.take() {
+        // Read to the end, discarding output past the limit: closing the
+        // pipe early would fail or stall a remote that writes more.
+        let _ = (&mut stdout).take(OUTPUT_LIMIT).read_to_end(&mut output);
+        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
     }
     let succeeded = child.wait().is_ok_and(|status| status.success());
     succeeded && acknowledged(&output, nonce)

@@ -125,12 +125,29 @@ pub(crate) fn plan(command: &TerminalCommand, host: &Host<'_>) -> LaunchPlan {
             if shell == "nu" {
                 result
                     .arguments
-                    .extend(["--execute".into(), "use huterm *".into()]);
+                    .extend(["--execute".into(), nushell_import(command)]);
             }
         }
         _ => {}
     }
     result
+}
+
+/// Imports the nushell wrappers whose features are on. `use` always runs
+/// the module's environment setup; a bare `use huterm` would also add a
+/// `huterm` command namespace over the huterm command.
+fn nushell_import(command: &TerminalCommand) -> String {
+    let features = &command.shell_integration.features;
+    let mut members = Vec::new();
+    if features.contains(ShellFeature::SshEnv)
+        || features.contains(ShellFeature::SshTerminfo)
+    {
+        members.push("ssh");
+    }
+    if features.contains(ShellFeature::Sudo) {
+        members.push("sudo");
+    }
+    format!("use huterm [{}]", members.join(" "))
 }
 
 /// The enabled features as the scripts read them: comma-separated, in a

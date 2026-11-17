@@ -361,7 +361,7 @@ them.
 | zsh | A static `ZDOTDIR` stub in Huterm resources restores the original value, reads the user's `.zshenv`, and installs hooks. Native `.zprofile`, `.zshrc`, and `.zlogin` ordering follows. |
 | bash | Every bash, Apple's `/bin/bash` 3.2 included, starts as `bash --rcfile <bootstrap> -i` with the other options it was given. For a login shell (`-l`, `--login`, or `l` in combined flags such as `-il`), the bootstrap emulates the login sequence: `/etc/profile`, then the first readable `.bash_profile`, `.bash_login`, or `.profile`. Other shells read `.bashrc` or the requested `--rcfile` as bash does. `--noprofile` is honored. `--norc` starts bash without integration, because an rcfile start cannot skip a distribution's system bashrc. Bash keeps its own `ENV`, `HISTFILE`, and option defaults. |
 | fish | A vendor `conf.d` bootstrap runs after user `conf.d` snippets and before `config.fish`. Fish 4.9.3 provides the full marker stream natively. |
-| nushell | A vendor autoload module and `--execute 'use huterm *'` preserve native startup order. Nushell 0.117.0 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
+| nushell | A vendor autoload module and `--execute 'use huterm [...]'` preserve native startup order; the list names the `ssh` and `sudo` wrappers whose features are on. Nushell 0.117.0 supplies OSC 133; Huterm replaces enabled native OSC 7 with literal directory reports. |
 | elvish | Huterm adds a module directory. Add the guarded `use` below to `rc.elv`; Elvish has no automatic loading hook. |
 
 For elvish, add this to `rc.elv`:
@@ -626,17 +626,31 @@ function files and aliases, which fish defines as functions. In bash and zsh,
 an existing alias such as `alias ssh='ssh -A'` keeps working: it expands into
 the wrapper. Removing or replacing a wrapper later, with `unset -f ssh`,
 `unfunction ssh`, `functions -e ssh`, or a new definition, sticks for the rest
-of that shell. Nushell's `use huterm *` runs after `config.nu` and the
-autoload directories, so Huterm's `ssh` and `sudo` replace your own `def ssh`
-or `def sudo`; turn off the feature to keep yours. Elvish gets no automatic
-wrappers. To add one, put this in `rc.elv`:
+of that shell. Nushell imports Huterm's `ssh` wrapper when `ssh_env` or
+`ssh_terminfo` is on, and its `sudo` wrapper when `sudo` is on, after
+`config.nu` and the autoload directories. An imported wrapper replaces your
+own `def ssh` or `def sudo`; turn off its features to keep yours. Elvish gets
+no automatic wrappers. To add them, put this in `rc.elv`; outside Huterm, the
+functions run the programs themselves:
 
 ```elvish
-fn ssh {|@args| huterm ssh --forward-env $@args }
+fn ssh {|@args|
+  if (has-env HUTERM_BIN_DIR) {
+    $E:HUTERM_BIN_DIR/huterm ssh --forward-env $@args
+  } else {
+    e:ssh $@args
+  }
+}
+fn sudo {|@args|
+  if (has-env HUTERM_BIN_DIR) {
+    $E:HUTERM_BIN_DIR/huterm sudo $@args
+  } else {
+    e:sudo $@args
+  }
+}
 ```
 
-Add `--terminfo` after `--forward-env` to install the entry as well, and
-define `fn sudo {|@args| huterm sudo $@args }` the same way.
+Add `--terminfo` after `--forward-env` to install the entry as well.
 
 The wrappers cover commands typed at the prompt. `scp`, `sftp`, `rsync`, Git,
 `mosh`, scripts, and other programs that start `ssh` themselves use the
@@ -650,21 +664,30 @@ terminal on the remote host.
   `SendEnv` adds to your own `SendEnv` lines. OpenSSH sends values from your
   `SetEnv` configuration after the forwarded ones, so your `SetEnv` of the
   same name wins.
+- An install needs OpenSSH 8.7 or later on your machine, which reports the
+  session settings Huterm checks. With an older `ssh`, `huterm ssh` prints
+  `huterm: ssh_terminfo needs OpenSSH 8.7 or later; using xterm-256color`
+  and connects with that `TERM`.
 - An install needs `sh`, `tic`, `mktemp`, a writable `~/.terminfo`, and an
   `xterm-256color` entry on the remote host, which the definition builds on.
   It runs only before an interactive session: not with a remote command,
-  `-N`, `-f`, `-n`, `-s`, `-W`, `-O`, `-G`, `-V`, `-Q`, or `RequestTTY no`,
-  and not with `-S` or `-M`, which would override Huterm's control socket.
+  `-N`, `-f`, `-n`, `-s`, `-T`, `-W`, `-O`, `-G`, `-V`, `-Q`, or
+  `RequestTTY no`, and not with `-S` or `-M`, which would override Huterm's
+  control socket. Standard input must be a terminal, as it is at a prompt,
+  unless `-tt` or `RequestTTY force` asks for a remote terminal anyway, so
+  `ssh host < script.sh` installs nothing.
   A host whose `infocmp` already knows the entry gets no new files.
 
 #### How an install connects once
 
 `huterm ssh` prints `huterm: installing the xterm-huterm terminfo entry on
 user@host`, then connects with its own `ControlMaster` and `ControlPath`, which
-take precedence over your configuration, so your own connection sharing is
-bypassed for this one connection. The session then reuses that connection,
-so you authenticate once; if the shared connection has already closed, the
-session connects on its own and may prompt again. The control socket lives in
+take precedence over your configuration. The session that follows uses the
+same `ControlPath`, so it reuses that connection and you authenticate once; if
+the shared connection has already closed, the session connects on its own and
+may prompt again. Neither the install nor that session uses or becomes your
+own shared connection; later sessions to a host in the cache use your
+configuration as usual. The control socket lives in
 a private directory under `$XDG_RUNTIME_DIR`, your temporary directory, or
 `/tmp`. Ctrl-C during the install stops it and starts no session.
 

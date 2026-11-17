@@ -7,7 +7,7 @@
 //! `TERM_PROGRAM_VERSION` with `SendEnv`, which accumulates with the user's
 //! own `SendEnv` lines, where `-o SetEnv` would replace theirs.
 use std::ffi::OsString;
-use std::io::Read as _;
+use std::io::{IsTerminal as _, Read as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -141,7 +141,17 @@ fn session(
     {
         return Session::Keep(None);
     }
-    if !options.terminfo || !parsed.installable() || !effective.interactive() {
+    if !options.terminfo || !parsed.installable() {
+        return Session::Downgrade;
+    }
+    if !effective.reports_session_settings() {
+        eprintln!(
+            "huterm: ssh_terminfo needs OpenSSH 8.7 or later; using \
+             {COMPATIBILITY_TERM}"
+        );
+        return Session::Downgrade;
+    }
+    if !effective.interactive(std::io::stdin().is_terminal()) {
         return Session::Downgrade;
     }
     let uid = huterm_socket::effective_uid();

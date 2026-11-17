@@ -43,17 +43,31 @@ impl Effective {
         Key::of(self.get("user")?, self.get("hostname")?).ok()
     }
 
+    /// Whether `ssh -G` printed `sessiontype`, `stdinnull`, and
+    /// `forkafterauthentication`, which OpenSSH 8.7 added. Without them an
+    /// install cannot tell whether the session is interactive.
+    pub(crate) fn reports_session_settings(&self) -> bool {
+        ["sessiontype", "stdinnull", "forkafterauthentication"]
+            .iter()
+            .all(|keyword| self.get(keyword).is_some())
+    }
+
     /// Whether the effective settings start an interactive session whose
-    /// standard input an install can borrow first. A setting `ssh -G` does
-    /// not print, as before OpenSSH 8.7, rules the install out.
-    pub(crate) fn interactive(&self) -> bool {
+    /// standard input an install can borrow first. The session gets a
+    /// terminal only when `terminal` says standard input is one, unless
+    /// `requesttty` is `force`; `ssh -G` prints `false` for `-T` and
+    /// `RequestTTY no`. A setting `ssh -G` does not print, as before
+    /// OpenSSH 8.7, rules the install out.
+    pub(crate) fn interactive(&self, terminal: bool) -> bool {
         self.get("sessiontype") == Some("default")
             && self.get("forkafterauthentication") == Some("no")
             && self.get("stdinnull") == Some("no")
             && matches!(self.get("remotecommand"), None | Some("none"))
-            && self
-                .get("requesttty")
-                .is_some_and(|request| request != "no")
+            && match self.get("requesttty") {
+                None | Some("false" | "no") => false,
+                Some("force") => true,
+                Some(_) => terminal,
+            }
     }
 }
 
@@ -63,7 +77,9 @@ mod tests {
 
     /// `ssh -G` output from OpenSSH 10.2 for an interactive session to a
     /// host alias whose `HostName` and `User` come from configuration,
-    /// trimmed to a representative set of lines.
+    /// trimmed to a representative set of lines. OpenSSH 10.3 prints
+    /// `requesttty` as `auto`, `true` (`-t`, `RequestTTY yes`), `force`
+    /// (`-tt`, `RequestTTY force`), or `false` (`-T`, `RequestTTY no`).
     const CAPTURED: &str = "\
 host work
 user alice
@@ -97,7 +113,7 @@ sendenv LC_*
         let settings = Effective::parse(CAPTURED);
         assert_eq!(settings.key(), Key::parse("alice@build.example.org").ok());
         assert!(
-            settings.interactive(),
+            settings.interactive(true),
             "a user's ControlPath changes nothing"
         );
         assert_eq!(
@@ -122,6 +138,7 @@ sendenv LC_*
             ("sessiontype default", "sessiontype subsystem"),
             ("forkafterauthentication no", "forkafterauthentication yes"),
             ("stdinnull no", "stdinnull yes"),
+            ("requesttty auto", "requesttty false"),
             ("requesttty auto", "requesttty no"),
             ("requesttty auto", "remotecommand uptime\nrequesttty auto"),
             ("sessiontype default\n", ""),
@@ -129,14 +146,53 @@ sendenv LC_*
             ("stdinnull no\n", ""),
             ("requesttty auto\n", ""),
         ] {
-            assert!(!with(&[replacement]).interactive(), "{replacement:?}");
+            let settings = with(&[replacement]);
+            for terminal in [true, false] {
+                assert!(
+                    !settings.interactive(terminal),
+                    "{replacement:?} {terminal}"
+                );
+            }
         }
         for replacement in [
-            ("requesttty auto", "requesttty yes"),
+            ("requesttty auto", "requesttty auto"),
+            ("requesttty auto", "requesttty true"),
             ("requesttty auto", "requesttty force"),
             ("requesttty auto", "remotecommand none\nrequesttty auto"),
         ] {
-            assert!(with(&[replacement]).interactive(), "{replacement:?}");
+            assert!(with(&[replacement]).interactive(true), "{replacement:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_forced_terminal_installs_without_terminal_input() {
+        for (requesttty, interactive) in
+            [("auto", false), ("true", false), ("force", true)]
+        {
+            let settings = with(&[(
+                "requesttty auto",
+                &format!("requesttty {requesttty}"),
+            )]);
+            assert_eq!(
+                settings.interactive(false),
+                interactive,
+                "{requesttty}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_settings_come_from_openssh_8_7() {
+        assert!(Effective::parse(CAPTURED).reports_session_settings());
+        for missing in [
+            "sessiontype default\n",
+            "stdinnull no\n",
+            "forkafterauthentication no\n",
+        ] {
+            assert!(
+                !with(&[(missing, "")]).reports_session_settings(),
+                "{missing:?}"
+            );
         }
     }
 }

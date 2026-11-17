@@ -18,8 +18,5 @@ huterm-socket.workspace = true
 huterm-state.workspace = true
 nix.workspace = true
 
-[dev-dependencies]
-nix.workspace = true
-
 [lints]
 workspace = true

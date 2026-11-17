@@ -270,6 +270,33 @@ fn planner_path_is_opt_in_and_resources_are_executable_relative() {
 }
 
 #[test]
+fn planner_imports_only_the_nushell_wrappers_whose_features_are_on() {
+    use ShellFeature::{Path as PathFeature, SshEnv, SshTerminfo, Sudo};
+    for (features, import) in [
+        (
+            vec![PathFeature, SshEnv, SshTerminfo, Sudo],
+            "use huterm [ssh sudo]",
+        ),
+        (vec![SshTerminfo], "use huterm [ssh]"),
+        (vec![SshEnv, Sudo], "use huterm [ssh sudo]"),
+        (vec![Sudo], "use huterm [sudo]"),
+        // An empty list still runs the module's environment setup, and
+        // never brings a `huterm` namespace over the huterm command.
+        (vec![PathFeature], "use huterm []"),
+        (vec![], "use huterm []"),
+    ] {
+        let mut command = command("nu");
+        command.arguments = vec!["--config".into(), "config.nu".into()];
+        command.shell_integration.features = features.iter().copied().collect();
+        assert_eq!(
+            planned(&command, &[], true).arguments,
+            ["--config", "config.nu", "--execute", import],
+            "{features:?}"
+        );
+    }
+}
+
+#[test]
 fn planner_distinguishes_options_from_command_and_script_invocations() {
     for (shell, args, skip) in [
         ("bash", vec!["script.sh"], true),
