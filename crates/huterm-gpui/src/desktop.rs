@@ -3308,9 +3308,11 @@ impl TerminalView {
         self.scrollbars.show(Axis::Vertical, Instant::now());
     }
     fn update_renderer_selection(&self) {
-        self.renderer
-            .borrow_mut()
-            .set_selection(self.selection.and_then(Selection::range));
+        let selection = self.selection;
+        self.renderer.borrow_mut().set_selection(
+            selection.and_then(Selection::range),
+            selection.and_then(|selection| selection.unit),
+        );
     }
 
     fn owns_pointer_gesture(&self) -> bool {

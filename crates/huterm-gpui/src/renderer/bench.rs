@@ -563,7 +563,7 @@ impl Fixture {
             scenario.theme.clone(),
             metrics,
         );
-        renderer.set_selection(scenario.selection);
+        renderer.set_selection(scenario.selection, None);
         renderer.set_opacity(
             paint_options.background,
             paint_options.foreground,

@@ -836,16 +836,19 @@ fn text_and_decorations_fade_while_selected_foreground_stays_solid() {
     );
     let snapshot = snapshot(2, 1, &["AB"]);
     renderer.set_opacity(0.6, 0.7, true, crate::transparency::Tint::default());
-    renderer.set_selection(Some(BufferRange::ordered(
-        huterm_protocol::BufferPoint {
-            rows_from_live_bottom: 0,
-            column: 0,
-        },
-        huterm_protocol::BufferPoint {
-            rows_from_live_bottom: 0,
-            column: 0,
-        },
-    )));
+    renderer.set_selection(
+        Some(BufferRange::ordered(
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 0,
+                column: 0,
+            },
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 0,
+                column: 0,
+            },
+        )),
+        None,
+    );
     assert_eq!(
         renderer.glyph_foreground(&snapshot, 0, 0, gpui::white()).a,
         1.0
@@ -874,6 +877,59 @@ fn text_and_decorations_fade_while_selected_foreground_stays_solid() {
     }) {
         assert_eq!(renderer.foreground(decoration.color).a, 0.7);
     }
+}
+
+fn selection_point(
+    rows_from_live_bottom: usize,
+    column: u16,
+) -> huterm_protocol::BufferPoint {
+    huterm_protocol::BufferPoint {
+        rows_from_live_bottom,
+        column,
+    }
+}
+
+#[test]
+fn a_line_selection_paints_its_last_row_to_the_edge_over_trailing_blanks() {
+    let snapshot = snapshot(
+        6,
+        2,
+        &["a", "b", " ", " ", " ", " ", "c", "d", "", "", "", ""],
+    );
+    let span = |selection, to_line_end, row: usize| {
+        selection_span(
+            selection,
+            to_line_end,
+            1 - row,
+            6,
+            &snapshot.rows[row].cells,
+        )
+    };
+    let one_line =
+        BufferRange::ordered(selection_point(1, 0), selection_point(1, 1));
+    assert_eq!(span(one_line, true, 0), Some((0, 6)));
+    assert_eq!(span(one_line, true, 1), None, "rows outside stay unpainted");
+    assert_eq!(
+        span(one_line, false, 0),
+        Some((0, 2)),
+        "a cell or word selection stops at its end"
+    );
+    let two_lines =
+        BufferRange::ordered(selection_point(1, 0), selection_point(0, 1));
+    assert_eq!(span(two_lines, true, 0), Some((0, 6)));
+    assert_eq!(span(two_lines, true, 1), Some((0, 6)));
+    assert_eq!(span(two_lines, false, 1), Some((0, 2)));
+}
+
+#[test]
+fn a_line_selection_stops_before_text_it_does_not_cover() {
+    let snapshot = snapshot(6, 1, &["a", "b", " ", " ", "z", " "]);
+    let line =
+        BufferRange::ordered(selection_point(0, 0), selection_point(0, 1));
+    assert_eq!(
+        selection_span(line, true, 0, 6, &snapshot.rows[0].cells),
+        Some((0, 2))
+    );
 }
 
 #[test]
@@ -964,16 +1020,19 @@ fn paint_fixture(
         ..PreparedRow::default()
     });
     renderer.snapshot = Some(Arc::new(snapshot));
-    renderer.set_selection(Some(BufferRange::ordered(
-        huterm_protocol::BufferPoint {
-            rows_from_live_bottom: 0,
-            column: 1,
-        },
-        huterm_protocol::BufferPoint {
-            rows_from_live_bottom: 0,
-            column: 1,
-        },
-    )));
+    renderer.set_selection(
+        Some(BufferRange::ordered(
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 0,
+                column: 1,
+            },
+            huterm_protocol::BufferPoint {
+                rows_from_live_bottom: 0,
+                column: 1,
+            },
+        )),
+        None,
+    );
     // Blur mode is translucent with an opaque background too.
     renderer.set_opacity(background, 0.7, true, tint);
     let handle: gpui::AnyWindowHandle = cx

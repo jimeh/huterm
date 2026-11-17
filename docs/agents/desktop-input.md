@@ -223,7 +223,10 @@ expansion request in flight per gesture and send only the latest head when it
 completes. Match each reply to its gesture and viewer epoch; a release, blur,
 or hide caches the text only once no request is in flight or wanted. A Copy
 while expanding asks for the range itself, because the right-click clears the
-selection straight after.
+selection straight after. The renderer paints a line selection's last row to
+the right edge when only blank cells follow its range there, as iTerm2 does;
+the range itself still ends at the trimmed text, so Copy, accessibility, and
+tracking through resizes see no change.
 
 A selection settles once no gesture is left: a released cell drag, a word or
 line whose expansion completed after release, Select All, and
