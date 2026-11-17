@@ -148,6 +148,9 @@ fn targeted_pills_outline_the_pill_bounds_in_every_position(
     let window = harness.attach_window();
     harness.wait_text(window, tab, "READY");
     harness.activate(window, tab);
+    // The outline is drawn a frame later than the pill is measured, and a
+    // Fit pill widens when its label settles.
+    harness.wait_labels_settled(window);
     let pill = format!("tab-pill-{}", tab.get()).leak();
     let outline = format!("tab-pill-target-{}", tab.get()).leak();
     let strip_outline = format!("tab-strip-target-{}", tab.get()).leak();
@@ -203,6 +206,9 @@ fn targeted_strip_tabs_keep_their_shell_outline(cx: &mut TestAppContext) {
     let window = harness.attach_window();
     harness.wait_text(window, tab, "READY");
     harness.activate(window, tab);
+    // The outline is drawn a frame later than the tab is measured, and a
+    // Fit tab widens when its label settles.
+    harness.wait_labels_settled(window);
     let shell = format!("tab-shell-{}", tab.get()).leak();
     let outline = format!("tab-strip-target-{}", tab.get()).leak();
     let shell_bounds =

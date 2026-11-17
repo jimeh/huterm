@@ -213,7 +213,9 @@ fn a_pane_resting_on_a_row_shows_its_workspace_and_drops_into_its_bar(
             && target(cx, window) == Some(row(second, false))
     });
     // The shown row no longer springs; the bar's slot after its tab takes
-    // the pane.
+    // the pane. That slot moves into the tab's middle if the tab widens as
+    // its label settles.
+    f.h.wait_labels_settled(window);
     let slot = f.h.update_view(window, |view, window, _| {
         let label = view.tab_strip(window).label(0);
         gpui::point(label.right() - px(2.0), label.center().y)
@@ -369,6 +371,9 @@ fn a_spring_loaded_drop_closes_the_emptied_origin_unless_pinned(
         h.wait_for("the workspace to show", |cx| {
             shown_workspace(cx, window) == Some(second)
         });
+        // The slot after the tab moves into its middle if the tab widens
+        // as its label settles.
+        h.wait_labels_settled(window);
         let slot = h.update_view(window, |view, window, _| {
             let label = view.tab_strip(window).label(0);
             gpui::point(label.right() - px(2.0), label.center().y)

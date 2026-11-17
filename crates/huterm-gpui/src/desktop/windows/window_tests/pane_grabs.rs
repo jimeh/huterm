@@ -589,6 +589,8 @@ fn badges_name_each_pane_after_the_delay_and_a_key_hides_them(
         .lock()
         .rename_pane(second, Some("logs"))
         .unwrap();
+    // The badge names the pane by its directory once it reports one.
+    harness.wait_labels_settled(window);
     let label = harness.update_view(window, |view, _, cx| {
         let tab = view.tabs.iter().find(|view| view.id == tab).unwrap();
         tab.pane_label(tab.pane(first).unwrap(), view.config.tabs, cx)

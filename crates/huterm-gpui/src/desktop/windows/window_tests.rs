@@ -446,25 +446,24 @@ impl DesktopHarness {
         });
     }
 
-    /// Waits until every tab of `window` labels itself with its directory,
-    /// as an idle shell's tab settles. Until a terminal reports one, its
-    /// tab shows its title, so a pointer aimed from an earlier frame can
+    /// Waits until every pane of every tab in `window` labels itself with
+    /// its directory, as an idle shell's pane settles. Until a terminal
+    /// reports one, its tab and pane bar show its title, so a label read
+    /// earlier goes stale, and a pointer aimed from an earlier frame can
     /// miss a control the relabelled tab moves.
     fn wait_labels_settled(&mut self, window: AnyWindowHandle) {
-        self.wait_for("every tab to label itself with its directory", |cx| {
+        self.wait_for("every pane to label itself with its directory", |cx| {
             window
                 .update(cx, |root, _, cx| {
                     let view = root.downcast::<WorkspaceView>().ok()?;
                     let tabs = &view.read(cx).tabs;
                     Some(
                         !tabs.is_empty()
-                            && tabs.iter().all(|tab| {
-                                tab.focused_view()
-                                    .read(cx)
-                                    .metadata
-                                    .directory()
-                                    .is_some()
-                            }),
+                            && tabs.iter().flat_map(TabView::views).all(
+                                |view| {
+                                    view.read(cx).metadata.directory().is_some()
+                                },
+                            ),
                     )
                 })
                 .ok()

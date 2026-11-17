@@ -243,6 +243,10 @@ fn two_tabs(
     harness.wait_for("the other tab to install", |cx| {
         pane_view(cx, window, other, lone).is_some()
     });
+    // Tests aim at labels and measure pills before their gestures, and a
+    // Fit tab widens when its label settles: a label's centre can move
+    // from its spring-loading middle into an insertion quarter.
+    harness.wait_labels_settled(window);
     (window, tab, left, right, other, lone)
 }
 

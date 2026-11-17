@@ -774,6 +774,8 @@ fn pane_title_bars_are_named_groups_whose_buttons_zoom_and_close(
         .lock()
         .set_input_sync(harness.workspace, tab, true)
         .unwrap();
+    // The bar names the pane by its directory once it reports one.
+    harness.wait_labels_settled(window);
     let title = harness.update_view(window, |view, _, cx| {
         let shown = view.tabs.iter().find(|shown| shown.id == tab).unwrap();
         let pane = shown.pane(first).unwrap();
