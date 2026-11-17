@@ -168,8 +168,28 @@ platform = "linux-x86_64"
   to 13.65 seconds (median 4.5). The warm-up itself took 6.5 to 51 seconds
   per job (median 10), about three quarters of it reading 1.4 GiB into the
   page cache and the rest in `sync`.
+- **Warm-up trimmed (2026-11-17, #494):** per-file timing showed that most
+  of that 1.4 GiB was five LLVM versions on the runner images, about
+  120 MiB each and read cold, of which Mesa links one. The smoke binary's
+  mapped segments, 55 to 66 MiB of about 250 MiB, were already cached. The
+  old name pattern also never matched `libvulkan_lvp.so`. The warm-up still
+  runs `sync` first. It then reads only the `PT_LOAD` segments of the smoke
+  binary, `libvulkan_lvp.so`, `libgallium`, glvnd's and Mesa's EGL where
+  installed (the runners have neither), and every library `ldd` says those
+  link. It reads every `libLLVM` file only when `ldd` names none. Reads fell
+  from about 1.35 GiB to 284 to 297 MiB. Over 4 jobs per architecture
+  against 7 before, the warm-up median fell from 9.3 to 5.8 seconds on
+  aarch64 and from 21 to 19 seconds on x86_64. On x86_64, cold reads ran at 15 to
+  90 MB/s and `sync` took 1.7 to 12 seconds, so disk speed hides most of
+  the gain. In one slow x86_64 run on an earlier head that still read every
+  LLVM, the four unused copies took 34 seconds. The time from
+  `application started` to `window opened`, when Mesa loads, stayed at 0.35
+  to 0.86 seconds against 0.37 to 1.09 before. One slow-disk x86_64 run
+  opened its window 3.53 seconds after launch, 2.68 of them before
+  `application started`, a phase neither version warms.
 - **Triage:** a match now fails CI as a regression. Download the
   `smoke-evidence-Linux-*` artifact and read `renderer-process/stdout.log`
   for the last marker, and `renderer-process/events.jsonl` for the `stall`
   or `deadline` event and the `threads` and `io` events after it. Compare
-  the `RENDERER_WARMUP` line in the step log with a passing run.
+  the `RENDERER_WARMUP` lines in the step log with a passing run: one per
+  file read, then a summary with the `sync` time.

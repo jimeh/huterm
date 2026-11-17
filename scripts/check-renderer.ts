@@ -154,16 +154,15 @@ export function readLoadedSegments(file: string, chunk = Buffer.alloc(CHUNK_BYTE
 
 /**
  * Before the timed smoke on Linux, flush dirty pages, then read the mapped
- * segments of the smoke binary, Mesa's driver, and the libraries the driver
- * links into the page cache. Five of six thread dumps from hung runs showed
- * a thread waiting on a page-cache folio (`folio_wait_bit_common`), and the
- * renderer is the first smoke after the binaries are linked. The `sync`
- * keeps the launch's page faults from queueing behind writeback of the build
- * output. The read skips sections the loader never maps and LLVM versions
- * Mesa does not link, and reads each file once however many names link to
- * it. The warm-up runs outside the
- * smoke's deadline and reports how long each part took, one line per file
- * and a summary line last.
+ * segments of the smoke binary and of `mesaLibraries` into the page cache.
+ * Five of six thread dumps from hung runs showed a thread waiting on a
+ * page-cache folio (`folio_wait_bit_common`), and the renderer is the first
+ * smoke after the binaries are linked. The `sync` keeps the launch's page
+ * faults from queueing behind writeback of the build output. The read skips
+ * sections the loader never maps and LLVM versions Mesa does not link, and
+ * reads each file once however many names link to it. The warm-up runs
+ * outside the smoke's deadline and reports how long each part took, one
+ * line per file and a summary line last.
  */
 export function warmUp(executable: string): string {
   const started = performance.now();
