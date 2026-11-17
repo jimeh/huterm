@@ -324,7 +324,15 @@ pub fn effective_uid() -> u32 {
     nix::unistd::geteuid().as_raw()
 }
 
-fn check_private_directory(path: &Path, uid: u32) -> Result<(), SocketError> {
+/// Checks that `path` is a directory, not a symbolic link, owned by `uid`,
+/// and closed to group and other users.
+///
+/// # Errors
+/// Reports a directory that cannot be inspected or fails a check.
+pub fn check_private_directory(
+    path: &Path,
+    uid: u32,
+) -> Result<(), SocketError> {
     let metadata =
         fs::symlink_metadata(path).map_err(|error| SocketError::Io {
             action: "inspect socket directory",

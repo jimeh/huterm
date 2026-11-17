@@ -103,9 +103,11 @@ pub(crate) fn prepare(directory: &Path) -> Result<(), String> {
         }
         _ => {}
     }
-    huterm_socket::SocketPath::explicit(directory.join("socket"))
-        .and_then(|socket| socket.check_directory())
-        .map_err(|error| error.to_string())
+    huterm_socket::check_private_directory(
+        directory,
+        huterm_socket::effective_uid(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// The line a successful install prints for `nonce`. The remote shell
