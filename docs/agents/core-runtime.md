@@ -676,7 +676,10 @@ Nothing in the desktop calls either until #45.
   `ServerBusy`, and closes the rest at once. Tests get a private socket
   directory each from `huterm_socket::testing::TestDirectory` or
   `huterm_server::test_support::SocketServer`, so parallel runs never
-  share a socket.
+  share a socket. macOS fails every `setsockopt`, such as
+  `set_read_timeout`, with `EINVAL` once the peer has closed, so a client
+  that sets an option after connecting races a server that closes at once;
+  the listener tests' `with_read_timeout` accepts that error.
 - The second-user peer test is ignored in the normal suite because it needs
   root. Run it in the Linux image after `mise run linux:exec -- cargo test
   --locked -p huterm-server --lib --no-run`, as root with this worktree's
