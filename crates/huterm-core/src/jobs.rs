@@ -16,6 +16,10 @@ pub(crate) struct JobContext {
     /// The root's waiter, which the runtime reads the exit from.
     #[cfg(all(test, unix))]
     pub exit_probe: Option<crate::child_wait::ExitProbe>,
+    /// Holds the reader's end of output for tests that order controls
+    /// ahead of it.
+    #[cfg(test)]
+    pub reader_end: crate::terminal::ReaderEndHold,
     /// Device number of the terminal's PTY.
     pub tty: Option<u64>,
 }
@@ -339,6 +343,7 @@ mod tests {
                     pty_eof: false,
                     #[cfg(unix)]
                     exit_probe: None,
+                    reader_end: crate::terminal::ReaderEndHold::default(),
                     tty: None
                 }),
                 None

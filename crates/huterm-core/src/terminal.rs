@@ -1525,6 +1525,8 @@ fn run_terminal(
     pty::record_foreground_group(master.as_ref(), &mut process_groups);
     let reader_cancel = reader_waiter.cancellation();
     #[cfg(test)]
+    let reader_end = ReaderEndHold::default();
+    #[cfg(test)]
     let workers = Arc::new(());
     #[cfg(test)]
     let worker_handle = Arc::downgrade(&workers);
@@ -1535,6 +1537,8 @@ fn run_terminal(
         output_sender,
         control_sender.clone(),
         Arc::clone(&closing),
+        #[cfg(test)]
+        reader_end.clone(),
         #[cfg(test)]
         Arc::clone(&workers),
     ) {
@@ -1586,6 +1590,8 @@ fn run_terminal(
             drop(master);
             drop(messages);
             drop(output);
+            #[cfg(test)]
+            reader_end.release();
             reader_cancel.cancel();
             join_worker(reader_join);
             let _ = pty::reap_child(child);
@@ -1845,6 +1851,8 @@ fn run_terminal(
                             pty_eof,
                             #[cfg(all(test, unix))]
                             exit_probe: exit_probe.clone(),
+                            #[cfg(test)]
+                            reader_end: reader_end.clone(),
                             tty: owner.master.tty_name().and_then(|name| {
                                 huterm_procinfo::tty_device(&name)
                             }),
@@ -2040,6 +2048,8 @@ fn run_terminal(
     drop(owner.master);
     drop(messages);
     drop(output);
+    #[cfg(test)]
+    reader_end.release();
     reader_cancel.cancel();
     join_worker(reader_join);
     join_worker(writer_join);
@@ -2311,6 +2321,13 @@ fn next_message(
     next
 }
 
+#[cfg_attr(
+    test,
+    expect(
+        clippy::too_many_arguments,
+        reason = "only test builds add the end hold and worker handle"
+    )
+)]
 fn spawn_reader(
     terminal_id: TerminalId,
     mut reader: Box<dyn Read + Send>,
@@ -2318,34 +2335,92 @@ fn spawn_reader(
     output: crate::wake::SyncSender<Vec<u8>>,
     controls: crate::wake::Sender<RuntimeControl>,
     closing: Arc<AtomicBool>,
+    #[cfg(test)] end_hold: ReaderEndHold,
     #[cfg(test)] running: Arc<()>,
 ) -> Result<JoinHandle<()>, RuntimeError> {
     thread::Builder::new()
         .name(format!("huterm-reader-{}", terminal_id.get()))
         .spawn(move || {
-            forward_output(
+            if let Some(end) = forward_output(
                 &mut *reader,
                 || reader_waiter.wait(None).map(drop),
                 &output,
-                &controls,
                 &closing,
-            );
+            ) {
+                #[cfg(test)]
+                end_hold.pass();
+                let _ = controls.send(end);
+            }
             #[cfg(test)]
             drop(running);
         })
         .map_err(|error| RuntimeError::Thread(error.to_string()))
 }
 
+/// Holds the reader's end of output, once it has one, until the test
+/// releases it or the runtime tears down. Tests use it to queue controls
+/// ahead of the real end.
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ReaderEndHold(
+    Arc<(Mutex<ReaderEndHoldState>, std::sync::Condvar)>,
+);
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct ReaderEndHoldState {
+    held: bool,
+    waiting: bool,
+}
+
+#[cfg(test)]
+impl ReaderEndHold {
+    pub(crate) fn hold(&self) {
+        self.state().held = true;
+    }
+
+    pub(crate) fn release(&self) {
+        self.state().held = false;
+        self.0.1.notify_all();
+    }
+
+    /// Whether the reader has reached its end and waits on the hold.
+    pub(crate) fn waiting(&self) -> bool {
+        self.state().waiting
+    }
+
+    fn pass(&self) {
+        let mut state = self.state();
+        while state.held {
+            state.waiting = true;
+            state = self
+                .0
+                .1
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        state.waiting = false;
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, ReaderEndHoldState> {
+        self.0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// Sends PTY output to the runtime in batches until end-of-file, a failure,
-/// teardown, or closing. `wait` blocks until the PTY is readable or its
-/// cancellation descriptor is signalled.
+/// teardown, or closing. Returns the control that reports end-of-file or a
+/// failure, after the output read before it; teardown and closing return
+/// none. `wait` blocks until the PTY is readable or its cancellation
+/// descriptor is signalled.
 fn forward_output(
     reader: &mut dyn Read,
     mut wait: impl FnMut() -> std::io::Result<()>,
     output: &crate::wake::SyncSender<Vec<u8>>,
-    controls: &crate::wake::Sender<RuntimeControl>,
     closing: &AtomicBool,
-) {
+) -> Option<RuntimeControl> {
     let mut buffer = [0_u8; 8192];
     let mut pending = None;
     let mut ended = None;
@@ -2355,30 +2430,25 @@ fn forward_output(
             // Teardown drops the receiver before joining this worker,
             // so bounded backpressure also has an explicit cancellation path.
             if output.send(bytes).is_err() {
-                break;
+                return None;
             }
             continue;
         }
         // End-of-file or a failure found while batching follows the
         // output read before it.
         if let Some(control) = ended.take() {
-            let _ = controls.send(control);
-            break;
+            return Some(control);
         }
         // A read that would block needs no retry before the wait.
         if std::mem::take(&mut drained)
             && let Err(error) = wait()
         {
-            let _ = controls.send(RuntimeControl::WorkerFailed(format!(
+            return Some(RuntimeControl::WorkerFailed(format!(
                 "PTY readiness wait failed: {error}"
             )));
-            break;
         }
         match reader.read(&mut buffer) {
-            Ok(0) => {
-                let _ = controls.send(RuntimeControl::PtyEof);
-                break;
-            }
+            Ok(0) => return Some(RuntimeControl::PtyEof),
             Ok(count) => {
                 let mut batch = buffer[..count].to_vec();
                 // Only Unix PTYs are nonblocking. Elsewhere, a second read
@@ -2398,13 +2468,13 @@ fn forward_output(
                 drained = true;
             }
             Err(error) => {
-                let _ = controls.send(RuntimeControl::WorkerFailed(format!(
+                return Some(RuntimeControl::WorkerFailed(format!(
                     "PTY read failed: {error}"
                 )));
-                break;
             }
         }
     }
+    None
 }
 
 /// Why [`read_ready`] stopped adding to a batch.

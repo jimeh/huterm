@@ -70,5 +70,11 @@ retried = false
   the waiter alone at 50 and 300 ms, the reader alone at 300 ms, and both
   at 5, 10, 20, 50, and 300 ms. 300 of 300 runs passed under the same busy
   loops at load averages up to 77.
+- **Follow-up:** the reader's real end of output usually reached the
+  runtime before the injected controls, so the test rarely exercised
+  the path its name describes. An implementation that abandoned running
+  records at exit passed 60 of 60 runs. The test now holds the reader's
+  end through a test-only hold on `JobContext` until teardown, and that
+  implementation fails all 60 runs at the records assertion.
 - **Triage:** a failure after the fix is new. Read the failures the
   timeout message now prints, and check `uptime`.
