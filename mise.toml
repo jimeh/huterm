@@ -16,6 +16,8 @@ bun = "1.4.4"
 lefthook = "2.2.2"
 markdownlint-cli2 = "0.24.1"
 pinact = "5.0.2"
+# The architecture task's dependency checks match with rg.
+ripgrep = "15.2.0"
 rust = { version = "1.99.1", components = ["clippy", "rustfmt"], profile = "minimal", targets = ["wasm32-unknown-unknown"] }
 "pipx:spdx-tools" = "0.8.5"
 syft = "1.57.1"
@@ -155,7 +157,31 @@ run = "bash scripts/build-exec.sh cargo check --workspace --all-targets --featur
 
 [tasks.architecture]
 description = "Check dependency-neutral protocol, wire, process-info, UI component, state, Ghostty binding, client, socket, server, command-line, and IPC simulation boundaries"
+# Bash for pipefail: a failed `cargo tree` must stop the task, not read as an
+# empty dependency list.
+shell = "bash -c"
 run = '''
+set -euo pipefail
+if ! command -v rg >/dev/null; then
+  echo "architecture needs rg (ripgrep); install the project tools with: mise install" >&2
+  exit 1
+fi
+# reject LINES MESSAGE RG_ARGS...: fails the task with MESSAGE when rg selects
+# any of LINES, printing them. rg exits 1 when it selects nothing and 2 on an
+# error, so only 1 passes. The status comes from rg itself, because an early rg
+# exit makes the writer fail under pipefail. A here-string would read a failed
+# redirection as status 1. --no-config keeps local rg settings out.
+reject() {
+  local lines="$1" message="$2" status=0
+  shift 2
+  [ -n "$lines" ] || return 0
+  printf '%s\n' "$lines" | rg --no-config "$@" || status=${PIPESTATUS[1]}
+  case "$status" in
+    0) echo "$message" >&2; exit 1 ;;
+    1) ;;
+    *) echo "architecture: rg $* failed with status $status" >&2; exit 1 ;;
+  esac
+}
 dependencies="$(cargo tree --locked -p huterm-protocol --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$dependencies" ]; then
   echo "huterm-protocol must not have normal or build dependencies:" >&2
@@ -163,77 +189,53 @@ if [ -n "$dependencies" ]; then
   exit 1
 fi
 config_dependencies="$(cargo tree --locked -p huterm-config --features schema,settings --prefix none --edges normal,build)"
-if echo "$config_dependencies" | rg '^(gpui|huterm-core|huterm-ghostty|alacritty_terminal|portable-pty)( |-)'; then
-  echo "huterm-config must remain independent of desktop and terminal engines" >&2
-  exit 1
-fi
+reject "$config_dependencies" "huterm-config must remain independent of desktop and terminal engines" \
+  '^(gpui|huterm-core|huterm-ghostty|alacritty_terminal|portable-pty)( |-)'
 procinfo_dependencies="$(cargo tree --locked -p huterm-procinfo --target all --prefix none --edges normal,build | tail -n +2)"
-if echo "$procinfo_dependencies" | rg '^huterm-'; then
-  echo "huterm-procinfo must not depend on other Huterm crates" >&2
-  exit 1
-fi
+reject "$procinfo_dependencies" "huterm-procinfo must not depend on other Huterm crates" \
+  '^huterm-'
 # huterm-ui stays generic: GPUI plus an allowlist of small general crates.
 ui_dependencies="$(cargo tree --locked -p huterm-ui --target all --depth 1 --prefix none --edges normal,build | tail -n +2)"
-if echo "$ui_dependencies" | rg -v '^(gpui-pre|unicode-segmentation) '; then
-  echo "huterm-ui may depend only on gpui-pre and unicode-segmentation; extend this allowlist deliberately" >&2
-  exit 1
-fi
+reject "$ui_dependencies" "huterm-ui may depend only on gpui-pre and unicode-segmentation; extend this allowlist deliberately" \
+  -v '^(gpui-pre|unicode-segmentation) '
 # huterm-state owns persistence; core and protocol stay serialization-free.
 state_dependencies="$(cargo tree --locked -p huterm-state --target all --depth 1 --prefix none --edges normal,build | tail -n +2)"
-if echo "$state_dependencies" | rg -v '^(huterm-protocol|nix|serde|serde_json) '; then
-  echo "huterm-state may depend only on huterm-protocol, nix, serde, and serde_json; extend this allowlist deliberately" >&2
-  exit 1
-fi
+reject "$state_dependencies" "huterm-state may depend only on huterm-protocol, nix, serde, and serde_json; extend this allowlist deliberately" \
+  -v '^(huterm-protocol|nix|serde|serde_json) '
 core_dependencies="$(cargo tree --locked -p huterm-core --target all --prefix none --edges normal,build | tail -n +2)"
-if echo "$core_dependencies" | rg '^(huterm-state|serde|serde_json) '; then
-  echo "huterm-core must not depend on huterm-state or serialization crates" >&2
-  exit 1
-fi
+reject "$core_dependencies" "huterm-core must not depend on huterm-state or serialization crates" \
+  '^(huterm-state|serde|serde_json) '
 ghostty_dependencies="$(cargo tree --locked -p huterm-ghostty --target all --prefix none --edges normal,build | tail -n +2)"
-if echo "$ghostty_dependencies" | rg '^huterm-'; then
-  echo "huterm-ghostty must not depend on other Huterm crates" >&2
-  exit 1
-fi
+reject "$ghostty_dependencies" "huterm-ghostty must not depend on other Huterm crates" \
+  '^huterm-'
 ghostty_dependents="$(cargo tree --locked --workspace --target all --invert huterm-ghostty --prefix none --edges normal,build,dev --depth 1 | tail -n +2)"
-if echo "$ghostty_dependents" | rg -v '^huterm-core '; then
-  echo "only huterm-core may depend on huterm-ghostty" >&2
-  exit 1
-fi
+reject "$ghostty_dependents" "only huterm-core may depend on huterm-ghostty" \
+  -v '^huterm-core '
 # huterm-wire is the wire contract: it builds for browsers and depends on
 # nothing but the protocol.
 wire_dependencies="$(cargo tree --locked -p huterm-wire --target all --all-features --depth 1 --edges normal,build --prefix none | tail -n +2)"
-if echo "$wire_dependencies" | rg -v '^huterm-protocol '; then
-  echo "huterm-wire may depend only on huterm-protocol" >&2
-  exit 1
-fi
+reject "$wire_dependencies" "huterm-wire may depend only on huterm-protocol" \
+  -v '^huterm-protocol '
 # huterm-client builds for browsers and never links a runtime or the
 # desktop. Its tests run against the real server, so only normal and build
 # edges count.
 client_dependencies="$(cargo tree --locked -p huterm-client --target all --all-features --prefix none --edges normal,build | tail -n +2)"
-if echo "$client_dependencies" | rg '^(huterm-core|huterm-ghostty|portable-pty|gpui-pre)( |-)'; then
-  echo "huterm-client must not depend on huterm-core, huterm-ghostty, portable-pty, or gpui-pre" >&2
-  exit 1
-fi
+reject "$client_dependencies" "huterm-client must not depend on huterm-core, huterm-ghostty, portable-pty, or gpui-pre" \
+  '^(huterm-core|huterm-ghostty|portable-pty|gpui-pre)( |-)'
 # huterm-socket holds the socket rules both the server and the client
 # share, so it stays as light as the client needs it.
 socket_dependencies="$(cargo tree --locked -p huterm-socket --target all --all-features --depth 1 --prefix none --edges normal,build | tail -n +2)"
-if echo "$socket_dependencies" | rg -v '^nix '; then
-  echo "huterm-socket may depend only on nix; extend this allowlist deliberately" >&2
-  exit 1
-fi
+reject "$socket_dependencies" "huterm-socket may depend only on nix; extend this allowlist deliberately" \
+  -v '^nix '
 # huterm-server serves a runtime to clients and never links the desktop.
 server_dependencies="$(cargo tree --locked -p huterm-server --target all --all-features --prefix none --edges normal,build | tail -n +2)"
-if echo "$server_dependencies" | rg '^gpui-pre( |-)'; then
-  echo "huterm-server must not depend on gpui-pre" >&2
-  exit 1
-fi
+reject "$server_dependencies" "huterm-server must not depend on gpui-pre" \
+  '^gpui-pre( |-)'
 # The `huterm` command line runs without a display, so it never links the
 # desktop; its standalone download depends on that.
 cli_dependencies="$(cargo tree --locked -p huterm-cli --target all --all-features --prefix none --edges normal,build | tail -n +2)"
-if echo "$cli_dependencies" | rg '^(gpui-pre|huterm-gpui|huterm-ui)( |-)'; then
-  echo "huterm-cli must not depend on gpui-pre, huterm-gpui, or huterm-ui" >&2
-  exit 1
-fi
+reject "$cli_dependencies" "huterm-cli must not depend on gpui-pre, huterm-gpui, or huterm-ui" \
+  '^(gpui-pre|huterm-gpui|huterm-ui)( |-)'
 # huterm-ipc-sim is a standalone design simulation, not product code.
 sim_dependencies="$(cargo tree --locked -p huterm-ipc-sim --depth 1 --edges normal,build --prefix none | tail -n +2)"
 if [ -n "$sim_dependencies" ]; then

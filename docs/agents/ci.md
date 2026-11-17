@@ -59,6 +59,15 @@ Clippy, schema and script checks, and Rust tests sequentially in one job per
 platform so they reuse setup and debug artifacts without contending on the Cargo
 target-directory lock. Keep desktop smokes separate and serial within their job.
 
+Hosted images do not ship `rg`, so the Checks job installs the pinned
+`ripgrep` Mise tool for `mise run architecture`. A shell condition such as
+`if … | rg …` reads a missing `rg` (status 127) or an rg error (status 2) as
+"no match". Every rg-based boundary check passed in CI that way, enforcing
+nothing, until the task checked for `rg` up front and failed on any rg status
+other than 1, the only "no match" result. Add new match-based boundary checks
+through the task's `reject` helper, and name every tool a task needs in its
+job's `install_args`.
+
 The smoke job separately times Ghostty preparation, compilation, and execution.
 Its Cargo cache retains workspace crates, and its additional `.native/ghostty`
 cache key hashes the pinned Rust, Cargo, and Ghostty inputs explicitly. Do not
