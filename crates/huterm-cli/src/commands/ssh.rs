@@ -175,7 +175,8 @@ fn session(
         }
     };
     eprintln!("huterm: installing the xterm-huterm terminfo entry on {key}");
-    let nonce = u32::try_from(super::random() >> 33).unwrap_or(0);
+    let [a, b, c, d, ..] = super::random().to_le_bytes();
+    let nonce = u32::from_le_bytes([a, b, c, d]);
     if !install::run(&socket, forwarding, parsed.without_tty(), nonce) {
         failed(&key);
         return Session::Downgrade;
