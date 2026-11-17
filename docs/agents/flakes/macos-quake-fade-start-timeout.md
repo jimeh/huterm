@@ -42,10 +42,9 @@ note = "main push, attempt 1; the rerun passed"
   applied the window opacity before the quake profile's animation settings
   took effect, so the hide used the previous slide. The trace has no command
   timestamps, so the link between generation 9 and the toggle is inferred.
-- **Not the departed-witness flake:** the
-  [departed-witness entry](macos-quake-departed-witness-activation.md) fails
-  at a different label, with the quake active and focus taken back by a
-  witness. Here the hide completed.
+- **Not the departed-witness flake:** that flake, retired from this
+  registry on 2026-11-17, failed at a different label, with the quake active
+  and focus taken back by a witness. Here the hide completed.
 - **Triage:** if it recurs, check the animation of the trace's last
   generation. A short slide after the fade reload supports the hypothesis; a
   fade that never reached the alpha window points at the fade itself, and no

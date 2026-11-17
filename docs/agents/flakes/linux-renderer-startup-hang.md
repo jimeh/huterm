@@ -1,11 +1,11 @@
 +++
 id = "linux-renderer-startup-hang"
 title = "Linux renderer smoke startup hang"
-status = "open"
+status = "fixed"
 kind = "smoke"
 platforms = ["linux-x86_64", "linux-aarch64"]
-retries = 1
-review_by = "2026-12-06"
+retries = 0
+review_by = "2026-12-17"
 
 [selector]
 steps = ["renderer"]
@@ -160,9 +160,16 @@ platform = "linux-x86_64"
   system's dirty, writeback, and major-fault counters. The fourth dump's
   running main thread is not covered by the warm-up; the watchdog gives it
   time as long as markers keep arriving.
-- **Triage:** CI reruns this signature once. Download the
+- **Fixed (2026-11-17):** none of 277 CI runs from the warm-up's merge
+  (#430, 2026-11-06) to 2026-11-17 matched this signature, after 10 CI
+  occurrences before it. In 81 main Linux smoke jobs with the warm-up,
+  `window opened` came 0.37 to 3.03 seconds after `RENDERER_SMOKE launching`
+  (median 0.92). The 18 main jobs earlier on 2026-11-06, without it, took 0.6
+  to 13.65 seconds (median 4.5). The warm-up itself took 6.5 to 51 seconds
+  per job (median 10), about three quarters of it reading 1.4 GiB into the
+  page cache and the rest in `sync`.
+- **Triage:** a match now fails CI as a regression. Download the
   `smoke-evidence-Linux-*` artifact and read `renderer-process/stdout.log`
   for the last marker, and `renderer-process/events.jsonl` for the `stall`
   or `deadline` event and the `threads` and `io` events after it. Compare
-  the `RENDERER_WARMUP` line in the step log with a passing run. Record the
-  occurrence with `mise run flakes:record`.
+  the `RENDERER_WARMUP` line in the step log with a passing run.

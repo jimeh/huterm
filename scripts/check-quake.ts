@@ -23,6 +23,20 @@ function run(args: string[]): string {
   if (result.exitCode !== 0) throw new Error(`${args.join(" ")}: ${result.stderr.toString()}`);
   return result.stdout.toString().trim();
 }
+/**
+ * The window `xdotool getactivewindow` reported, or undefined when the root's
+ * `_NET_ACTIVE_WINDOW` is None or absent, as Openbox leaves it for a moment
+ * while focus moves. Any other failure throws.
+ */
+export function activeWindowFrom(result: { exitCode: number | null; stdout: string; stderr: string }): string | undefined {
+  if (result.exitCode === 0) return result.stdout.trim();
+  if (result.exitCode === 1 && result.stderr.includes("XGetWindowProperty[_NET_ACTIVE_WINDOW] failed")) return undefined;
+  throw new Error(`xdotool getactivewindow exited ${result.exitCode ?? "by timeout"}: ${result.stderr}`);
+}
+function x11ActiveWindow(): string | undefined {
+  const result = Bun.spawnSync(["xdotool", "getactivewindow"], { stdout: "pipe", stderr: "pipe", timeout: 5_000 });
+  return activeWindowFrom({ exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() });
+}
 async function waitFor(check: () => Promise<boolean>, label: string, timeout = 12_000): Promise<void> {
   const deadline = performance.now() + timeout;
   while (!await check()) {
@@ -181,7 +195,19 @@ async function check(executable: string, engine: string, witnessExecutable?: str
     // The caller waits for the activation; `--sync` would wait under run()'s 5-second limit.
     else run(["xdotool","windowactivate",witnessWindow]);
   };
-  const witnessActive = async () => macos ? parseState(await readFile(join(directory,"witness-state"),"utf8")).active === "true" : run(["xdotool","getactivewindow"]) === witnessWindow;
+  // An unset `_NET_ACTIVE_WINDOW` reads as inactive, so waitFor polls again.
+  const witnessActive = async () => macos ? parseState(await readFile(join(directory,"witness-state"),"utf8")).active === "true" : x11ActiveWindow() === witnessWindow;
+  /** A single check that waits briefly through an unset `_NET_ACTIVE_WINDOW` for a definite window. */
+  const witnessActiveNow = async () => {
+    if (macos) return witnessActive();
+    const deadline = performance.now() + 2_000;
+    for (;;) {
+      const active = x11ActiveWindow();
+      if (active !== undefined) return active === witnessWindow;
+      if (performance.now() > deadline) throw new Error("_NET_ACTIVE_WINDOW stayed unset for 2 seconds");
+      await Bun.sleep(25);
+    }
+  };
   const hotkey = async (code = 17, linux = "ctrl+alt+t") => {
     if (macos) {
       await native("key\t59\tdown\t262144");
@@ -666,7 +692,7 @@ async function check(executable: string, engine: string, witnessExecutable?: str
           await waitFor(async () => (await current())?.stage === "Idle", "unfocused show settles");
           const unfocused = (await current())!;
           const verdict = analyzeFade(await completedTrace(cursor, true), true, frame(unfocused));
-          if (unfocused.regular !== "false" || unfocused.visible !== "true" || unfocused.active !== "false" || !await witnessActive()) {
+          if (unfocused.regular !== "false" || unfocused.visible !== "true" || unfocused.active !== "false" || !await witnessActiveNow()) {
             throw new Error(`show stole focus or recovered after deliberate app switch: ${JSON.stringify(unfocused)}`);
           }
           if (focusObservation?.stage !== "Animate" || focusObservation.progress <= 0 || focusObservation.progress >= 1) {
