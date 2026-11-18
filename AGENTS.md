@@ -96,7 +96,7 @@ when this file exceeds its line budget or a guide link breaks.
 Run `mise tasks` to discover the full task set.
 
 - `mise run doctor` checks host prerequisites; `mise run dev` starts the native
-  macOS or Linux client.
+  macOS or Linux client, and `mise run dev --release` an optimized one.
 - `mise run check` runs the fast format, Clippy compilation, test-module
   order, docs, and architecture gate; `mise run typecheck` remains available
   independently.
