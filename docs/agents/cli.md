@@ -10,12 +10,13 @@ Rules for `crates/huterm-cli`, the `huterm` command. The decision record is
   `huterm` package) is the desktop app and the macOS `CFBundleExecutable`.
   They sit side by side in `target/<profile>/`, `Huterm.app/Contents/MacOS/`,
   and the Linux packages' `bin/`.
-- The app exports its own directory as `HUTERM_BIN_DIR`, and shell integration's
-  `ssh` and `sudo` wrappers run the `huterm` there. Build both executables in
-  one `cargo build` with one profile, as `mise run dev` does. A `huterm-gui`
-  built alone in `target/release/` makes the wrappers fall back to plain
-  `ssh` and `sudo`, or run a stale `huterm` left there, which may reject
-  current configuration.
+- The app exports its own directory as `HUTERM_BIN_DIR`. Shell integration's
+  `path` feature appends it to `PATH`, and the `ssh` and `sudo` wrappers run
+  the `huterm` there. Build both executables in one `cargo build` with one
+  profile, as `mise run dev` does. A `huterm-gui` built alone in a
+  `target/<profile>/` directory leaves its shells without a matching
+  `huterm`: the wrappers fall back to plain `ssh` and `sudo`, or run a stale
+  `huterm` left there, which may reject current configuration.
 - Run without arguments, `huterm` replaces itself with the `huterm-gui` beside
   its canonicalized path, so the PID, standard streams, and exit status are the
   app's. Desktop entries, `AppRun`, and symlinks into the bundle rely on that.
