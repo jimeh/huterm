@@ -6,17 +6,18 @@
 //! tree whose stamp differs from the current manifest. Zig writes mutable
 //! `zig-pkg` directories beside `build.zig`, so every build runs from a fresh
 //! private copy under `OUT_DIR` and never touches the verified tree. Zig's
-//! caches sit beside that copy, or in Zig's global cache, so they survive a
-//! refresh.
+//! caches sit beside that copy, or in Huterm's private Zig global cache, so
+//! they survive a refresh.
 //!
 //! Preparation also publishes verified copies of the manifest's patches and
 //! their `series` beside the tree. The build applies them to the private copy
 //! with Git, and fails rather than build without one.
 //!
 //! Preparation publishes the vendored Zig package tarballs beside the tree
-//! too. The build seeds them into Zig's global package cache, where Zig checks
-//! each against the hash its `build.zig.zon` pins, so no build needs a package
-//! host. A build that still downloads a package fails, naming it.
+//! too. The build makes them the only packages in a Zig global cache private
+//! to Huterm, where Zig checks each against the hash its `build.zig.zon` pins,
+//! so no build needs a package host. A build that still downloads a package
+//! fails, naming it.
 //!
 //! With `HUTERM_GHOSTTY_ARTIFACT_CACHE` set, a build first looks there for an
 //! archive built from the same inputs and links it instead of running Zig.
@@ -529,30 +530,11 @@ fn host_target(native: &str) -> Option<String> {
     parts.next().is_none().then(|| format!("{arch}-{os}-{abi}"))
 }
 
-/// A string field of `zig env`'s ZON output, such as `target`, with its
-/// escapes decoded. `None` when the field is missing or uses an escape that
-/// a path or target never needs.
-fn zig_env_field(output: &str, field: &str) -> Option<String> {
-    let key = format!(".{field} = \"");
-    let start = output.find(&key)? + key.len();
-    let mut value = String::new();
-    let mut characters = output[start..].chars();
-    loop {
-        match characters.next()? {
-            '"' => return Some(value),
-            '\n' => return None,
-            '\\' => match characters.next()? {
-                '\\' => value.push('\\'),
-                '"' => value.push('"'),
-                '\'' => value.push('\''),
-                'n' => value.push('\n'),
-                'r' => value.push('\r'),
-                't' => value.push('\t'),
-                _ => return None,
-            },
-            character => value.push(character),
-        }
-    }
+/// The `.target` field of `zig env`'s ZON output.
+fn zig_env_target(output: &str) -> Option<&str> {
+    let start = output.find(".target = \"")? + ".target = \"".len();
+    let length = output[start..].find('"')?;
+    Some(&output[start..start + length])
 }
 
 /// Everything that shapes the archive, as one comparable text. Paths are
@@ -703,8 +685,7 @@ fn current_fingerprint(
     let version = command_output(zig, &["version"]);
     let host = command_output(zig, &["env"])
         .as_deref()
-        .and_then(|output| zig_env_field(output, "target"))
-        .as_deref()
+        .and_then(zig_env_target)
         .and_then(host_target);
     let sdk = if target.ends_with("-apple-darwin") {
         command_output(
@@ -752,34 +733,35 @@ impl Layout {
     }
 }
 
-/// Zig's global cache directory as `zig env` reports it, made absolute so
-/// that the Zig child, which runs from the private copy, uses the same one.
-fn zig_global_cache(zig: &OsString) -> Result<PathBuf, BuildError> {
-    let output = command_output(zig, &["env"]).ok_or_else(|| {
+/// Zig's global cache for Ghostty builds, private to Huterm:
+/// `ghostty-zig-cache` beside the prepared directory. A shared cache can hold
+/// lazy packages Ghostty declares but lib-vt never uses, and Zig unpacks
+/// those and fetches their missing dependencies anyway.
+fn zig_global_cache(source: &Path) -> Result<PathBuf, BuildError> {
+    let prepared = source.parent().ok_or_else(|| {
         BuildError::Option(format!(
-            "could not run `{} env`; install the pinned Zig with `mise \
-             install`",
-            zig.to_string_lossy()
+            "{SOURCE_VAR}={} has no parent directory",
+            source.display()
         ))
     })?;
-    let path = zig_env_field(&output, "global_cache_dir").ok_or_else(|| {
-        BuildError::Option(
-            "`zig env` reported no readable global_cache_dir".to_owned(),
-        )
-    })?;
-    std::path::absolute(&path).map_err(|error| {
-        BuildError::Io(format!("resolving Zig's global cache {path}"), error)
+    let cache = prepared.with_file_name("ghostty-zig-cache");
+    std::path::absolute(&cache).map_err(|error| {
+        BuildError::Io(format!("resolving {}", cache.display()), error)
     })
 }
 
-/// Copies the vendored Zig package tarballs that `ghostty:prepare` publishes
-/// in `zig-packages/` beside the source into Zig's global package cache,
-/// under the names Zig gives its own: `p/<hash>.tar.gz`. Zig unpacks a cached
-/// tarball only after checking its contents against the hash its declaring
-/// `build.zig.zon` pins, so seeding changes nothing a build trusts but spares
-/// it the package hosts. A cached file with other bytes is replaced, because
-/// Zig would reject it rather than fetch the package again.
-fn seed_packages(source: &Path, global_cache: &Path) -> Result<(), BuildError> {
+/// Makes the package cache `p/` of `global_cache` hold exactly the vendored
+/// Zig package tarballs that `ghostty:prepare` publishes in `zig-packages/`
+/// beside the source, under the names Zig gives its own: `<hash>.tar.gz`.
+/// Returns their hashes. Zig unpacks a cached tarball only after checking its
+/// contents against the hash its declaring `build.zig.zon` pins, so seeding
+/// changes nothing a build trusts but spares it the package hosts. A cached
+/// file with other bytes is replaced, because Zig would reject it rather than
+/// fetch the package again, and any other cached file is removed.
+fn seed_packages(
+    source: &Path,
+    global_cache: &Path,
+) -> Result<BTreeSet<String>, BuildError> {
     let io = |context: &str, path: &Path| {
         let context = format!("{context} {}", path.display());
         move |error| BuildError::Io(context, error)
@@ -796,17 +778,31 @@ fn seed_packages(source: &Path, global_cache: &Path) -> Result<(), BuildError> {
         }
         Err(error) => return Err(io("reading", &published)(error)),
     };
+    let mut names = BTreeSet::new();
+    for entry in entries {
+        let name = entry.map_err(io("reading", &published))?.file_name();
+        if let Some(name) = name
+            .to_str()
+            .filter(|name| name.ends_with(".tar.gz") && !name.starts_with('.'))
+        {
+            names.insert(name.to_owned());
+        }
+    }
     let cache = global_cache.join("p");
     fs::create_dir_all(&cache).map_err(io("creating", &cache))?;
-    for entry in entries {
-        let from = entry.map_err(io("reading", &published))?.path();
-        let Some(name) = from
+    for entry in fs::read_dir(&cache).map_err(io("reading", &cache))? {
+        let entry = entry.map_err(io("reading", &cache))?;
+        let stale = entry
             .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| name.ends_with(".tar.gz") && !name.starts_with('.'))
-        else {
-            continue;
-        };
+            .to_str()
+            .is_none_or(|name| !names.contains(name));
+        if stale && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            fs::remove_file(entry.path())
+                .map_err(io("removing", &entry.path()))?;
+        }
+    }
+    for name in &names {
+        let from = published.join(name);
         let bytes = fs::read(&from).map_err(io("reading", &from))?;
         let destination = cache.join(name);
         if fs::read(&destination).is_ok_and(|current| current == bytes) {
@@ -821,49 +817,18 @@ fn seed_packages(source: &Path, global_cache: &Path) -> Result<(), BuildError> {
             return Err(io("replacing", &destination)(error));
         }
     }
-    Ok(())
+    Ok(names
+        .iter()
+        .filter_map(|name| name.strip_suffix(".tar.gz"))
+        .map(str::to_owned)
+        .collect())
 }
 
-/// The hashes of the packages Zig's global cache holds as tarballs.
-fn cached_packages(
-    global_cache: &Path,
-) -> Result<BTreeSet<String>, BuildError> {
-    let cache = global_cache.join("p");
-    let entries = match fs::read_dir(&cache) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(BTreeSet::new());
-        }
-        Err(error) => {
-            return Err(BuildError::Io(
-                format!("reading {}", cache.display()),
-                error,
-            ));
-        }
-    };
-    let mut hashes = BTreeSet::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            BuildError::Io(format!("reading {}", cache.display()), error)
-        })?;
-        if let Some(hash) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.strip_suffix(".tar.gz"))
-        {
-            hashes.insert(hash.to_owned());
-        }
-    }
-    Ok(hashes)
-}
-
-/// Packages in the private copy's `zig-pkg` that `cached`, the global
-/// cache's contents before `zig build`, did not hold, and that Zig therefore
-/// downloaded. Zig also unpacks unneeded lazy packages it finds in
-/// a warm cache, so only packages missing from the cache show a download.
+/// Packages in the private copy's `zig-pkg` that are not `vendored`, and
+/// that Zig therefore downloaded.
 fn downloaded_packages(
     source: &Path,
-    cached: &BTreeSet<String>,
+    vendored: &BTreeSet<String>,
 ) -> Result<Vec<String>, BuildError> {
     let packages = source.join("zig-pkg");
     let entries = match fs::read_dir(&packages) {
@@ -885,7 +850,7 @@ fn downloaded_packages(
         })?;
         let name = entry.file_name().to_string_lossy().into_owned();
         // Zig's own temporary directories start with a dot.
-        if !name.starts_with('.') && !cached.contains(&name) {
+        if !name.starts_with('.') && !vendored.contains(&name) {
             downloaded.push(name);
         }
     }
@@ -897,7 +862,8 @@ fn downloaded_packages(
 ///
 /// Commit hooks export repository paths that would point Ghostty's version
 /// probe at Huterm, so Git state is isolated to the private copy. The child
-/// gets the global cache the seeds went to, and keeps `zig-pkg` in the copy.
+/// gets Huterm's private global cache, which holds the seeds, and keeps
+/// `zig-pkg` in the copy.
 fn zig_command(
     zig: &OsString,
     layout: &Layout,
@@ -1019,14 +985,13 @@ fn build() -> Result<(), BuildError> {
             &layout.source,
             &std::env::vars_os().collect::<Vec<_>>(),
         )?;
-        let global_cache = zig_global_cache(&zig)?;
-        seed_packages(&source, &global_cache)?;
-        let cached = cached_packages(&global_cache)?;
+        let global_cache = zig_global_cache(&source)?;
+        let vendored = seed_packages(&source, &global_cache)?;
         run_zig(&zig, &layout, &options, &global_cache)?;
         // Zig fetches lazy packages while the build runs, so only the
         // finished build shows them. A pin or Zig bump can add one; vendor it
         // rather than let builds depend on its host.
-        let downloaded = downloaded_packages(&layout.source, &cached)?;
+        let downloaded = downloaded_packages(&layout.source, &vendored)?;
         if !downloaded.is_empty() {
             return Err(BuildError::Option(format!(
                 "zig build downloaded Zig packages that Huterm does not \
@@ -1553,10 +1518,10 @@ mod tests {
         }
         let env = ".{\n    .version = \"0.16.0\",\n    .target = \"x86_64-linux.6.8.0...6.8.0-gnu.2.39\",\n}";
         assert_eq!(
-            zig_env_field(env, "target").as_deref(),
+            zig_env_target(env),
             Some("x86_64-linux.6.8.0...6.8.0-gnu.2.39")
         );
-        assert_eq!(zig_env_field(".{ .version = \"0.16.0\" }", "target"), None);
+        assert_eq!(zig_env_target(".{ .version = \"0.16.0\" }"), None);
     }
 
     #[test]
@@ -1746,26 +1711,6 @@ mod tests {
         assert_eq!(layout.source.parent(), Some(Path::new("/out")));
     }
 
-    #[test]
-    fn zig_env_fields_decode_escaped_paths() {
-        let env = ".{\n    .global_cache_dir = \"/home/a \\\"b\\\\c/zig\",\n}";
-        assert_eq!(
-            zig_env_field(env, "global_cache_dir").as_deref(),
-            Some("/home/a \"b\\c/zig")
-        );
-        for unreadable in [
-            ".{ .global_cache_dir = \"/a\\x41\" }",
-            ".{ .global_cache_dir = \"/unterminated }",
-            ".{ .global_cache_dir = \"/a\nb\" }",
-        ] {
-            assert_eq!(
-                zig_env_field(unreadable, "global_cache_dir"),
-                None,
-                "{unreadable:?}"
-            );
-        }
-    }
-
     /// A prepared root holding `source/` and the published `zig-packages/`.
     fn published_packages(root: &Path, packages: &[(&str, &str)]) -> PathBuf {
         let source = root.join("source");
@@ -1779,42 +1724,38 @@ mod tests {
     }
 
     #[test]
-    fn seeding_copies_vendored_tarballs_into_the_global_cache() {
-        let temp = TempDir::new("seed");
-        let source = published_packages(
-            &temp.0,
-            &[("aro-1", "aro"), ("uucode-2", "uu")],
-        );
-        let global = temp.0.join("global");
-        seed_packages(&source, &global).unwrap();
+    fn the_private_cache_sits_beside_the_prepared_directory() {
         assert_eq!(
-            snapshot(&global),
-            [
-                ("p".to_owned(), "dir".to_owned()),
-                ("p/aro-1.tar.gz".to_owned(), "aro".to_owned()),
-                ("p/uucode-2.tar.gz".to_owned(), "uu".to_owned()),
-            ]
-        );
-        assert_eq!(
-            cached_packages(&global).unwrap(),
-            BTreeSet::from(["aro-1".to_owned(), "uucode-2".to_owned()])
+            zig_global_cache(Path::new("/repo/.native/ghostty/source"))
+                .unwrap(),
+            Path::new("/repo/.native/ghostty-zig-cache")
         );
     }
 
     #[test]
-    fn seeding_replaces_a_differing_cached_tarball_and_keeps_others() {
-        let temp = TempDir::new("seed-replace");
-        let source = published_packages(&temp.0, &[("aro-1", "vendored")]);
+    fn seeding_leaves_the_cache_holding_exactly_the_vendored_tarballs() {
+        let temp = TempDir::new("seed");
+        let source = published_packages(
+            &temp.0,
+            &[("aro-1", "vendored"), ("uucode-2", "uu")],
+        );
         let cache = temp.0.join("global/p");
         fs::create_dir_all(&cache).unwrap();
         fs::write(cache.join("aro-1.tar.gz"), "poisoned").unwrap();
-        fs::write(cache.join("other-3.tar.gz"), "unrelated").unwrap();
-        seed_packages(&source, &temp.0.join("global")).unwrap();
+        // A lazy package lib-vt never uses, whose dependencies Zig would
+        // otherwise fetch, and a temporary file a killed build left behind.
+        fs::write(cache.join("vaxis-3.tar.gz"), "unused").unwrap();
+        fs::write(cache.join(".uucode-2.tar.gz.huterm-1"), "partial").unwrap();
+        let vendored = seed_packages(&source, &temp.0.join("global")).unwrap();
+        assert_eq!(
+            vendored,
+            BTreeSet::from(["aro-1".to_owned(), "uucode-2".to_owned()])
+        );
         assert_eq!(
             snapshot(&cache),
             [
                 ("aro-1.tar.gz".to_owned(), "vendored".to_owned()),
-                ("other-3.tar.gz".to_owned(), "unrelated".to_owned()),
+                ("uucode-2.tar.gz".to_owned(), "uu".to_owned()),
             ]
         );
     }
@@ -1832,16 +1773,17 @@ mod tests {
     }
 
     #[test]
-    fn only_packages_missing_from_the_cache_count_as_downloads() {
+    fn packages_outside_the_vendored_set_count_as_downloads() {
         let temp = TempDir::new("downloads");
         let packages = temp.0.join("zig-pkg");
-        for name in ["aro-1", "lazy-4", "new-5", ".tmp-0123"] {
+        for name in ["aro-1", "new-5", ".tmp-0123"] {
             fs::create_dir_all(packages.join(name)).unwrap();
         }
-        let cached = BTreeSet::from(["aro-1".to_owned(), "lazy-4".to_owned()]);
-        assert_eq!(downloaded_packages(&temp.0, &cached).unwrap(), ["new-5"]);
+        let vendored =
+            BTreeSet::from(["aro-1".to_owned(), "uucode-2".to_owned()]);
+        assert_eq!(downloaded_packages(&temp.0, &vendored).unwrap(), ["new-5"]);
         assert!(
-            downloaded_packages(&temp.0.join("none"), &cached)
+            downloaded_packages(&temp.0.join("none"), &vendored)
                 .unwrap()
                 .is_empty()
         );

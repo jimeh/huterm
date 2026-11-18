@@ -438,28 +438,32 @@ itself writes to its global cache's `p` directory. The manifest's
 SHA-256; `ghostty:prepare` checks those and publishes verified copies to
 `.native/ghostty/zig-packages`, as it does for patches.
 
-Before `zig build`, the build script copies the published tarballs into Zig's
-global cache, replacing any cached copy with other bytes. Zig unpacks a
-`p/<hash>.tar.gz` only after hashing its contents and comparing the result
-with the hash its declaring `build.zig.zon` pins, and fails on a mismatch, so
-the seeds change nothing a build trusts: the chain from the verified Ghostty
-tree to each package's contents is the upstream one. Zig trusts an existing
+Ghostty builds use a Zig global cache private to Huterm,
+`.native/ghostty-zig-cache`, whatever `ZIG_GLOBAL_CACHE_DIR` says. A shared
+cache does not work: Zig unpacks every cached lazy package Ghostty declares,
+needed or not, and fetches that package's missing dependencies, so a
+developer cache holding `vaxis` without `zigimg` sent an offline build to
+GitHub. Before `zig build`, the build script makes the private cache's `p`
+directory hold exactly the published tarballs, replacing a copy with other
+bytes and removing every other file. Zig unpacks a `p/<hash>.tar.gz` only
+after hashing its contents and comparing the result with the hash its
+declaring `build.zig.zon` pins, and fails on a mismatch, so the seeds change
+nothing a build trusts: the chain from the verified Ghostty tree to each
+package's contents is the upstream one. Zig trusts an existing
 `zig-pkg/<hash>` directory by name instead, which is safe only because every
-build stages a fresh copy. The script reads the global cache path from
-`zig env`, passes it to the Zig child as an absolute `ZIG_GLOBAL_CACHE_DIR`,
-and removes `ZIG_LOCAL_PKG_DIR`, so the seeds and the build use the same
-cache and `zig-pkg` stays in the copy.
+build stages a fresh copy. The Zig child gets the private cache as
+`ZIG_GLOBAL_CACHE_DIR` and loses `ZIG_LOCAL_PKG_DIR`, so `zig-pkg` stays in the
+copy. The cache also holds Zig's compiled build runner and libc objects;
+deleting it costs one slower build.
 
 Zig fetches some lazy packages only while build steps run, so `zig build
 --fetch` never covered them: it missed `pixels`, zlib, Highway, and Wuffs. After
-the build, the script fails if `zig-pkg` holds any package whose tarball was
-not in the global cache beforehand, naming the packages Zig downloaded. A warm
-cache can hold more than the build needs: Zig unpacks every cached lazy
-package Ghostty declares, needed or not, so the check compares with the cache,
-not the vendored set. A developer cache that already holds a newly needed
-package therefore passes locally; CI, whose cache starts empty, fails. The
-build passes `-Demit-themes=false`: Ghostty otherwise installs its bundled
-themes, a package that carries no license file and that Huterm never reads.
+the build, the script fails if `zig-pkg` holds any package that is not
+vendored, naming the packages Zig downloaded, on every machine. The build
+passes `-Demit-themes=false`: Ghostty otherwise installs its bundled themes, a
+package that carries no license file and that Huterm never reads. zlib stays:
+lib-vt compiles none of it, but Ghostty's build graph requests it for the
+`framegen` host tool even when nothing builds that tool.
 
 After a Ghostty pin or Zig bump, run `mise run ghostty:zig-packages`. It
 prepares the pin and patches in a scratch directory, builds lib-vt for both
@@ -608,8 +612,10 @@ reruns only when those, itself, `scripts/ghostty-source.json`, or the stamp
 beside the source directory change. `ghostty:prepare` writes that stamp,
 `.native/ghostty/source.manifest.json`, with the manifest's bytes once the tree
 verifies. The build fails, even before reusing a cached archive, unless the
-stamp matches the manifest. A source build also reads the patch series beside
-the stamp, without a rerun trigger; see [native patches](#native-patches).
+stamp matches the manifest. A source build also reads the patch series and the
+published Zig packages beside the stamp, without a rerun trigger, and writes to
+`.native/ghostty-zig-cache`; see [native patches](#native-patches) and
+[vendored Zig packages](#vendored-zig-packages).
 `scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract tests
 pin each C behavior the engine relies on, and the ABI test checks every emitted
 FFI type against `ghostty_type_json()`. After a pin bump, fix a failing contract

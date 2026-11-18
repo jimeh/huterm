@@ -477,7 +477,8 @@ secrets through `workflow_call`.
 
 Package jobs use no Actions cache and build libghostty-vt from the verified
 source. They fetch no Zig packages either: the build seeds Huterm's vendored
-copies, which Zig checks against the pinned hashes, so a Codeberg or
+copies into a private Zig cache, and Zig checks them against the pinned
+hashes, so a Codeberg or
 deps.files.ghostty.org outage cannot fail a release. Zig itself still
 downloads from ziglang.org and its mirrors; see [CI](ci.md).
 
