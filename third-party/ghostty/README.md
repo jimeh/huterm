@@ -21,9 +21,10 @@ the static library; `zig-MIT.txt` is Zig 0.17.0's license.
 
 The upstream archive and Zig dependency evaluation include application-related
 sources that are not linked into the VT library. This notice set describes the
-VT build, not every optional application dependency. Zig may download additional
-lazy dependencies while evaluating the build; their hashes remain pinned in the
-upstream package manifests. No native Ghostty renderer or font stack is linked.
+VT build, not every optional application dependency. The build uses the Zig
+packages vendored in `third-party/ghostty-zig-packages`, which Zig checks
+against the hashes pinned in the upstream package manifests. No native
+Ghostty renderer or font stack is linked.
 Huterm's Rust terminal graphics port has [separate notices](../terminal-graphics/README.md).
 
 The `huterm-ghostty` build script builds libghostty-vt from a private copy of

@@ -47,8 +47,7 @@ runs:
         path: ${{ runner.temp }}/mise-zig-cache
         key: ${{ steps.key.outputs.key }}
 
-    # restore-ghostty and save-ghostty cache Zig's package directory from
-    # this global cache. Only literal paths under RUNNER_TEMP reach GITHUB_ENV.
+    # Only literal paths under RUNNER_TEMP reach GITHUB_ENV.
     - name: Keep Zig caches outside the checkout
       shell: bash
       run: | # zizmor: ignore[github-env]

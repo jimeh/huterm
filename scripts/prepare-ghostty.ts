@@ -7,11 +7,16 @@ import { dlopen } from "bun:ffi";
 
 type Source = { name: string; url: string; sha256: string; tree_sha256: string };
 type Patch = { name: string; file: string; sha256: string; description: string; upstream?: string };
-type Manifest = { revision: string; zig: string; source: Source; patches: Patch[] };
+/** A Zig package that Ghostty's build fetches, vendored as Zig's own cache tarball. */
+export type ZigPackage = { name: string; zig_hash: string; url: string; sha256: string };
+export type Manifest = { revision: string; zig: string; source: Source; patches: Patch[]; zig_packages: ZigPackage[] };
 /** A manifest patch whose bytes matched its recorded checksum. */
 export type VerifiedPatch = { name: string; bytes: Buffer };
+/** A vendored Zig package tarball whose bytes matched its recorded checksum. */
+export type VerifiedZigPackage = { zig_hash: string; bytes: Buffer };
 const repository = resolve(import.meta.dir, "..");
 const patchDirectory = "third-party/ghostty-patches";
+export const zigPackageDirectory = "third-party/ghostty-zig-packages";
 
 export function fileHash(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
@@ -259,11 +264,58 @@ export function loadPatches(patches: Patch[], root: string): VerifiedPatch[] {
   });
 }
 
+/** The vendored tarball for a Zig package: Zig's own `p/<hash>.tar.gz` name. */
+export function zigPackageFile(zigHash: string): string {
+  return `${zigPackageDirectory}/${zigHash}.tar.gz`;
+}
+
+export function parseZigPackages(value: unknown): ZigPackage[] {
+  if (!Array.isArray(value)) throw new Error("invalid Ghostty Zig package list");
+  const hashes = new Set<string>();
+  return value.map((entry: unknown) => {
+    if (!entry || typeof entry !== "object") throw new Error("invalid Ghostty Zig package entry");
+    const { name, zig_hash, url, sha256 } = entry as Record<string, unknown>;
+    if (typeof name !== "string" || !/^[A-Za-z0-9_.-]+$/.test(name)) throw new Error(`invalid Ghostty Zig package name: ${String(name)}`);
+    // Zig package hashes use this alphabet; it also keeps the hash a plain file name.
+    if (typeof zig_hash !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(zig_hash) || zig_hash.includes("..")) {
+      throw new Error(`invalid Zig hash for Ghostty Zig package ${name}`);
+    }
+    if (hashes.has(zig_hash)) throw new Error(`duplicate Ghostty Zig package: ${zig_hash}`);
+    hashes.add(zig_hash);
+    // The URL its upstream manifest declares, kept for provenance; Git packages use git+https.
+    if (typeof url !== "string" || !/^(?:git\+)?https:\/\//.test(url)) throw new Error(`Ghostty Zig package ${name} url must be https or git+https`);
+    if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`invalid sha256 for Ghostty Zig package ${name}`);
+    return { name, zig_hash, url, sha256 };
+  });
+}
+
+/** Reads each vendored Zig package tarball under `root` and checks its bytes. */
+export function loadZigPackages(packages: ZigPackage[], root: string): VerifiedZigPackage[] {
+  return packages.map(item => {
+    const file = zigPackageFile(item.zig_hash);
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(join(root, file));
+    } catch (error) {
+      throw new Error(`cannot read Ghostty Zig package ${item.name}: ${error instanceof Error ? error.message : error}; run \`mise run ghostty:zig-packages\``);
+    }
+    if (createHash("sha256").update(bytes).digest("hex") !== item.sha256) {
+      throw new Error(`Ghostty Zig package checksum mismatch: ${file}; run \`mise run ghostty:zig-packages\` and review the result`);
+    }
+    return { zig_hash: item.zig_hash, bytes };
+  });
+}
+
 /** The published patch directory's contents: verified copies and their order. */
 function publishedFiles(patches: VerifiedPatch[]): Map<string, Buffer> {
   const files = new Map(patches.map(patch => [`${patch.name}.patch`, patch.bytes]));
   files.set("series", Buffer.from(patches.map(patch => `${patch.name}.patch\n`).join("")));
   return files;
+}
+
+/** The published Zig package directory's contents, named as Zig's cache names them. */
+function publishedZigPackages(packages: VerifiedZigPackage[]): Map<string, Buffer> {
+  return new Map(packages.map(item => [`${item.zig_hash}.tar.gz`, item.bytes]));
 }
 
 /**
@@ -287,7 +339,8 @@ function readRegularFile(path: string): Buffer | undefined {
 
 /** Entries of `directory` that are missing, differ from `files`, or are stale. */
 function publishedDifferences(directory: string, files: Map<string, Buffer>): string[] {
-  if (!lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) return [...files.keys()];
+  // Builds require the directory even when it holds nothing.
+  if (!lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) return files.size > 0 ? [...files.keys()] : [`${basename(directory)}/`];
   return [...new Set([...files.keys(), ...readdirSync(directory)])].sort().filter(name => {
     const expected = files.get(name);
     return !expected || !readRegularFile(join(directory, name))?.equals(expected);
@@ -295,26 +348,27 @@ function publishedDifferences(directory: string, files: Map<string, Buffer>): st
 }
 
 /**
- * Publishes verified patch copies and `series` for the build script. Unchanged
- * files keep their mtimes. A changed set removes the stamp first, so builds
- * reject the tree until the caller writes the stamp after a complete publish.
+ * Publishes verified files, such as patch copies and their `series`, in
+ * `root/name` for the build script. Unchanged files keep their mtimes. A
+ * changed set removes the stamp first, so builds reject the tree until the
+ * caller writes the stamp after a complete publish.
  */
-function publishPatches(root: string, stamp: string, patches: VerifiedPatch[]): void {
-  const directory = join(root, "patches");
-  const files = publishedFiles(patches);
+function publish(root: string, stamp: string, name: string, files: Map<string, Buffer>): void {
+  const directory = join(root, name);
   const differences = publishedDifferences(directory, files);
   if (differences.length === 0) return;
   rmSync(stamp, { force: true });
   if (!lstatSync(directory, { throwIfNoEntry: false })?.isDirectory()) rmSync(directory, { force: true });
   mkdirSync(directory, { recursive: true });
-  const stage = mkdtempSync(join(root, ".patches-"));
+  const stage = mkdtempSync(join(root, `.${name}-`));
   try {
-    for (const name of differences) {
-      const target = join(directory, name);
-      const bytes = files.get(name);
+    for (const file of differences) {
+      if (file.endsWith("/")) continue;
+      const target = join(directory, file);
+      const bytes = files.get(file);
       if (!bytes || !lstatSync(target, { throwIfNoEntry: false })?.isFile()) rmSync(target, { recursive: true, force: true });
       if (!bytes) continue;
-      const temporary = join(stage, name);
+      const temporary = join(stage, file);
       writeFileSync(temporary, bytes);
       renameSync(temporary, target);
     }
@@ -327,20 +381,27 @@ function publishPatches(root: string, stamp: string, patches: VerifiedPatch[]): 
  * `manifest` holds the manifest file's bytes, recorded beside a verified tree
  * except in check mode. `reuse` lists other checkouts' preparation
  * directories, searched in order for a matching archive before downloading.
- * `patches` are published beside the tree, or only compared in check mode.
+ * `patches` and the vendored `zigPackages` are published beside the tree, or
+ * only compared in check mode.
  */
-export async function prepareSource(item: Source, root: string, check: boolean, manifest: Uint8Array, reuse: string[] = [], patches: VerifiedPatch[] = []): Promise<void> {
+export async function prepareSource(item: Source, root: string, check: boolean, manifest: Uint8Array, reuse: string[] = [], patches: VerifiedPatch[] = [], zigPackages: VerifiedZigPackage[] = []): Promise<void> {
   const source = join(root, "source");
   const stamp = join(root, "source.manifest.json");
+  const published: [string, string, Map<string, Buffer>][] = [
+    ["patches", "patches", publishedFiles(patches)],
+    ["zig-packages", "Zig packages", publishedZigPackages(zigPackages)],
+  ];
   if (lstatSync(source, { throwIfNoEntry: false })) {
     verifyTree(source, item.tree_sha256);
     if (check) {
-      const differences = publishedDifferences(join(root, "patches"), publishedFiles(patches));
-      if (differences.length > 0) {
-        throw new Error(`published Ghostty patches differ from the manifest (${differences.join(", ")}); run \`mise run ghostty:prepare\``);
+      for (const [name, label, files] of published) {
+        const differences = publishedDifferences(join(root, name), files);
+        if (differences.length > 0) {
+          throw new Error(`published Ghostty ${label} differ from the manifest (${differences.join(", ")}); run \`mise run ghostty:prepare\``);
+        }
       }
     } else {
-      publishPatches(root, stamp, patches);
+      for (const [name, , files] of published) publish(root, stamp, name, files);
       writeStamp(stamp, manifest);
     }
     return;
@@ -360,11 +421,11 @@ export async function prepareSource(item: Source, root: string, check: boolean, 
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
-  publishPatches(root, stamp, patches);
+  for (const [name, , files] of published) publish(root, stamp, name, files);
   writeStamp(stamp, manifest);
 }
 
-function parseManifest(bytes: Buffer): Manifest {
+export function parseManifest(bytes: Buffer): Manifest {
   const manifest: unknown = JSON.parse(bytes.toString("utf8"));
   if (!manifest || typeof manifest !== "object" || !("revision" in manifest) || !("zig" in manifest) || !("source" in manifest)) {
     throw new Error("invalid Ghostty source manifest");
@@ -380,10 +441,11 @@ function parseManifest(bytes: Buffer): Manifest {
     throw new Error("invalid Ghostty source manifest");
   }
   const patches = parsePatches("patches" in manifest ? manifest.patches : undefined);
-  return { revision, zig, source: { name: source.name, url: source.url, sha256: source.sha256, tree_sha256: source.tree_sha256 }, patches };
+  const zigPackages = parseZigPackages("zig_packages" in manifest ? manifest.zig_packages : undefined);
+  return { revision, zig, source: { name: source.name, url: source.url, sha256: source.sha256, tree_sha256: source.tree_sha256 }, patches, zig_packages: zigPackages };
 }
 
-function verifyRevision(manifest: Manifest): void {
+export function verifyRevision(manifest: Manifest): void {
   const source = readFileSync(join(repository, "crates/huterm-core/src/lib.rs"), "utf8");
   const revision = /pub const GHOSTTY_REVISION: &str =\s*"([0-9a-f]{40})";/.exec(source)?.[1];
   const provenance = JSON.parse(readFileSync(join(repository, "third-party/ghostty/provenance.json"), "utf8"));
@@ -407,6 +469,7 @@ if (import.meta.main) {
       const manifest = parseManifest(manifestBytes);
       verifyRevision(manifest);
       const patches = loadPatches(manifest.patches, repository);
+      const zigPackages = loadZigPackages(manifest.zig_packages, repository);
       const root = resolve(values.directory ?? join(repository, ".native/ghostty"));
       const reuse = otherCheckouts(repository).map(checkout => join(checkout, ".native/ghostty"));
       mkdirSync(root, { recursive: true });
@@ -417,7 +480,7 @@ if (import.meta.main) {
           const version = result.stdout.toString().trim();
           if (version !== manifest.zig) throw new Error(`expected Zig ${manifest.zig}, got ${version}`);
         }
-        await prepareSource(manifest.source, root, values.check ?? false, manifestBytes, reuse, patches);
+        await prepareSource(manifest.source, root, values.check ?? false, manifestBytes, reuse, patches, zigPackages);
       });
       console.log(`verified Ghostty ${manifest.revision} at ${join(root, "source")}`);
     }

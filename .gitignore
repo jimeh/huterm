@@ -4,6 +4,7 @@
 .DS_Store
 /.native/ghostty/
 /.native/ghostty-prebuilt/
+/.native/ghostty-zig-cache/
 /.native/nerd-fonts/
 /.native/sparkle/
 /.native/vendor/

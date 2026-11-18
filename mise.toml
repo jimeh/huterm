@@ -753,6 +753,10 @@ esac
 description = "Verify pinned source and Zig for the Ghostty engine"
 run = "bash scripts/build-exec.sh bun scripts/prepare-ghostty.ts"
 
+[tasks."ghostty:zig-packages"]
+description = "Refetch Ghostty's Zig packages from upstream into third-party/ghostty-zig-packages"
+run = "bash scripts/build-exec.sh bun scripts/ghostty-zig-packages.ts"
+
 [tasks."ghostty:bindings"]
 depends = ["ghostty:prepare"]
 description = "Regenerate huterm-ghostty's FFI declarations from the pinned headers"
@@ -920,7 +924,7 @@ depends = ["ghostty:prepare", "icons:check"]
 run = "bun scripts/package-linux.ts build"
 
 [tasks."ci:package:linux"]
-description = "Build Linux packages, retrying one transient native dependency fetch"
+description = "Build Linux packages, retrying once after a transient download failure"
 run = '''
 if mise run package:linux; then
   exit 0

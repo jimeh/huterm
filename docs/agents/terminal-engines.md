@@ -424,16 +424,58 @@ result. The fingerprint covers the source manifest, Zig version and arguments,
 target, and the host libc or macOS SDK: Linux host builds stay native, so an
 archive built against a newer glibc must never reach a 2.35-ceiling package.
 
-Before `zig build`, the build script runs `zig build --fetch` with the same
-arguments and retries it after 5 and 20 seconds. Ghostty's Zig packages come
-from upstream hosts: most from deps.files.ghostty.org, and translate-c's `aro`
-dependency from codeberg.org over Git. One 503 from codeberg.org once failed
-every compiling CI job in a run. Fetch with the build's exact arguments: a
-separate prefetch with default options missed lazy packages, such as
-`pixels`, that the real build needs. Zig keeps fetched packages as tarballs in
-its global cache's `p` directory, which is enough for a later offline build;
-`restore-ghostty` and `save-ghostty` persist that directory in CI, keyed by OS,
-architecture, and `scripts/ghostty-source.json`.
+### Vendored Zig packages
+
+Builds never fetch Zig packages. Ghostty's lib-vt build needs seven:
+translate-c and its `aro` dependency, uucode, Highway, Wuffs and its `pixels`
+test data, and zlib. Upstream they come from deps.files.ghostty.org, and `aro`
+from codeberg.org over Git. A 503 from codeberg.org once failed every
+compiling CI job in a run, and a Codeberg DNS outage failed all three package
+jobs of the v0.36.0 release. Each package is vendored in
+`third-party/ghostty-zig-packages` as `<zig hash>.tar.gz`, the tarball Zig
+itself writes to its global cache's `p` directory. The manifest's
+`zig_packages` lists each with its declared upstream URL and the tarball's
+SHA-256; `ghostty:prepare` checks those and publishes verified copies to
+`.native/ghostty/zig-packages`, as it does for patches.
+
+Ghostty builds use a Zig global cache private to Huterm,
+`.native/ghostty-zig-cache`, whatever `ZIG_GLOBAL_CACHE_DIR` says. A shared
+cache does not work: Zig unpacks every cached lazy package Ghostty declares,
+needed or not, and fetches that package's missing dependencies, so a
+developer cache holding `vaxis` without `zigimg` sent an offline build to
+GitHub. Before `zig build`, the build script makes the private cache's `p`
+directory hold exactly the published tarballs, replacing a copy with other
+bytes and removing every other file. Zig unpacks a `p/<hash>.tar.gz` only
+after hashing its contents and comparing the result with the hash its
+declaring `build.zig.zon` pins, and fails on a mismatch, so the seeds change
+nothing a build trusts: the chain from the verified Ghostty tree to each
+package's contents is the upstream one. Zig trusts an existing
+`zig-pkg/<hash>` directory by name instead, which is safe only because every
+build stages a fresh copy. The Zig child gets the private cache as
+`ZIG_GLOBAL_CACHE_DIR` and loses `ZIG_LOCAL_PKG_DIR`, so `zig-pkg` stays in the
+copy. The cache also holds Zig's compiled build runner and libc objects;
+deleting it costs one slower build.
+
+Zig fetches some lazy packages only while build steps run, so `zig build
+--fetch` never covered them: it missed `pixels`, zlib, Highway, and Wuffs. After
+the build, the script fails if `zig-pkg` holds any package that is not
+vendored, naming the packages Zig downloaded, on every machine. The build
+passes `-Demit-themes=false`: Ghostty otherwise installs its bundled themes, a
+package that carries no license file and that Huterm never reads. zlib stays:
+lib-vt compiles none of it, but Ghostty's build graph requests it for the
+`framegen` host tool even when nothing builds that tool.
+
+After a Ghostty pin or Zig bump, run `mise run ghostty:zig-packages`. It
+prepares the pin and patches in a scratch directory, builds lib-vt for both
+macOS architectures and both Linux architectures in ReleaseFast and
+ReleaseSafe into an empty global cache, and replaces the vendored tarballs and
+the manifest's `zig_packages` with what Zig fetched. It needs the upstream
+hosts and takes about six minutes. Zig compresses these tarballs
+deterministically, so a rerun on an unchanged pin leaves no diff, and anyone
+can reproduce the committed bytes from upstream. Other optimize modes may need
+more packages; the build's check names them.
+
+### Prebuilt archives in CI
 
 CI jobs restore and save `.native/ghostty-prebuilt` through the
 `restore-ghostty` and `save-ghostty` actions, keyed by namespace and by a hash
@@ -570,8 +612,10 @@ reruns only when those, itself, `scripts/ghostty-source.json`, or the stamp
 beside the source directory change. `ghostty:prepare` writes that stamp,
 `.native/ghostty/source.manifest.json`, with the manifest's bytes once the tree
 verifies. The build fails, even before reusing a cached archive, unless the
-stamp matches the manifest. A source build also reads the patch series beside
-the stamp, without a rerun trigger; see [native patches](#native-patches).
+stamp matches the manifest. A source build also reads the patch series and the
+published Zig packages beside the stamp, without a rerun trigger, and writes to
+`.native/ghostty-zig-cache`; see [native patches](#native-patches) and
+[vendored Zig packages](#vendored-zig-packages).
 `scripts/ghostty-build.test.ts` runs its unit tests. The crate's contract tests
 pin each C behavior the engine relies on, and the ABI test checks every emitted
 FFI type against `ghostty_type_json()`. After a pin bump, fix a failing contract
