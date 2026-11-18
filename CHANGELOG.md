@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.36.0](https://github.com/jimeh/huterm/compare/v0.35.0...v0.36.0) (2026-11-18)
+
+
+### Features
+
+* highlight triple-clicked lines to the right edge ([#488](https://github.com/jimeh/huterm/issues/488)) ([f459db6](https://github.com/jimeh/huterm/commit/f459db6c85c4033a439debd1160c640f76840c67))
+* keep SSH and sudo working with Huterm's terminal identity ([#484](https://github.com/jimeh/huterm/issues/484)) ([548296b](https://github.com/jimeh/huterm/commit/548296b005fb423d0167021287a65193e7786931))
+
+
+### Bug Fixes
+
+* stop a stuck PTY creation from hanging terminal spawns ([#493](https://github.com/jimeh/huterm/issues/493)) ([8153c1b](https://github.com/jimeh/huterm/commit/8153c1b4e98271b7b4eade72162abbe2f61cc4da))
+
 ## [0.35.0](https://github.com/jimeh/huterm/compare/v0.34.0...v0.35.0) (2026-11-16)
 
 
