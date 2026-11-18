@@ -292,6 +292,8 @@ mise run setup
 mise run dev
 ```
 
+`mise run dev --release` builds and runs an optimized app instead.
+
 The main checks are:
 
 - `mise run check`: formatting, Clippy, test-module order, documentation, and

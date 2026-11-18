@@ -75,14 +75,30 @@ fi
 [tasks.dev]
 description = "Run the native Huterm app"
 depends = ["ghostty:prepare", "terminfo:prepare"]
+# Extra arguments go to the app, never to Cargo, so they cannot give the run
+# step a different profile from the build step. Mise consumes its own `--`
+# first, so the older `mise run dev -- --release` still sets the flag.
+usage = '''
+flag "-r --release" help="Build and run with the release profile"
+arg "[args]" var=#true help="Arguments passed to huterm-gui"
+'''
+shell = "bash -c"
+# Building the command line with the app puts `huterm` beside `huterm-gui` in
+# the same profile directory, where the app's `HUTERM_BIN_DIR` and shell
+# integration find it.
 # A worktree-local state directory, so a dev build neither restores nor
 # overwrites the installed app's sessions.
-# Building the command line first puts `huterm` beside `huterm-gui`, where
-# shell integration's `path` feature finds it.
-run = [
-  "bash scripts/build-exec.sh cargo build --locked -p huterm-cli",
-  'HUTERM_STATE_DIR="$PWD/target/dev-state" bash scripts/build-exec.sh cargo run --locked -p huterm',
-]
+run = '''
+set -eo pipefail
+profile=()
+if [ "${usage_release:-}" = true ]; then
+  profile=(--release)
+fi
+eval "app_args=(${usage_args:-})"
+bash scripts/build-exec.sh cargo build --locked "${profile[@]}" -p huterm-cli -p huterm
+HUTERM_STATE_DIR="$PWD/target/dev-state" exec bash scripts/build-exec.sh \
+  cargo run --locked "${profile[@]}" -p huterm -- "${app_args[@]}"
+'''
 
 [tasks.build]
 description = "Build the workspace"
