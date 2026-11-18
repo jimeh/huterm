@@ -475,6 +475,12 @@ and annotate those lines with `# x-release-please-version`; the generic extra
 Cargo.toml updater advances them with the package versions. Do not forward
 secrets through `workflow_call`.
 
+Package jobs use no Actions cache and build libghostty-vt from the verified
+source. They fetch no Zig packages either: the build seeds Huterm's vendored
+copies, which Zig checks against the pinned hashes, so a Codeberg or
+deps.files.ghostty.org outage cannot fail a release. Zig itself still
+downloads from ziglang.org and its mirrors; see [CI](ci.md).
+
 Draft release listings require push access even though the API accepts read-only
 tokens. Use a contents-write bot token for draft validation; keep the job token
 read-only and mint a fresh publishing token after the build.

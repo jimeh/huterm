@@ -424,16 +424,54 @@ result. The fingerprint covers the source manifest, Zig version and arguments,
 target, and the host libc or macOS SDK: Linux host builds stay native, so an
 archive built against a newer glibc must never reach a 2.35-ceiling package.
 
-Before `zig build`, the build script runs `zig build --fetch` with the same
-arguments and retries it after 5 and 20 seconds. Ghostty's Zig packages come
-from upstream hosts: most from deps.files.ghostty.org, and translate-c's `aro`
-dependency from codeberg.org over Git. One 503 from codeberg.org once failed
-every compiling CI job in a run. Fetch with the build's exact arguments: a
-separate prefetch with default options missed lazy packages, such as
-`pixels`, that the real build needs. Zig keeps fetched packages as tarballs in
-its global cache's `p` directory, which is enough for a later offline build;
-`restore-ghostty` and `save-ghostty` persist that directory in CI, keyed by OS,
-architecture, and `scripts/ghostty-source.json`.
+### Vendored Zig packages
+
+Builds never fetch Zig packages. Ghostty's lib-vt build needs seven:
+translate-c and its `aro` dependency, uucode, Highway, Wuffs and its `pixels`
+test data, and zlib. Upstream they come from deps.files.ghostty.org, and `aro`
+from codeberg.org over Git. A 503 from codeberg.org once failed every
+compiling CI job in a run, and a Codeberg DNS outage failed all three package
+jobs of the v0.36.0 release. Each package is vendored in
+`third-party/ghostty-zig-packages` as `<zig hash>.tar.gz`, the tarball Zig
+itself writes to its global cache's `p` directory. The manifest's
+`zig_packages` lists each with its declared upstream URL and the tarball's
+SHA-256; `ghostty:prepare` checks those and publishes verified copies to
+`.native/ghostty/zig-packages`, as it does for patches.
+
+Before `zig build`, the build script copies the published tarballs into Zig's
+global cache, replacing any cached copy with other bytes. Zig unpacks a
+`p/<hash>.tar.gz` only after hashing its contents and comparing the result
+with the hash its declaring `build.zig.zon` pins, and fails on a mismatch, so
+the seeds change nothing a build trusts: the chain from the verified Ghostty
+tree to each package's contents is the upstream one. Zig trusts an existing
+`zig-pkg/<hash>` directory by name instead, which is safe only because every
+build stages a fresh copy. The script reads the global cache path from
+`zig env`, passes it to the Zig child as an absolute `ZIG_GLOBAL_CACHE_DIR`,
+and removes `ZIG_LOCAL_PKG_DIR`, so the seeds and the build use the same
+cache and `zig-pkg` stays in the copy.
+
+Zig fetches some lazy packages only while build steps run, so `zig build
+--fetch` never covered them: it missed `pixels`, zlib, Highway, and Wuffs. After
+the build, the script fails if `zig-pkg` holds any package whose tarball was
+not in the global cache beforehand, naming the packages Zig downloaded. A warm
+cache can hold more than the build needs: Zig unpacks every cached lazy
+package Ghostty declares, needed or not, so the check compares with the cache,
+not the vendored set. A developer cache that already holds a newly needed
+package therefore passes locally; CI, whose cache starts empty, fails. The
+build passes `-Demit-themes=false`: Ghostty otherwise installs its bundled
+themes, a package that carries no license file and that Huterm never reads.
+
+After a Ghostty pin or Zig bump, run `mise run ghostty:zig-packages`. It
+prepares the pin and patches in a scratch directory, builds lib-vt for both
+macOS architectures and both Linux architectures in ReleaseFast and
+ReleaseSafe into an empty global cache, and replaces the vendored tarballs and
+the manifest's `zig_packages` with what Zig fetched. It needs the upstream
+hosts and takes about six minutes. Zig compresses these tarballs
+deterministically, so a rerun on an unchanged pin leaves no diff, and anyone
+can reproduce the committed bytes from upstream. Other optimize modes may need
+more packages; the build's check names them.
+
+### Prebuilt archives in CI
 
 CI jobs restore and save `.native/ghostty-prebuilt` through the
 `restore-ghostty` and `save-ghostty` actions, keyed by namespace and by a hash

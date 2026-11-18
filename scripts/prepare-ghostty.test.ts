@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileHash, loadPatches, otherCheckouts, parsePatches, patchPaths, prepareSource, treeHash, verifyTree, withPrepareLock } from "./prepare-ghostty.ts";
+import { fileHash, loadPatches, loadZigPackages, otherCheckouts, parsePatches, parseZigPackages, patchPaths, prepareSource, treeHash, verifyTree, withPrepareLock, zigPackageFile } from "./prepare-ghostty.ts";
 
 const directories: string[] = [];
 function temporary(): string {
@@ -52,10 +52,11 @@ test("records the manifest beside freshly extracted source", async () => {
   const { root, item } = await fixture();
   await prepareSource(item, root, false, manifest);
   expect(readFileSync(join(root, "source.manifest.json"))).toEqual(manifest);
-  expect(readdirSync(root).sort()).toEqual(["archives", "patches", "source", "source.manifest.json"]);
-  // Builds read the series even when the manifest lists no patches.
+  expect(readdirSync(root).sort()).toEqual(["archives", "patches", "source", "source.manifest.json", "zig-packages"]);
+  // Builds read the series and the package directory even when the manifest lists none.
   expect(readdirSync(join(root, "patches"))).toEqual(["series"]);
   expect(readFileSync(join(root, "patches", "series"), "utf8")).toBe("");
+  expect(readdirSync(join(root, "zig-packages"))).toEqual([]);
 });
 
 test("creates or refreshes the stamp only when the retained source verifies", async () => {
@@ -211,6 +212,60 @@ test("check mode compares published patches without writing", async () => {
   rmSync(join(root, "patches"), { recursive: true });
   await expect(prepareSource(item, root, true, manifest)).rejects.toThrow("(series)");
   expect(existsSync(join(root, "patches"))).toBe(false);
+});
+
+const zigEntry = { name: "aro", zig_hash: "aro-0.0.0-JSD1QtuBNwCASyBtNF3pqTl_W3oAJQGEVyFAtrBSE_Pa", url: "git+https://codeberg.org/ziglang/arocc#d0c8c4d9", sha256: "a".repeat(64) };
+
+test("validates manifest Zig package entries", () => {
+  const naked = { ...zigEntry, name: "highway", zig_hash: "N-V-__8AAGmZhABbsPJLfbqrh6JTHsXhY6qCaLAQyx25e0XE", url: "https://deps.example/highway.tar.gz" };
+  expect(parseZigPackages([zigEntry, naked])).toEqual([zigEntry, naked]);
+  for (const [invalid, message] of [
+    [{ ...zigEntry, name: "a/b" }, "invalid Ghostty Zig package name"],
+    [{ ...zigEntry, zig_hash: "../aro" }, "invalid Zig hash"],
+    [{ ...zigEntry, zig_hash: "aro/0" }, "invalid Zig hash"],
+    [{ ...zigEntry, zig_hash: ".hidden" }, "invalid Zig hash"],
+    [{ ...zigEntry, url: "http://codeberg.org/ziglang/arocc" }, "https or git+https"],
+    [{ ...zigEntry, sha256: "A".repeat(64) }, "invalid sha256"],
+  ] as const) {
+    expect(() => parseZigPackages([invalid])).toThrow(message);
+  }
+  expect(() => parseZigPackages([zigEntry, { ...zigEntry, name: "again" }])).toThrow("duplicate Ghostty Zig package");
+  expect(() => parseZigPackages(undefined)).toThrow("invalid Ghostty Zig package list");
+});
+
+test("loads vendored Zig packages only when their bytes match the manifest", () => {
+  const root = temporary();
+  const file = join(root, zigPackageFile(zigEntry.zig_hash));
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, "tarball");
+  const entry = { ...zigEntry, sha256: fileHash(file) };
+  expect(loadZigPackages([entry], root)).toEqual([{ zig_hash: entry.zig_hash, bytes: Buffer.from("tarball") }]);
+  writeFileSync(file, "tampered");
+  expect(() => loadZigPackages([entry], root)).toThrow("Ghostty Zig package checksum mismatch");
+  rmSync(file);
+  expect(() => loadZigPackages([entry], root)).toThrow("cannot read Ghostty Zig package aro");
+});
+
+test("publishes vendored Zig packages by hash and check mode compares them", async () => {
+  const { root, item } = await fixture();
+  const packages = [{ zig_hash: "aro-1", bytes: Buffer.from("aro") }, { zig_hash: "uucode-2", bytes: Buffer.from("uu") }];
+  await prepareSource(item, root, false, manifest, [], [], packages);
+  const published = join(root, "zig-packages");
+  expect(readdirSync(published).sort()).toEqual(["aro-1.tar.gz", "uucode-2.tar.gz"]);
+  expect(readFileSync(join(published, "aro-1.tar.gz"), "utf8")).toBe("aro");
+  await prepareSource(item, root, true, manifest, [], [], packages);
+
+  writeFileSync(join(published, "aro-1.tar.gz"), "poisoned");
+  await expect(prepareSource(item, root, true, manifest, [], [], packages)).rejects.toThrow("published Ghostty Zig packages differ from the manifest (aro-1.tar.gz)");
+  expect(readFileSync(join(published, "aro-1.tar.gz"), "utf8")).toBe("poisoned");
+  // Preparing again restores the verified bytes and drops packages the manifest no longer lists.
+  await prepareSource(item, root, false, manifest, [], [], packages.slice(0, 1));
+  expect(readdirSync(published)).toEqual(["aro-1.tar.gz"]);
+  expect(readFileSync(join(published, "aro-1.tar.gz"), "utf8")).toBe("aro");
+  expect(readFileSync(join(root, "source.manifest.json"))).toEqual(manifest);
+
+  rmSync(published, { recursive: true });
+  await expect(prepareSource(item, root, true, manifest)).rejects.toThrow("(zig-packages/)");
 });
 
 test("check mode never materializes missing sources", async () => {

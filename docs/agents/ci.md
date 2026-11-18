@@ -118,10 +118,11 @@ ziglang.org outage fails the install.
 The Mise action saves its install cache right after its own install step, so
 tools installed later in a job, such as Zig and the `cargo:` tools, never reach
 it. The setup-zig action also points `ZIG_GLOBAL_CACHE_DIR` and
-`ZIG_LOCAL_CACHE_DIR` under `RUNNER_TEMP`, where restore-ghostty and
-save-ghostty expect Zig's package cache. Release jobs install Zig through the
-Mise action, with community mirrors, no Actions cache, and no retry. Reference
-local actions as `./.github/actions/...` with a
+`ZIG_LOCAL_CACHE_DIR` under `RUNNER_TEMP`. No job caches Zig's packages:
+the `huterm-ghostty` build seeds the vendored ones into the global cache; see
+[vendored Zig packages](terminal-engines.md#vendored-zig-packages). Release
+jobs install Zig through the Mise action, with community mirrors, no Actions
+cache, and no retry. Reference local actions as `./.github/actions/...` with a
 `zizmor: ignore[self-repository]` comment: actionlint rejects GitHub's `$/`
 self-repository syntax.
 
