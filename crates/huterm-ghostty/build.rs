@@ -799,8 +799,13 @@ fn seed_packages(
             .to_str()
             .is_none_or(|name| !names.contains(name));
         if stale && entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            fs::remove_file(entry.path())
-                .map_err(io("removing", &entry.path()))?;
+            // A concurrent build may have removed it first.
+            match fs::remove_file(entry.path()) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                    return Err(io("removing", &entry.path())(error));
+                }
+                _ => {}
+            }
         }
     }
     let staging = global_cache.join("huterm-seed");
