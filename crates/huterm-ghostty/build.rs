@@ -757,7 +757,9 @@ fn zig_global_cache(source: &Path) -> Result<PathBuf, BuildError> {
 /// contents against the hash its declaring `build.zig.zon` pins, so seeding
 /// changes nothing a build trusts but spares it the package hosts. A cached
 /// file with other bytes is replaced, because Zig would reject it rather than
-/// fetch the package again, and any other cached file is removed.
+/// fetch the package again, and any other cached file is removed. Copies are
+/// staged in `huterm-seed/`, outside `p/`, so pruning never removes one that a
+/// concurrent build is about to rename into place.
 fn seed_packages(
     source: &Path,
     global_cache: &Path,
@@ -801,6 +803,8 @@ fn seed_packages(
                 .map_err(io("removing", &entry.path()))?;
         }
     }
+    let staging = global_cache.join("huterm-seed");
+    fs::create_dir_all(&staging).map_err(io("creating", &staging))?;
     for name in &names {
         let from = published.join(name);
         let bytes = fs::read(&from).map_err(io("reading", &from))?;
@@ -809,8 +813,7 @@ fn seed_packages(
             continue;
         }
         // Rename into place so a concurrent build never reads a partial file.
-        let temporary =
-            cache.join(format!(".{name}.huterm-{}", std::process::id()));
+        let temporary = staging.join(format!("{name}.{}", std::process::id()));
         fs::write(&temporary, &bytes).map_err(io("writing", &temporary))?;
         if let Err(error) = fs::rename(&temporary, &destination) {
             let _ = fs::remove_file(&temporary);
@@ -1743,9 +1746,13 @@ mod tests {
         fs::create_dir_all(&cache).unwrap();
         fs::write(cache.join("aro-1.tar.gz"), "poisoned").unwrap();
         // A lazy package lib-vt never uses, whose dependencies Zig would
-        // otherwise fetch, and a temporary file a killed build left behind.
+        // otherwise fetch, and a stray hidden file.
         fs::write(cache.join("vaxis-3.tar.gz"), "unused").unwrap();
-        fs::write(cache.join(".uucode-2.tar.gz.huterm-1"), "partial").unwrap();
+        fs::write(cache.join(".partial"), "partial").unwrap();
+        // Another build's copy, staged but not yet renamed into `p/`.
+        let staged = temp.0.join("global/huterm-seed/uucode-2.tar.gz.1");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        fs::write(&staged, "uu").unwrap();
         let vendored = seed_packages(&source, &temp.0.join("global")).unwrap();
         assert_eq!(
             vendored,
@@ -1758,6 +1765,7 @@ mod tests {
                 ("uucode-2.tar.gz".to_owned(), "uu".to_owned()),
             ]
         );
+        assert_eq!(fs::read_to_string(&staged).unwrap(), "uu");
     }
 
     #[test]
