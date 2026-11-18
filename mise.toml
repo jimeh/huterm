@@ -924,7 +924,7 @@ depends = ["ghostty:prepare", "icons:check"]
 run = "bun scripts/package-linux.ts build"
 
 [tasks."ci:package:linux"]
-description = "Build Linux packages, retrying one transient native dependency fetch"
+description = "Build Linux packages, retrying once after a transient download failure"
 run = '''
 if mise run package:linux; then
   exit 0

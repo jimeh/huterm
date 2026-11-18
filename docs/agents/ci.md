@@ -81,9 +81,10 @@ set a `CARGO*`, `RUST*`, `CC*`, `CXX*`, or `CMAKE*` variable that differs betwee
 PR and main runs: rust-cache hashes those prefixes into the key, so PRs would
 stop matching main. The smoke key must name any such workflow value itself.
 
-CI Linux packaging retries once with retained Cargo and Zig caches because
-Ghostty's native dependency downloads can fail transiently. A second failure
-remains authoritative.
+CI Linux packaging retries once with retained Cargo and Zig caches because its
+downloads, such as the AppImage tools from GitHub releases, can fail
+transiently. Ghostty's Zig packages are vendored and never fetched. A second
+failure remains authoritative.
 
 CI installs Zig through `.github/actions/setup-zig`, which runs
 `mise install --locked zig` in its own step. Keep `zig` out of CI's Mise action

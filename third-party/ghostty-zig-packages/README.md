@@ -24,8 +24,9 @@ Every package keeps its upstream license file inside its tarball: aro, MIT;
 translate-c, MIT; uucode, MIT; Highway, Apache-2.0 or BSD-3-Clause; Wuffs,
 Apache-2.0 or MIT; `pixels`, CC0-1.0; zlib, the zlib license. zlib's tarball
 also carries contributed sources under other licenses, which Zig's package
-hash covers and which no build compiles: `contrib/ada` under GPL-2.0-or-later
-with the GNAT linking exception, and `contrib/dotzlib` under BSL-1.0. These
+hash covers and which no build compiles, including `contrib/ada` under
+GPL-2.0-or-later with the GNAT linking exception, `contrib/dotzlib` under
+BSL-1.0, and Info-ZIP code in `contrib/minizip`. These
 files are build inputs and do not ship. The notices for the code the VT library
 links, including uucode, Highway, and Wuffs, are in
 [the Ghostty notices](../ghostty/README.md).
