@@ -15,7 +15,7 @@ async-channel = "=2.5.0"
 async-executor = "=1.14.1"
 async-io = "=2.6.0"
 blocking = "=1.7.0"
-clap = { version = "=4.6.7", default-features = false, features = ["derive", "error-context", "help", "std", "suggestions", "usage"] }
+clap = { version = "=4.6.8", default-features = false, features = ["derive", "error-context", "help", "std", "suggestions", "usage"] }
 gpui = { package = "gpui-pre", version = "=0.3.11", default-features = false, features = ["font-kit", "x11"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", default-features = false, features = ["font-kit", "x11"] }
 huterm-cli = { path = "crates/huterm-cli", version = "=0.36.0" } # x-release-please-version
