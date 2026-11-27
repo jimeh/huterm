@@ -73,6 +73,10 @@ the same branch runs the generator:
 
 - `bindgen`: `mise run ghostty:bindings`, checked by
   `ghostty:bindings:check` on macOS.
+- The Ghostty pin and Zig: `mise run ghostty:zig-packages`, checked by the
+  `huterm-ghostty` build, which fails when Zig downloads a package Huterm
+  does not vendor. See
+  [vendored Zig packages](terminal-engines.md#vendored-zig-packages).
 - `schemars`: `mise run schema:generate`, checked by `schema:check`.
 - `lucide-static`: `mise run ui-icons:generate`, checked by
   `ui-icons.test.ts`.

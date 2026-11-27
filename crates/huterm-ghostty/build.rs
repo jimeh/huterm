@@ -6,12 +6,18 @@
 //! tree whose stamp differs from the current manifest. Zig writes mutable
 //! `zig-pkg` directories beside `build.zig`, so every build runs from a fresh
 //! private copy under `OUT_DIR` and never touches the verified tree. Zig's
-//! caches sit beside that copy, or in Zig's global cache, so they survive a
-//! refresh.
+//! caches sit beside that copy, or in Huterm's private Zig global cache, so
+//! they survive a refresh.
 //!
 //! Preparation also publishes verified copies of the manifest's patches and
 //! their `series` beside the tree. The build applies them to the private copy
 //! with Git, and fails rather than build without one.
+//!
+//! Preparation publishes the vendored Zig package tarballs beside the tree
+//! too. The build makes them the only packages in a Zig global cache private
+//! to Huterm, where Zig checks each against the hash its `build.zig.zon` pins,
+//! so no build needs a package host. A build that still downloads a package
+//! fails, naming it.
 //!
 //! With `HUTERM_GHOSTTY_ARTIFACT_CACHE` set, a build first looks there for an
 //! archive built from the same inputs and links it instead of running Zig.
@@ -25,13 +31,13 @@
 //! below are plain functions with unit tests;
 //! `scripts/ghostty-build.test.ts` compiles this file with `rustc --test`.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 const SOURCE_VAR: &str = "GHOSTTY_SOURCE_DIR";
 const OPTIMIZE_VAR: &str = "HUTERM_GHOSTTY_OPTIMIZE";
@@ -152,6 +158,9 @@ impl Options {
             "-Dapp-runtime=none".into(),
             // Huterm links only the host archive; skip Apple bundles.
             "-Demit-xcframework=false".into(),
+            // Installed themes come from a package Huterm would otherwise
+            // need to vendor, and nothing reads them.
+            "-Demit-themes=false".into(),
             format!("-Doptimize={}", self.optimize.as_str()).into(),
             format!("-Dcpu={}", self.cpu).into(),
         ];
@@ -724,88 +733,190 @@ impl Layout {
     }
 }
 
-/// Pauses between attempts to fetch Ghostty's Zig packages. Upstream package
-/// hosts have returned 503 during builds, and in CI one such response failed
-/// every compiling job of a run.
-const FETCH_RETRY_DELAYS: [Duration; 2] =
-    [Duration::from_secs(5), Duration::from_secs(20)];
+/// Zig's global cache for Ghostty builds, private to Huterm:
+/// `ghostty-zig-cache` beside the prepared directory. A shared cache can hold
+/// lazy packages Ghostty declares but lib-vt never uses, and Zig unpacks
+/// those and fetches their missing dependencies anyway.
+fn zig_global_cache(source: &Path) -> Result<PathBuf, BuildError> {
+    let prepared = source.parent().ok_or_else(|| {
+        BuildError::Option(format!(
+            "{SOURCE_VAR}={} has no parent directory",
+            source.display()
+        ))
+    })?;
+    let cache = prepared.with_file_name("ghostty-zig-cache");
+    std::path::absolute(&cache).map_err(|error| {
+        BuildError::Io(format!("resolving {}", cache.display()), error)
+    })
+}
 
-/// The Zig build command, run from the private copy. With `fetch`, it only
-/// fetches the packages that exact build needs into Zig's global cache.
+/// Makes the package cache `p/` of `global_cache` hold exactly the vendored
+/// Zig package tarballs that `ghostty:prepare` publishes in `zig-packages/`
+/// beside the source, under the names Zig gives its own: `<hash>.tar.gz`.
+/// Returns their hashes. Zig unpacks a cached tarball only after checking its
+/// contents against the hash its declaring `build.zig.zon` pins, so seeding
+/// changes nothing a build trusts but spares it the package hosts. A cached
+/// file with other bytes is replaced, because Zig would reject it rather than
+/// fetch the package again, and any other cached file is removed. Copies are
+/// staged in `huterm-seed/`, outside `p/`, so pruning never removes one that a
+/// concurrent build is about to rename into place.
+fn seed_packages(
+    source: &Path,
+    global_cache: &Path,
+) -> Result<BTreeSet<String>, BuildError> {
+    let io = |context: &str, path: &Path| {
+        let context = format!("{context} {}", path.display());
+        move |error| BuildError::Io(context, error)
+    };
+    let published = source.with_file_name("zig-packages");
+    let entries = match fs::read_dir(&published) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(BuildError::Option(format!(
+                "the vendored Zig packages {} are missing; run `mise run \
+                 ghostty:prepare`",
+                published.display()
+            )));
+        }
+        Err(error) => return Err(io("reading", &published)(error)),
+    };
+    let mut names = BTreeSet::new();
+    for entry in entries {
+        let name = entry.map_err(io("reading", &published))?.file_name();
+        if let Some(name) = name
+            .to_str()
+            .filter(|name| name.ends_with(".tar.gz") && !name.starts_with('.'))
+        {
+            names.insert(name.to_owned());
+        }
+    }
+    let cache = global_cache.join("p");
+    fs::create_dir_all(&cache).map_err(io("creating", &cache))?;
+    for entry in fs::read_dir(&cache).map_err(io("reading", &cache))? {
+        let entry = entry.map_err(io("reading", &cache))?;
+        let stale = entry
+            .file_name()
+            .to_str()
+            .is_none_or(|name| !names.contains(name));
+        if stale && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            // A concurrent build may have removed it first.
+            match fs::remove_file(entry.path()) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                    return Err(io("removing", &entry.path())(error));
+                }
+                _ => {}
+            }
+        }
+    }
+    let staging = global_cache.join("huterm-seed");
+    fs::create_dir_all(&staging).map_err(io("creating", &staging))?;
+    for name in &names {
+        let from = published.join(name);
+        let bytes = fs::read(&from).map_err(io("reading", &from))?;
+        let destination = cache.join(name);
+        if fs::read(&destination).is_ok_and(|current| current == bytes) {
+            continue;
+        }
+        // Rename into place so a concurrent build never reads a partial file.
+        let temporary = staging.join(format!("{name}.{}", std::process::id()));
+        fs::write(&temporary, &bytes).map_err(io("writing", &temporary))?;
+        if let Err(error) = fs::rename(&temporary, &destination) {
+            let _ = fs::remove_file(&temporary);
+            return Err(io("replacing", &destination)(error));
+        }
+    }
+    Ok(names
+        .iter()
+        .filter_map(|name| name.strip_suffix(".tar.gz"))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Packages in the private copy's `zig-pkg` that are not `vendored`, and
+/// that Zig therefore downloaded.
+fn downloaded_packages(
+    source: &Path,
+    vendored: &BTreeSet<String>,
+) -> Result<Vec<String>, BuildError> {
+    let packages = source.join("zig-pkg");
+    let entries = match fs::read_dir(&packages) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(error) => {
+            return Err(BuildError::Io(
+                format!("reading {}", packages.display()),
+                error,
+            ));
+        }
+    };
+    let mut downloaded = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            BuildError::Io(format!("reading {}", packages.display()), error)
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Zig's own temporary directories start with a dot.
+        if !name.starts_with('.') && !vendored.contains(&name) {
+            downloaded.push(name);
+        }
+    }
+    downloaded.sort_unstable();
+    Ok(downloaded)
+}
+
+/// The Zig build command, run from the private copy.
 ///
 /// Commit hooks export repository paths that would point Ghostty's version
-/// probe at Huterm, so Git state is isolated to the private copy.
+/// probe at Huterm, so Git state is isolated to the private copy. The child
+/// gets Huterm's private global cache, which holds the seeds, and keeps
+/// `zig-pkg` in the copy.
 fn zig_command(
     zig: &OsString,
     layout: &Layout,
     options: &Options,
-    fetch: bool,
+    global_cache: &Path,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Command {
-    let mut arguments =
-        options.zig_arguments(&layout.install, &layout.local_cache);
-    if fetch {
-        // `zig build` stays first; `--fetch` applies to the same options.
-        arguments.insert(1, "--fetch".into());
-    }
     let mut command = Command::new(zig);
-    command.current_dir(&layout.source).args(arguments);
-    isolate_git(&mut command, &layout.source, inherited);
     command
-}
-
-/// Runs `action` until it succeeds, pausing for each delay in turn, and
-/// returns the last error once the delays run out. Only failures Zig reports
-/// are retried; an I/O error such as a missing `zig` cannot clear itself.
-fn retry<T>(
-    delays: &[Duration],
-    mut pause: impl FnMut(Duration),
-    mut action: impl FnMut() -> Result<T, BuildError>,
-) -> Result<T, BuildError> {
-    let mut delays = delays.iter();
-    loop {
-        match action() {
-            Ok(value) => return Ok(value),
-            Err(error @ BuildError::Zig(_)) => match delays.next() {
-                Some(delay) => {
-                    println!(
-                        "cargo:warning={error}; retrying in {}s",
-                        delay.as_secs()
-                    );
-                    pause(*delay);
-                }
-                None => return Err(error),
-            },
-            Err(error) => return Err(error),
-        }
-    }
+        .current_dir(&layout.source)
+        .args(options.zig_arguments(&layout.install, &layout.local_cache));
+    isolate_git(&mut command, &layout.source, inherited);
+    // `zig build` takes the global cache only from the environment.
+    command
+        .env("ZIG_GLOBAL_CACHE_DIR", global_cache)
+        .env_remove("ZIG_LOCAL_PKG_DIR");
+    command
 }
 
 fn run_zig(
     zig: &OsString,
     layout: &Layout,
     options: &Options,
-    fetch: bool,
+    global_cache: &Path,
 ) -> Result<(), BuildError> {
-    let status = zig_command(zig, layout, options, fetch, std::env::vars_os())
-        .status()
-        .map_err(|error| {
-            BuildError::Io(
-                format!(
-                    "running {}; install the pinned Zig with `mise install`",
-                    zig.to_string_lossy()
-                ),
-                error,
-            )
-        })?;
+    let status = zig_command(
+        zig,
+        layout,
+        options,
+        global_cache,
+        std::env::vars_os(),
+    )
+    .status()
+    .map_err(|error| {
+        BuildError::Io(
+            format!(
+                "running {}; install the pinned Zig with `mise install`",
+                zig.to_string_lossy()
+            ),
+            error,
+        )
+    })?;
     if !status.success() {
-        let step = if fetch {
-            "zig build --fetch"
-        } else {
-            "zig build"
-        };
         return Err(BuildError::Zig(format!(
-            "{step} failed with {status} in {}",
+            "zig build failed with {status} in {}",
             layout.source.display()
         )));
     }
@@ -882,12 +993,21 @@ fn build() -> Result<(), BuildError> {
             &layout.source,
             &std::env::vars_os().collect::<Vec<_>>(),
         )?;
-        // Fetch first, with retries, so a transient package-host failure
-        // cannot fail the build itself.
-        retry(&FETCH_RETRY_DELAYS, std::thread::sleep, || {
-            run_zig(&zig, &layout, &options, true)
-        })?;
-        run_zig(&zig, &layout, &options, false)?;
+        let global_cache = zig_global_cache(&source)?;
+        let vendored = seed_packages(&source, &global_cache)?;
+        run_zig(&zig, &layout, &options, &global_cache)?;
+        // Zig fetches lazy packages while the build runs, so only the
+        // finished build shows them. A pin or Zig bump can add one; vendor it
+        // rather than let builds depend on its host.
+        let downloaded = downloaded_packages(&layout.source, &vendored)?;
+        if !downloaded.is_empty() {
+            return Err(BuildError::Option(format!(
+                "zig build downloaded Zig packages that Huterm does not \
+                 vendor: {}; run `mise run ghostty:zig-packages` and commit \
+                 the result",
+                downloaded.join(", ")
+            )));
+        }
         if !layout.install.join("lib").join(ARCHIVE).is_file() {
             return Err(BuildError::Zig(format!(
                 "zig build did not produce {}",
@@ -1054,6 +1174,7 @@ mod tests {
                 "-Demit-lib-vt=true",
                 "-Dapp-runtime=none",
                 "-Demit-xcframework=false",
+                "-Demit-themes=false",
                 "-Doptimize=ReleaseFast",
                 "-Dcpu=baseline",
                 "-Dtarget=x86_64-macos.14.0",
@@ -1203,7 +1324,7 @@ mod tests {
             &OsString::from("zig"),
             &layout,
             &parsed,
-            false,
+            Path::new("/zig-cache"),
             inherited,
         );
         assert_eq!(command.get_current_dir(), Some(layout.source.as_path()));
@@ -1223,6 +1344,8 @@ mod tests {
                 ("GIT_CEILING_DIRECTORIES", Some("/out")),
                 ("GIT_DIR", None),
                 ("GIT_INDEX_FILE", None),
+                ("ZIG_GLOBAL_CACHE_DIR", Some("/zig-cache")),
+                ("ZIG_LOCAL_PKG_DIR", None),
             ]
         );
     }
@@ -1596,73 +1719,86 @@ mod tests {
         assert_eq!(layout.source.parent(), Some(Path::new("/out")));
     }
 
-    #[test]
-    fn fetch_runs_the_build_arguments_with_fetch_after_build() {
-        let parsed = options(
-            Some("ReleaseFast"),
-            Some("baseline"),
-            "aarch64-apple-darwin",
-            None,
-        )
-        .unwrap();
-        let layout = Layout::new(Path::new("/out"));
-        let arguments = |fetch| -> Vec<OsString> {
-            zig_command(&OsString::from("zig"), &layout, &parsed, fetch, [])
-                .get_args()
-                .map(OsString::from)
-                .collect()
-        };
-        let mut expected = arguments(false);
-        assert_eq!(expected[0], "build");
-        expected.insert(1, "--fetch".into());
-        assert_eq!(arguments(true), expected);
+    /// A prepared root holding `source/` and the published `zig-packages/`.
+    fn published_packages(root: &Path, packages: &[(&str, &str)]) -> PathBuf {
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let published = root.join("zig-packages");
+        fs::create_dir_all(&published).unwrap();
+        for (hash, bytes) in packages {
+            fs::write(published.join(format!("{hash}.tar.gz")), bytes).unwrap();
+        }
+        source
     }
 
     #[test]
-    fn retry_pauses_between_failures_and_returns_the_last_error() {
-        let delays = [Duration::from_secs(5), Duration::from_secs(20)];
-        let mut pauses = Vec::new();
-        let mut calls = 0;
-        let result = retry(
-            &delays,
-            |delay| pauses.push(delay),
-            || {
-                calls += 1;
-                if calls < 3 {
-                    Err(BuildError::Zig(format!("attempt {calls}")))
-                } else {
-                    Ok(calls)
-                }
-            },
+    fn the_private_cache_sits_beside_the_prepared_directory() {
+        assert_eq!(
+            zig_global_cache(Path::new("/repo/.native/ghostty/source"))
+                .unwrap(),
+            Path::new("/repo/.native/ghostty-zig-cache")
         );
-        assert_eq!(result.unwrap(), 3);
-        assert_eq!(pauses, delays);
+    }
 
-        let mut pauses = Vec::new();
-        let mut calls = 0;
-        let result: Result<(), _> = retry(
-            &delays,
-            |delay| pauses.push(delay),
-            || {
-                calls += 1;
-                Err(BuildError::Zig(format!("attempt {calls}")))
-            },
+    #[test]
+    fn seeding_leaves_the_cache_holding_exactly_the_vendored_tarballs() {
+        let temp = TempDir::new("seed");
+        let source = published_packages(
+            &temp.0,
+            &[("aro-1", "vendored"), ("uucode-2", "uu")],
         );
-        assert_eq!(result.unwrap_err().to_string(), "attempt 3");
-        assert_eq!(pauses, delays);
+        let cache = temp.0.join("global/p");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("aro-1.tar.gz"), "poisoned").unwrap();
+        // A lazy package lib-vt never uses, whose dependencies Zig would
+        // otherwise fetch, and a stray hidden file.
+        fs::write(cache.join("vaxis-3.tar.gz"), "unused").unwrap();
+        fs::write(cache.join(".partial"), "partial").unwrap();
+        // Another build's copy, staged but not yet renamed into `p/`.
+        let staged = temp.0.join("global/huterm-seed/uucode-2.tar.gz.1");
+        fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        fs::write(&staged, "uu").unwrap();
+        let vendored = seed_packages(&source, &temp.0.join("global")).unwrap();
+        assert_eq!(
+            vendored,
+            BTreeSet::from(["aro-1".to_owned(), "uucode-2".to_owned()])
+        );
+        assert_eq!(
+            snapshot(&cache),
+            [
+                ("aro-1.tar.gz".to_owned(), "vendored".to_owned()),
+                ("uucode-2.tar.gz".to_owned(), "uu".to_owned()),
+            ]
+        );
+        assert_eq!(fs::read_to_string(&staged).unwrap(), "uu");
+    }
 
-        let mut pauses = Vec::new();
-        let result: Result<(), _> = retry(
-            &delays,
-            |delay| pauses.push(delay),
-            || {
-                Err(BuildError::Io(
-                    "running zig".into(),
-                    io::Error::from(io::ErrorKind::NotFound),
-                ))
-            },
+    #[test]
+    fn seeding_requires_the_published_packages() {
+        let temp = TempDir::new("seed-missing");
+        let source = temp.0.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let error = seed_packages(&source, &temp.0.join("global")).unwrap_err();
+        assert!(
+            error.to_string().contains("run `mise run ghostty:prepare`"),
+            "{error}"
         );
-        assert!(matches!(result, Err(BuildError::Io(..))));
-        assert!(pauses.is_empty());
+    }
+
+    #[test]
+    fn packages_outside_the_vendored_set_count_as_downloads() {
+        let temp = TempDir::new("downloads");
+        let packages = temp.0.join("zig-pkg");
+        for name in ["aro-1", "new-5", ".tmp-0123"] {
+            fs::create_dir_all(packages.join(name)).unwrap();
+        }
+        let vendored =
+            BTreeSet::from(["aro-1".to_owned(), "uucode-2".to_owned()]);
+        assert_eq!(downloaded_packages(&temp.0, &vendored).unwrap(), ["new-5"]);
+        assert!(
+            downloaded_packages(&temp.0.join("none"), &vendored)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
